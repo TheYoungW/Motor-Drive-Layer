@@ -99,10 +99,10 @@
       ],
       "status": "aligned"
     },
-    "cpp": {
-      "namespace_metadata": [
-        "motorbridge::abi_version()",
-        "motorbridge::abi_capabilities_json()"
+    "cpp_damiao": {
+      "abi_metadata": [
+        "motor_abi_version",
+        "motor_abi_capabilities_json"
       ],
       "status": "aligned"
     }

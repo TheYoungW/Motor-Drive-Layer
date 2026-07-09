@@ -1,9 +1,6 @@
 # cpp_damiao
 
-Native C++ Damiao SDK components with no Rust dependency.
-
-This directory is separate from `bindings/cpp`, which wraps the Rust C ABI.
-Use this directory when your C++ project must not link Rust-built libraries.
+Native C++ Damiao SDK components and the C ABI shared library used by Python.
 
 ## Current Scope
 
@@ -29,7 +26,7 @@ ctest --test-dir cpp_damiao/build --output-on-failure
 
 The build produces `cpp_damiao/build/libmotor_abi.dylib` on macOS or
 `cpp_damiao/build/libmotor_abi.so` on Linux. The Python loader checks this path
-before Rust `target/release`, so local Python tests use the C++ ABI.
+for local development.
 
 ## Python/reBot Compatibility
 

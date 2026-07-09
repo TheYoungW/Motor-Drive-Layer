@@ -73,31 +73,13 @@ with Controller(args.channel) as ctrl:
     motor = ctrl.add_damiao_motor(0x01, 0x11, "4340P")
     target_mode = Mode.POS_VEL
 
-    # 2) Other vendor templates (commented by default; uncomment one block to switch)
-    # MyActuator:
-    # Typical: id=1, feedback=0x241, model=X8
-    # motor = ctrl.add_myactuator_motor(1, 0x241, "X8")
-    # target_mode = Mode.POS_VEL
-
-    # RobStride:
-    # Typical: id=127, feedback=0xFE, model=rs-00
-    # motor = ctrl.add_robstride_motor(127, 0xFE, "rs-00")
-    # target_mode = Mode.MIT
-
-    # HighTorque:
-    # Typical: id=1, feedback=0x01, model=hightorque
-    # motor = ctrl.add_hightorque_motor(1, 0x01, "hightorque")
-    # target_mode = Mode.MIT
-
     # Enable motor output and make sure control mode is ready.
     # If ensure_mode times out, check CAN wiring, IDs, and that no other sender is flooding bus.
     ctrl.enable_all()
     motor.ensure_mode(target_mode, 1000)
 
-    # Main control loop:
-    # - Damiao/MyActuator: keep sending POS_VEL target.
-    # - RobStride/HighTorque: comment send_pos_vel and use send_mit line.
-    # Why "keep sending"? Most drivers are streaming controllers, not one-shot latches.
+    # Main control loop. Keep sending targets because the driver expects a stream,
+    # not a single latched command.
     for i in range(args.loop):
         t0 = time.time()
         try:

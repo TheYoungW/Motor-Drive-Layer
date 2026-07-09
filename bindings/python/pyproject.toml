@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "motorbridge"
 dynamic = ["version"]
-description = "Python SDK for motorbridge Rust ABI"
-readme = "README.md"
+description = "Python SDK for the Motor-Drive-Layer C++ ABI"
+readme = { text = "Python SDK for the Motor-Drive-Layer C++ ABI.", content-type = "text/markdown" }
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "motorbridge contributors" }]
+authors = [{ name = "Motor-Drive-Layer contributors" }]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
@@ -28,8 +28,8 @@ classifiers = [
 version = { attr = "motorbridge._version.VERSION" }
 
 [project.urls]
-Homepage = "https://github.com/tianrking/motorbridge"
-Repository = "https://github.com/tianrking/motorbridge"
+Homepage = "https://github.com/TheYoungW/Motor-Drive-Layer"
+Repository = "https://github.com/TheYoungW/Motor-Drive-Layer"
 
 [project.scripts]
 motorbridge = "motorbridge.cli:main"

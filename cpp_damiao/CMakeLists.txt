@@ -20,7 +20,7 @@ add_library(
   src/dm_serial_bus_posix.cpp
   src/socketcan_bus.cpp
   src/dm_device_bus.cpp
-  ../motor_core/src/dm_device_shim.cpp
+  src/dm_device_shim.cpp
 )
 add_library(damiao::runtime ALIAS damiao_runtime)
 target_compile_features(damiao_runtime PUBLIC cxx_std_17)
@@ -30,7 +30,7 @@ set_target_properties(damiao_runtime PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_library(motor_abi SHARED src/motor_abi.cpp)
 target_compile_features(motor_abi PRIVATE cxx_std_17)
-target_include_directories(motor_abi PRIVATE ../motor_abi/include)
+target_include_directories(motor_abi PRIVATE include)
 target_link_libraries(motor_abi PRIVATE damiao::runtime)
 
 if(BUILD_TESTING)
@@ -47,7 +47,7 @@ if(BUILD_TESTING)
   add_test(NAME damiao_runtime_test COMMAND damiao_runtime_test)
 
   add_executable(motor_abi_smoke_test tests/abi_smoke_test.cpp)
-  target_include_directories(motor_abi_smoke_test PRIVATE ../motor_abi/include)
+  target_include_directories(motor_abi_smoke_test PRIVATE include)
   target_link_libraries(motor_abi_smoke_test PRIVATE motor_abi)
   add_test(NAME motor_abi_smoke_test COMMAND motor_abi_smoke_test)
 

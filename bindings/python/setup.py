@@ -15,6 +15,13 @@ def _package_version() -> str:
     return ns["VERSION"]
 
 
+def _long_description() -> str:
+    repo_readme = Path(__file__).resolve().parents[2] / "README.md"
+    if repo_readme.exists():
+        return repo_readme.read_text(encoding="utf-8")
+    return "Python SDK for the Motor-Drive-Layer C++ ABI."
+
+
 def _platform_lib_name() -> str:
     if sys.platform.startswith("win"):
         return "motor_abi.dll"
@@ -84,7 +91,7 @@ def _candidate_abi_paths() -> list[Path]:
     if env:
         candidates.append(Path(env).expanduser())
 
-    candidates.append(repo_root / "target" / "release" / lib_name)
+    candidates.append(repo_root / "cpp_damiao" / "build" / lib_name)
     candidates.append(here.parent / "src" / "motorbridge" / "lib" / lib_name)
     return candidates
 
@@ -97,7 +104,8 @@ def _resolve_abi_path() -> Path:
     raise RuntimeError(
         "Cannot locate motor_abi shared library for wheel build.\n"
         f"Tried:\n{tried}\n"
-        "Build ABI first (`cargo build -p motor_abi --release`) or set MOTORBRIDGE_LIB."
+        "Build ABI first (`cmake -S cpp_damiao -B cpp_damiao/build && cmake --build cpp_damiao/build`) "
+        "or set MOTORBRIDGE_LIB."
     )
 
 
@@ -125,10 +133,10 @@ class BinaryDistribution(Distribution):
 setup(
     name="motorbridge",
     version=_package_version(),
-    description="Python SDK for motorbridge Rust ABI",
-    long_description=open("README.md", encoding="utf-8").read(),
+    description="Python SDK for the Motor-Drive-Layer C++ ABI",
+    long_description=_long_description(),
     long_description_content_type="text/markdown",
-    author="motorbridge contributors",
+    author="Motor-Drive-Layer contributors",
     license="MIT",
     python_requires=">=3.10",
     package_dir={"": "src"},

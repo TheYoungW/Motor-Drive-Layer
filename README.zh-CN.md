@@ -1,26 +1,21 @@
 # Motor-Drive-Layer
 
-Motor-Drive-Layer 是面向达妙电机的 C++ / Python 电机控制层。当前项目只保留达妙电机控制链路，移除了不需要的其他电机厂商实现，并加入了可替代原 Rust 动态库的原生 C++ ABI 路径。
+Motor-Drive-Layer 是面向达妙电机的 C++ / Python 电机控制层。当前项目只保留达妙电机控制链路，移除了不需要的其他电机厂商实现，并使用原生 C++ ABI 动态库作为 Python 和下游项目的底层实现。
 
 ## 保留内容
 
-- `motor_core`：共享总线、传输、模型和错误抽象。
-- `motor_vendors/damiao`：达妙协议、控制器、电机模型和寄存器访问。
-- `motor_cli`：只支持达妙的 Rust CLI。
-- `motor_abi`：只支持达妙的 C ABI，供 Python binding 使用。
-- `bindings/python`：Python SDK 和达妙专用 CLI 包装。
-- `cpp_damiao`：不依赖 Rust 的原生 C++ 达妙 SDK 组件。
+- `cpp_damiao`：原生 C++ 达妙协议、运行时、传输层、测试和 C ABI。
+- `bindings/python`：保持现有 motorbridge Python API 形态，并加载 C++ ABI 动态库。
+- `third_party/dm_device`：可选的达妙 DM_Device 运行库。
 
-如果你的最终项目是 C++，并且产品里不想带 Rust，从
-[`cpp_damiao`](cpp_damiao/README.md) 开始。
+这个仓库现在只保留 C++ 和 Python。
 
 ## 常用命令
 
 ```bash
-cargo run -p motor_cli -- --vendor damiao --mode scan --start-id 1 --end-id 16
-cargo run -p motor_cli -- --vendor damiao --channel can0 --model 4340P \
-  --motor-id 0x01 --feedback-id 0x11 --mode mit \
-  --pos 0 --vel 0 --kp 2 --kd 1 --tau 0 --loop 200 --dt-ms 20
+cmake -S cpp_damiao -B cpp_damiao/build
+cmake --build cpp_damiao/build
+ctest --test-dir cpp_damiao/build --output-on-failure
 ```
 
 Python：

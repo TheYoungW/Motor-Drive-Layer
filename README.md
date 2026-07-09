@@ -2,29 +2,24 @@
 
 Motor-Drive-Layer is a Damiao-focused motor control layer for C++ and Python
 projects. It keeps the Damiao motor control path, removes unused motor vendor
-implementations, and adds a native C++ ABI path that can replace the original
-Rust shared library for downstream applications.
+implementations, and uses a native C++ ABI shared library for downstream
+applications.
 
 ## What remains
 
-- `motor_core`: shared bus, transport, model, and error abstractions.
-- `motor_vendors/damiao`: Damiao protocol, controller, motor model support, and
-  register access.
-- `motor_cli`: Damiao-only Rust CLI.
-- `motor_abi`: Damiao-only C ABI used by the Python binding.
-- `bindings/python`: Python SDK and Damiao-only CLI wrapper.
-- `cpp_damiao`: native C++ Damiao SDK components with no Rust dependency.
+- `cpp_damiao`: native C++ Damiao protocol, runtime, transports, tests, and C ABI.
+- `bindings/python`: Python SDK that keeps the existing motorbridge API shape
+  while loading the C++ ABI shared library.
+- `third_party/dm_device`: optional DaMiao DM_Device runtime libraries.
 
-If your application is C++ and you do not want Rust in the product, start with
-[`cpp_damiao`](cpp_damiao/README.md).
+This repository is C++ and Python only.
 
 ## Quick commands
 
 ```bash
-cargo run -p motor_cli -- --vendor damiao --mode scan --start-id 1 --end-id 16
-cargo run -p motor_cli -- --vendor damiao --channel can0 --model 4340P \
-  --motor-id 0x01 --feedback-id 0x11 --mode mit \
-  --pos 0 --vel 0 --kp 2 --kd 1 --tau 0 --loop 200 --dt-ms 20
+cmake -S cpp_damiao -B cpp_damiao/build
+cmake --build cpp_damiao/build
+ctest --test-dir cpp_damiao/build --output-on-failure
 ```
 
 Python:

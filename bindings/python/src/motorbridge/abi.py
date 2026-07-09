@@ -48,20 +48,13 @@ def _candidate_lib_paths() -> list[Path]:
             repo_root / "cpp_damiao" / "build" / "motor_abi.dll",
         ]
     )
-    candidates.extend(
-        [
-            repo_root / "target" / "release" / "libmotor_abi.so",
-            repo_root / "target" / "release" / "libmotor_abi.dylib",
-            repo_root / "target" / "release" / "motor_abi.dll",
-        ]
-    )
 
     cwd = Path.cwd()
     candidates.extend(
         [
-            cwd / "target" / "release" / "libmotor_abi.so",
-            cwd / "target" / "release" / "libmotor_abi.dylib",
-            cwd / "target" / "release" / "motor_abi.dll",
+            cwd / "cpp_damiao" / "build" / "libmotor_abi.so",
+            cwd / "cpp_damiao" / "build" / "libmotor_abi.dylib",
+            cwd / "cpp_damiao" / "build" / "motor_abi.dll",
         ]
     )
     return candidates
@@ -99,7 +92,7 @@ def _load_library() -> ctypes.CDLL:
     raise AbiLoadError(
         "Failed to load motor_abi shared library. Tried:\n"
         + "\n".join(f"- {x}" for x in tried)
-        + "\nHint: build ABI first: cargo build -p motor_abi --release"
+        + "\nHint: build ABI first: cmake -S cpp_damiao -B cpp_damiao/build && cmake --build cpp_damiao/build"
     )
 
 
