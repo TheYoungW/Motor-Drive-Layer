@@ -1,0 +1,230 @@
+from __future__ import annotations
+
+import ctypes
+from ctypes import c_float, c_uint32
+
+from .abi import CState, get_abi
+from .dm_device_runtime import ensure_dm_device_runtime
+from .errors import CallError
+from .models import Mode, MotorState
+
+
+def _err_text() -> str:
+    msg = get_abi().lib.motor_last_error_message()
+    return msg.decode() if msg else "unknown error"
+
+
+def _ok(rc: int, what: str) -> None:
+    if rc != 0:
+        raise CallError(f"{what} failed: {_err_text()}")
+
+
+class Controller:
+    def __init__(self, channel: str = "can0") -> None:
+        self._abi = get_abi()
+        self._ptr = self._abi.lib.motor_controller_new_socketcan(channel.encode())
+        if not self._ptr:
+            raise CallError(f"new_socketcan failed: {_err_text()}")
+
+    @classmethod
+    def from_socketcanfd(cls, channel: str = "can0") -> "Controller":
+        self = cls.__new__(cls)
+        self._abi = get_abi()
+        self._ptr = self._abi.lib.motor_controller_new_socketcanfd(channel.encode())
+        if not self._ptr:
+            raise CallError(f"new_socketcanfd failed: {_err_text()}")
+        return self
+
+    @classmethod
+    def from_dm_serial(cls, serial_port: str = "/dev/ttyACM0", baud: int = 921600) -> "Controller":
+        self = cls.__new__(cls)
+        self._abi = get_abi()
+        self._ptr = self._abi.lib.motor_controller_new_dm_serial(serial_port.encode(), int(baud))
+        if not self._ptr:
+            raise CallError(f"new_dm_serial failed: {_err_text()}")
+        return self
+
+    @classmethod
+    def from_dm_device(
+        cls,
+        dm_device_type: str = "usb2canfd-dual",
+        dm_channel: str = "0",
+    ) -> "Controller":
+        self = cls.__new__(cls)
+        ensure_dm_device_runtime(quiet=True)
+        self._abi = get_abi()
+        self._ptr = self._abi.lib.motor_controller_new_dm_device(
+            dm_device_type.encode(),
+            dm_channel.encode(),
+        )
+        if not self._ptr:
+            raise CallError(f"new_dm_device failed: {_err_text()}")
+        return self
+
+    def close(self) -> None:
+        if self._ptr:
+            self._abi.lib.motor_controller_free(self._ptr)
+            self._ptr = None
+
+    def _require_open(self) -> int:
+        if not self._ptr:
+            raise CallError("controller is closed")
+        return self._ptr
+
+    def shutdown(self) -> None:
+        _ok(self._abi.lib.motor_controller_shutdown(self._require_open()), "controller_shutdown")
+
+    def close_bus(self) -> None:
+        _ok(self._abi.lib.motor_controller_close_bus(self._require_open()), "controller_close_bus")
+
+    def enable_all(self) -> None:
+        _ok(self._abi.lib.motor_controller_enable_all(self._require_open()), "enable_all")
+
+    def disable_all(self) -> None:
+        _ok(self._abi.lib.motor_controller_disable_all(self._require_open()), "disable_all")
+
+    def poll_feedback_once(self) -> None:
+        _ok(
+            self._abi.lib.motor_controller_poll_feedback_once(self._require_open()),
+            "poll_feedback_once",
+        )
+
+    def add_damiao_motor(self, motor_id: int, feedback_id: int, model: str) -> "Motor":
+        m = self._abi.lib.motor_controller_add_damiao_motor(
+            self._require_open(), motor_id, feedback_id, model.encode()
+        )
+        if not m:
+            raise CallError(f"add_damiao_motor failed: {_err_text()}")
+        return Motor(m)
+
+    def __enter__(self) -> "Controller":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        try:
+            self.shutdown()
+        finally:
+            self.close()
+
+
+class Motor:
+    def __init__(self, ptr: int) -> None:
+        self._abi = get_abi()
+        self._ptr = ptr
+
+    def close(self) -> None:
+        if self._ptr:
+            self._abi.lib.motor_handle_free(self._require_open())
+            self._ptr = None
+
+    def _require_open(self) -> int:
+        if not self._ptr:
+            raise CallError("motor handle is closed")
+        return self._ptr
+
+    def enable(self) -> None:
+        _ok(self._abi.lib.motor_handle_enable(self._require_open()), "enable")
+
+    def disable(self) -> None:
+        _ok(self._abi.lib.motor_handle_disable(self._require_open()), "disable")
+
+    def clear_error(self) -> None:
+        _ok(self._abi.lib.motor_handle_clear_error(self._require_open()), "clear_error")
+
+    def set_zero_position(self) -> None:
+        _ok(self._abi.lib.motor_handle_set_zero_position(self._require_open()), "set_zero_position")
+
+    def ensure_mode(self, mode: Mode | int, timeout_ms: int = 1000) -> None:
+        _ok(self._abi.lib.motor_handle_ensure_mode(self._require_open(), int(mode), timeout_ms), "ensure_mode")
+
+    def send_mit(self, pos: float, vel: float, kp: float, kd: float, tau: float) -> None:
+        _ok(self._abi.lib.motor_handle_send_mit(self._require_open(), pos, vel, kp, kd, tau), "send_mit")
+
+    def send_pos_vel(self, pos: float, vlim: float) -> None:
+        _ok(self._abi.lib.motor_handle_send_pos_vel(self._require_open(), pos, vlim), "send_pos_vel")
+
+    def send_vel(self, vel: float) -> None:
+        _ok(self._abi.lib.motor_handle_send_vel(self._require_open(), vel), "send_vel")
+
+    def send_force_pos(self, pos: float, vlim: float, ratio: float) -> None:
+        _ok(
+            self._abi.lib.motor_handle_send_force_pos(self._require_open(), pos, vlim, ratio),
+            "send_force_pos",
+        )
+
+    def request_feedback(self) -> None:
+        _ok(self._abi.lib.motor_handle_request_feedback(self._require_open()), "request_feedback")
+
+    def set_can_timeout_ms(self, timeout_ms: int) -> None:
+        _ok(self._abi.lib.motor_handle_set_can_timeout_ms(self._require_open(), timeout_ms), "set_can_timeout_ms")
+
+    def store_parameters(self) -> None:
+        _ok(self._abi.lib.motor_handle_store_parameters(self._require_open()), "store_parameters")
+
+    def write_register_f32(self, rid: int, value: float) -> None:
+        _ok(self._abi.lib.motor_handle_write_register_f32(self._require_open(), rid, value), "write_register_f32")
+
+    def write_register_u32(self, rid: int, value: int) -> None:
+        _ok(self._abi.lib.motor_handle_write_register_u32(self._require_open(), rid, value), "write_register_u32")
+
+    def get_register_f32(self, rid: int, timeout_ms: int = 1000) -> float:
+        out = c_float(0.0)
+        _ok(
+            self._abi.lib.motor_handle_get_register_f32(
+                self._require_open(), rid, timeout_ms, ctypes.byref(out)
+            ),
+            "get_register_f32",
+        )
+        return float(out.value)
+
+    def get_register_u32(self, rid: int, timeout_ms: int = 1000) -> int:
+        out = c_uint32(0)
+        _ok(
+            self._abi.lib.motor_handle_get_register_u32(
+                self._require_open(), rid, timeout_ms, ctypes.byref(out)
+            ),
+            "get_register_u32",
+        )
+        return int(out.value)
+
+    def damiao_get_param_f32(self, param_id: int, timeout_ms: int = 1000) -> float:
+        out = c_float(0.0)
+        _ok(
+            self._abi.lib.motor_handle_damiao_get_param_f32(
+                self._require_open(), param_id, timeout_ms, ctypes.byref(out)
+            ),
+            "damiao_get_param_f32",
+        )
+        return float(out.value)
+
+    def damiao_get_param_u32(self, param_id: int, timeout_ms: int = 1000) -> int:
+        out = c_uint32(0)
+        _ok(
+            self._abi.lib.motor_handle_damiao_get_param_u32(
+                self._require_open(), param_id, timeout_ms, ctypes.byref(out)
+            ),
+            "damiao_get_param_u32",
+        )
+        return int(out.value)
+
+    def damiao_write_param_f32(self, param_id: int, value: float) -> None:
+        _ok(self._abi.lib.motor_handle_damiao_write_param_f32(self._require_open(), param_id, value), "damiao_write_param_f32")
+
+    def damiao_write_param_u32(self, param_id: int, value: int) -> None:
+        _ok(self._abi.lib.motor_handle_damiao_write_param_u32(self._require_open(), param_id, value), "damiao_write_param_u32")
+
+    def get_state(self) -> MotorState | None:
+        st = CState()
+        _ok(self._abi.lib.motor_handle_get_state(self._require_open(), ctypes.byref(st)), "get_state")
+        if not st.has_value:
+            return None
+        return MotorState(
+            can_id=int(st.can_id),
+            arbitration_id=int(st.arbitration_id),
+            status_code=int(st.status_code),
+            pos=float(st.pos),
+            vel=float(st.vel),
+            torq=float(st.torq),
+            t_mos=float(st.t_mos),
+            t_rotor=float(st.t_rotor),
+        )

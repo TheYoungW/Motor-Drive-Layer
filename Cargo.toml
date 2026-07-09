@@ -1,0 +1,20 @@
+[workspace]
+members = [
+  "motor_core",
+  "motor_vendors/damiao",
+  "motor_cli",
+  "motor_abi",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.4.9"
+edition = "2021"
+authors = ["tianrking"]
+license = "MIT"
+repository = "https://github.com/tianrking/motorbridge.git"
+homepage = "https://github.com/tianrking/motorbridge"
+description = "Damiao CAN motor control stack with C ABI"
+
+[workspace.lints.clippy]
+all = "warn"
