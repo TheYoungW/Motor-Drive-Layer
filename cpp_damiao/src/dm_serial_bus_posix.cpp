@@ -34,6 +34,10 @@ speed_t baud_to_constant(uint32_t baud) {
     case 921600:
       return B921600;
 #endif
+#ifdef B1000000
+    case 1000000:
+      return B1000000;
+#endif
     default:
       throw std::invalid_argument("unsupported serial baud: " + std::to_string(baud));
   }

@@ -1,10 +1,13 @@
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <thread>
 #include <vector>
 
+#include <fcntl.h>
+#include <termios.h>
 #include <unistd.h>
 
 #include "damiao/dm_serial_bus.hpp"
@@ -91,6 +94,18 @@ int main() {
   require(fragmented.has_value(), "receive_for assembles fragmented serial frames");
   require(fragmented->id == 0x11, "fragmented serial frame id");
   fragmented_bus.shutdown();
+
+#ifdef B1000000
+  const int pty_master = ::posix_openpt(O_RDWR | O_NOCTTY);
+  require(pty_master >= 0, "open pseudo-terminal master");
+  require(::grantpt(pty_master) == 0, "grant pseudo-terminal");
+  require(::unlockpt(pty_master) == 0, "unlock pseudo-terminal");
+  const char* pty_slave = ::ptsname(pty_master);
+  require(pty_slave != nullptr, "resolve pseudo-terminal slave");
+  auto one_megabaud_bus = damiao::DmSerialBus::open(pty_slave, 1000000);
+  one_megabaud_bus->shutdown();
+  ::close(pty_master);
+#endif
 
   std::cout << "dm serial codec tests passed\n";
   return 0;
