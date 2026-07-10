@@ -4,6 +4,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #include "damiao/can_bus.hpp"
 #include "damiao/protocol.hpp"
@@ -40,12 +41,33 @@ class Motor {
   uint16_t feedback_id() const { return feedback_id_; }
   Limits limits() const { return limits_; }
 
-  void enable() { send_to_motor(encode_enable_command()); }
-  void disable() { send_to_motor(encode_disable_command()); }
-  void set_zero_position() { send_to_motor(encode_set_zero_command()); }
+  void enable() {
+    send_to_motor(encode_enable_command());
+    disabled_hint_ = false;
+  }
+  void disable() {
+    send_to_motor(encode_disable_command());
+    disabled_hint_ = true;
+  }
+  void set_zero_position() {
+    if (!disabled_hint_) {
+      throw std::invalid_argument("motor is not disabled; call disable() before set_zero_position()");
+    }
+    send_to_motor(encode_set_zero_command());
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
   void clear_error() { send_to_motor(encode_clear_error_command()); }
-  void request_feedback() { send_to_motor(encode_feedback_request_command(motor_id_)); }
-  void store_parameters() { send_to_motor(encode_store_parameters_command(motor_id_)); }
+  void request_feedback() {
+    bus_.send(CanFrame{0x7FF, encode_feedback_request_command(motor_id_)});
+  }
+  void store_parameters() {
+    if (!disabled_hint_) {
+      disable();
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    bus_.send(CanFrame{0x7FF, encode_store_parameters_command(motor_id_)});
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  }
 
   void send_mit(float pos, float vel, float kp, float kd, float tau) {
     send_to_motor(encode_mit_command(pos, vel, tau, kp, kd, limits_));
@@ -84,6 +106,7 @@ class Motor {
   uint16_t motor_id_;
   uint16_t feedback_id_;
   Limits limits_;
+  bool disabled_hint_ = true;
 };
 
 }  // namespace damiao

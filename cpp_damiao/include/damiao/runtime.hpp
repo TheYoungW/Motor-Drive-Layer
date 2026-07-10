@@ -64,6 +64,7 @@ class MotorHandle {
   void send_to_motor(std::array<uint8_t, 8> data);
   void send_mode_frame(uint32_t base_id, std::array<uint8_t, 8> data);
   void write_register_raw(uint8_t rid, std::array<uint8_t, 4> data);
+  std::optional<MotorState> request_fresh_state(std::chrono::milliseconds timeout);
   std::array<uint8_t, 4> wait_for_register(uint8_t rid, std::chrono::milliseconds timeout);
   void wait_for_write_ack(uint8_t rid, std::array<uint8_t, 4> expected,
                           std::chrono::milliseconds timeout);
@@ -75,6 +76,8 @@ class MotorHandle {
   Limits limits_;
   mutable std::mutex state_mutex_;
   std::optional<MotorState> state_;
+  std::optional<std::chrono::steady_clock::time_point> state_time_;
+  std::atomic<bool> disabled_hint_{true};
   mutable std::mutex register_mutex_;
   std::map<uint8_t, std::pair<std::array<uint8_t, 4>, std::chrono::steady_clock::time_point>>
       register_replies_;
@@ -102,6 +105,7 @@ class Controller {
  private:
   void send_with_pacing(const CanFrame& frame);
   void start_polling();
+  void stop_polling();
   void polling_loop();
   std::vector<std::shared_ptr<MotorHandle>> sorted_motors() const;
 
@@ -113,6 +117,10 @@ class Controller {
   std::atomic<bool> polling_active_{false};
   std::thread polling_thread_;
   mutable std::mutex recv_mutex_;
+  std::mutex lifecycle_mutex_;
+  bool bus_closed_ = false;
+  bool tx_gap_env_override_ = false;
+  std::chrono::milliseconds bulk_op_gap_{2};
 };
 
 }  // namespace damiao

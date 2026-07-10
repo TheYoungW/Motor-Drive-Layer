@@ -46,6 +46,15 @@ std::runtime_error errno_error(const std::string& prefix) {
 }  // namespace
 
 std::vector<uint8_t> DmSerialCodec::encode_tx(const CanFrame& frame) {
+  if (frame.dlc > 8) {
+    throw std::invalid_argument("invalid DLC, expected <= 8");
+  }
+  if (!frame.is_extended && frame.id > 0x7FFU) {
+    throw std::invalid_argument("invalid standard CAN id");
+  }
+  if (frame.is_extended && frame.id > 0x1FFFFFFFU) {
+    throw std::invalid_argument("invalid extended CAN id");
+  }
   std::vector<uint8_t> out(kTxFrameLen, 0);
   out[0] = 0x55;
   out[1] = 0xAA;
@@ -55,13 +64,13 @@ std::vector<uint8_t> DmSerialCodec::encode_tx(const CanFrame& frame) {
   out[4] = 1;
   out[8] = 10;
 
-  out[12] = 0;
+  out[12] = static_cast<uint8_t>(frame.is_extended);
   out[13] = static_cast<uint8_t>(frame.id & 0xFF);
   out[14] = static_cast<uint8_t>((frame.id >> 8) & 0xFF);
   out[15] = static_cast<uint8_t>((frame.id >> 16) & 0xFF);
   out[16] = static_cast<uint8_t>((frame.id >> 24) & 0xFF);
   out[17] = 0;
-  out[18] = 8;
+  out[18] = frame.dlc;
   for (std::size_t i = 0; i < 8; ++i) {
     out[21 + i] = frame.data[i];
   }
@@ -107,6 +116,8 @@ std::optional<CanFrame> DmSerialCodec::try_parse_rx() {
     frame.id = static_cast<uint32_t>(raw[3]) | (static_cast<uint32_t>(raw[4]) << 8) |
                (static_cast<uint32_t>(raw[5]) << 16) |
                (static_cast<uint32_t>(raw[6]) << 24);
+    frame.dlc = dlc;
+    frame.is_extended = (flags & 0x40) != 0;
     for (std::size_t i = 0; i < 8; ++i) {
       frame.data[i] = raw[7 + i];
     }
@@ -162,8 +173,23 @@ void DmSerialBus::send(const CanFrame& frame) {
   if (fd_ < 0) {
     throw std::runtime_error("serial port already closed");
   }
-  const auto n = ::write(fd_, raw.data(), raw.size());
-  if (n != static_cast<ssize_t>(raw.size())) {
+  std::size_t written = 0;
+  while (written < raw.size()) {
+    const auto n = ::write(fd_, raw.data() + written, raw.size() - written);
+    if (n > 0) {
+      written += static_cast<std::size_t>(n);
+      continue;
+    }
+    if (n < 0 && errno == EINTR) {
+      continue;
+    }
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      pollfd pfd{fd_, POLLOUT, 0};
+      const int rc = ::poll(&pfd, 1, 100);
+      if (rc > 0) continue;
+      if (rc < 0 && errno == EINTR) continue;
+      if (rc == 0) throw std::runtime_error("dm-serial write timed out");
+    }
     throw errno_error("dm-serial write failed");
   }
 }
@@ -174,34 +200,44 @@ std::optional<CanFrame> DmSerialBus::receive_for(std::chrono::milliseconds timeo
     throw std::runtime_error("serial port already closed");
   }
 
-  if (const auto frame = codec_.try_parse_rx()) {
-    return frame;
-  }
+  const bool wait_for_data = timeout > std::chrono::milliseconds::zero();
+  const auto deadline = std::chrono::steady_clock::now() + std::max(timeout, std::chrono::milliseconds(0));
+  for (;;) {
+    if (const auto frame = codec_.try_parse_rx()) {
+      return frame;
+    }
 
-  pollfd pfd{};
-  pfd.fd = fd_;
-  pfd.events = POLLIN;
-  const int timeout_ms = static_cast<int>(timeout.count());
-  const int rc = ::poll(&pfd, 1, timeout_ms);
-  if (rc < 0) {
-    throw errno_error("dm-serial poll failed");
-  }
-  if (rc == 0) {
-    return std::nullopt;
-  }
+    int timeout_ms = 0;
+    if (wait_for_data) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) return std::nullopt;
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+      timeout_ms = static_cast<int>(std::max<int64_t>(remaining.count(), 1));
+    }
 
-  std::array<uint8_t, 256> tmp{};
-  const auto n = ::read(fd_, tmp.data(), tmp.size());
-  if (n < 0) {
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    pollfd pfd{fd_, POLLIN, 0};
+    const int rc = ::poll(&pfd, 1, timeout_ms);
+    if (rc < 0) {
+      if (errno == EINTR) continue;
+      throw errno_error("dm-serial poll failed");
+    }
+    if (rc == 0) {
       return std::nullopt;
     }
-    throw errno_error("dm-serial read failed");
-  }
-  if (n > 0) {
+
+    std::array<uint8_t, 256> tmp{};
+    const auto n = ::read(fd_, tmp.data(), tmp.size());
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (wait_for_data) continue;
+        return std::nullopt;
+      }
+      throw errno_error("dm-serial read failed");
+    }
+    if (n == 0) return std::nullopt;
     codec_.push_bytes(tmp.data(), static_cast<std::size_t>(n));
   }
-  return codec_.try_parse_rx();
 }
 
 void DmSerialBus::shutdown() {

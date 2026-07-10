@@ -6,6 +6,8 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "damiao/registers.hpp"
+
 namespace damiao {
 
 inline constexpr float kKpMin = 0.0f;
@@ -162,8 +164,7 @@ inline SensorFeedback decode_sensor_feedback(std::array<uint8_t, 8> data, Limits
 }
 
 inline bool is_known_register(uint8_t rid) {
-  return (rid <= 36) || (rid >= 50 && rid <= 56) || (rid >= 59 && rid <= 65) ||
-         rid == 80 || rid == 81;
+  return register_info(rid).has_value();
 }
 
 inline bool is_register_frame(const std::array<uint8_t, 8>& data, uint8_t marker) {
