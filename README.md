@@ -35,8 +35,6 @@ Python motorbridge API ── ctypes call ── C ABI
 
 YAML belongs only to the optional Python hardware tool. C++ neither parses YAML nor contains robot-specific ports, joint names, motor IDs, feedback IDs, or control frequencies.
 
-See [architecture](docs/architecture.md), [configuration](docs/configuration.md), and [hardware testing](docs/hardware-testing.md).
-
 ## Safety
 
 Motor control can cause unexpected motion and injury. Support the mechanism, keep an independent emergency stop available, begin with conservative limits, and verify IDs and control modes before enabling a motor.
@@ -92,6 +90,7 @@ The focused examples in `bindings/python/examples/` cover the common workflows:
 
 | File | Purpose |
 | --- | --- |
+| `connection_test.py` | Disable one motor and verify fresh feedback over any supported transport. |
 | `socketcan_control.py` | Control one motor over Linux SocketCAN in MIT mode. |
 | `dm_serial_control.py` | Control one motor through a Damiao serial bridge in any supported control mode. |
 | `multi_motor_control.py` | Control multiple motors over Linux SocketCAN. |
@@ -101,6 +100,7 @@ The focused examples in `bindings/python/examples/` cover the common workflows:
 Install the project first, then inspect a command before running it:
 
 ```bash
+python3 bindings/python/examples/connection_test.py --help
 python3 bindings/python/examples/socketcan_control.py --help
 python3 bindings/python/examples/dm_serial_control.py --help
 ```
@@ -164,7 +164,6 @@ cpp_damiao/                 C++ protocol, runtime, transports, C ABI, tests
 bindings/python/            Python package, tests, examples, YAML hardware tool
 third_party/dm_device/      Optional vendor runtime headers/libraries
 scripts/                    Linux SocketCAN/CAN-FD interface setup helpers
-docs/                       Architecture, configuration, hardware-test documentation
 .github/                    CI and issue templates
 ```
 

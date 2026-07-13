@@ -35,8 +35,6 @@ Python motorbridge API ── ctypes 调用 ── C ABI
 
 YAML 只属于可选的 Python 硬件工具。C++ 不解析 YAML，也不保存机器人专用的串口、关节名、电机 ID、反馈 ID 或控制频率。
 
-更多说明见[架构](docs/architecture.md)、[配置](docs/configuration.md)和[硬件测试](docs/hardware-testing.md)。
-
 ## 安全说明
 
 电机控制可能造成意外运动和人身伤害。测试前应支撑机械结构、准备独立急停、使用保守限制，并在使能前确认 ID 和控制模式。
@@ -88,10 +86,11 @@ with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
 
 ## Python 示例
 
-`bindings/python/examples/` 中保留了五个用途明确的示例：
+`bindings/python/examples/` 中保留了六个用途明确的示例：
 
 | 文件 | 用途 |
 | --- | --- |
+| `connection_test.py` | 失能一台电机，并通过任一受支持传输验证反馈是否正常。 |
 | `socketcan_control.py` | 通过 Linux SocketCAN 控制一台电机，演示 MIT 模式。 |
 | `dm_serial_control.py` | 通过达妙串口桥控制一台电机，支持 MIT、位置速度、速度和力位混合模式。 |
 | `multi_motor_control.py` | 通过 Linux SocketCAN 控制多台电机。 |
@@ -101,6 +100,7 @@ with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
 先安装项目，再使用 `--help` 查看参数：
 
 ```bash
+python3 bindings/python/examples/connection_test.py --help
 python3 bindings/python/examples/socketcan_control.py --help
 python3 bindings/python/examples/dm_serial_control.py --help
 ```
@@ -162,7 +162,6 @@ cpp_damiao/                 C++协议、运行时、传输层、C ABI和测试
 bindings/python/            Python包、测试、示例和YAML硬件工具
 third_party/dm_device/      可选厂商运行库
 scripts/                    Linux SocketCAN/CAN-FD接口配置工具
-docs/                       架构、配置和硬件测试文档
 .github/                    CI和Issue模板
 ```
 

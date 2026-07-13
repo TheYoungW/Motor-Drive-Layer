@@ -50,4 +50,4 @@ The C ABI exposes the same information through `motor_handle_get_feedback_stats`
 
 ## Hardware testing
 
-Hardware configuration and the safe disabled benchmark live in the optional Python tooling. See [hardware testing](../docs/hardware-testing.md). Default C++ tests never open a real motor device.
+Hardware configuration and the safe disabled benchmark live in the optional Python tooling. See the [project README](../README.md#python-hardware-configuration). Default C++ tests never open a real motor device.
