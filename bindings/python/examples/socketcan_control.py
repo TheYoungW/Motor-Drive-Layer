@@ -12,7 +12,7 @@ def _parse_id(text: str) -> int:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="MIT loop demo aligned with C++ cpp_wrapper_demo")
+    p = argparse.ArgumentParser(description="Single-motor SocketCAN MIT control example")
     p.add_argument("--channel", default="can0")
     p.add_argument("--model", default="4340P")
     p.add_argument("--motor-id", default="0x01")
@@ -54,6 +54,10 @@ def main() -> None:
                 if args.dt_ms > 0:
                     time.sleep(args.dt_ms / 1000.0)
         finally:
+            try:
+                ctrl.disable_all()
+            except Exception:
+                pass
             m.close()
 
 

@@ -13,7 +13,7 @@ def _parse_id(text: str) -> int:
 
 def main() -> None:
     p = argparse.ArgumentParser(
-        description="Damiao maintenance demo: clear-error / set-zero / timeout / feedback"
+        description="Damiao maintenance example: clear error, set zero, and read feedback"
     )
     p.add_argument("--channel", default="can0")
     p.add_argument("--model", default="4340P")
@@ -35,9 +35,6 @@ def main() -> None:
     with Controller(args.channel) as ctrl:
         m = ctrl.add_damiao_motor(motor_id, feedback_id, args.model)
         try:
-            ctrl.enable_all()
-            time.sleep(0.2)
-
             m.set_can_timeout_ms(args.can_timeout_ms)
             print(f"set_can_timeout_ms={args.can_timeout_ms}")
 

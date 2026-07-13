@@ -12,7 +12,7 @@ def _parse_id(text: str) -> int:
 
 def main() -> None:
     p = argparse.ArgumentParser(
-        description="Damiao register read/write demo (f32 + u32 + optional store)"
+        description="Damiao register read/write example"
     )
     p.add_argument("--channel", default="can0")
     p.add_argument("--model", default="4340P")

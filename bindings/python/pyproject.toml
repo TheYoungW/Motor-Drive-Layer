@@ -3,7 +3,7 @@ requires = ["setuptools>=77.0.3", "wheel>=0.43"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "motorbridge"
+name = "motor-drive-layer"
 dynamic = ["version"]
 description = "Python SDK for the Motor-Drive-Layer C++ ABI"
 readme = "README.md"

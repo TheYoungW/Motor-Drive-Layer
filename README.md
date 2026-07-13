@@ -1,5 +1,7 @@
 # Motor-Drive-Layer
 
+English | [简体中文](README.zh-CN.md)
+
 Motor-Drive-Layer is an open-source Damiao motor driver for C++ and Python. The native C++ runtime owns protocol encoding, serial/CAN I/O, TX pacing, background feedback reception, and state caching. Python exposes the same driver through a small C ABI and adds optional user-facing YAML configuration and safe hardware diagnostics.
 
 ## Features
@@ -83,6 +85,27 @@ with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
 ```
 
 All values are supplied by the caller; the C++ driver does not assume these example IDs.
+
+## Python examples
+
+The focused examples in `bindings/python/examples/` cover the common workflows:
+
+| File | Purpose |
+| --- | --- |
+| `socketcan_control.py` | Control one motor over Linux SocketCAN in MIT mode. |
+| `dm_serial_control.py` | Control one motor through a Damiao serial bridge in any supported control mode. |
+| `multi_motor_control.py` | Control multiple motors over Linux SocketCAN. |
+| `maintenance.py` | Clear errors, set the CAN timeout, optionally set zero, and read state. |
+| `register_access.py` | Read registers; writes and persistent storage occur only when explicitly requested. |
+
+Install the project first, then inspect a command before running it:
+
+```bash
+python3 bindings/python/examples/socketcan_control.py --help
+python3 bindings/python/examples/dm_serial_control.py --help
+```
+
+Motor control can cause sudden motion. Support the mechanism, prepare an independent emergency stop, and verify the channel, IDs, model, mode, and targets before enabling a motor. Maintenance and register writes can permanently change device settings; stay in read-only mode unless you know the register semantics.
 
 ## Linux SocketCAN setup
 
