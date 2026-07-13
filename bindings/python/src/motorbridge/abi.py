@@ -3,7 +3,7 @@ import ctypes.util
 import json
 import os
 import sys
-from ctypes import POINTER, Structure, c_char_p, c_float, c_int32, c_uint8, c_uint16, c_uint32, c_void_p
+from ctypes import POINTER, Structure, c_char_p, c_float, c_int32, c_uint8, c_uint16, c_uint32, c_uint64, c_void_p
 from pathlib import Path
 
 from .errors import AbiLoadError
@@ -23,6 +23,14 @@ class CState(Structure):
     ]
 
 
+class CFeedbackStats(Structure):
+    _fields_ = [
+        ("has_feedback", c_int32),
+        ("update_count", c_uint64),
+        ("age_ns", c_uint64),
+    ]
+
+
 def _candidate_lib_paths() -> list[Path]:
     candidates: list[Path] = []
     env = os.getenv("MOTORBRIDGE_LIB")
@@ -31,23 +39,26 @@ def _candidate_lib_paths() -> list[Path]:
 
     here = Path(__file__).resolve()
     pkg_lib = here.parent / "lib"
-    if pkg_lib.exists():
-        candidates.extend(
-            [
-                pkg_lib / "libmotor_abi.so",
-                pkg_lib / "libmotor_abi.dylib",
-                pkg_lib / "motor_abi.dll",
-            ]
-        )
-
-    repo_root = here.parents[4]
     candidates.extend(
         [
-            repo_root / "cpp_damiao" / "build" / "libmotor_abi.so",
-            repo_root / "cpp_damiao" / "build" / "libmotor_abi.dylib",
-            repo_root / "cpp_damiao" / "build" / "motor_abi.dll",
+            pkg_lib / "libmotor_abi.so",
+            pkg_lib / "libmotor_abi.dylib",
+            pkg_lib / "motor_abi.dll",
         ]
     )
+
+    # The source tree has enough parents to locate cpp_damiao/build.  An
+    # installed package may live directly under a shallow --target directory,
+    # so this fallback must not assume a fixed minimum path depth.
+    if len(here.parents) > 4:
+        repo_root = here.parents[4]
+        candidates.extend(
+            [
+                repo_root / "cpp_damiao" / "build" / "libmotor_abi.so",
+                repo_root / "cpp_damiao" / "build" / "libmotor_abi.dylib",
+                repo_root / "cpp_damiao" / "build" / "motor_abi.dll",
+            ]
+        )
 
     cwd = Path.cwd()
     candidates.extend(
@@ -127,6 +138,8 @@ class Abi:
         lib.motor_controller_shutdown.restype = c_int32
         lib.motor_controller_close_bus.argtypes = [c_void_p]
         lib.motor_controller_close_bus.restype = c_int32
+        lib.motor_controller_set_tx_gap_us.argtypes = [c_void_p, c_uint32]
+        lib.motor_controller_set_tx_gap_us.restype = c_int32
 
         lib.motor_controller_add_damiao_motor.argtypes = [c_void_p, c_uint16, c_uint16, c_char_p]
         lib.motor_controller_add_damiao_motor.restype = c_void_p
@@ -170,6 +183,8 @@ class Abi:
 
         lib.motor_handle_get_state.argtypes = [c_void_p, POINTER(CState)]
         lib.motor_handle_get_state.restype = c_int32
+        lib.motor_handle_get_feedback_stats.argtypes = [c_void_p, POINTER(CFeedbackStats)]
+        lib.motor_handle_get_feedback_stats.restype = c_int32
 
         lib.motor_handle_damiao_get_param_f32.argtypes = [c_void_p, c_uint16, c_uint32, POINTER(c_float)]
         lib.motor_handle_damiao_get_param_f32.restype = c_int32

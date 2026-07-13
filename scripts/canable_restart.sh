@@ -67,12 +67,19 @@ restart_one() {
     return 0
   fi
 
-  local before
-  before="$(ip -details link show "$ifn")"
-  if [[ "$CHECK_DRIVER" -eq 1 ]] && ! grep -q "gs_usb" <<<"$before"; then
-    echo "[canable_restart] error: ${ifn} does not look like gs_usb/candleLight" >&2
-    echo "$before" >&2
-    return 1
+  if [[ "$CHECK_DRIVER" -eq 1 ]]; then
+    local driver=""
+    local driver_link="/sys/class/net/${ifn}/device/driver"
+    if [[ -L "$driver_link" ]]; then
+      driver="$(basename "$(readlink -f "$driver_link")")"
+    elif command -v ethtool >/dev/null 2>&1; then
+      driver="$(ethtool -i "$ifn" 2>/dev/null | awk '/^driver:/ {print $2; exit}')"
+    fi
+    if [[ "$driver" != "gs_usb" ]]; then
+      echo "[canable_restart] error: ${ifn} driver is '${driver:-unknown}', expected gs_usb" >&2
+      echo "[canable_restart] confirm the adapter/firmware, or use --no-driver-check" >&2
+      return 1
+    fi
   fi
 
   echo "[canable_restart] restarting ${ifn} bitrate=${BITRATE} loopback=${LOOPBACK} txqueuelen=${TX_QLEN}"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import ctypes
+import shlex
 import sys
 from pathlib import Path
 
@@ -96,14 +96,6 @@ def transport_needs_can_runtime(transport: str) -> bool:
     return str(transport or "auto").strip().lower() in _CAN_TRANSPORTS
 
 
-def is_macos() -> bool:
-    return sys.platform == "darwin"
-
-
-def is_windows() -> bool:
-    return sys.platform.startswith("win")
-
-
 def is_linux() -> bool:
     return sys.platform.startswith("linux")
 
@@ -112,55 +104,10 @@ def parse_channel_arg(argv: list[str], default: str = "can0") -> str:
     return parse_option_arg(argv, "channel", default)
 
 
-def can_load_pcbusb() -> bool:
-    if not is_macos():
-        return True
-
-    candidate_names = [
-        "libPCBUSB.dylib",
-        "/usr/local/lib/libPCBUSB.dylib",
-        "/opt/homebrew/lib/libPCBUSB.dylib",
-        str(Path.home() / ".local/lib/libPCBUSB.dylib"),
-    ]
-    for name in candidate_names:
-        try:
-            ctypes.CDLL(name)
-            return True
-        except OSError:
-            continue
-    return False
-
-
-def macos_pcbusb_hint(tool_name: str) -> str:
+def unsupported_socketcan_hint(tool_name: str, transport: str) -> str:
     return (
-        f"[{tool_name}] macOS CAN runtime not found: libPCBUSB.dylib\n"
-        "CAN transport on macOS requires MacCAN PCBUSB runtime.\n"
-        "Install PCBUSB first, then retry.\n"
-        "Quick checks:\n"
-        "  ls /usr/local/lib/libPCBUSB.dylib\n"
-        "  ls ~/.local/lib/libPCBUSB.dylib\n"
-        "Reference: motorbridge README.zh-CN.md -> \"macOS PCAN 运行时（PCBUSB）\""
-    )
-
-
-def can_load_pcanbasic_windows() -> bool:
-    if not is_windows():
-        return True
-    try:
-        ctypes.CDLL("PCANBasic.dll")
-        return True
-    except OSError:
-        return False
-
-
-def windows_pcan_hint(tool_name: str) -> str:
-    return (
-        f"[{tool_name}] Windows CAN runtime not found: PCANBasic.dll\n"
-        "CAN transport on Windows requires PEAK PCAN driver + PCAN-Basic runtime.\n"
-        "Install PEAK driver/PCAN-Basic, then reopen terminal and retry.\n"
-        "Channel examples:\n"
-        "  can0@1000000  (maps to PCAN_USBBUS1)\n"
-        "  can1@1000000  (maps to PCAN_USBBUS2)"
+        f"[{tool_name}] transport '{transport}' is only available on Linux.\n"
+        "Use dm-serial or dm-device on this platform, or run SocketCAN on Linux."
     )
 
 
@@ -176,9 +123,11 @@ def _linux_iface_state(iface: str) -> tuple[bool, str]:
     return True, state
 
 
-def linux_socketcan_hint(tool_name: str, channel: str) -> str:
+def linux_socketcan_hint(tool_name: str, channel: str, transport: str = "socketcan") -> str:
     raw = str(channel or "can0").strip()
     iface = raw.split("@", 1)[0].strip() or "can0"
+    shell_iface = shlex.quote(iface)
+    normalized_transport = str(transport or "socketcan").strip().lower()
     suffix_tip = ""
     if "@" in raw:
         suffix_tip = (
@@ -186,14 +135,32 @@ def linux_socketcan_hint(tool_name: str, channel: str) -> str:
             f"Use plain interface name like '{iface}'."
         )
 
+    if normalized_transport == "socketcanfd":
+        setup = (
+            "Example CAN-FD setup (adjust both bitrates for your hardware):\n"
+            f"  sudo ip link set {shell_iface} down\n"
+            f"  sudo ip link set {shell_iface} type can bitrate 1000000 "
+            "dbitrate 5000000 fd on\n"
+            f"  sudo ip link set {shell_iface} up\n"
+            f"  ip -details link show {shell_iface}"
+        )
+    else:
+        setup = (
+            "Example classic CAN setup (adjust bitrate for your hardware):\n"
+            f"  sudo ip link set {shell_iface} down\n"
+            f"  sudo ip link set {shell_iface} type can bitrate 1000000\n"
+            f"  sudo ip link set {shell_iface} up\n"
+            f"  ip -details link show {shell_iface}"
+        )
+
     return (
         f"[{tool_name}] Linux CAN interface not ready: {raw}\n"
         "For CAN transport, bring up the SocketCAN interface first, then retry.\n"
         "Quick checks:\n"
-        f"  ip link show {iface}\n"
-        f"  sudo ip link set {iface} up\n"
-        "For CANable, use candleLight/gs_usb firmware and initialize the resulting SocketCAN interface:\n"
-        f"  scripts/canable_restart.sh {iface}"
+        f"  ip link show {shell_iface}\n"
+        f"{setup}\n"
+        "CANable/candleLight devices must use gs_usb-compatible firmware and appear as a "
+        "SocketCAN interface before these commands can work."
         f"{suffix_tip}"
     )
 
@@ -202,21 +169,11 @@ def preflight_can_runtime(tool_name: str, transport: str, channel: str) -> str |
     if not transport_needs_can_runtime(transport):
         return None
 
-    if is_macos():
-        if not can_load_pcbusb():
-            return macos_pcbusb_hint(tool_name)
-        return None
-
-    if is_windows():
-        if not can_load_pcanbasic_windows():
-            return windows_pcan_hint(tool_name)
-        return None
-
     if is_linux():
         iface = str(channel or "can0").strip().split("@", 1)[0].strip() or "can0"
         exists, state = _linux_iface_state(iface)
         if (not exists) or state in {"down", "dormant", "lowerlayerdown", "notpresent"}:
-            return linux_socketcan_hint(tool_name, channel)
+            return linux_socketcan_hint(tool_name, channel, transport)
         return None
 
-    return None
+    return unsupported_socketcan_hint(tool_name, transport)

@@ -4,22 +4,9 @@ import shutil
 import sys
 from pathlib import Path
 
-from setuptools import Distribution, find_packages, setup
+from setuptools import setup
+from setuptools.command.bdist_wheel import bdist_wheel as _bdist_wheel
 from setuptools.command.build_py import build_py as _build_py
-
-
-def _package_version() -> str:
-    ns: dict[str, str] = {}
-    version_file = Path(__file__).resolve().parent / "src" / "motorbridge" / "_version.py"
-    exec(version_file.read_text(encoding="utf-8"), ns)
-    return ns["VERSION"]
-
-
-def _long_description() -> str:
-    repo_readme = Path(__file__).resolve().parents[2] / "README.md"
-    if repo_readme.exists():
-        return repo_readme.read_text(encoding="utf-8")
-    return "Python SDK for the Motor-Drive-Layer C++ ABI."
 
 
 def _platform_lib_name() -> str:
@@ -125,32 +112,16 @@ class BuildPyWithAbi(_build_py):
             dm_dst_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(dm_src, dm_dst_dir / dm_src.name)
 
-class BinaryDistribution(Distribution):
-    def has_ext_modules(self):
-        return True
+class BdistWheelWithAbi(_bdist_wheel):
+    def finalize_options(self):
+        super().finalize_options()
+        self.root_is_pure = False
+
+    def get_tag(self):
+        _, _, platform_tag = super().get_tag()
+        return "py3", "none", platform_tag
 
 
 setup(
-    name="motorbridge",
-    version=_package_version(),
-    description="Python SDK for the Motor-Drive-Layer C++ ABI",
-    long_description=_long_description(),
-    long_description_content_type="text/markdown",
-    author="Motor-Drive-Layer contributors",
-    license="MIT",
-    python_requires=">=3.10",
-    package_dir={"": "src"},
-    packages=find_packages(where="src"),
-    package_data={"motorbridge": ["lib/*", "lib/dm_device/*"]},
-    include_package_data=True,
-    entry_points={
-        "console_scripts": [
-            "motorbridge=motorbridge.cli:main",
-            "motorbridge-cli=motorbridge.cli:main",
-            "motorbridge-install-dm-device=motorbridge.dm_device_runtime:main",
-        ]
-    },
-    distclass=BinaryDistribution,
-    cmdclass={"build_py": BuildPyWithAbi},
-    zip_safe=False,
+    cmdclass={"build_py": BuildPyWithAbi, "bdist_wheel": BdistWheelWithAbi},
 )

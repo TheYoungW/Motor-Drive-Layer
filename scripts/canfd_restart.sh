@@ -140,7 +140,7 @@ restart_one() {
   local cmd_err=""
   if ! cmd_err="$("${cmd[@]}" 2>&1)"; then
     echo "$cmd_err" >&2
-    if grep -qi "doesn't support restart from Bus Off" <<<"$cmd_err"; then
+    if [[ -n "${RESTART_MS}" ]]; then
       echo "[canfd_restart] retry without restart-ms ..." >&2
       echo "[canfd_restart] cmd: ${cmd_no_restart[*]}"
       "${cmd_no_restart[@]}"

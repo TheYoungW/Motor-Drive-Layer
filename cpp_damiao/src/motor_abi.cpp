@@ -65,11 +65,11 @@ const char* motor_last_error_message(void) {
 }
 
 const char* motor_abi_version(void) {
-  return "0.2.0-cpp";
+  return "0.3.0-cpp";
 }
 
 const char* motor_abi_capabilities_json(void) {
-  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.2.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","enable_all","disable_all"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
+  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.3.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","enable_all","disable_all","set_tx_gap_us"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
 }
 
 MotorController* motor_controller_new_socketcan(const char* channel) {
@@ -163,6 +163,14 @@ int32_t motor_controller_close_bus(MotorController* controller) {
   if (controller == nullptr) return fail("controller is null");
   std::lock_guard<std::mutex> lock(controller->mutex);
   return ffi_call([&] { controller->controller->close_bus(); });
+}
+
+int32_t motor_controller_set_tx_gap_us(MotorController* controller, uint32_t gap_us) {
+  if (controller == nullptr) return fail("controller is null");
+  std::lock_guard<std::mutex> lock(controller->mutex);
+  return ffi_call([&] {
+    controller->controller->set_tx_gap(std::chrono::microseconds(gap_us));
+  });
 }
 
 MotorHandle* motor_controller_add_damiao_motor(MotorController* controller,
@@ -330,6 +338,19 @@ int32_t motor_handle_get_state(MotorHandle* motor, MotorState* out_state) {
     out_state->torq = state->torq;
     out_state->t_mos = state->t_mos;
     out_state->t_rotor = state->t_rotor;
+  });
+}
+
+int32_t motor_handle_get_feedback_stats(MotorHandle* motor,
+                                        MotorFeedbackStats* out_stats) {
+  if (motor == nullptr || out_stats == nullptr) return fail("motor or out_stats is null");
+  std::lock_guard<std::mutex> lock(motor->mutex);
+  return ffi_call([&] {
+    std::memset(out_stats, 0, sizeof(MotorFeedbackStats));
+    const auto stats = motor->motor->feedback_stats();
+    out_stats->has_feedback = stats.has_feedback ? 1 : 0;
+    out_stats->update_count = stats.update_count;
+    out_stats->age_ns = stats.age.count() < 0 ? 0 : static_cast<uint64_t>(stats.age.count());
   });
 }
 

@@ -8,6 +8,10 @@ on:
 jobs:
   cpp-python:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -15,7 +19,10 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Python test tools
+        run: python -m pip install --upgrade build pytest PyYAML
 
       - name: Configure C++ ABI
         run: cmake -S cpp_damiao -B cpp_damiao/build
@@ -26,19 +33,52 @@ jobs:
       - name: Run C++ tests
         run: ctest --test-dir cpp_damiao/build --output-on-failure
 
-      - name: Python ABI smoke
+      - name: Run Python tests
         env:
           PYTHONPATH: bindings/python/src
+        run: python -m pytest -q bindings/python/tests
+
+      - name: Validate Python hardware example without opening hardware
+        env:
+          PYTHONPATH: bindings/python/src
+        run: >-
+          python -m motorbridge.hardware_test
+          --config bindings/python/src/motorbridge/configs/damiao_dual_arm.yaml
+          --validate-only
+
+      - name: Build Python wheel with C++ ABI
+        run: python -m build --wheel bindings/python
+
+      - name: Verify and install built wheel
         run: |
           python - <<'PY'
-          import motorbridge
-          caps = motorbridge.abi_capabilities()
-          assert motorbridge.abi_version() == "0.2.0-cpp"
-          assert caps["transports"] == ["socketcan", "socketcanfd", "dm-serial", "dm-device"]
-          assert caps["vendors"] == ["damiao"]
-          print("python-abi-ok")
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheel = next(Path("bindings/python/dist").glob("*.whl"))
+          assert "-py3-none-" in wheel.name, wheel.name
+          with ZipFile(wheel) as archive:
+              names = archive.namelist()
+              assert any(name.endswith("/licenses/LICENSE") for name in names)
+              assert any(name.endswith("/motorbridge/lib/libmotor_abi.so") for name in names)
+              assert any(name.endswith("/motorbridge/configs/damiao_dual_arm.yaml") for name in names)
           PY
+          python -m pip install --force-reinstall --no-deps bindings/python/dist/*.whl
+          cd /tmp
+          python - <<'PY'
+          import motorbridge
+          assert motorbridge.get_version() == "0.5.0"
+          assert motorbridge.abi_version() == "0.3.0-cpp"
+          assert motorbridge.abi_capabilities()["features"]["feedback_stats"] is True
+          PY
+          rm -f /tmp/motorbridge-example.yaml
+          motorbridge-hardware-test --write-example /tmp/motorbridge-example.yaml
+          motorbridge-hardware-test --config /tmp/motorbridge-example.yaml --validate-only
+
+      - name: Check shell helper syntax
+        run: bash -n scripts/*.sh
 
       - name: No obsolete source workspace remains
         run: |
           test -z "$(find . -path ./.git -prune -o -name '*.rs' -print)"
+          test ! -d integrations/ros2_bridge

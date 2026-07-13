@@ -3,10 +3,10 @@ from __future__ import annotations
 import ctypes
 from ctypes import c_float, c_uint32
 
-from .abi import CState, get_abi
+from .abi import CFeedbackStats, CState, get_abi
 from .dm_device_runtime import ensure_dm_device_runtime
 from .errors import CallError
-from .models import Mode, MotorState
+from .models import FeedbackStats, Mode, MotorState
 
 
 def _err_text() -> str:
@@ -87,6 +87,15 @@ class Controller:
         _ok(
             self._abi.lib.motor_controller_poll_feedback_once(self._require_open()),
             "poll_feedback_once",
+        )
+
+    def set_tx_gap_us(self, gap_us: int) -> None:
+        value = int(gap_us)
+        if value < 0 or value > 0xFFFFFFFF:
+            raise ValueError("gap_us must be in 0..=4294967295")
+        _ok(
+            self._abi.lib.motor_controller_set_tx_gap_us(self._require_open(), value),
+            "set_tx_gap_us",
         )
 
     def add_damiao_motor(self, motor_id: int, feedback_id: int, model: str) -> "Motor":
@@ -227,4 +236,18 @@ class Motor:
             torq=float(st.torq),
             t_mos=float(st.t_mos),
             t_rotor=float(st.t_rotor),
+        )
+
+    def get_feedback_stats(self) -> FeedbackStats:
+        stats = CFeedbackStats()
+        _ok(
+            self._abi.lib.motor_handle_get_feedback_stats(
+                self._require_open(), ctypes.byref(stats)
+            ),
+            "get_feedback_stats",
+        )
+        return FeedbackStats(
+            has_feedback=bool(stats.has_feedback),
+            update_count=int(stats.update_count),
+            age_ns=int(stats.age_ns),
         )

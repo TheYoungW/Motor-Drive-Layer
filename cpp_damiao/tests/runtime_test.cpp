@@ -204,6 +204,23 @@ int main() {
   require_close(state->pos, 1.2f, 0.05f, "state position");
   require(!motor2->latest_state().has_value(), "unmatched motor state stays empty");
 
+  const auto first_feedback_stats = motor1->feedback_stats();
+  require(first_feedback_stats.has_feedback, "feedback stats report an available sample");
+  require(first_feedback_stats.update_count == 1, "first sensor frame increments feedback count");
+  require(first_feedback_stats.age >= std::chrono::nanoseconds::zero(),
+          "feedback age is non-negative");
+  const auto empty_feedback_stats = motor2->feedback_stats();
+  require(!empty_feedback_stats.has_feedback, "unmatched motor has no feedback timestamp");
+  require(empty_feedback_stats.update_count == 0, "unmatched motor feedback count stays zero");
+
+  bus->push_rx(feedback_frame(0x11, 0x01, 0x01, 1.3f, 0.2f, 0.1f,
+                              damiao::model_limits("4340P")));
+  for (int i = 0; i < 50 && motor1->feedback_stats().update_count < 2; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  require(motor1->feedback_stats().update_count == 2,
+          "each sensor frame increments feedback count exactly once");
+
   auto extended_feedback = feedback_frame(0x11, 0x01, 0x01, 0.0f, 0.0f, 0.0f,
                                           damiao::model_limits("4340P"));
   extended_feedback.is_extended = true;

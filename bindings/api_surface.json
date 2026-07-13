@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "motorbridge",
-  "version": "0.4.9",
+  "version": "0.5.0",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "abi": {
     "metadata": [
@@ -20,6 +20,7 @@
       "motor_controller_disable_all",
       "motor_controller_shutdown",
       "motor_controller_close_bus",
+      "motor_controller_set_tx_gap_us",
       "motor_controller_add_damiao_motor"
     ],
     "motor_lifecycle": [
@@ -39,6 +40,7 @@
     "state_and_feedback": [
       "motor_handle_request_feedback",
       "motor_handle_get_state",
+      "motor_handle_get_feedback_stats",
       "motor_handle_set_can_timeout_ms",
       "motor_handle_store_parameters"
     ],
@@ -65,6 +67,7 @@
       "Controller.enable_all()",
       "Controller.disable_all()",
       "Controller.poll_feedback_once()",
+      "Controller.set_tx_gap_us(gap_us)",
       "Controller.add_damiao_motor(motor_id, feedback_id, model)"
     ],
     "motor_methods": [
@@ -89,7 +92,8 @@
       "Motor.damiao_get_param_u32(param_id, timeout_ms)",
       "Motor.damiao_write_param_f32(param_id, value)",
       "Motor.damiao_write_param_u32(param_id, value)",
-      "Motor.get_state()"
+      "Motor.get_state()",
+      "Motor.get_feedback_stats()"
     ],
     "python": {
       "module_metadata": [

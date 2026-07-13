@@ -22,6 +22,12 @@ typedef struct MotorState {
   float t_rotor;
 } MotorState;
 
+typedef struct MotorFeedbackStats {
+  int32_t has_feedback;
+  uint64_t update_count;
+  uint64_t age_ns;
+} MotorFeedbackStats;
+
 // Unified units across all vendors:
 // - position: rad
 // - velocity: rad/s
@@ -63,6 +69,7 @@ int32_t motor_controller_enable_all(MotorController* controller);
 int32_t motor_controller_disable_all(MotorController* controller);
 int32_t motor_controller_shutdown(MotorController* controller);
 int32_t motor_controller_close_bus(MotorController* controller);
+int32_t motor_controller_set_tx_gap_us(MotorController* controller, uint32_t gap_us);
 
 MotorHandle* motor_controller_add_damiao_motor(MotorController* controller, uint16_t motor_id, uint16_t feedback_id, const char* model);
 void motor_handle_free(MotorHandle* motor);
@@ -88,6 +95,7 @@ int32_t motor_handle_get_register_f32(MotorHandle* motor, uint8_t rid, uint32_t 
 int32_t motor_handle_get_register_u32(MotorHandle* motor, uint8_t rid, uint32_t timeout_ms, uint32_t* out_value);
 
 int32_t motor_handle_get_state(MotorHandle* motor, MotorState* out_state);
+int32_t motor_handle_get_feedback_stats(MotorHandle* motor, MotorFeedbackStats* out_stats);
 
 int32_t motor_handle_damiao_get_param_f32(MotorHandle* motor, uint16_t param_id, uint32_t timeout_ms, float* out_value);
 int32_t motor_handle_damiao_get_param_u32(MotorHandle* motor, uint16_t param_id, uint32_t timeout_ms, uint32_t* out_value);

@@ -10,6 +10,11 @@ c_abi_demo
 cpp_abi_demo
 __pycache__/
 *.pyc
+.vscode/
+docs/superpowers/
+bindings/python/build/
+bindings/python/dist/
+bindings/python/*.egg-info/
 
 # Node / Mintlify local artifacts
 node_modules/

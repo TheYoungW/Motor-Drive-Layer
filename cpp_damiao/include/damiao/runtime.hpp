@@ -29,6 +29,12 @@ struct MotorState {
   float t_rotor = 0.0f;
 };
 
+struct FeedbackStats {
+  bool has_feedback = false;
+  uint64_t update_count = 0;
+  std::chrono::nanoseconds age{0};
+};
+
 class MotorHandle {
  public:
   MotorHandle(std::shared_ptr<CanBus> bus, uint16_t motor_id, uint16_t feedback_id,
@@ -58,6 +64,7 @@ class MotorHandle {
   bool accepts_frame(const CanFrame& frame) const;
   void process_feedback_frame(const CanFrame& frame);
   std::optional<MotorState> latest_state() const;
+  FeedbackStats feedback_stats() const;
 
  private:
   void send_raw(uint32_t arbitration_id, std::array<uint8_t, 8> data);
@@ -77,6 +84,7 @@ class MotorHandle {
   mutable std::mutex state_mutex_;
   std::optional<MotorState> state_;
   std::optional<std::chrono::steady_clock::time_point> state_time_;
+  uint64_t feedback_update_count_ = 0;
   std::atomic<bool> disabled_hint_{true};
   mutable std::mutex register_mutex_;
   std::map<uint8_t, std::pair<std::array<uint8_t, 4>, std::chrono::steady_clock::time_point>>

@@ -7,7 +7,6 @@ class Mode(IntEnum):
     POS_VEL = 2
     VEL = 3
     FORCE_POS = 4
-    ROBSTRIDE_POS_VEL_CSP = 5
 
 
 @dataclass(frozen=True)
@@ -20,3 +19,10 @@ class MotorState:
     torq: float
     t_mos: float
     t_rotor: float
+
+
+@dataclass(frozen=True)
+class FeedbackStats:
+    has_feedback: bool
+    update_count: int
+    age_ns: int

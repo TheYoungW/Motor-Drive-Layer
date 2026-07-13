@@ -427,11 +427,24 @@ void MotorHandle::process_feedback_frame(const CanFrame& frame) {
   std::lock_guard<std::mutex> lock(state_mutex_);
   state_ = state;
   state_time_ = std::chrono::steady_clock::now();
+  ++feedback_update_count_;
 }
 
 std::optional<MotorState> MotorHandle::latest_state() const {
   std::lock_guard<std::mutex> lock(state_mutex_);
   return state_;
+}
+
+FeedbackStats MotorHandle::feedback_stats() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  FeedbackStats stats;
+  stats.update_count = feedback_update_count_;
+  if (state_time_.has_value()) {
+    stats.has_feedback = true;
+    stats.age = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - *state_time_);
+  }
+  return stats;
 }
 
 Controller::Controller(std::shared_ptr<CanBus> bus) : bus_(std::make_shared<PacingBus>(bus)) {
