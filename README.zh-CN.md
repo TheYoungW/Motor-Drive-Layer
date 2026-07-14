@@ -22,7 +22,7 @@ Motor-Drive-Layer 是面向达妙电机的开源 C++ / Python 驱动。原生 C+
         │
         │ 可编辑参数：串口、波特率、ID、型号、发送间隔
         ▼
-Python motorbridge API ── ctypes 调用 ── C ABI
+Python motor-drive-layer API ── ctypes 调用 ── C ABI
                                       │
                                       ▼
                                C++ 达妙运行时
@@ -71,7 +71,7 @@ python3 -m pip install -e './bindings/python[hardware,test]'
 最小 Python 使用不需要 YAML：
 
 ```python
-from motorbridge import Controller
+from motor_drive_layer import Controller
 
 with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
     motor = controller.add_damiao_motor(
@@ -124,7 +124,7 @@ scripts/canable_restart.sh can0    # CANable/candleLight（gs_usb）
 先复制示例再修改：
 
 ```bash
-motorbridge-hardware-test --write-example my_robot.yaml
+motor-drive-layer-hardware-test --write-example my_robot.yaml
 ```
 
 示例使用 `/dev/ttyACM0`、`/dev/ttyACM5`、1,000,000 波特率、120 us 发送间隔以及 `0x201–0x207` 反馈 ID。用户必须按实际设备修改。
@@ -132,13 +132,13 @@ motorbridge-hardware-test --write-example my_robot.yaml
 只校验 YAML，不打开硬件：
 
 ```bash
-motorbridge-hardware-test --config my_robot.yaml --validate-only
+motor-drive-layer-hardware-test --config my_robot.yaml --validate-only
 ```
 
 运行保持失能的通信测试：
 
 ```bash
-motorbridge-hardware-test --config my_robot.yaml
+motor-drive-layer-hardware-test --config my_robot.yaml
 ```
 
 结果会输出 Python 循环时间、控制帧提交时间、精确反馈计数差值、当前反馈新鲜度、电机状态和温度。循环调度时间不会被错误描述为 CAN 物理往返延迟。

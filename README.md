@@ -22,7 +22,7 @@ User Python / application code
         │
         │ editable values: port, baud, IDs, model, TX gap
         ▼
-Python motorbridge API ── ctypes call ── C ABI
+Python motor-drive-layer API ── ctypes call ── C ABI
                                       │
                                       ▼
                               C++ Damiao runtime
@@ -71,7 +71,7 @@ python3 -m pip install -e './bindings/python[hardware,test]'
 Minimal Python usage does not require YAML:
 
 ```python
-from motorbridge import Controller
+from motor_drive_layer import Controller
 
 with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
     motor = controller.add_damiao_motor(
@@ -126,7 +126,7 @@ self-contained `ip link` commands printed by the CLI when an interface is not re
 Copy the editable example before changing it:
 
 ```bash
-motorbridge-hardware-test --write-example my_robot.yaml
+motor-drive-layer-hardware-test --write-example my_robot.yaml
 ```
 
 The example uses `/dev/ttyACM0`, `/dev/ttyACM5`, 1,000,000 baud, a 120 us TX gap, and feedback IDs `0x201` through `0x207`. Change them to match the actual device configuration.
@@ -134,13 +134,13 @@ The example uses `/dev/ttyACM0`, `/dev/ttyACM5`, 1,000,000 baud, a 120 us TX gap
 Validate YAML without opening any hardware:
 
 ```bash
-motorbridge-hardware-test --config my_robot.yaml --validate-only
+motor-drive-layer-hardware-test --config my_robot.yaml --validate-only
 ```
 
 Run the safe disabled communication benchmark:
 
 ```bash
-motorbridge-hardware-test --config my_robot.yaml
+motor-drive-layer-hardware-test --config my_robot.yaml
 ```
 
 The result reports Python loop timing, command submission timing, exact feedback counter deltas, current feedback age, motor status, and temperatures. It does not claim that scheduler timing is physical CAN round-trip latency.

@@ -1,4 +1,4 @@
-# motorbridge
+# motor-drive-layer
 
 Python bindings for the Motor-Drive-Layer native C++ Damiao motor driver.
 

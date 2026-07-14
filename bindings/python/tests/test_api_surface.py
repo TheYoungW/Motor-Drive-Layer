@@ -11,7 +11,7 @@ def test_api_surface_includes_binding_parity_metadata() -> None:
     assert surface["schema"] == 1
     assert "motor_abi_version" in surface["abi"]["metadata"]
     assert "motor_abi_capabilities_json" in surface["abi"]["metadata"]
-    assert "motorbridge.abi_version()" in surface["bindings"]["python"]["module_metadata"]
+    assert "motor_drive_layer.abi_version()" in surface["bindings"]["python"]["module_metadata"]
     assert "motor_abi_version" in surface["bindings"]["cpp_damiao"]["abi_metadata"]
     assert surface["vendors"] == ["damiao"]
     assert "Controller.add_damiao_motor(motor_id, feedback_id, model)" in surface["bindings"]["controller_methods"]

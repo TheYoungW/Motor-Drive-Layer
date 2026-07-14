@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import time
 
-from motorbridge import Controller
+from motor_drive_layer import Controller
 
 
 def _parse_id(text: str) -> int:

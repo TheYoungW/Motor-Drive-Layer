@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import time
 
-from motorbridge import Controller, Mode
+from motor_drive_layer import Controller, Mode
 
 
 def _parse_id(text: str) -> int:
@@ -23,7 +23,7 @@ def main() -> None:
         description="Single-motor Damiao serial control example"
     )
     p.add_argument("--serial-port", default="/dev/ttyACM0")
-    p.add_argument("--serial-baud", type=int, default=921600)
+    p.add_argument("--serial-baud", type=int, default=1_000_000)
     p.add_argument("--model", default="4310")
     p.add_argument("--motor-id", default="0x01")
     p.add_argument("--feedback-id", default="0x11")

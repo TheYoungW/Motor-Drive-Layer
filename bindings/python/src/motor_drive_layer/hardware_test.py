@@ -207,7 +207,7 @@ def run_hardware_test(
                     errors,
                     errors_lock,
                 ),
-                name=f"motorbridge-{opened.config.name}",
+                name=f"motor-drive-layer-{opened.config.name}",
             )
             threads.append(thread)
             thread.start()
@@ -323,7 +323,7 @@ def run_cli(
             destination = Path(args.write_example)
             if destination.exists():
                 raise BenchmarkError(f"refusing to overwrite existing file: {destination}")
-            example = resources.files("motorbridge").joinpath(
+            example = resources.files("motor_drive_layer").joinpath(
                 "configs/damiao_dual_arm.yaml"
             )
             destination.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")

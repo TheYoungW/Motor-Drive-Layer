@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "package": "motorbridge",
+  "package": "motor_drive_layer",
   "version": "0.5.0",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "abi": {
@@ -97,9 +97,9 @@
     ],
     "python": {
       "module_metadata": [
-        "motorbridge.get_version()",
-        "motorbridge.abi_version()",
-        "motorbridge.abi_capabilities()"
+        "motor_drive_layer.get_version()",
+        "motor_drive_layer.abi_version()",
+        "motor_drive_layer.abi_capabilities()"
       ],
       "status": "aligned"
     },

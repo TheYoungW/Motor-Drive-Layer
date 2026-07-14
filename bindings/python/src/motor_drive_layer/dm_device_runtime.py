@@ -15,7 +15,7 @@ from urllib.request import urlopen
 from ._version import VERSION
 
 SDK_VERSION = "v1.1.0"
-_REPO = "motorbridge/motorbridge"
+_REPO = "TheYoungW/Motor-Drive-Layer"
 
 
 @dataclass(frozen=True)
@@ -53,8 +53,8 @@ def _cache_root() -> Path:
         return Path(env).expanduser()
     xdg = os.getenv("XDG_CACHE_HOME")
     if xdg:
-        return Path(xdg).expanduser() / "motorbridge" / "dm_device"
-    return Path.home() / ".cache" / "motorbridge" / "dm_device"
+        return Path(xdg).expanduser() / "motor-drive-layer" / "dm_device"
+    return Path.home() / ".cache" / "motor-drive-layer" / "dm_device"
 
 
 def _packaged_runtime_path(runtime: DmDeviceRuntime) -> Path:
@@ -96,7 +96,7 @@ def _download_runtime(runtime: DmDeviceRuntime, dst: Path, quiet: bool) -> Path:
     for base_url in _download_base_urls():
         url = _url_for(base_url, runtime.relpath)
         if not quiet:
-            print(f"[motorbridge] downloading DM_Device runtime: {url}", file=sys.stderr)
+            print(f"[motor-drive-layer] downloading DM_Device runtime: {url}", file=sys.stderr)
         fd, tmp_name = tempfile.mkstemp(prefix=f".{runtime.lib_name}.", dir=str(dst.parent))
         os.close(fd)
         tmp = Path(tmp_name)
@@ -157,9 +157,9 @@ def _install_hint(runtime: DmDeviceRuntime) -> str:
         f"Direct file URL: {raw_url}\n"
         "Install options:\n"
         f"- Set MOTOR_DM_DEVICE_LIB=/absolute/path/to/{runtime.lib_name}\n"
-        f"- Or place the file at the motorbridge cache path: {cache_path}"
+        f"- Or place the file at the motor-drive-layer cache path: {cache_path}"
         f"{source_line}\n"
-        "- Or run: motorbridge-install-dm-device --download\n"
+        "- Or run: motor-drive-layer-install-dm-device --download\n"
         "Reference: third_party/dm_device/README.md"
         f"{dep_note}"
     )
@@ -201,7 +201,7 @@ def ensure_dm_device_runtime(*, auto_download: bool | None = None, quiet: bool =
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Inspect or install the DaMiao DM_Device runtime used by motorbridge.")
+    parser = argparse.ArgumentParser(description="Inspect or install the DaMiao DM_Device runtime used by motor-drive-layer.")
     parser.add_argument("--download", action="store_true", help="download the matching runtime into the user cache")
     parser.add_argument("--force", action="store_true", help="download again even if a cached runtime exists")
     parser.add_argument("--print-path", action="store_true", help="print only the installed runtime path")

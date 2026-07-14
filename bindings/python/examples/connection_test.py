@@ -6,7 +6,7 @@ import sys
 import time
 from collections.abc import Sequence
 
-from motorbridge import Controller
+from motor_drive_layer import Controller
 
 
 def _parse_id(text: str) -> int:
@@ -29,7 +29,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--channel", default="can0")
     parser.add_argument("--serial-port", default="/dev/ttyACM0")
-    parser.add_argument("--serial-baud", type=int, default=921600)
+    parser.add_argument("--serial-baud", type=int, default=1_000_000)
     parser.add_argument("--dm-device-type", default="usb2canfd-dual")
     parser.add_argument("--dm-channel", default="0")
     parser.add_argument("--model", default="4340P")

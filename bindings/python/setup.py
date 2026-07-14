@@ -50,7 +50,7 @@ def _candidate_dm_device_paths() -> list[Path]:
     candidates.append(repo_root / "third_party" / "dm_device" / "v1.1.0" / rel)
     candidates.append(repo_root / "dm-device-sdk" / "C&C++" / "lib" / "v1.1.0" / rel)
     candidates.append(repo_root.parent / "dm-device-sdk" / "C&C++" / "lib" / "v1.1.0" / rel)
-    candidates.append(here.parent / "src" / "motorbridge" / "lib" / "dm_device" / rel.name)
+    candidates.append(here.parent / "src" / "motor_drive_layer" / "lib" / "dm_device" / rel.name)
     return candidates
 
 
@@ -74,12 +74,12 @@ def _candidate_abi_paths() -> list[Path]:
     lib_name = _platform_lib_name()
     candidates: list[Path] = []
 
-    env = os.getenv("MOTORBRIDGE_LIB")
+    env = os.getenv("MOTOR_DRIVE_LAYER_LIB")
     if env:
         candidates.append(Path(env).expanduser())
 
     candidates.append(repo_root / "cpp_damiao" / "build" / lib_name)
-    candidates.append(here.parent / "src" / "motorbridge" / "lib" / lib_name)
+    candidates.append(here.parent / "src" / "motor_drive_layer" / "lib" / lib_name)
     return candidates
 
 
@@ -92,7 +92,7 @@ def _resolve_abi_path() -> Path:
         "Cannot locate motor_abi shared library for wheel build.\n"
         f"Tried:\n{tried}\n"
         "Build ABI first (`cmake -S cpp_damiao -B cpp_damiao/build && cmake --build cpp_damiao/build`) "
-        "or set MOTORBRIDGE_LIB."
+        "or set MOTOR_DRIVE_LAYER_LIB."
     )
 
 
@@ -100,7 +100,7 @@ class BuildPyWithAbi(_build_py):
     def run(self):
         super().run()
         abi_src = _resolve_abi_path()
-        dst_dir = Path(self.build_lib) / "motorbridge" / "lib"
+        dst_dir = Path(self.build_lib) / "motor_drive_layer" / "lib"
         if dst_dir.exists():
             shutil.rmtree(dst_dir)
         dst_dir.mkdir(parents=True, exist_ok=True)

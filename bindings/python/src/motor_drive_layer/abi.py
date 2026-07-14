@@ -33,7 +33,7 @@ class CFeedbackStats(Structure):
 
 def _candidate_lib_paths() -> list[Path]:
     candidates: list[Path] = []
-    env = os.getenv("MOTORBRIDGE_LIB")
+    env = os.getenv("MOTOR_DRIVE_LAYER_LIB")
     if env:
         candidates.append(Path(env).expanduser())
 

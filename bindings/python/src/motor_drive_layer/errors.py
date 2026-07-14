@@ -1,5 +1,5 @@
 class MotorBridgeError(RuntimeError):
-    """Base error for motorbridge Python SDK."""
+    """Base error for the motor-drive-layer Python SDK."""
 
 
 class AbiLoadError(MotorBridgeError):

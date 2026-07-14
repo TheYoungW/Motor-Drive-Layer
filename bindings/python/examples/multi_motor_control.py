@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import time
 
-from motorbridge import Controller, Mode
+from motor_drive_layer import Controller, Mode
 
 
 def _split(values: list[str]) -> list[str]:

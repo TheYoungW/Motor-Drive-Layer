@@ -42,8 +42,8 @@ jobs:
         env:
           PYTHONPATH: bindings/python/src
         run: >-
-          python -m motorbridge.hardware_test
-          --config bindings/python/src/motorbridge/configs/damiao_dual_arm.yaml
+          python -m motor_drive_layer.hardware_test
+          --config bindings/python/src/motor_drive_layer/configs/damiao_dual_arm.yaml
           --validate-only
 
       - name: Build Python wheel with C++ ABI
@@ -60,20 +60,20 @@ jobs:
           with ZipFile(wheel) as archive:
               names = archive.namelist()
               assert any(name.endswith("/licenses/LICENSE") for name in names)
-              assert any(name.endswith("/motorbridge/lib/libmotor_abi.so") for name in names)
-              assert any(name.endswith("/motorbridge/configs/damiao_dual_arm.yaml") for name in names)
+              assert any(name.endswith("/motor_drive_layer/lib/libmotor_abi.so") for name in names)
+              assert any(name.endswith("/motor_drive_layer/configs/damiao_dual_arm.yaml") for name in names)
           PY
           python -m pip install --force-reinstall --no-deps bindings/python/dist/*.whl
           cd /tmp
           python - <<'PY'
-          import motorbridge
-          assert motorbridge.get_version() == "0.5.0"
-          assert motorbridge.abi_version() == "0.3.0-cpp"
-          assert motorbridge.abi_capabilities()["features"]["feedback_stats"] is True
+          import motor_drive_layer
+          assert motor_drive_layer.get_version() == "0.5.0"
+          assert motor_drive_layer.abi_version() == "0.3.0-cpp"
+          assert motor_drive_layer.abi_capabilities()["features"]["feedback_stats"] is True
           PY
-          rm -f /tmp/motorbridge-example.yaml
-          motorbridge-hardware-test --write-example /tmp/motorbridge-example.yaml
-          motorbridge-hardware-test --config /tmp/motorbridge-example.yaml --validate-only
+          rm -f /tmp/motor-drive-layer-example.yaml
+          motor-drive-layer-hardware-test --write-example /tmp/motor-drive-layer-example.yaml
+          motor-drive-layer-hardware-test --config /tmp/motor-drive-layer-example.yaml --validate-only
 
       - name: Check shell helper syntax
         run: bash -n scripts/*.sh

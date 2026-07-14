@@ -112,7 +112,7 @@ def load_hardware_config(path: str | Path) -> HardwareConfig:
         import yaml
     except ImportError as error:
         raise ConfigError(
-            'YAML support is optional; install it with pip install "motorbridge[hardware]"'
+            'YAML support is optional; install it with pip install "motor-drive-layer[hardware]"'
         ) from error
 
     config_path = Path(path)

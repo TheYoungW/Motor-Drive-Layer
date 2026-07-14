@@ -13,7 +13,7 @@ class RegisterSpec:
     range_str: str
 
 
-# Damiao RW register subset used for configuration/tuning in motorbridge.
+# Damiao RW register subset used for configuration/tuning in motor-drive-layer.
 DAMIAO_RW_REGISTERS: dict[int, RegisterSpec] = {
     0: RegisterSpec(0, "UV_Value", "Under-voltage protection value", "f32", "RW", "(10.0, 3.4E38]"),
     1: RegisterSpec(1, "KT_Value", "Torque coefficient", "f32", "RW", "[0.0, 3.4E38]"),

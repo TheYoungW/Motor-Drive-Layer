@@ -448,7 +448,7 @@ FeedbackStats MotorHandle::feedback_stats() const {
 }
 
 Controller::Controller(std::shared_ptr<CanBus> bus) : bus_(std::make_shared<PacingBus>(bus)) {
-  if (const char* raw = std::getenv("MOTORBRIDGE_TX_GAP_US")) {
+  if (const char* raw = std::getenv("MOTOR_DRIVE_LAYER_TX_GAP_US")) {
     uint64_t gap_us = 0;
     const auto* end = raw + std::strlen(raw);
     const auto parsed = std::from_chars(raw, end, gap_us);
@@ -458,7 +458,7 @@ Controller::Controller(std::shared_ptr<CanBus> bus) : bus_(std::make_shared<Paci
       tx_gap_env_override_ = true;
     }
   }
-  if (const char* raw = std::getenv("MOTORBRIDGE_BULK_OP_GAP_MS")) {
+  if (const char* raw = std::getenv("MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS")) {
     uint64_t gap_ms = 0;
     const auto* end = raw + std::strlen(raw);
     const auto parsed = std::from_chars(raw, end, gap_ms);

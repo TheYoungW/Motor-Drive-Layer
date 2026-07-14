@@ -73,7 +73,7 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
         help="transport backend",
     )
     p.add_argument("--serial-port", default="/dev/ttyACM0", help="serial port for dm-serial")
-    p.add_argument("--serial-baud", type=int, default=921600, help="baud rate for dm-serial")
+    p.add_argument("--serial-baud", type=int, default=1_000_000, help="baud rate for dm-serial")
     p.add_argument("--dm-device-type", default="usb2canfd-dual", help="DM_Device SDK adapter type")
     p.add_argument("--dm-channel", default="0", help="DM_Device SDK channel number")
     p.add_argument("--model", default="4340", help="Damiao model name/hint")
@@ -308,8 +308,8 @@ def _scan_command(args: argparse.Namespace) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="motorbridge Damiao-only Python CLI", allow_abbrev=False)
-    p.add_argument("-v", "--version", action="version", version=f"motorbridge {get_version()}")
+    p = argparse.ArgumentParser(description="motor-drive-layer Damiao-only Python CLI", allow_abbrev=False)
+    p.add_argument("-v", "--version", action="version", version=f"motor-drive-layer {get_version()}")
     sub = p.add_subparsers(dest="command")
 
     run = sub.add_parser("run", help="send Damiao control commands")
@@ -356,8 +356,12 @@ def _parse_args() -> argparse.Namespace:
     if len(sys.argv) == 1:
         parser.print_help()
         raise SystemExit(0)
-    if len(sys.argv) > 1 and sys.argv[1].startswith("--"):
-        legacy = argparse.ArgumentParser(description="motorbridge Damiao-only Python CLI", allow_abbrev=False)
+    if (
+        len(sys.argv) > 1
+        and sys.argv[1].startswith("--")
+        and sys.argv[1] not in {"--help", "--version"}
+    ):
+        legacy = argparse.ArgumentParser(description="motor-drive-layer Damiao-only Python CLI", allow_abbrev=False)
         _add_common_args(legacy)
         _add_run_args(legacy)
         args = legacy.parse_args()
@@ -374,7 +378,7 @@ def main() -> None:
     try:
         if args.transport == "auto" and getattr(args, "serial_port", None) != "/dev/ttyACM0":
             args.transport = "dm-serial"
-        hint = preflight_can_runtime("motorbridge-cli", args.transport, args.channel)
+        hint = preflight_can_runtime("motor-drive-layer-cli", args.transport, args.channel)
         if hint:
             raise RuntimeError(hint)
 

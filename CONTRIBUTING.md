@@ -15,8 +15,8 @@ python3 -m pip install -e './bindings/python[hardware,test]'
 ```bash
 ctest --test-dir cpp_damiao/build --output-on-failure
 PYTHONPATH=bindings/python/src python3 -m pytest -q bindings/python/tests
-python3 -m motorbridge.hardware_test \
-  --config bindings/python/src/motorbridge/configs/damiao_dual_arm.yaml \
+python3 -m motor_drive_layer.hardware_test \
+  --config bindings/python/src/motor_drive_layer/configs/damiao_dual_arm.yaml \
   --validate-only
 ```
 

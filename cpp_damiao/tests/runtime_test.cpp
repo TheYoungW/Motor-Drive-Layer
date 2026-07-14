@@ -400,7 +400,7 @@ int main() {
           "background polling survives a transient receive exception");
   resilient_controller.close_bus();
 
-  ::setenv("MOTORBRIDGE_TX_GAP_US", "5000", 1);
+  ::setenv("MOTOR_DRIVE_LAYER_TX_GAP_US", "5000", 1);
   auto env_gap_bus = std::make_shared<FakeBus>();
   damiao::Controller env_gap_controller(env_gap_bus);
   auto env_gap_motor = env_gap_controller.add_damiao_motor(0x01, 0x11, "4340P");
@@ -409,12 +409,12 @@ int main() {
   const auto env_gap_times = env_gap_bus->sent_times_snapshot();
   require(env_gap_times.size() == 2, "environment TX-gap test sends two frames");
   require(env_gap_times[1] - env_gap_times[0] >= std::chrono::microseconds(4000),
-          "MOTORBRIDGE_TX_GAP_US configures single-motor pacing");
+          "MOTOR_DRIVE_LAYER_TX_GAP_US configures single-motor pacing");
   env_gap_controller.close_bus();
-  ::unsetenv("MOTORBRIDGE_TX_GAP_US");
+  ::unsetenv("MOTOR_DRIVE_LAYER_TX_GAP_US");
 
-  ::setenv("MOTORBRIDGE_TX_GAP_US", "0", 1);
-  ::setenv("MOTORBRIDGE_BULK_OP_GAP_MS", "7", 1);
+  ::setenv("MOTOR_DRIVE_LAYER_TX_GAP_US", "0", 1);
+  ::setenv("MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS", "7", 1);
   auto bulk_gap_bus = std::make_shared<FakeBus>();
   damiao::Controller bulk_gap_controller(bulk_gap_bus);
   bulk_gap_controller.add_damiao_motor(0x01, 0x11, "4340P");
@@ -423,10 +423,10 @@ int main() {
   const auto bulk_gap_times = bulk_gap_bus->sent_times_snapshot();
   require(bulk_gap_times.size() == 2, "bulk-gap test enables two motors");
   require(bulk_gap_times[1] - bulk_gap_times[0] >= std::chrono::milliseconds(6),
-          "MOTORBRIDGE_BULK_OP_GAP_MS configures bulk pacing");
+          "MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS configures bulk pacing");
   bulk_gap_controller.close_bus();
-  ::unsetenv("MOTORBRIDGE_TX_GAP_US");
-  ::unsetenv("MOTORBRIDGE_BULK_OP_GAP_MS");
+  ::unsetenv("MOTOR_DRIVE_LAYER_TX_GAP_US");
+  ::unsetenv("MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS");
 
   auto failing_drain_bus = std::make_shared<FakeBus>();
   damiao::Controller failing_drain_controller(failing_drain_bus);

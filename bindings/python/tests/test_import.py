@@ -1,4 +1,4 @@
-from motorbridge import Controller, Mode, MotorState, get_version
+from motor_drive_layer import Controller, Mode, MotorState, get_version
 
 
 def test_import_symbols() -> None:

@@ -23,17 +23,17 @@ classifiers = [
 ]
 
 [tool.setuptools.dynamic]
-version = { attr = "motorbridge._version.VERSION" }
+version = { attr = "motor_drive_layer._version.VERSION" }
 
 [project.urls]
 Homepage = "https://github.com/TheYoungW/Motor-Drive-Layer"
 Repository = "https://github.com/TheYoungW/Motor-Drive-Layer"
 
 [project.scripts]
-motorbridge = "motorbridge.cli:main"
-motorbridge-cli = "motorbridge.cli:main"
-motorbridge-install-dm-device = "motorbridge.dm_device_runtime:main"
-motorbridge-hardware-test = "motorbridge.hardware_test:main"
+motor-drive-layer = "motor_drive_layer.cli:main"
+motor-drive-layer-cli = "motor_drive_layer.cli:main"
+motor-drive-layer-install-dm-device = "motor_drive_layer.dm_device_runtime:main"
+motor-drive-layer-hardware-test = "motor_drive_layer.hardware_test:main"
 
 [project.optional-dependencies]
 hardware = ["PyYAML>=6.0"]
@@ -46,4 +46,4 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-motorbridge = ["lib/*", "lib/dm_device/*", "configs/*.yaml"]
+motor_drive_layer = ["lib/*", "lib/dm_device/*", "configs/*.yaml"]

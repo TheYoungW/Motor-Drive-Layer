@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from motorbridge.hardware_config import ConfigError, load_hardware_config
+from motor_drive_layer.hardware_config import ConfigError, load_hardware_config
 
 
 VALID_YAML = """
@@ -87,7 +87,7 @@ def test_repository_dual_arm_example_is_valid_and_user_editable() -> None:
     example = (
         Path(__file__).resolve().parents[1]
         / "src"
-        / "motorbridge"
+        / "motor_drive_layer"
         / "configs"
         / "damiao_dual_arm.yaml"
     )

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import ctypes
 
-from motorbridge.abi import CFeedbackStats
-from motorbridge.core import Controller, Motor
-from motorbridge.models import FeedbackStats
+from motor_drive_layer.abi import CFeedbackStats
+from motor_drive_layer.core import Controller, Motor
+from motor_drive_layer.models import FeedbackStats
 
 
 class FakeLib:

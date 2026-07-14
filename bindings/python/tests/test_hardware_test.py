@@ -4,20 +4,20 @@ from dataclasses import dataclass
 
 import pytest
 
-from motorbridge.hardware_config import (
+from motor_drive_layer.hardware_config import (
     BenchmarkConfig,
     ControllerConfig,
     HardwareConfig,
     JointConfig,
 )
-from motorbridge.hardware_config import load_hardware_config
-from motorbridge.hardware_test import (
+from motor_drive_layer.hardware_config import load_hardware_config
+from motor_drive_layer.hardware_test import (
     BenchmarkError,
     report_is_successful,
     run_cli,
     run_hardware_test,
 )
-from motorbridge.models import FeedbackStats, MotorState
+from motor_drive_layer.models import FeedbackStats, MotorState
 
 
 @dataclass

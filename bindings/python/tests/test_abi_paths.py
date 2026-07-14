@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import motorbridge.abi as abi
+import motor_drive_layer.abi as abi
 
 
 def test_candidate_paths_support_shallow_installs(monkeypatch) -> None:
