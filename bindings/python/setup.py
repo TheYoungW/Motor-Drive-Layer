@@ -4,7 +4,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from setuptools import setup
+from setuptools import Distribution, setup
 from setuptools.command.bdist_wheel import bdist_wheel as _bdist_wheel
 from setuptools.command.build_py import build_py as _build_py
 
@@ -122,6 +122,14 @@ class BdistWheelWithAbi(_bdist_wheel):
         return "py3", "none", platform_tag
 
 
+class BinaryDistribution(Distribution):
+    """Install the ctypes shared library into platlib, not purelib."""
+
+    def has_ext_modules(self) -> bool:
+        return True
+
+
 setup(
     cmdclass={"build_py": BuildPyWithAbi, "bdist_wheel": BdistWheelWithAbi},
+    distclass=BinaryDistribution,
 )
