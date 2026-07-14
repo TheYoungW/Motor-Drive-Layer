@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import motor_drive_layer.platform_hints as hints
+import motor_drive_layer.cli.platform_hints as hints
 
 
 def test_linux_classic_can_hint_is_self_contained() -> None:

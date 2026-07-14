@@ -7,7 +7,7 @@ import time
 from .. import get_version
 from ..core import Controller
 from ..models import Mode
-from ..platform_hints import preflight_can_runtime
+from .platform_hints import preflight_can_runtime
 
 
 DAMIAO_MODEL_LIMITS: dict[str, tuple[float, float, float]] = {

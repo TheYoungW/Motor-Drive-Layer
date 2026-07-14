@@ -48,6 +48,4 @@ The values above are examples supplied by the caller. They are not defaults comp
 
 The C ABI exposes the same information through `motor_handle_get_feedback_stats` and accepts caller-provided pacing through `motor_controller_set_tx_gap_us`.
 
-## Hardware testing
-
-Hardware configuration and the safe disabled benchmark live in the optional Python tooling. See the [project README](../README.md#python-hardware-configuration). Default C++ tests never open a real motor device.
+Default C++ tests never open a real motor device.

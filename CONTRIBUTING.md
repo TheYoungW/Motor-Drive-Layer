@@ -7,7 +7,7 @@ Contributions are welcome for the Damiao C++ core, C ABI, Python binding, tests,
 ```bash
 cmake -S cpp_damiao -B cpp_damiao/build
 cmake --build cpp_damiao/build -j
-python3 -m pip install -e './bindings/python[hardware,test]'
+python3 -m pip install -e './bindings/python[test]'
 ```
 
 ## Required checks
@@ -15,9 +15,6 @@ python3 -m pip install -e './bindings/python[hardware,test]'
 ```bash
 ctest --test-dir cpp_damiao/build --output-on-failure
 PYTHONPATH=bindings/python/src python3 -m pytest -q bindings/python/tests
-python3 -m motor_drive_layer.hardware_test \
-  --config bindings/python/src/motor_drive_layer/configs/damiao_dual_arm.yaml \
-  --validate-only
 ```
 
 Default automated tests must not require external repositories, attached hardware, root privileges, or motor power.

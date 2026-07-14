@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Motor-Drive-Layer is an open-source Damiao motor driver for C++ and Python. The native C++ runtime owns protocol encoding, serial/CAN I/O, TX pacing, background feedback reception, and state caching. Python exposes the same driver through a small C ABI and adds optional user-facing YAML configuration and safe hardware diagnostics.
+Motor-Drive-Layer is an open-source Damiao motor driver for C++ and Python. The native C++ runtime owns protocol encoding, serial/CAN I/O, TX pacing, background feedback reception, and state caching. Python exposes the same driver through a small C ABI.
 
 ## Features
 
@@ -13,7 +13,6 @@ Motor-Drive-Layer is an open-source Damiao motor driver for C++ and Python. The 
 - Configurable multi-motor TX pacing; 120 us is the provided hardware example, not a compiled constant.
 - Register read/write helpers with acknowledgement and timeout handling.
 - C ABI shared library and Python 3.10+ bindings.
-- Pure-Python, YAML-configured multi-controller hardware benchmark.
 
 ## Architecture
 
@@ -33,13 +32,11 @@ Python motor-drive-layer API ── ctypes call ── C ABI
                               adapter and motors
 ```
 
-YAML belongs only to the optional Python hardware tool. C++ neither parses YAML nor contains robot-specific ports, joint names, motor IDs, feedback IDs, or control frequencies.
+C++ does not contain robot-specific ports, joint names, motor IDs, feedback IDs, or control frequencies.
 
 ## Safety
 
 Motor control can cause unexpected motion and injury. Support the mechanism, keep an independent emergency stop available, begin with conservative limits, and verify IDs and control modes before enabling a motor.
-
-The included hardware benchmark never enables motors. It disables every configured motor, verifies disabled feedback, sends zero-position/zero-velocity-limit control frames only while disabled, and disables again during cleanup. Review the script and your device behavior before using it on other hardware or firmware.
 
 ## Build the C++ library
 
@@ -62,13 +59,13 @@ python3 -m pip install --upgrade pip
 python3 -m pip install -e ./bindings/python
 ```
 
-Install optional YAML hardware tooling and test dependencies with:
+Install test dependencies with:
 
 ```bash
-python3 -m pip install -e './bindings/python[hardware,test]'
+python3 -m pip install -e './bindings/python[test]'
 ```
 
-Minimal Python usage does not require YAML:
+Minimal Python usage:
 
 ```python
 from motor_drive_layer import Controller
@@ -121,30 +118,6 @@ scripts/canable_restart.sh can0    # CANable/candleLight (gs_usb)
 They are not needed for `dm-serial` or `dm-device`. Pip-installed users can follow the
 self-contained `ip link` commands printed by the CLI when an interface is not ready.
 
-## Python hardware configuration
-
-Copy the editable example before changing it:
-
-```bash
-motor-drive-layer-hardware-test --write-example my_robot.yaml
-```
-
-The example uses `/dev/ttyACM0`, `/dev/ttyACM5`, 1,000,000 baud, a 120 us TX gap, and feedback IDs `0x201` through `0x207`. Change them to match the actual device configuration.
-
-Validate YAML without opening any hardware:
-
-```bash
-motor-drive-layer-hardware-test --config my_robot.yaml --validate-only
-```
-
-Run the safe disabled communication benchmark:
-
-```bash
-motor-drive-layer-hardware-test --config my_robot.yaml
-```
-
-The result reports Python loop timing, command submission timing, exact feedback counter deltas, current feedback age, motor status, and temperatures. It does not claim that scheduler timing is physical CAN round-trip latency.
-
 ## Tests
 
 No-hardware tests:
@@ -161,7 +134,7 @@ Default CI does not open serial devices or enable motors.
 
 ```text
 cpp_damiao/                 C++ protocol, runtime, transports, C ABI, tests
-bindings/python/            Python package, tests, examples, YAML hardware tool
+bindings/python/            Python package, tests, and examples
 third_party/dm_device/      Optional vendor runtime headers/libraries
 scripts/                    Linux SocketCAN/CAN-FD interface setup helpers
 .github/                    CI and issue templates

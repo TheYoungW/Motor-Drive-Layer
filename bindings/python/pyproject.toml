@@ -33,10 +33,8 @@ Repository = "https://github.com/TheYoungW/Motor-Drive-Layer"
 motor-drive-layer = "motor_drive_layer.cli:main"
 motor-drive-layer-cli = "motor_drive_layer.cli:main"
 motor-drive-layer-install-dm-device = "motor_drive_layer.dm_device_runtime:main"
-motor-drive-layer-hardware-test = "motor_drive_layer.hardware_test:main"
 
 [project.optional-dependencies]
-hardware = ["PyYAML>=6.0"]
 test = ["pytest>=7"]
 
 [tool.setuptools]
@@ -46,4 +44,4 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-motor_drive_layer = ["lib/*", "lib/dm_device/*", "configs/*.yaml"]
+motor_drive_layer = ["lib/*", "lib/dm_device/*"]
