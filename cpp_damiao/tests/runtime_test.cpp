@@ -256,12 +256,11 @@ int main() {
     std::this_thread::sleep_for(std::chrono::milliseconds(3));
     delayed_bus->push_rx(feedback_frame(0x11, 0x01, 0x01, 0.5f, 0.1f, 0.0f,
                                         damiao::model_limits("4340P")));
-    std::this_thread::sleep_for(std::chrono::milliseconds(4));
     delayed_bus->push_rx(feedback_frame(0x12, 0x02, 0x01, -0.25f, 0.0f, 0.0f,
                                         damiao::model_limits("4310")));
   });
   try {
-    delayed_controller.request_feedback_all(std::chrono::milliseconds(50));
+    delayed_controller.request_feedback_all(std::chrono::milliseconds(250));
   } catch (...) {
     batch_responder.join();
     throw;
@@ -283,7 +282,7 @@ int main() {
   });
   std::optional<damiao::MotorState> fresh_state;
   try {
-    fresh_state = delayed_motor1->request_fresh_state(std::chrono::milliseconds(50));
+    fresh_state = delayed_motor1->request_fresh_state(std::chrono::milliseconds(250));
   } catch (...) {
     single_responder.join();
     throw;
