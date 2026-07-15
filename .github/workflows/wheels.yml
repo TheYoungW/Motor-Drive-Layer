@@ -40,7 +40,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -96,7 +96,7 @@ jobs:
           python -c "from importlib.metadata import version; import motor_drive_layer as mdl; assert mdl.get_version() == version('motor-drive-layer'); assert mdl.abi_version() == '0.5.0-cpp'; assert mdl.abi_capabilities()['features']['register_metadata'] is True"
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.name }}
           path: wheelhouse/*.whl
@@ -110,7 +110,7 @@ jobs:
       contents: write
     steps:
       - name: Download all wheels
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           pattern: wheel-*
           path: wheels

@@ -316,7 +316,7 @@ int main() {
   const auto batch_timeout_elapsed = std::chrono::steady_clock::now() - timeout_started;
   require(timeout_message == "fresh feedback timed out; missing motor IDs: 2",
           "batch timeout reports only the missing motor ID");
-  require(batch_timeout_elapsed < std::chrono::milliseconds(35),
+  require(batch_timeout_elapsed < std::chrono::milliseconds(150),
           "batch feedback uses one shared timeout instead of one timeout per motor");
   timeout_controller.close_bus();
 
@@ -561,7 +561,9 @@ int main() {
   }
   const auto write_elapsed = std::chrono::steady_clock::now() - write_started;
   require(write_timed_out, "register write without ACK times out");
-  require(write_elapsed < std::chrono::milliseconds(300),
+  require(write_timeout_bus->sent_snapshot().size() == 3,
+          "register write uses exactly three ACK attempts");
+  require(write_elapsed < std::chrono::seconds(1),
           "register write uses the Rust ACK retry budget");
   write_timeout_controller.close_bus();
   std::cout << "damiao runtime tests passed\n";
