@@ -8,4 +8,4 @@ def test_candidate_paths_support_shallow_installs(monkeypatch) -> None:
 
     candidates = abi._candidate_lib_paths()
 
-    assert Path("/tmp/pkg/lib/libmotor_abi.so") in candidates
+    assert Path("/tmp/pkg/lib/libmotor_abi.so").resolve() in candidates

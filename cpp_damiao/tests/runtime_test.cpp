@@ -211,6 +211,7 @@ std::size_t feedback_request_count(const std::vector<damiao::CanFrame>& frames) 
 }  // namespace
 
 int main() {
+  try {
   auto bus = std::make_shared<FakeBus>();
   damiao::Controller controller(bus);
   auto motor1 = controller.add_damiao_motor(0x01, 0x11, "4340P");
@@ -568,4 +569,8 @@ int main() {
   write_timeout_controller.close_bus();
   std::cout << "damiao runtime tests passed\n";
   return 0;
+  } catch (const std::exception& error) {
+    std::cerr << "damiao runtime test failed: " << error.what() << '\n';
+    return 1;
+  }
 }
