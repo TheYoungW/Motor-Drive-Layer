@@ -18,7 +18,7 @@ void require(bool condition, const char* message) {
 int main() {
   const char* version = motor_abi_version();
   require(version != nullptr, "version pointer");
-  require(std::string(version) == "0.3.0-cpp", "ABI minor version reflects additive API");
+  require(std::string(version) == "0.4.0-cpp", "ABI minor version reflects additive API");
 
   const std::string capabilities = motor_abi_capabilities_json();
   require(capabilities.find("\"vendors\":[\"damiao\"]") != std::string::npos ||
@@ -34,9 +34,14 @@ int main() {
 
   require(motor_controller_set_tx_gap_us(nullptr, 120) != 0,
           "TX-gap setter rejects a null controller");
+  require(motor_controller_request_feedback_all(nullptr, 50) != 0,
+          "batch feedback rejects a null controller");
   MotorFeedbackStats feedback_stats{};
   require(motor_handle_get_feedback_stats(nullptr, &feedback_stats) != 0,
           "feedback stats reject a null motor");
+  MotorState fresh_state{};
+  require(motor_handle_request_fresh_state(nullptr, 50, &fresh_state) != 0,
+          "fresh-state request rejects a null motor");
 
   MotorController* invalid = motor_controller_new_socketcan(nullptr);
   require(invalid == nullptr, "null socketcan channel fails");

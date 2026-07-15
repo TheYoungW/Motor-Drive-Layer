@@ -53,6 +53,7 @@ class MotorHandle {
   void send_vel(float velocity);
   void send_force_pos(float pos, float velocity_limit, float torque_limit_ratio);
   void request_feedback();
+  std::optional<MotorState> request_fresh_state(std::chrono::milliseconds timeout);
   void store_parameters();
   void write_register_f32(uint8_t rid, float value);
   void write_register_u32(uint8_t rid, uint32_t value);
@@ -67,11 +68,14 @@ class MotorHandle {
   FeedbackStats feedback_stats() const;
 
  private:
+  friend class Controller;
+
   void send_raw(uint32_t arbitration_id, std::array<uint8_t, 8> data);
   void send_to_motor(std::array<uint8_t, 8> data);
   void send_mode_frame(uint32_t base_id, std::array<uint8_t, 8> data);
   void write_register_raw(uint8_t rid, std::array<uint8_t, 4> data);
-  std::optional<MotorState> request_fresh_state(std::chrono::milliseconds timeout);
+  bool wait_for_feedback_after(uint64_t previous_count,
+                               std::chrono::steady_clock::time_point deadline);
   std::array<uint8_t, 4> wait_for_register(uint8_t rid, std::chrono::milliseconds timeout);
   void wait_for_write_ack(uint8_t rid, std::array<uint8_t, 4> expected,
                           std::chrono::milliseconds timeout);
@@ -82,6 +86,7 @@ class MotorHandle {
   std::string model_;
   Limits limits_;
   mutable std::mutex state_mutex_;
+  std::condition_variable state_cv_;
   std::optional<MotorState> state_;
   std::optional<std::chrono::steady_clock::time_point> state_time_;
   uint64_t feedback_update_count_ = 0;
@@ -104,6 +109,7 @@ class Controller {
   std::shared_ptr<MotorHandle> add_damiao_motor(uint16_t motor_id, uint16_t feedback_id,
                                                 const std::string& model);
   void poll_feedback_once();
+  void request_feedback_all(std::chrono::milliseconds timeout);
   void enable_all();
   void disable_all();
   void shutdown();

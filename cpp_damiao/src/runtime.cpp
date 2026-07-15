@@ -140,21 +140,23 @@ void MotorHandle::store_parameters() {
 }
 
 std::optional<MotorState> MotorHandle::request_fresh_state(std::chrono::milliseconds timeout) {
-  const auto request_at = std::chrono::steady_clock::now();
-  request_feedback();
-  const auto deadline = request_at + timeout;
-  for (;;) {
-    {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      if (state_.has_value() && state_time_.has_value() && *state_time_ >= request_at) {
-        return state_;
-      }
-    }
-    if (std::chrono::steady_clock::now() >= deadline) {
-      return std::nullopt;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  uint64_t previous_count = 0;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    previous_count = feedback_update_count_;
   }
+  request_feedback();
+  if (!wait_for_feedback_after(previous_count, deadline)) return std::nullopt;
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return state_;
+}
+
+bool MotorHandle::wait_for_feedback_after(
+    uint64_t previous_count, std::chrono::steady_clock::time_point deadline) {
+  std::unique_lock<std::mutex> lock(state_mutex_);
+  return state_cv_.wait_until(
+      lock, deadline, [&] { return feedback_update_count_ > previous_count; });
 }
 
 void MotorHandle::write_register_raw(uint8_t rid, std::array<uint8_t, 4> data) {
@@ -424,10 +426,13 @@ void MotorHandle::process_feedback_frame(const CanFrame& frame) {
   state.t_mos = decoded.t_mos;
   state.t_rotor = decoded.t_rotor;
 
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  state_ = state;
-  state_time_ = std::chrono::steady_clock::now();
-  ++feedback_update_count_;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    state_ = state;
+    state_time_ = std::chrono::steady_clock::now();
+    ++feedback_update_count_;
+  }
+  state_cv_.notify_all();
 }
 
 std::optional<MotorState> MotorHandle::latest_state() const {
@@ -517,6 +522,37 @@ void Controller::poll_feedback_once() {
         break;
       }
     }
+  }
+}
+
+void Controller::request_feedback_all(std::chrono::milliseconds timeout) {
+  const auto motors = sorted_motors();
+  if (motors.empty()) return;
+
+  std::vector<uint64_t> previous_counts;
+  previous_counts.reserve(motors.size());
+  for (const auto& motor : motors) {
+    previous_counts.push_back(motor->feedback_stats().update_count);
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  for (const auto& motor : motors) {
+    motor->request_feedback();
+  }
+
+  std::vector<uint16_t> missing_ids;
+  for (std::size_t i = 0; i < motors.size(); ++i) {
+    if (!motors[i]->wait_for_feedback_after(previous_counts[i], deadline)) {
+      missing_ids.push_back(motors[i]->motor_id());
+    }
+  }
+
+  if (!missing_ids.empty()) {
+    std::string message = "fresh feedback timed out; missing motor IDs:";
+    for (const auto motor_id : missing_ids) {
+      message += " " + std::to_string(motor_id);
+    }
+    throw std::runtime_error(message);
   }
 }
 

@@ -44,6 +44,18 @@ uint8_t param_to_rid(uint16_t param_id) {
   return static_cast<uint8_t>(param_id);
 }
 
+void copy_motor_state(const damiao::MotorState& state, ::MotorState* out_state) {
+  out_state->has_value = 1;
+  out_state->can_id = state.can_id;
+  out_state->arbitration_id = state.arbitration_id;
+  out_state->status_code = state.status_code;
+  out_state->pos = state.pos;
+  out_state->vel = state.vel;
+  out_state->torq = state.torq;
+  out_state->t_mos = state.t_mos;
+  out_state->t_rotor = state.t_rotor;
+}
+
 }  // namespace
 
 struct MotorController {
@@ -65,11 +77,11 @@ const char* motor_last_error_message(void) {
 }
 
 const char* motor_abi_version(void) {
-  return "0.3.0-cpp";
+  return "0.4.0-cpp";
 }
 
 const char* motor_abi_capabilities_json(void) {
-  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.3.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","enable_all","disable_all","set_tx_gap_us"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
+  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.4.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","enable_all","disable_all","set_tx_gap_us"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
 }
 
 MotorController* motor_controller_new_socketcan(const char* channel) {
@@ -139,6 +151,15 @@ int32_t motor_controller_poll_feedback_once(MotorController* controller) {
   if (controller == nullptr) return fail("controller is null");
   std::lock_guard<std::mutex> lock(controller->mutex);
   return ffi_call([&] { controller->controller->poll_feedback_once(); });
+}
+
+int32_t motor_controller_request_feedback_all(MotorController* controller,
+                                              uint32_t timeout_ms) {
+  if (controller == nullptr) return fail("controller is null");
+  std::lock_guard<std::mutex> lock(controller->mutex);
+  return ffi_call([&] {
+    controller->controller->request_feedback_all(std::chrono::milliseconds(timeout_ms));
+  });
 }
 
 int32_t motor_controller_enable_all(MotorController* controller) {
@@ -280,6 +301,23 @@ int32_t motor_handle_request_feedback(MotorHandle* motor) {
   return ffi_call([&] { motor->motor->request_feedback(); });
 }
 
+int32_t motor_handle_request_fresh_state(MotorHandle* motor,
+                                         uint32_t timeout_ms,
+                                         MotorState* out_state) {
+  if (motor == nullptr || out_state == nullptr) return fail("motor or out_state is null");
+  std::lock_guard<std::mutex> lock(motor->mutex);
+  return ffi_call([&] {
+    std::memset(out_state, 0, sizeof(MotorState));
+    const auto state =
+        motor->motor->request_fresh_state(std::chrono::milliseconds(timeout_ms));
+    if (!state.has_value()) {
+      throw std::runtime_error("fresh feedback timed out for motor ID " +
+                               std::to_string(motor->motor->motor_id()));
+    }
+    copy_motor_state(*state, out_state);
+  });
+}
+
 int32_t motor_handle_set_can_timeout_ms(MotorHandle* motor, uint32_t timeout_ms) {
   if (motor == nullptr) return fail("motor is null");
   std::lock_guard<std::mutex> lock(motor->mutex);
@@ -329,15 +367,7 @@ int32_t motor_handle_get_state(MotorHandle* motor, MotorState* out_state) {
     if (!state.has_value()) {
       return;
     }
-    out_state->has_value = 1;
-    out_state->can_id = state->can_id;
-    out_state->arbitration_id = state->arbitration_id;
-    out_state->status_code = state->status_code;
-    out_state->pos = state->pos;
-    out_state->vel = state->vel;
-    out_state->torq = state->torq;
-    out_state->t_mos = state->t_mos;
-    out_state->t_rotor = state->t_rotor;
+    copy_motor_state(*state, out_state);
   });
 }
 

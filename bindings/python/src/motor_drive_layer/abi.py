@@ -130,6 +130,8 @@ class Abi:
         lib.motor_controller_free.argtypes = [c_void_p]
         lib.motor_controller_poll_feedback_once.argtypes = [c_void_p]
         lib.motor_controller_poll_feedback_once.restype = c_int32
+        lib.motor_controller_request_feedback_all.argtypes = [c_void_p, c_uint32]
+        lib.motor_controller_request_feedback_all.restype = c_int32
         lib.motor_controller_enable_all.argtypes = [c_void_p]
         lib.motor_controller_enable_all.restype = c_int32
         lib.motor_controller_disable_all.argtypes = [c_void_p]
@@ -169,6 +171,8 @@ class Abi:
         lib.motor_handle_store_parameters.restype = c_int32
         lib.motor_handle_request_feedback.argtypes = [c_void_p]
         lib.motor_handle_request_feedback.restype = c_int32
+        lib.motor_handle_request_fresh_state.argtypes = [c_void_p, c_uint32, POINTER(CState)]
+        lib.motor_handle_request_fresh_state.restype = c_int32
         lib.motor_handle_set_can_timeout_ms.argtypes = [c_void_p, c_uint32]
         lib.motor_handle_set_can_timeout_ms.restype = c_int32
 

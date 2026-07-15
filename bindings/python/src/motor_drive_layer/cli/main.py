@@ -100,6 +100,7 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--ensure-timeout-ms", type=int, default=1000)
     p.add_argument("--ensure-strict", type=int, default=0)
     p.add_argument("--print-state", type=int, default=1)
+    p.add_argument("--feedback-timeout-ms", type=int, default=50)
     p.add_argument("--verify-model", type=int, default=1)
     p.add_argument("--verify-timeout-ms", type=int, default=500)
     p.add_argument("--verify-tol", type=float, default=0.2)
@@ -267,13 +268,10 @@ def _run_command(args: argparse.Namespace) -> None:
                     motor.send_vel(args.vel)
                 elif args.mode == "force-pos":
                     motor.send_force_pos(args.pos, args.vlim, args.ratio)
-                motor.request_feedback()
-                try:
-                    ctrl.poll_feedback_once()
-                except Exception:
-                    pass
                 if args.print_state:
-                    print(f"#{i} state={motor.get_state()}")
+                    print(
+                        f"#{i} state={motor.request_fresh_state(args.feedback_timeout_ms)}"
+                    )
                 time.sleep(max(args.dt_ms, 0) / 1000.0)
         finally:
             motor.close()
@@ -291,15 +289,9 @@ def _scan_command(args: argparse.Namespace) -> None:
             with _open_controller(scan_args) as ctrl:
                 motor = _add_motor(ctrl, scan_args)
                 try:
-                    motor.request_feedback()
-                    time.sleep(max(args.timeout_ms, 10) / 1000.0)
-                    ctrl.poll_feedback_once()
-                    state = motor.get_state()
-                    if state is not None:
-                        found += 1
-                        print(f"[hit] id=0x{mid:X} feedback_id={scan_args.feedback_id} state={state}")
-                    else:
-                        print(f"[.. ] id=0x{mid:X} no state")
+                    state = motor.request_fresh_state(max(args.timeout_ms, 10))
+                    found += 1
+                    print(f"[hit] id=0x{mid:X} feedback_id={scan_args.feedback_id} state={state}")
                 finally:
                     motor.close()
         except Exception as e:

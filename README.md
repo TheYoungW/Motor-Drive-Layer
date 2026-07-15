@@ -10,7 +10,7 @@ Motor-Drive-Layer is an open-source Damiao motor driver for C++ and Python. The 
 - Linux SocketCAN, SocketCAN-FD, Damiao serial bridge, and optional DM_Device SDK transports.
 - Damiao serial rates through 1,000,000 baud where supported by the host.
 - Background feedback reception and per-motor state cache.
-- Configurable multi-motor TX pacing; 120 us is the provided hardware example, not a compiled constant.
+- Multi-motor controllers default to a configurable 120 µs minimum interval between outgoing frames.
 - Register read/write helpers with acknowledgement and timeout handling.
 - C ABI shared library and Python 3.10+ bindings.
 
@@ -80,6 +80,41 @@ with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
 ```
 
 All values are supplied by the caller; the C++ driver does not assume these example IDs.
+
+## TX pacing
+
+A controller starts without an artificial TX delay while it has one motor. When a second motor
+is added, the runtime applies a minimum 120 µs interval between all outgoing frames. Configure a
+different value after adding the motors with `Controller.set_tx_gap_us()` in Python or
+`Controller::set_tx_gap()` in C++; zero disables the delay. Setting
+`MOTOR_DRIVE_LAYER_TX_GAP_US` before creating the controller overrides the automatic multi-motor
+default.
+
+`enable_all()` and `disable_all()` additionally wait 2 ms between motors by default. Set
+`MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS` before creating the controller to change that bulk-operation
+interval. These are host-side minimum submission intervals, not hard real-time guarantees for
+physical CAN bus timing.
+
+## Fresh feedback
+
+`Motor.request_feedback()` is asynchronous, `Motor.get_state()` reads the current cache, and
+`Controller.poll_feedback_once()` only drains frames that have already arrived. None of those
+methods waits for a newly requested frame. Use the synchronous helper when fresh data is required:
+
+```python
+state = motor.request_fresh_state(timeout_ms=50)
+```
+
+For multiple motors, request all feedback first and wait against one shared deadline:
+
+```python
+controller.request_feedback_all(timeout_ms=50)
+states = [motor.get_state() for motor in motors]
+```
+
+The batch call records each motor's feedback counter, sends every request with the configured TX
+pacing, and returns as soon as every counter advances. On timeout it raises `CallError` whose
+message lists the missing motor IDs; it does not apply a separate full timeout to every motor.
 
 ## Python examples
 

@@ -16,5 +16,7 @@ def test_api_surface_includes_binding_parity_metadata() -> None:
     assert surface["vendors"] == ["damiao"]
     assert "Controller.add_damiao_motor(motor_id, feedback_id, model)" in surface["bindings"]["controller_methods"]
     assert "Controller.set_tx_gap_us(gap_us)" in surface["bindings"]["controller_methods"]
+    assert "Controller.request_feedback_all(timeout_ms)" in surface["bindings"]["controller_methods"]
     assert "Motor.damiao_get_param_f32(param_id, timeout_ms)" in surface["bindings"]["motor_methods"]
     assert "Motor.get_feedback_stats()" in surface["bindings"]["motor_methods"]
+    assert "Motor.request_fresh_state(timeout_ms)" in surface["bindings"]["motor_methods"]

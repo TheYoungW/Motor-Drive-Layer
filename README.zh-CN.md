@@ -10,7 +10,7 @@ Motor-Drive-Layer 是面向达妙电机的开源 C++ / Python 驱动。原生 C+
 - Linux SocketCAN、SocketCAN-FD、达妙串口桥和可选 DM_Device SDK。
 - 主机支持时，达妙串口支持最高 1,000,000 波特率。
 - 后台反馈接收和每电机状态缓存。
-- 可配置的多电机发送节流；示例使用 120 us，但它不是 C++ 硬编码常量。
+- 多电机 Controller 默认在输出帧之间保持可配置的最小 120 µs 间隔。
 - 带 ACK、重试和超时的寄存器读写。
 - C ABI 动态库和 Python 3.10+ 接口。
 
@@ -80,6 +80,35 @@ with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
 ```
 
 这些值全部由调用者提供；C++ 不会假设示例 ID。
+
+## 发送间隔
+
+Controller 只有一台电机时，运行时不额外延迟发送。添加第二台电机后，运行时会在所有输出帧之间保持最小
+120 µs 间隔。添加完电机后，可以通过 Python 的 `Controller.set_tx_gap_us()` 或 C++ 的
+`Controller::set_tx_gap()` 修改该值；设为零可关闭延迟。在创建 Controller 前设置
+`MOTOR_DRIVE_LAYER_TX_GAP_US` 可覆盖自动的多电机默认值。
+
+`enable_all()` 和 `disable_all()` 还会默认在电机之间额外等待 2 ms。在创建 Controller 前设置
+`MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS` 可修改这个批量操作间隔。这些数值是主机侧的最小提交间隔，不是对 CAN 总线物理时序的硬实时保证。
+
+## 新鲜反馈
+
+`Motor.request_feedback()` 只异步发送请求，`Motor.get_state()` 只读取当前缓存，
+`Controller.poll_feedback_once()` 也只会排空已经到达的帧；这三个方法都不会等待刚请求的反馈。需要新数据时请使用同步接口：
+
+```python
+state = motor.request_fresh_state(timeout_ms=50)
+```
+
+多电机场景使用一个共享的截止时间请求全部反馈：
+
+```python
+controller.request_feedback_all(timeout_ms=50)
+states = [motor.get_state() for motor in motors]
+```
+
+批量接口会先记录每台电机的反馈计数，再按已配置的发送间隔发出全部请求。所有计数都增加后立即返回；超时时会抛出
+`CallError` 并在消息中列出缺失的电机 ID，不会对每台电机重复等待一个完整超时。
 
 ## Python 示例
 

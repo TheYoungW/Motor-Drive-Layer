@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "abi": {
     "metadata": [
@@ -16,6 +16,7 @@
       "motor_controller_new_dm_device",
       "motor_controller_free",
       "motor_controller_poll_feedback_once",
+      "motor_controller_request_feedback_all",
       "motor_controller_enable_all",
       "motor_controller_disable_all",
       "motor_controller_shutdown",
@@ -39,6 +40,7 @@
     ],
     "state_and_feedback": [
       "motor_handle_request_feedback",
+      "motor_handle_request_fresh_state",
       "motor_handle_get_state",
       "motor_handle_get_feedback_stats",
       "motor_handle_set_can_timeout_ms",
@@ -67,6 +69,7 @@
       "Controller.enable_all()",
       "Controller.disable_all()",
       "Controller.poll_feedback_once()",
+      "Controller.request_feedback_all(timeout_ms)",
       "Controller.set_tx_gap_us(gap_us)",
       "Controller.add_damiao_motor(motor_id, feedback_id, model)"
     ],
@@ -82,6 +85,7 @@
       "Motor.send_vel(vel)",
       "Motor.send_force_pos(pos, vlim, ratio)",
       "Motor.request_feedback()",
+      "Motor.request_fresh_state(timeout_ms)",
       "Motor.set_can_timeout_ms(timeout_ms)",
       "Motor.store_parameters()",
       "Motor.write_register_f32(rid, value)",

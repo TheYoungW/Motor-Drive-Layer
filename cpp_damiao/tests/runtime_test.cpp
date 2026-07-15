@@ -178,6 +178,14 @@ damiao::CanFrame feedback_frame(uint32_t arbitration_id,
   };
 }
 
+std::size_t feedback_request_count(const std::vector<damiao::CanFrame>& frames) {
+  std::size_t count = 0;
+  for (const auto& frame : frames) {
+    if (frame.id == 0x7FF && frame.data[2] == 0xCC) ++count;
+  }
+  return count;
+}
+
 }  // namespace
 
 int main() {
@@ -212,6 +220,83 @@ int main() {
   const auto empty_feedback_stats = motor2->feedback_stats();
   require(!empty_feedback_stats.has_feedback, "unmatched motor has no feedback timestamp");
   require(empty_feedback_stats.update_count == 0, "unmatched motor feedback count stays zero");
+
+  auto delayed_bus = std::make_shared<FakeBus>();
+  damiao::Controller delayed_controller(delayed_bus);
+  auto delayed_motor1 = delayed_controller.add_damiao_motor(0x01, 0x11, "4340P");
+  auto delayed_motor2 = delayed_controller.add_damiao_motor(0x02, 0x12, "4310");
+  std::thread batch_responder([&] {
+    for (int i = 0; i < 200; ++i) {
+      if (feedback_request_count(delayed_bus->sent_snapshot()) >= 2) break;
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    delayed_bus->push_rx(feedback_frame(0x11, 0x01, 0x01, 0.5f, 0.1f, 0.0f,
+                                        damiao::model_limits("4340P")));
+    std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    delayed_bus->push_rx(feedback_frame(0x12, 0x02, 0x01, -0.25f, 0.0f, 0.0f,
+                                        damiao::model_limits("4310")));
+  });
+  try {
+    delayed_controller.request_feedback_all(std::chrono::milliseconds(50));
+  } catch (...) {
+    batch_responder.join();
+    throw;
+  }
+  batch_responder.join();
+  require(delayed_motor1->feedback_stats().update_count == 1,
+          "batch feedback waits for delayed motor 1 response");
+  require(delayed_motor2->feedback_stats().update_count == 1,
+          "batch feedback waits for delayed motor 2 response");
+
+  std::thread single_responder([&] {
+    for (int i = 0; i < 200; ++i) {
+      if (feedback_request_count(delayed_bus->sent_snapshot()) >= 3) break;
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    delayed_bus->push_rx(feedback_frame(0x11, 0x01, 0x01, 0.75f, 0.0f, 0.0f,
+                                        damiao::model_limits("4340P")));
+  });
+  std::optional<damiao::MotorState> fresh_state;
+  try {
+    fresh_state = delayed_motor1->request_fresh_state(std::chrono::milliseconds(50));
+  } catch (...) {
+    single_responder.join();
+    throw;
+  }
+  single_responder.join();
+  require(fresh_state.has_value(), "single-motor fresh-state request waits for delayed response");
+  require_close(fresh_state->pos, 0.75f, 0.05f, "fresh-state position");
+  delayed_controller.close_bus();
+
+  auto timeout_bus = std::make_shared<FakeBus>();
+  damiao::Controller timeout_controller(timeout_bus);
+  timeout_controller.add_damiao_motor(0x01, 0x11, "4340P");
+  timeout_controller.add_damiao_motor(0x02, 0x12, "4310");
+  std::thread partial_responder([&] {
+    for (int i = 0; i < 200; ++i) {
+      if (feedback_request_count(timeout_bus->sent_snapshot()) >= 2) break;
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    timeout_bus->push_rx(feedback_frame(0x11, 0x01, 0x01, 0.0f, 0.0f, 0.0f,
+                                        damiao::model_limits("4340P")));
+  });
+  const auto timeout_started = std::chrono::steady_clock::now();
+  std::string timeout_message;
+  try {
+    timeout_controller.request_feedback_all(std::chrono::milliseconds(20));
+  } catch (const std::runtime_error& error) {
+    timeout_message = error.what();
+  }
+  partial_responder.join();
+  const auto batch_timeout_elapsed = std::chrono::steady_clock::now() - timeout_started;
+  require(timeout_message == "fresh feedback timed out; missing motor IDs: 2",
+          "batch timeout reports only the missing motor ID");
+  require(batch_timeout_elapsed < std::chrono::milliseconds(35),
+          "batch feedback uses one shared timeout instead of one timeout per motor");
+  timeout_controller.close_bus();
 
   bus->push_rx(feedback_frame(0x11, 0x01, 0x01, 1.3f, 0.2f, 0.1f,
                               damiao::model_limits("4340P")));

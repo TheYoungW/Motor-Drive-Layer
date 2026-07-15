@@ -20,6 +20,7 @@ def main() -> None:
     p.add_argument("--motor-id", default="0x01")
     p.add_argument("--feedback-id", default="0x11")
     p.add_argument("--can-timeout-ms", type=int, default=1000)
+    p.add_argument("--feedback-timeout-ms", type=int, default=50)
     p.add_argument("--set-zero", type=int, default=0, help="1 to set zero position")
     p.add_argument("--disable-at-end", type=int, default=1, help="1 to disable at end")
     args = p.parse_args()
@@ -50,15 +51,11 @@ def main() -> None:
                 print("set_zero_position done")
                 time.sleep(0.2)
 
-            m.request_feedback()
-            st = m.get_state()
-            if st is None:
-                print("state: no feedback yet")
-            else:
-                print(
-                    f"state pos={st.pos:+.3f} vel={st.vel:+.3f} torq={st.torq:+.3f} "
-                    f"status={st.status_code} t_mos={st.t_mos:.1f} t_rotor={st.t_rotor:.1f}"
-                )
+            st = m.request_fresh_state(args.feedback_timeout_ms)
+            print(
+                f"state pos={st.pos:+.3f} vel={st.vel:+.3f} torq={st.torq:+.3f} "
+                f"status={st.status_code} t_mos={st.t_mos:.1f} t_rotor={st.t_rotor:.1f}"
+            )
         finally:
             if args.disable_at_end:
                 m.disable()

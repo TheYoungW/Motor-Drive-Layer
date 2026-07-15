@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 from collections.abc import Sequence
 
-from motor_drive_layer import Controller
+from motor_drive_layer import CallError, Controller
 
 
 def _parse_id(text: str) -> int:
@@ -77,14 +76,14 @@ def run(argv: Sequence[str] | None = None) -> int:
                 motor.disable()
 
                 for attempt in range(1, args.attempts + 1):
-                    motor.request_feedback()
-                    if args.interval_ms:
-                        time.sleep(args.interval_ms / 1000.0)
-
-                    state = motor.get_state()
+                    try:
+                        state = motor.request_fresh_state(max(args.interval_ms, 1))
+                    except CallError as error:
+                        print(f"attempt={attempt} feedback=missing error={error}")
+                        continue
                     stats = motor.get_feedback_stats()
                     age_ms = stats.age_ns / 1_000_000.0
-                    if state is None or not stats.has_feedback:
+                    if not stats.has_feedback:
                         print(f"attempt={attempt} feedback=missing")
                         continue
                     if age_ms > args.max_age_ms:

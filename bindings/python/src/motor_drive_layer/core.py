@@ -19,6 +19,28 @@ def _ok(rc: int, what: str) -> None:
         raise CallError(f"{what} failed: {_err_text()}")
 
 
+def _timeout_u32(timeout_ms: int) -> int:
+    value = int(timeout_ms)
+    if value < 0 or value > 0xFFFFFFFF:
+        raise ValueError("timeout_ms must be in 0..=4294967295")
+    return value
+
+
+def _state_from_c(state: CState) -> MotorState | None:
+    if not state.has_value:
+        return None
+    return MotorState(
+        can_id=int(state.can_id),
+        arbitration_id=int(state.arbitration_id),
+        status_code=int(state.status_code),
+        pos=float(state.pos),
+        vel=float(state.vel),
+        torq=float(state.torq),
+        t_mos=float(state.t_mos),
+        t_rotor=float(state.t_rotor),
+    )
+
+
 class Controller:
     def __init__(self, channel: str = "can0") -> None:
         self._abi = get_abi()
@@ -87,6 +109,15 @@ class Controller:
         _ok(
             self._abi.lib.motor_controller_poll_feedback_once(self._require_open()),
             "poll_feedback_once",
+        )
+
+    def request_feedback_all(self, timeout_ms: int = 50) -> None:
+        """Request one fresh feedback frame from every motor or raise on timeout."""
+        _ok(
+            self._abi.lib.motor_controller_request_feedback_all(
+                self._require_open(), _timeout_u32(timeout_ms)
+            ),
+            "request_feedback_all",
         )
 
     def set_tx_gap_us(self, gap_us: int) -> None:
@@ -164,6 +195,20 @@ class Motor:
     def request_feedback(self) -> None:
         _ok(self._abi.lib.motor_handle_request_feedback(self._require_open()), "request_feedback")
 
+    def request_fresh_state(self, timeout_ms: int = 50) -> MotorState:
+        """Request feedback and wait for a newer state than the cached sample."""
+        state = CState()
+        _ok(
+            self._abi.lib.motor_handle_request_fresh_state(
+                self._require_open(), _timeout_u32(timeout_ms), ctypes.byref(state)
+            ),
+            "request_fresh_state",
+        )
+        result = _state_from_c(state)
+        if result is None:
+            raise CallError("request_fresh_state returned no state")
+        return result
+
     def set_can_timeout_ms(self, timeout_ms: int) -> None:
         _ok(self._abi.lib.motor_handle_set_can_timeout_ms(self._require_open(), timeout_ms), "set_can_timeout_ms")
 
@@ -225,18 +270,7 @@ class Motor:
     def get_state(self) -> MotorState | None:
         st = CState()
         _ok(self._abi.lib.motor_handle_get_state(self._require_open(), ctypes.byref(st)), "get_state")
-        if not st.has_value:
-            return None
-        return MotorState(
-            can_id=int(st.can_id),
-            arbitration_id=int(st.arbitration_id),
-            status_code=int(st.status_code),
-            pos=float(st.pos),
-            vel=float(st.vel),
-            torq=float(st.torq),
-            t_mos=float(st.t_mos),
-            t_rotor=float(st.t_rotor),
-        )
+        return _state_from_c(st)
 
     def get_feedback_stats(self) -> FeedbackStats:
         stats = CFeedbackStats()

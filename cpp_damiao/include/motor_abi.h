@@ -65,6 +65,7 @@ MotorController* motor_controller_new_dm_serial(const char* serial_port, uint32_
 MotorController* motor_controller_new_dm_device(const char* dm_device_type, const char* dm_channel);
 void motor_controller_free(MotorController* controller);
 int32_t motor_controller_poll_feedback_once(MotorController* controller);
+int32_t motor_controller_request_feedback_all(MotorController* controller, uint32_t timeout_ms);
 int32_t motor_controller_enable_all(MotorController* controller);
 int32_t motor_controller_disable_all(MotorController* controller);
 int32_t motor_controller_shutdown(MotorController* controller);
@@ -87,6 +88,8 @@ int32_t motor_handle_send_force_pos(MotorHandle* motor, float target_position, f
 
 int32_t motor_handle_store_parameters(MotorHandle* motor);
 int32_t motor_handle_request_feedback(MotorHandle* motor);
+int32_t motor_handle_request_fresh_state(MotorHandle* motor, uint32_t timeout_ms,
+                                         MotorState* out_state);
 int32_t motor_handle_set_can_timeout_ms(MotorHandle* motor, uint32_t timeout_ms);
 
 int32_t motor_handle_write_register_f32(MotorHandle* motor, uint8_t rid, float value);
