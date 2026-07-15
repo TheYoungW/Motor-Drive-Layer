@@ -66,6 +66,9 @@ def _candidate_lib_paths() -> list[Path]:
                 repo_root / "cpp_damiao" / "build" / "libmotor_abi.so",
                 repo_root / "cpp_damiao" / "build" / "libmotor_abi.dylib",
                 repo_root / "cpp_damiao" / "build" / "motor_abi.dll",
+                repo_root / "cpp_damiao" / "build" / "Release" / "libmotor_abi.so",
+                repo_root / "cpp_damiao" / "build" / "Release" / "libmotor_abi.dylib",
+                repo_root / "cpp_damiao" / "build" / "Release" / "motor_abi.dll",
             ]
         )
 
@@ -75,6 +78,9 @@ def _candidate_lib_paths() -> list[Path]:
             cwd / "cpp_damiao" / "build" / "libmotor_abi.so",
             cwd / "cpp_damiao" / "build" / "libmotor_abi.dylib",
             cwd / "cpp_damiao" / "build" / "motor_abi.dll",
+            cwd / "cpp_damiao" / "build" / "Release" / "libmotor_abi.so",
+            cwd / "cpp_damiao" / "build" / "Release" / "libmotor_abi.dylib",
+            cwd / "cpp_damiao" / "build" / "Release" / "motor_abi.dll",
         ]
     )
     return candidates

@@ -72,6 +72,11 @@ jobs:
         run: python -m pytest -q bindings/python/tests
 
       - name: Build platform wheel
+        if: matrix.family != 'macos'
+        run: python -m build --wheel bindings/python
+
+      - name: Build macOS platform wheel
+        if: matrix.family == 'macos'
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
           _PYTHON_HOST_PLATFORM: ${{ matrix.wheel_platform }}
