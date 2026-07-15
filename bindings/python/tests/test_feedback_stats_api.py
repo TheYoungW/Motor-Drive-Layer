@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import ctypes
 
+import pytest
+
+import motor_drive_layer.core as core_module
 from motor_drive_layer.abi import CFeedbackStats, CState
 from motor_drive_layer.core import Controller, Motor
+from motor_drive_layer.errors import CallError
 from motor_drive_layer.models import FeedbackStats, MotorState
 
 
@@ -12,6 +16,10 @@ class FakeLib:
         self.tx_gap_calls: list[tuple[int, int]] = []
         self.batch_feedback_calls: list[tuple[int, int]] = []
         self.fresh_state_calls: list[tuple[int, int]] = []
+        self.freed_motors: list[int] = []
+
+    def motor_handle_free(self, ptr: int) -> None:
+        self.freed_motors.append(ptr)
 
     def motor_controller_set_tx_gap_us(self, ptr: int, gap_us: int) -> int:
         self.tx_gap_calls.append((ptr, gap_us))
@@ -98,3 +106,35 @@ def test_motor_requests_and_returns_a_fresh_state() -> None:
         t_mos=31.0,
         t_rotor=29.0,
     )
+
+
+def test_motor_rejects_operations_after_parent_controller_closes_but_can_free() -> None:
+    controller = Controller.__new__(Controller)
+    controller._ptr = None
+    motor = Motor.__new__(Motor)
+    motor._abi = FakeAbi()
+    motor._ptr = 456
+    motor._controller = controller
+
+    with pytest.raises(CallError, match="motor controller is closed"):
+        motor.get_feedback_stats()
+
+    motor.close()
+
+    assert motor.closed
+    assert motor._abi.lib.freed_motors == [456]
+
+
+def test_motor_keeps_its_parent_controller_and_supports_context_cleanup(monkeypatch) -> None:
+    fake_abi = FakeAbi()
+    monkeypatch.setattr(core_module, "get_abi", lambda: fake_abi)
+    controller = Controller.__new__(Controller)
+    controller._ptr = 123
+
+    with Motor(456, controller) as motor:
+        assert motor._controller is controller
+        assert not motor.closed
+        assert not controller.closed
+
+    assert motor.closed
+    assert fake_abi.lib.freed_motors == [456]

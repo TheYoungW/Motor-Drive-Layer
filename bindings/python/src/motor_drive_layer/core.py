@@ -42,6 +42,8 @@ def _state_from_c(state: CState) -> MotorState | None:
 
 
 class Controller:
+    """Own one native bus and the motor handles added to that bus."""
+
     def __init__(self, channel: str = "can0") -> None:
         self._abi = get_abi()
         self._ptr = self._abi.lib.motor_controller_new_socketcan(channel.encode())
@@ -87,6 +89,10 @@ class Controller:
         if self._ptr:
             self._abi.lib.motor_controller_free(self._ptr)
             self._ptr = None
+
+    @property
+    def closed(self) -> bool:
+        return not bool(self._ptr)
 
     def _require_open(self) -> int:
         if not self._ptr:
@@ -135,7 +141,7 @@ class Controller:
         )
         if not m:
             raise CallError(f"add_damiao_motor failed: {_err_text()}")
-        return Motor(m)
+        return Motor(m, self)
 
     def __enter__(self) -> "Controller":
         return self
@@ -148,19 +154,38 @@ class Controller:
 
 
 class Motor:
-    def __init__(self, ptr: int) -> None:
+    """A native motor handle whose parent Controller must remain open."""
+
+    def __init__(self, ptr: int, controller: Controller | None = None) -> None:
         self._abi = get_abi()
         self._ptr = ptr
+        self._controller = controller
 
     def close(self) -> None:
         if self._ptr:
-            self._abi.lib.motor_handle_free(self._require_open())
+            # Freeing the ABI wrapper remains valid after the parent controller
+            # closes; operational methods are rejected by _require_open().
+            self._abi.lib.motor_handle_free(self._ptr)
             self._ptr = None
+
+    @property
+    def closed(self) -> bool:
+        return not bool(self._ptr)
 
     def _require_open(self) -> int:
         if not self._ptr:
             raise CallError("motor handle is closed")
+        controller = getattr(self, "_controller", None)
+        if controller is not None and controller.closed:
+            raise CallError("motor controller is closed")
         return self._ptr
+
+    def __enter__(self) -> "Motor":
+        self._require_open()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
 
     def enable(self) -> None:
         _ok(self._abi.lib.motor_handle_enable(self._require_open()), "enable")

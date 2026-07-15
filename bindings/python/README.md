@@ -11,6 +11,22 @@ request with the configured TX pacing and waits against one shared deadline; a t
 missing motor IDs. The lower-level `request_feedback()`, `get_state()`, and
 `poll_feedback_once()` methods remain non-blocking asynchronous/cache operations.
 
+The wheel includes `py.typed` and `.pyi` declarations for editor completion and static type
+checking. The main public APIs are:
+
+- `Controller(...)`, `from_socketcanfd(...)`, `from_dm_serial(...)`, and `from_dm_device(...)`.
+- `Controller.add_damiao_motor(...)`, `enable_all()`, `disable_all()`,
+  `request_feedback_all()`, `set_tx_gap_us()`, `shutdown()`, and `close_bus()`.
+- `Motor.enable()`, `disable()`, `ensure_mode()`, all four control-mode send methods,
+  fresh/cached feedback methods, typed register access, parameter aliases, and
+  `store_parameters()`.
+- `MotorState`, `FeedbackStats`, `Mode`, register metadata/constants, and SDK exception classes.
+
+`Motor` is a logical child of its creating `Controller`. After the parent closes, motor operations
+raise `CallError`; `motor.close()` can still release the handle. Both classes support context
+managers. Leaving a Motor context only frees its handle, while leaving a Controller context attempts
+to disable all motors before closing the bus.
+
 See the [project README](https://github.com/TheYoungW/Motor-Drive-Layer)
 for build instructions, architecture, configuration, safety guidance, and examples.
 

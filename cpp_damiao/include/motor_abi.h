@@ -28,6 +28,23 @@ typedef struct MotorFeedbackStats {
   uint64_t age_ns;
 } MotorFeedbackStats;
 
+enum {
+  MOTOR_REGISTER_ACCESS_READ_ONLY = 0,
+  MOTOR_REGISTER_ACCESS_READ_WRITE = 1,
+};
+
+enum {
+  MOTOR_REGISTER_DATA_FLOAT = 0,
+  MOTOR_REGISTER_DATA_UINT32 = 1,
+};
+
+typedef struct MotorRegisterInfo {
+  int32_t has_value;
+  uint8_t rid;
+  uint8_t access;
+  uint8_t data_type;
+} MotorRegisterInfo;
+
 // Unified units across all vendors:
 // - position: rad
 // - velocity: rad/s
@@ -51,6 +68,10 @@ const char* motor_last_error_message(void);
 const char* motor_abi_version(void);
 const char* motor_abi_capabilities_json(void);
 
+// Returns metadata from the C++ Damiao register table. Unknown register IDs
+// succeed with out_info->has_value set to zero.
+int32_t motor_damiao_register_info(uint8_t rid, MotorRegisterInfo* out_info);
+
 // Thread-safety:
 // - Calls using the same MotorController or MotorHandle are serialized inside
 //   the ABI.
@@ -58,6 +79,9 @@ const char* motor_abi_capabilities_json(void);
 //   motor_controller_free or motor_handle_free concurrently with any other
 //   operation using the same pointer, and do not use a pointer after free.
 // - Different handles may be used from different threads.
+// - MotorHandle values are logical children of the MotorController that
+//   created them. Do not perform motor operations after freeing the parent
+//   controller. The handle itself may still be passed to motor_handle_free.
 
 MotorController* motor_controller_new_socketcan(const char* channel);
 MotorController* motor_controller_new_socketcanfd(const char* channel);

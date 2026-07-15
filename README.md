@@ -116,6 +116,72 @@ The batch call records each motor's feedback counter, sends every request with t
 pacing, and returns as soon as every counter advances. On timeout it raises `CallError` whose
 message lists the missing motor IDs; it does not apply a separate full timeout to every motor.
 
+## Python API reference
+
+The wheel includes `py.typed` and complete `.pyi` declarations, so VS Code/Pylance, Pyright, and
+Mypy can expose signatures, return types, and completion. Import the public objects from the
+top-level `motor_drive_layer` package.
+
+### Controller
+
+| API | Behavior |
+| --- | --- |
+| `Controller(channel="can0")` | Open classic Linux SocketCAN. |
+| `Controller.from_socketcanfd(channel="can0")` | Open Linux SocketCAN-FD. |
+| `Controller.from_dm_serial(serial_port="/dev/ttyACM0", baud=1_000_000)` | Open a Damiao serial bridge. |
+| `Controller.from_dm_device(dm_device_type="usb2canfd-dual", dm_channel="0")` | Open the optional DM_Device transport. |
+| `add_damiao_motor(motor_id, feedback_id, model)` | Register a motor on the bus and return `Motor`. |
+| `enable_all()` / `disable_all()` | Enable or disable every registered motor; these send hardware commands. |
+| `request_feedback_all(timeout_ms=50)` | Request and wait for one fresh frame per motor against one shared timeout. |
+| `poll_feedback_once()` | Non-blocking drain of frames that have already arrived. |
+| `set_tx_gap_us(gap_us)` | Configure the minimum host-side interval between outgoing frames. |
+| `shutdown()` | Attempt to disable every motor, stop polling, and close the bus. |
+| `close_bus()` | Stop polling and close the bus without sending disable commands. |
+| `close()` / `closed` | Free the native Controller handle; `close()` does not actively send disable commands. |
+
+### Motor
+
+| API | Behavior |
+| --- | --- |
+| `enable()` / `disable()` | Enable or disable this motor. |
+| `clear_error()` | Send the clear-error command. |
+| `set_zero_position()` | Set zero while the SDK believes the motor is disabled. |
+| `ensure_mode(mode, timeout_ms=1000)` | Check, switch if needed, and verify the control mode. |
+| `send_mit(pos, vel, kp, kd, tau)` | Send an MIT command. |
+| `send_pos_vel(pos, vlim)` | Send a position/velocity command. |
+| `send_vel(vel)` | Send a velocity command. |
+| `send_force_pos(pos, vlim, ratio)` | Send a force/position command. |
+| `request_feedback()` | Send a feedback request without waiting. |
+| `request_fresh_state(timeout_ms=50)` | Request and wait for a fresh state from this motor. |
+| `get_state()` | Read the C++ cache, returning `None` before the first feedback. |
+| `get_feedback_stats()` | Return availability, update count, and cached-sample age. |
+| `set_can_timeout_ms(timeout_ms)` | Write the Damiao CAN-timeout register. |
+| `get_register_f32/u32(rid, timeout_ms=1000)` | Read a register using its declared type. |
+| `write_register_f32/u32(rid, value)` | Write a register; the canonical C++ table rejects read-only or wrong-type operations. |
+| `damiao_get_param_f32/u32(...)` / `damiao_write_param_f32/u32(...)` | Compatibility aliases using parameter-ID terminology. |
+| `store_parameters()` | Persist parameters to the motor and potentially disable it first. |
+| `close()` / `closed` | Free the native Motor handle without sending a disable command. |
+
+Position, velocity, and torque use rad, rad/s, and Nm. `MotorState`, `FeedbackStats`, `Mode`,
+`CallError`, and the register constants are also exported at package level.
+
+### Lifetime
+
+A `Motor` is a logical child of the `Controller` that created it and keeps that Python Controller
+alive. Motor operations raise `CallError("motor controller is closed")` after the parent closes;
+`motor.close()` remains available to free the handle. Prefer nested context managers:
+
+```python
+from motor_drive_layer import Controller
+
+with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
+    with controller.add_damiao_motor(0x01, 0x201, "4340P") as motor:
+        state = motor.request_fresh_state(timeout_ms=50)
+```
+
+Leaving the Motor context only frees its handle and does not disable hardware. Leaving the
+Controller context calls `shutdown()`, which attempts to disable every motor before closing the bus.
+
 ## Python examples
 
 The focused examples in `bindings/python/examples/` cover the common workflows:

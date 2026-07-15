@@ -9,12 +9,18 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include "damiao/protocol.hpp"
 #include "damiao/runtime.hpp"
 
 namespace {
+
+static_assert(!std::is_copy_constructible_v<damiao::MotorHandle>,
+              "MotorHandle owns synchronized runtime state and must not be copied");
+static_assert(!std::is_move_constructible_v<damiao::MotorHandle>,
+              "MotorHandle addresses must remain stable while registered");
 
 class FakeBus final : public damiao::CanBus {
  public:

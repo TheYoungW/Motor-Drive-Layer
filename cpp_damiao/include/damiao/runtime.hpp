@@ -40,6 +40,11 @@ class MotorHandle {
   MotorHandle(std::shared_ptr<CanBus> bus, uint16_t motor_id, uint16_t feedback_id,
               std::string model);
 
+  MotorHandle(const MotorHandle&) = delete;
+  MotorHandle& operator=(const MotorHandle&) = delete;
+  MotorHandle(MotorHandle&&) = delete;
+  MotorHandle& operator=(MotorHandle&&) = delete;
+
   uint16_t motor_id() const { return motor_id_; }
   uint16_t feedback_id() const { return feedback_id_; }
   const std::string& model() const { return model_; }
@@ -117,7 +122,6 @@ class Controller {
   void set_tx_gap(std::chrono::microseconds gap);
 
  private:
-  void send_with_pacing(const CanFrame& frame);
   void start_polling();
   void stop_polling();
   void polling_loop();

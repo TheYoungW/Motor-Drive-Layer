@@ -8,6 +8,7 @@
 
 #include "damiao/dm_device_bus.hpp"
 #include "damiao/dm_serial_bus.hpp"
+#include "damiao/registers.hpp"
 #include "damiao/runtime.hpp"
 #include "damiao/socketcan_bus.hpp"
 
@@ -77,11 +78,28 @@ const char* motor_last_error_message(void) {
 }
 
 const char* motor_abi_version(void) {
-  return "0.4.0-cpp";
+  return "0.5.0-cpp";
 }
 
 const char* motor_abi_capabilities_json(void) {
-  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.4.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","enable_all","disable_all","set_tx_gap_us"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
+  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.5.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"register_metadata":true,"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","enable_all","disable_all","set_tx_gap_us"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
+}
+
+int32_t motor_damiao_register_info(uint8_t rid, MotorRegisterInfo* out_info) {
+  if (out_info == nullptr) return fail("out_info is null");
+  return ffi_call([&] {
+    std::memset(out_info, 0, sizeof(MotorRegisterInfo));
+    const auto info = damiao::register_info(rid);
+    if (!info.has_value()) return;
+    out_info->has_value = 1;
+    out_info->rid = info->rid;
+    out_info->access = info->access == damiao::RegisterAccess::ReadWrite
+                           ? MOTOR_REGISTER_ACCESS_READ_WRITE
+                           : MOTOR_REGISTER_ACCESS_READ_ONLY;
+    out_info->data_type = info->data_type == damiao::RegisterDataType::UInt32
+                              ? MOTOR_REGISTER_DATA_UINT32
+                              : MOTOR_REGISTER_DATA_FLOAT;
+  });
 }
 
 MotorController* motor_controller_new_socketcan(const char* channel) {

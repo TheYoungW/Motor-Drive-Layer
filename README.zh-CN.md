@@ -110,6 +110,66 @@ states = [motor.get_state() for motor in motors]
 批量接口会先记录每台电机的反馈计数，再按已配置的发送间隔发出全部请求。所有计数都增加后立即返回；超时时会抛出
 `CallError` 并在消息中列出缺失的电机 ID，不会对每台电机重复等待一个完整超时。
 
+## Python API 参考
+
+安装包包含 `py.typed` 和完整 `.pyi` 声明；VS Code/Pylance、Pyright 和 Mypy 可以直接显示参数、返回值和自动补全。公开对象应从 `motor_drive_layer` 顶层导入。
+
+### Controller
+
+| 接口 | 作用 |
+| --- | --- |
+| `Controller(channel="can0")` | 打开经典 Linux SocketCAN。 |
+| `Controller.from_socketcanfd(channel="can0")` | 打开 Linux SocketCAN-FD。 |
+| `Controller.from_dm_serial(serial_port="/dev/ttyACM0", baud=1_000_000)` | 打开达妙串口桥。 |
+| `Controller.from_dm_device(dm_device_type="usb2canfd-dual", dm_channel="0")` | 打开可选 DM_Device 传输。 |
+| `add_damiao_motor(motor_id, feedback_id, model)` | 在总线上注册电机并返回 `Motor`。 |
+| `enable_all()` / `disable_all()` | 依次使能或失能所有已注册电机；会发送硬件命令。 |
+| `request_feedback_all(timeout_ms=50)` | 请求并等待所有电机各收到一帧新反馈，共享一个总超时。 |
+| `poll_feedback_once()` | 非阻塞排空当前已经到达的帧。 |
+| `set_tx_gap_us(gap_us)` | 设置相邻输出帧的最小主机提交间隔。 |
+| `shutdown()` | 先尝试失能全部电机，再停止接收线程并关闭总线。 |
+| `close_bus()` | 不发送失能命令，直接停止接收并关闭总线。 |
+| `close()` / `closed` | 释放原生 Controller 句柄；`close()` 不主动发送失能命令。 |
+
+### Motor
+
+| 接口 | 作用 |
+| --- | --- |
+| `enable()` / `disable()` | 使能或失能这一台电机。 |
+| `clear_error()` | 发送清除错误命令。 |
+| `set_zero_position()` | 在 SDK 认为电机已失能时设置零位。 |
+| `ensure_mode(mode, timeout_ms=1000)` | 检查并在需要时切换控制模式，然后验证结果。 |
+| `send_mit(pos, vel, kp, kd, tau)` | 发送 MIT 控制命令。 |
+| `send_pos_vel(pos, vlim)` | 发送位置/速度命令。 |
+| `send_vel(vel)` | 发送速度命令。 |
+| `send_force_pos(pos, vlim, ratio)` | 发送力位混合命令。 |
+| `request_feedback()` | 只发送反馈请求，不等待返回。 |
+| `request_fresh_state(timeout_ms=50)` | 请求并等待这一台电机的新反馈，返回 `MotorState`。 |
+| `get_state()` | 读取 C++ 当前缓存；没有反馈时返回 `None`。 |
+| `get_feedback_stats()` | 返回是否收到过反馈、更新计数和缓存年龄。 |
+| `set_can_timeout_ms(timeout_ms)` | 写入达妙 CAN 超时寄存器。 |
+| `get_register_f32/u32(rid, timeout_ms=1000)` | 按声明的数据类型读取寄存器。 |
+| `write_register_f32/u32(rid, value)` | 写寄存器；C++ 权限表会拒绝只读或类型错误的操作。 |
+| `damiao_get_param_f32/u32(...)` / `damiao_write_param_f32/u32(...)` | 兼容参数 ID 命名的寄存器访问接口。 |
+| `store_parameters()` | 将参数持久保存到电机，可能先发送失能命令。 |
+| `close()` / `closed` | 释放原生 Motor 句柄；不发送电机失能命令。 |
+
+位置、速度和力矩统一使用 rad、rad/s 和 Nm。`MotorState`、`FeedbackStats`、`Mode`、`CallError` 以及寄存器常量也从包顶层公开。
+
+### 生命周期
+
+`Motor` 是创建它的 `Controller` 的逻辑子对象，并在 Python 中持有父 Controller 引用。Controller 关闭后，Motor 的硬件操作会抛出 `CallError("motor controller is closed")`；此时仍可调用 `motor.close()` 释放句柄。推荐使用嵌套上下文管理器：
+
+```python
+from motor_drive_layer import Controller
+
+with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
+    with controller.add_damiao_motor(0x01, 0x201, "4340P") as motor:
+        state = motor.request_fresh_state(timeout_ms=50)
+```
+
+退出 Motor 上下文只释放句柄，不会失能电机；退出 Controller 上下文会调用 `shutdown()`，尝试失能全部电机后关闭总线。
+
 ## Python 示例
 
 `bindings/python/examples/` 中保留了六个用途明确的示例：

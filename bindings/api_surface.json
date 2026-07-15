@@ -1,13 +1,14 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "abi": {
     "metadata": [
       "motor_last_error_message",
       "motor_abi_version",
-      "motor_abi_capabilities_json"
+      "motor_abi_capabilities_json",
+      "motor_damiao_register_info"
     ],
     "controller": [
       "motor_controller_new_socketcan",
@@ -64,6 +65,7 @@
       "Controller.from_dm_serial(serial_port, baud)",
       "Controller.from_dm_device(dm_device_type, dm_channel)",
       "Controller.close()",
+      "Controller.closed",
       "Controller.shutdown()",
       "Controller.close_bus()",
       "Controller.enable_all()",
@@ -75,6 +77,7 @@
     ],
     "motor_methods": [
       "Motor.close()",
+      "Motor.closed",
       "Motor.enable()",
       "Motor.disable()",
       "Motor.clear_error()",

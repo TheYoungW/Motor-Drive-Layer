@@ -6,7 +6,7 @@ import sys
 from ctypes import POINTER, Structure, c_char_p, c_float, c_int32, c_uint8, c_uint16, c_uint32, c_uint64, c_void_p
 from pathlib import Path
 
-from .errors import AbiLoadError
+from .errors import AbiLoadError, CallError
 
 
 class CState(Structure):
@@ -28,6 +28,15 @@ class CFeedbackStats(Structure):
         ("has_feedback", c_int32),
         ("update_count", c_uint64),
         ("age_ns", c_uint64),
+    ]
+
+
+class CRegisterInfo(Structure):
+    _fields_ = [
+        ("has_value", c_int32),
+        ("rid", c_uint8),
+        ("access", c_uint8),
+        ("data_type", c_uint8),
     ]
 
 
@@ -118,6 +127,8 @@ class Abi:
         lib.motor_last_error_message.restype = c_char_p
         lib.motor_abi_version.restype = c_char_p
         lib.motor_abi_capabilities_json.restype = c_char_p
+        lib.motor_damiao_register_info.argtypes = [c_uint8, POINTER(CRegisterInfo)]
+        lib.motor_damiao_register_info.restype = c_int32
 
         lib.motor_controller_new_socketcan.argtypes = [c_char_p]
         lib.motor_controller_new_socketcan.restype = c_void_p
@@ -218,3 +229,22 @@ def abi_version() -> str:
 def abi_capabilities() -> dict:
     msg = get_abi().lib.motor_abi_capabilities_json()
     return json.loads(msg.decode() if msg else "{}")
+
+
+def damiao_register_info(rid: int) -> tuple[str, str] | None:
+    """Return (access, data_type) from the native canonical register table."""
+    value = int(rid)
+    if value < 0 or value > 0xFF:
+        return None
+    info = CRegisterInfo()
+    rc = get_abi().lib.motor_damiao_register_info(value, ctypes.byref(info))
+    if rc != 0:
+        msg = get_abi().lib.motor_last_error_message()
+        raise CallError(msg.decode() if msg else "motor_damiao_register_info failed")
+    if not info.has_value:
+        return None
+    access = {0: "RO", 1: "RW"}.get(int(info.access))
+    data_type = {0: "f32", 1: "u32"}.get(int(info.data_type))
+    if access is None or data_type is None:
+        raise CallError("motor_damiao_register_info returned invalid metadata")
+    return access, data_type

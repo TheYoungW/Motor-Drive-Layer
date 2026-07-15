@@ -18,7 +18,7 @@ void require(bool condition, const char* message) {
 int main() {
   const char* version = motor_abi_version();
   require(version != nullptr, "version pointer");
-  require(std::string(version) == "0.4.0-cpp", "ABI minor version reflects additive API");
+  require(std::string(version) == "0.5.0-cpp", "ABI minor version reflects additive API");
 
   const std::string capabilities = motor_abi_capabilities_json();
   require(capabilities.find("\"vendors\":[\"damiao\"]") != std::string::npos ||
@@ -26,6 +26,21 @@ int main() {
           "capabilities include damiao only");
   require(capabilities.find("socketcan") != std::string::npos, "capabilities include socketcan");
   require(capabilities.find("dm-device") != std::string::npos, "capabilities include dm-device");
+  require(capabilities.find("register_metadata") != std::string::npos,
+          "capabilities include canonical register metadata");
+
+  MotorRegisterInfo register_info{};
+  require(motor_damiao_register_info(11, &register_info) == 0,
+          "register metadata query succeeds");
+  require(register_info.has_value == 1 &&
+              register_info.access == MOTOR_REGISTER_ACCESS_READ_ONLY &&
+              register_info.data_type == MOTOR_REGISTER_DATA_FLOAT,
+          "register 11 metadata comes from the C++ table");
+  require(motor_damiao_register_info(37, &register_info) == 0 &&
+              register_info.has_value == 0,
+          "unknown register metadata is represented explicitly");
+  require(motor_damiao_register_info(0, nullptr) != 0,
+          "register metadata rejects a null output pointer");
 
   require(motor_controller_enable_all(nullptr) != 0, "null controller fails");
   require(std::string(motor_last_error_message()).find("controller is null") !=
