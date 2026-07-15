@@ -14,14 +14,22 @@ target_include_directories(
     $<INSTALL_INTERFACE:include>
 )
 
-add_library(
-  damiao_runtime STATIC
+set(
+  DAMIAO_RUNTIME_SOURCES
   src/runtime.cpp
-  src/dm_serial_bus_posix.cpp
+  src/dm_serial_codec.cpp
   src/socketcan_bus.cpp
   src/dm_device_bus.cpp
   src/dm_device_shim.cpp
 )
+
+if(WIN32)
+  list(APPEND DAMIAO_RUNTIME_SOURCES src/dm_serial_bus_windows.cpp)
+else()
+  list(APPEND DAMIAO_RUNTIME_SOURCES src/dm_serial_bus_posix.cpp)
+endif()
+
+add_library(damiao_runtime STATIC ${DAMIAO_RUNTIME_SOURCES})
 add_library(damiao::runtime ALIAS damiao_runtime)
 target_compile_features(damiao_runtime PUBLIC cxx_std_17)
 target_link_libraries(damiao_runtime PUBLIC damiao::cpp ${CMAKE_DL_LIBS})
@@ -32,6 +40,7 @@ add_library(motor_abi SHARED src/motor_abi.cpp)
 target_compile_features(motor_abi PRIVATE cxx_std_17)
 target_include_directories(motor_abi PRIVATE include)
 target_link_libraries(motor_abi PRIVATE damiao::runtime)
+set_target_properties(motor_abi PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 if(BUILD_TESTING)
   add_executable(damiao_protocol_test tests/protocol_test.cpp)

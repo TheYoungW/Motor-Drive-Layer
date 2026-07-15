@@ -7,7 +7,7 @@ Motor-Drive-Layer 是面向达妙电机的开源 C++ / Python 驱动。原生 C+
 ## 功能
 
 - 达妙 MIT、位置速度、速度和力位混合控制模式。
-- Linux SocketCAN、SocketCAN-FD、达妙串口桥和可选 DM_Device SDK。
+- Linux SocketCAN、SocketCAN-FD、跨平台达妙串口桥和可选 DM_Device SDK。
 - 主机支持时，达妙串口支持最高 1,000,000 波特率。
 - 后台反馈接收和每电机状态缓存。
 - 多电机 Controller 默认在输出帧之间保持可配置的最小 120 µs 间隔。
@@ -26,7 +26,7 @@ Python motor-drive-layer API ── ctypes 调用 ── C ABI
                                       ▼
                                C++ 达妙运行时
                                       │
-                    POSIX 串口 / SocketCAN / DM_Device
+                POSIX 或 Windows 串口 / SocketCAN / DM_Device
                                       │
                                       ▼
                                 适配器与电机
@@ -40,7 +40,7 @@ C++ 不保存机器人专用的串口、关节名、电机 ID、反馈 ID 或控
 
 ## 构建 C++
 
-需要 C++17 编译器、CMake 3.16+ 和 Linux 开发环境：
+需要 C++17 编译器和 CMake 3.16+；SocketCAN 还需要 Linux 开发头文件：
 
 ```bash
 cmake -S cpp_damiao -B cpp_damiao/build
@@ -48,7 +48,16 @@ cmake --build cpp_damiao/build -j
 ctest --test-dir cpp_damiao/build --output-on-failure
 ```
 
-构建结果包含 `cpp_damiao/build/libmotor_abi.so` 和静态 C++ 运行库。
+构建结果包含 Linux 的 `libmotor_abi.so`、macOS 的 `libmotor_abi.dylib` 或 Windows 的
+`motor_abi.dll`，以及静态 C++ 运行库。
+
+## 支持平台
+
+PyPI wheel 通过 GitHub Actions 为 Linux x86_64/ARM64、macOS Intel/Apple Silicon 和 Windows
+x64 构建。达妙串口传输支持以上所有平台；SocketCAN 和 SocketCAN-FD 仅支持 Linux。可选的
+`dm-device` 直连方式还需要对应平台的厂商运行库和 USB 驱动。
+
+常见串口名称为 Linux 的 `/dev/ttyACM0`、macOS 的 `/dev/cu.usbmodem*` 和 Windows 的 `COM3`。
 
 ## 从源码安装 Python
 

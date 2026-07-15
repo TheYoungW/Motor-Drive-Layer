@@ -27,7 +27,11 @@ class DmSerialCodec {
 class DmSerialBus final : public CanBus {
  public:
   static std::shared_ptr<DmSerialBus> open(const std::string& port, uint32_t baud);
+#if defined(_WIN32)
+  DmSerialBus(void* handle, std::string port);
+#else
   DmSerialBus(int fd, std::string port);
+#endif
   ~DmSerialBus() override;
 
   DmSerialBus(const DmSerialBus&) = delete;
@@ -38,7 +42,11 @@ class DmSerialBus final : public CanBus {
   void shutdown() override;
 
  private:
+#if defined(_WIN32)
+  void* handle_;
+#else
   int fd_;
+#endif
   std::string port_;
   DmSerialCodec codec_;
   std::mutex mutex_;

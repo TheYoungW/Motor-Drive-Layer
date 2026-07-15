@@ -1,0 +1,122 @@
+name: Wheels
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-wheel:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            runner: ubuntu-22.04
+            family: linux
+            deployment_target: ""
+          - name: linux-aarch64
+            runner: ubuntu-22.04-arm
+            family: linux
+            deployment_target: ""
+          - name: macos-x86_64
+            runner: macos-15-intel
+            family: macos
+            deployment_target: "11.0"
+          - name: macos-arm64
+            runner: macos-15
+            family: macos
+            deployment_target: "11.0"
+          - name: windows-amd64
+            runner: windows-2025
+            family: windows
+            deployment_target: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: python -m pip install --upgrade build pytest
+
+      - name: Configure C++ ABI
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+        run: cmake -S cpp_damiao -B cpp_damiao/build -DCMAKE_BUILD_TYPE=Release ${{ matrix.family == 'macos' && '-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' || '' }}
+
+      - name: Build C++ ABI
+        run: cmake --build cpp_damiao/build --config Release
+
+      - name: Run C++ tests
+        run: ctest --test-dir cpp_damiao/build --build-config Release --output-on-failure
+
+      - name: Run Python tests
+        env:
+          PYTHONPATH: bindings/python/src
+        run: python -m pytest -q bindings/python/tests
+
+      - name: Build platform wheel
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+        run: python -m build --wheel bindings/python
+
+      - name: Repair Linux wheel
+        if: matrix.family == 'linux'
+        run: |
+          python -m pip install --upgrade auditwheel patchelf
+          python -m auditwheel repair bindings/python/dist/*.whl --wheel-dir wheelhouse
+
+      - name: Repair macOS wheel
+        if: matrix.family == 'macos'
+        run: |
+          python -m pip install --upgrade delocate
+          delocate-wheel --wheel-dir wheelhouse --verbose bindings/python/dist/*.whl
+
+      - name: Collect Windows wheel
+        if: matrix.family == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force wheelhouse
+          Copy-Item bindings/python/dist/*.whl wheelhouse/
+
+      - name: Install and verify wheel
+        run: |
+          python -c "from pathlib import Path; import subprocess, sys; wheel = next(Path('wheelhouse').glob('*.whl')); subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-deps', str(wheel)])"
+          python -c "from importlib.metadata import version; import motor_drive_layer as mdl; assert mdl.get_version() == version('motor-drive-layer'); assert mdl.abi_version() == '0.5.0-cpp'; assert mdl.abi_capabilities()['features']['register_metadata'] is True"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: wheel-${{ matrix.name }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-wheel
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v6
+        with:
+          pattern: wheel-*
+          path: wheels
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" wheels/*.whl --repo "${GITHUB_REPOSITORY}" --generate-notes --title "motor-drive-layer ${GITHUB_REF_NAME#v}"

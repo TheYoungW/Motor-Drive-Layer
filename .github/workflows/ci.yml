@@ -58,9 +58,12 @@ jobs:
           cd /tmp
           python - <<'PY'
           import motor_drive_layer
-          assert motor_drive_layer.get_version() == "0.5.0"
-          assert motor_drive_layer.abi_version() == "0.3.0-cpp"
+          from importlib.metadata import version
+
+          assert motor_drive_layer.get_version() == version("motor-drive-layer")
+          assert motor_drive_layer.abi_version() == "0.5.0-cpp"
           assert motor_drive_layer.abi_capabilities()["features"]["feedback_stats"] is True
+          assert motor_drive_layer.abi_capabilities()["features"]["register_metadata"] is True
           PY
 
       - name: Check shell helper syntax

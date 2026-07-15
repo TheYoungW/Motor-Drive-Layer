@@ -6,9 +6,11 @@
 #include <thread>
 #include <vector>
 
+#if !defined(_WIN32)
 #include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
+#endif
 
 #include "damiao/dm_serial_bus.hpp"
 
@@ -80,6 +82,7 @@ int main() {
   require(parsed_ext->is_extended, "rx preserves extended id flag");
   require(parsed_ext->dlc == 3, "rx preserves dlc");
 
+#if !defined(_WIN32)
   int pipe_fds[2] = {-1, -1};
   require(::pipe(pipe_fds) == 0, "create fragmented-rx pipe");
   damiao::DmSerialBus fragmented_bus(pipe_fds[0], "test-pipe");
@@ -105,6 +108,7 @@ int main() {
   auto one_megabaud_bus = damiao::DmSerialBus::open(pty_slave, 1000000);
   one_megabaud_bus->shutdown();
   ::close(pty_master);
+#endif
 #endif
 
   std::cout << "dm serial codec tests passed\n";

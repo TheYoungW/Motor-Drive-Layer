@@ -17,6 +17,22 @@
 
 namespace {
 
+void set_test_env(const char* name, const char* value) {
+#if defined(_WIN32)
+  _putenv_s(name, value);
+#else
+  ::setenv(name, value, 1);
+#endif
+}
+
+void unset_test_env(const char* name) {
+#if defined(_WIN32)
+  _putenv_s(name, "");
+#else
+  ::unsetenv(name);
+#endif
+}
+
 static_assert(!std::is_copy_constructible_v<damiao::MotorHandle>,
               "MotorHandle owns synchronized runtime state and must not be copied");
 static_assert(!std::is_move_constructible_v<damiao::MotorHandle>,
@@ -491,7 +507,7 @@ int main() {
           "background polling survives a transient receive exception");
   resilient_controller.close_bus();
 
-  ::setenv("MOTOR_DRIVE_LAYER_TX_GAP_US", "5000", 1);
+  set_test_env("MOTOR_DRIVE_LAYER_TX_GAP_US", "5000");
   auto env_gap_bus = std::make_shared<FakeBus>();
   damiao::Controller env_gap_controller(env_gap_bus);
   auto env_gap_motor = env_gap_controller.add_damiao_motor(0x01, 0x11, "4340P");
@@ -502,10 +518,10 @@ int main() {
   require(env_gap_times[1] - env_gap_times[0] >= std::chrono::microseconds(4000),
           "MOTOR_DRIVE_LAYER_TX_GAP_US configures single-motor pacing");
   env_gap_controller.close_bus();
-  ::unsetenv("MOTOR_DRIVE_LAYER_TX_GAP_US");
+  unset_test_env("MOTOR_DRIVE_LAYER_TX_GAP_US");
 
-  ::setenv("MOTOR_DRIVE_LAYER_TX_GAP_US", "0", 1);
-  ::setenv("MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS", "7", 1);
+  set_test_env("MOTOR_DRIVE_LAYER_TX_GAP_US", "0");
+  set_test_env("MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS", "7");
   auto bulk_gap_bus = std::make_shared<FakeBus>();
   damiao::Controller bulk_gap_controller(bulk_gap_bus);
   bulk_gap_controller.add_damiao_motor(0x01, 0x11, "4340P");
@@ -516,8 +532,8 @@ int main() {
   require(bulk_gap_times[1] - bulk_gap_times[0] >= std::chrono::milliseconds(6),
           "MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS configures bulk pacing");
   bulk_gap_controller.close_bus();
-  ::unsetenv("MOTOR_DRIVE_LAYER_TX_GAP_US");
-  ::unsetenv("MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS");
+  unset_test_env("MOTOR_DRIVE_LAYER_TX_GAP_US");
+  unset_test_env("MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS");
 
   auto failing_drain_bus = std::make_shared<FakeBus>();
   damiao::Controller failing_drain_controller(failing_drain_bus);

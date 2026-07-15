@@ -7,7 +7,7 @@ Motor-Drive-Layer is an open-source Damiao motor driver for C++ and Python. The 
 ## Features
 
 - Damiao MIT, position/velocity, velocity, and force/position control modes.
-- Linux SocketCAN, SocketCAN-FD, Damiao serial bridge, and optional DM_Device SDK transports.
+- Linux SocketCAN and SocketCAN-FD, cross-platform Damiao serial bridge, and optional DM_Device SDK transports.
 - Damiao serial rates through 1,000,000 baud where supported by the host.
 - Background feedback reception and per-motor state cache.
 - Multi-motor controllers default to a configurable 120 µs minimum interval between outgoing frames.
@@ -26,7 +26,7 @@ Python motor-drive-layer API ── ctypes call ── C ABI
                                       ▼
                               C++ Damiao runtime
                                       │
-                   POSIX serial / SocketCAN / DM_Device
+               POSIX or Windows serial / SocketCAN / DM_Device
                                       │
                                       ▼
                               adapter and motors
@@ -40,7 +40,8 @@ Motor control can cause unexpected motion and injury. Support the mechanism, kee
 
 ## Build the C++ library
 
-Requirements: a C++17 compiler, CMake 3.16+, and Linux development headers.
+Requirements: a C++17 compiler and CMake 3.16+. SocketCAN additionally requires Linux development
+headers.
 
 ```bash
 cmake -S cpp_damiao -B cpp_damiao/build
@@ -48,7 +49,18 @@ cmake --build cpp_damiao/build -j
 ctest --test-dir cpp_damiao/build --output-on-failure
 ```
 
-The build produces `cpp_damiao/build/libmotor_abi.so` and the static C++ runtime library.
+The build produces `libmotor_abi.so` on Linux, `libmotor_abi.dylib` on macOS, or
+`motor_abi.dll` on Windows, together with the static C++ runtime library.
+
+## Supported platforms
+
+PyPI wheels are built by GitHub Actions for Linux x86_64 and ARM64, macOS Intel and Apple Silicon,
+and Windows x64. The Damiao serial transport is available on all of those platforms. SocketCAN and
+SocketCAN-FD are Linux-only. The optional direct `dm-device` transport also requires the matching
+vendor runtime and USB driver for the host platform.
+
+Typical serial device names are `/dev/ttyACM0` on Linux, `/dev/cu.usbmodem*` on macOS, and `COM3`
+on Windows.
 
 ## Install the Python package from source
 

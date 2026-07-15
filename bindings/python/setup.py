@@ -79,6 +79,7 @@ def _candidate_abi_paths() -> list[Path]:
         candidates.append(Path(env).expanduser())
 
     candidates.append(repo_root / "cpp_damiao" / "build" / lib_name)
+    candidates.append(repo_root / "cpp_damiao" / "build" / "Release" / lib_name)
     candidates.append(here.parent / "src" / "motor_drive_layer" / "lib" / lib_name)
     return candidates
 

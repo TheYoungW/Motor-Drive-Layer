@@ -4,6 +4,8 @@ Python bindings for the Motor-Drive-Layer native C++ Damiao motor driver.
 
 The package loads the bundled C ABI library through Python `ctypes` and exposes
 SocketCAN, SocketCAN-FD, Damiao serial bridge, and optional DM_Device transports.
+Published wheels cover Linux x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x64. The serial
+transport is cross-platform; SocketCAN transports remain Linux-only.
 
 Use `Motor.request_fresh_state(timeout_ms=50)` when the caller must wait for a newly requested
 feedback frame. For multiple motors, `Controller.request_feedback_all(timeout_ms=50)` sends every
