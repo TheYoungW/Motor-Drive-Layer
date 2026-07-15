@@ -21,22 +21,27 @@ jobs:
             runner: ubuntu-22.04
             family: linux
             deployment_target: ""
+            wheel_platform: ""
           - name: linux-aarch64
             runner: ubuntu-22.04-arm
             family: linux
             deployment_target: ""
+            wheel_platform: ""
           - name: macos-x86_64
             runner: macos-15-intel
             family: macos
             deployment_target: "11.0"
+            wheel_platform: "macosx-11.0-x86_64"
           - name: macos-arm64
             runner: macos-15
             family: macos
             deployment_target: "11.0"
+            wheel_platform: "macosx-11.0-arm64"
           - name: windows-amd64
             runner: windows-2025
             family: windows
             deployment_target: ""
+            wheel_platform: ""
 
     steps:
       - name: Checkout
@@ -69,6 +74,7 @@ jobs:
       - name: Build platform wheel
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+          _PYTHON_HOST_PLATFORM: ${{ matrix.wheel_platform }}
         run: python -m build --wheel bindings/python
 
       - name: Repair Linux wheel

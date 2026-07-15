@@ -302,14 +302,14 @@ int main() {
       if (feedback_request_count(timeout_bus->sent_snapshot()) >= 2) break;
       std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
     timeout_bus->push_rx(feedback_frame(0x11, 0x01, 0x01, 0.0f, 0.0f, 0.0f,
                                         damiao::model_limits("4340P")));
   });
   const auto timeout_started = std::chrono::steady_clock::now();
   std::string timeout_message;
   try {
-    timeout_controller.request_feedback_all(std::chrono::milliseconds(20));
+    timeout_controller.request_feedback_all(std::chrono::milliseconds(100));
   } catch (const std::runtime_error& error) {
     timeout_message = error.what();
   }
@@ -317,7 +317,7 @@ int main() {
   const auto batch_timeout_elapsed = std::chrono::steady_clock::now() - timeout_started;
   require(timeout_message == "fresh feedback timed out; missing motor IDs: 2",
           "batch timeout reports only the missing motor ID");
-  require(batch_timeout_elapsed < std::chrono::milliseconds(150),
+  require(batch_timeout_elapsed < std::chrono::milliseconds(300),
           "batch feedback uses one shared timeout instead of one timeout per motor");
   timeout_controller.close_bus();
 
