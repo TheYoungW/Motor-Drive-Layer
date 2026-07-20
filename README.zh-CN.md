@@ -181,13 +181,14 @@ with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
 
 ## Python 示例
 
-`bindings/python/examples/` 中保留了六个用途明确的示例：
+`bindings/python/examples/` 中保留了七个用途明确的示例：
 
 | 文件 | 用途 |
 | --- | --- |
 | `connection_test.py` | 失能一台电机，并通过任一受支持传输验证反馈是否正常。 |
 | `socketcan_control.py` | 通过 Linux SocketCAN 控制一台电机，演示 MIT 模式。 |
 | `dm_serial_control.py` | 通过达妙串口桥控制一台电机，支持 MIT、位置速度、速度和力位混合模式。 |
+| `dm_serial_pos_vel.py` | 通过达妙串口桥向七台电机周期发送位置速度（PV）帧。 |
 | `multi_motor_control.py` | 通过 Linux SocketCAN 控制多台电机。 |
 | `maintenance.py` | 清除错误、设置 CAN 超时、可选设置零位并读取状态。 |
 | `register_access.py` | 读取寄存器；只有明确传入写参数时才会写入或保存。 |
@@ -198,6 +199,7 @@ with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
 python3 bindings/python/examples/connection_test.py --help
 python3 bindings/python/examples/socketcan_control.py --help
 python3 bindings/python/examples/dm_serial_control.py --help
+python3 bindings/python/examples/dm_serial_pos_vel.py --help
 ```
 
 电机控制可能造成突然运动。运行控制示例前，请支撑机械结构、准备独立急停，并核对通道、电机 ID、反馈 ID、型号、控制模式和目标值。维护及寄存器写入可能永久改变设备参数；不确定寄存器含义时请只读，不要使用写入或保存参数。

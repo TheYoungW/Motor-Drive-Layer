@@ -234,154 +234,154 @@ MotorHandle* motor_controller_add_damiao_motor(MotorController* controller,
   }
 }
 
-void motor_handle_free(MotorHandle* motor) {
-  delete motor;
+void motor_handle_free(MotorHandle* handle) {
+  delete handle;
 }
 
-int32_t motor_handle_enable(MotorHandle* motor) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
-  return ffi_call([&] { motor->motor->enable(); });
+int32_t motor_handle_enable(MotorHandle* handle) {
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
+  return ffi_call([&] { handle->motor->enable(); });
 }
 
-int32_t motor_handle_disable(MotorHandle* motor) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
-  return ffi_call([&] { motor->motor->disable(); });
+int32_t motor_handle_disable(MotorHandle* handle) {
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
+  return ffi_call([&] { handle->motor->disable(); });
 }
 
-int32_t motor_handle_clear_error(MotorHandle* motor) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
-  return ffi_call([&] { motor->motor->clear_error(); });
+int32_t motor_handle_clear_error(MotorHandle* handle) {
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
+  return ffi_call([&] { handle->motor->clear_error(); });
 }
 
-int32_t motor_handle_set_zero_position(MotorHandle* motor) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
-  return ffi_call([&] { motor->motor->set_zero_position(); });
+int32_t motor_handle_set_zero_position(MotorHandle* handle) {
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
+  return ffi_call([&] { handle->motor->set_zero_position(); });
 }
 
-int32_t motor_handle_ensure_mode(MotorHandle* motor, uint32_t mode, uint32_t timeout_ms) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
+int32_t motor_handle_ensure_mode(MotorHandle* handle, uint32_t mode, uint32_t timeout_ms) {
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
   return ffi_call(
-      [&] { motor->motor->ensure_mode(mode, std::chrono::milliseconds(timeout_ms)); });
+      [&] { handle->motor->ensure_mode(mode, std::chrono::milliseconds(timeout_ms)); });
 }
 
-int32_t motor_handle_send_mit(MotorHandle* motor,
+int32_t motor_handle_send_mit(MotorHandle* handle,
                               float target_position,
                               float target_velocity,
                               float stiffness,
                               float damping,
                               float feedforward_torque) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
   return ffi_call([&] {
-    motor->motor->send_mit(target_position, target_velocity, stiffness, damping,
+    handle->motor->send_mit(target_position, target_velocity, stiffness, damping,
                            feedforward_torque);
   });
 }
 
-int32_t motor_handle_send_pos_vel(MotorHandle* motor,
+int32_t motor_handle_send_pos_vel(MotorHandle* handle,
                                   float target_position,
                                   float velocity_limit) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
-  return ffi_call([&] { motor->motor->send_pos_vel(target_position, velocity_limit); });
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
+  return ffi_call([&] { handle->motor->send_pos_vel(target_position, velocity_limit); });
 }
 
-int32_t motor_handle_send_vel(MotorHandle* motor, float target_velocity) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
-  return ffi_call([&] { motor->motor->send_vel(target_velocity); });
+int32_t motor_handle_send_vel(MotorHandle* handle, float target_velocity) {
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
+  return ffi_call([&] { handle->motor->send_vel(target_velocity); });
 }
 
-int32_t motor_handle_send_force_pos(MotorHandle* motor,
+int32_t motor_handle_send_force_pos(MotorHandle* handle,
                                     float target_position,
                                     float velocity_limit,
                                     float torque_limit_ratio) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
   return ffi_call(
-      [&] { motor->motor->send_force_pos(target_position, velocity_limit, torque_limit_ratio); });
+      [&] { handle->motor->send_force_pos(target_position, velocity_limit, torque_limit_ratio); });
 }
 
-int32_t motor_handle_store_parameters(MotorHandle* motor) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
-  return ffi_call([&] { motor->motor->store_parameters(); });
+int32_t motor_handle_store_parameters(MotorHandle* handle) {
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
+  return ffi_call([&] { handle->motor->store_parameters(); });
 }
 
-int32_t motor_handle_request_feedback(MotorHandle* motor) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
-  return ffi_call([&] { motor->motor->request_feedback(); });
+int32_t motor_handle_request_feedback(MotorHandle* handle) {
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
+  return ffi_call([&] { handle->motor->request_feedback(); });
 }
 
-int32_t motor_handle_request_fresh_state(MotorHandle* motor,
+int32_t motor_handle_request_fresh_state(MotorHandle* handle,
                                          uint32_t timeout_ms,
                                          MotorState* out_state) {
-  if (motor == nullptr || out_state == nullptr) return fail("motor or out_state is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
+  if (handle == nullptr || out_state == nullptr) return fail("motor or out_state is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
   return ffi_call([&] {
     std::memset(out_state, 0, sizeof(MotorState));
     const auto state =
-        motor->motor->request_fresh_state(std::chrono::milliseconds(timeout_ms));
+        handle->motor->request_fresh_state(std::chrono::milliseconds(timeout_ms));
     if (!state.has_value()) {
       throw std::runtime_error("fresh feedback timed out for motor ID " +
-                               std::to_string(motor->motor->motor_id()));
+                               std::to_string(handle->motor->motor_id()));
     }
     copy_motor_state(*state, out_state);
   });
 }
 
-int32_t motor_handle_set_can_timeout_ms(MotorHandle* motor, uint32_t timeout_ms) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
-  return ffi_call([&] { motor->motor->set_can_timeout_ms(timeout_ms); });
+int32_t motor_handle_set_can_timeout_ms(MotorHandle* handle, uint32_t timeout_ms) {
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
+  return ffi_call([&] { handle->motor->set_can_timeout_ms(timeout_ms); });
 }
 
-int32_t motor_handle_write_register_f32(MotorHandle* motor, uint8_t rid, float value) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
-  return ffi_call([&] { motor->motor->write_register_f32(rid, value); });
+int32_t motor_handle_write_register_f32(MotorHandle* handle, uint8_t rid, float value) {
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
+  return ffi_call([&] { handle->motor->write_register_f32(rid, value); });
 }
 
-int32_t motor_handle_write_register_u32(MotorHandle* motor, uint8_t rid, uint32_t value) {
-  if (motor == nullptr) return fail("motor is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
-  return ffi_call([&] { motor->motor->write_register_u32(rid, value); });
+int32_t motor_handle_write_register_u32(MotorHandle* handle, uint8_t rid, uint32_t value) {
+  if (handle == nullptr) return fail("motor is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
+  return ffi_call([&] { handle->motor->write_register_u32(rid, value); });
 }
 
-int32_t motor_handle_get_register_f32(MotorHandle* motor,
+int32_t motor_handle_get_register_f32(MotorHandle* handle,
                                       uint8_t rid,
                                       uint32_t timeout_ms,
                                       float* out_value) {
-  if (motor == nullptr || out_value == nullptr) return fail("motor or out_value is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
+  if (handle == nullptr || out_value == nullptr) return fail("motor or out_value is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
   return ffi_call([&] {
-    *out_value = motor->motor->get_register_f32(rid, std::chrono::milliseconds(timeout_ms));
+    *out_value = handle->motor->get_register_f32(rid, std::chrono::milliseconds(timeout_ms));
   });
 }
 
-int32_t motor_handle_get_register_u32(MotorHandle* motor,
+int32_t motor_handle_get_register_u32(MotorHandle* handle,
                                       uint8_t rid,
                                       uint32_t timeout_ms,
                                       uint32_t* out_value) {
-  if (motor == nullptr || out_value == nullptr) return fail("motor or out_value is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
+  if (handle == nullptr || out_value == nullptr) return fail("motor or out_value is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
   return ffi_call([&] {
-    *out_value = motor->motor->get_register_u32(rid, std::chrono::milliseconds(timeout_ms));
+    *out_value = handle->motor->get_register_u32(rid, std::chrono::milliseconds(timeout_ms));
   });
 }
 
-int32_t motor_handle_get_state(MotorHandle* motor, MotorState* out_state) {
-  if (motor == nullptr || out_state == nullptr) return fail("motor or out_state is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
+int32_t motor_handle_get_state(MotorHandle* handle, MotorState* out_state) {
+  if (handle == nullptr || out_state == nullptr) return fail("motor or out_state is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
   return ffi_call([&] {
     std::memset(out_state, 0, sizeof(MotorState));
-    const auto state = motor->motor->latest_state();
+    const auto state = handle->motor->latest_state();
     if (!state.has_value()) {
       return;
     }
@@ -389,56 +389,56 @@ int32_t motor_handle_get_state(MotorHandle* motor, MotorState* out_state) {
   });
 }
 
-int32_t motor_handle_get_feedback_stats(MotorHandle* motor,
+int32_t motor_handle_get_feedback_stats(MotorHandle* handle,
                                         MotorFeedbackStats* out_stats) {
-  if (motor == nullptr || out_stats == nullptr) return fail("motor or out_stats is null");
-  std::lock_guard<std::mutex> lock(motor->mutex);
+  if (handle == nullptr || out_stats == nullptr) return fail("motor or out_stats is null");
+  std::lock_guard<std::mutex> lock(handle->mutex);
   return ffi_call([&] {
     std::memset(out_stats, 0, sizeof(MotorFeedbackStats));
-    const auto stats = motor->motor->feedback_stats();
+    const auto stats = handle->motor->feedback_stats();
     out_stats->has_feedback = stats.has_feedback ? 1 : 0;
     out_stats->update_count = stats.update_count;
     out_stats->age_ns = stats.age.count() < 0 ? 0 : static_cast<uint64_t>(stats.age.count());
   });
 }
 
-int32_t motor_handle_damiao_get_param_f32(MotorHandle* motor,
+int32_t motor_handle_damiao_get_param_f32(MotorHandle* handle,
                                           uint16_t param_id,
                                           uint32_t timeout_ms,
                                           float* out_value) {
   try {
-    return motor_handle_get_register_f32(motor, param_to_rid(param_id), timeout_ms, out_value);
+    return motor_handle_get_register_f32(handle, param_to_rid(param_id), timeout_ms, out_value);
   } catch (const std::exception& err) {
     return fail(err.what());
   }
 }
 
-int32_t motor_handle_damiao_get_param_u32(MotorHandle* motor,
+int32_t motor_handle_damiao_get_param_u32(MotorHandle* handle,
                                           uint16_t param_id,
                                           uint32_t timeout_ms,
                                           uint32_t* out_value) {
   try {
-    return motor_handle_get_register_u32(motor, param_to_rid(param_id), timeout_ms, out_value);
+    return motor_handle_get_register_u32(handle, param_to_rid(param_id), timeout_ms, out_value);
   } catch (const std::exception& err) {
     return fail(err.what());
   }
 }
 
-int32_t motor_handle_damiao_write_param_f32(MotorHandle* motor,
+int32_t motor_handle_damiao_write_param_f32(MotorHandle* handle,
                                             uint16_t param_id,
                                             float value) {
   try {
-    return motor_handle_write_register_f32(motor, param_to_rid(param_id), value);
+    return motor_handle_write_register_f32(handle, param_to_rid(param_id), value);
   } catch (const std::exception& err) {
     return fail(err.what());
   }
 }
 
-int32_t motor_handle_damiao_write_param_u32(MotorHandle* motor,
+int32_t motor_handle_damiao_write_param_u32(MotorHandle* handle,
                                             uint16_t param_id,
                                             uint32_t value) {
   try {
-    return motor_handle_write_register_u32(motor, param_to_rid(param_id), value);
+    return motor_handle_write_register_u32(handle, param_to_rid(param_id), value);
   } catch (const std::exception& err) {
     return fail(err.what());
   }

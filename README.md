@@ -203,6 +203,7 @@ The focused examples in `bindings/python/examples/` cover the common workflows:
 | `connection_test.py` | Disable one motor and verify fresh feedback over any supported transport. |
 | `socketcan_control.py` | Control one motor over Linux SocketCAN in MIT mode. |
 | `dm_serial_control.py` | Control one motor through a Damiao serial bridge in any supported control mode. |
+| `dm_serial_pos_vel.py` | Send periodic position-velocity (PV) frames to seven motors through a Damiao serial bridge. |
 | `multi_motor_control.py` | Control multiple motors over Linux SocketCAN. |
 | `maintenance.py` | Clear errors, set the CAN timeout, optionally set zero, and read state. |
 | `register_access.py` | Read registers; writes and persistent storage occur only when explicitly requested. |
@@ -213,6 +214,7 @@ Install the project first, then inspect a command before running it:
 python3 bindings/python/examples/connection_test.py --help
 python3 bindings/python/examples/socketcan_control.py --help
 python3 bindings/python/examples/dm_serial_control.py --help
+python3 bindings/python/examples/dm_serial_pos_vel.py --help
 ```
 
 Motor control can cause sudden motion. Support the mechanism, prepare an independent emergency stop, and verify the channel, IDs, model, mode, and targets before enabling a motor. Maintenance and register writes can permanently change device settings; stay in read-only mode unless you know the register semantics.
