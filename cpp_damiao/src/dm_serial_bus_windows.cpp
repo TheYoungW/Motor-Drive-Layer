@@ -1,3 +1,5 @@
+#if defined(_WIN32)
+
 #include "damiao/dm_serial_bus.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -179,3 +181,5 @@ void DmSerialBus::shutdown() {
 }
 
 }  // namespace damiao
+
+#endif  // defined(_WIN32)

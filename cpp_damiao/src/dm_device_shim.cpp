@@ -1,5 +1,7 @@
 #include "dmcan.h"
 
+#include "dm_device_shim.h"
+
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -15,19 +17,6 @@
 #else
 #include <dlfcn.h>
 #endif
-
-extern "C" {
-
-struct mb_dm_frame {
-    uint32_t can_id;
-    uint8_t data[8];
-    uint8_t dlc;
-    uint8_t channel;
-    uint8_t ext;
-    uint8_t canfd;
-};
-
-} // extern "C"
 
 namespace {
 
@@ -228,7 +217,7 @@ void recv_callback(dmcan_device_handle* dev, usb_rx_frame_t* frame)
 } // namespace
 
 extern "C" int mb_dm_open(const char* library_path, int device_type, uint8_t selected_channel,
-                          uint32_t can_baudrate, uint32_t canfd_baudrate, mb_dm_handle** out,
+                          uint32_t can_baudrate, uint32_t canfd_baudrate, void** out,
                           char* err_buf, size_t err_len)
 {
     if (!library_path || !out) {
@@ -252,7 +241,7 @@ extern "C" int mb_dm_open(const char* library_path, int device_type, uint8_t sel
                 g_registry[h->dev] = h;
             }
             h->api.device_hook_recv_callback(h->dev, recv_callback);
-            *out = h;
+            *out = static_cast<void*>(h);
             return 0;
         }
     }
@@ -335,13 +324,14 @@ extern "C" int mb_dm_open(const char* library_path, int device_type, uint8_t sel
         g_persistent_handle = h;
     }
 
-    *out = h;
+    *out = static_cast<void*>(h);
     return 0;
 }
 
-extern "C" int mb_dm_send(mb_dm_handle* handle, uint32_t can_id, uint8_t ext, uint8_t dlc,
+extern "C" int mb_dm_send(void* opaque_handle, uint32_t can_id, uint8_t ext, uint8_t dlc,
                           const uint8_t* data, char* err_buf, size_t err_len)
 {
+    auto* handle = static_cast<mb_dm_handle*>(opaque_handle);
     if (!handle || !data || dlc > 8) {
         set_err(err_buf, err_len, "invalid mb_dm_send argument");
         return -1;
@@ -357,9 +347,10 @@ extern "C" int mb_dm_send(mb_dm_handle* handle, uint32_t can_id, uint8_t ext, ui
     return 0;
 }
 
-extern "C" int mb_dm_recv(mb_dm_handle* handle, mb_dm_frame* out, uint32_t timeout_ms,
+extern "C" int mb_dm_recv(void* opaque_handle, mb_dm_frame* out, uint32_t timeout_ms,
                           char* err_buf, size_t err_len)
 {
+    auto* handle = static_cast<mb_dm_handle*>(opaque_handle);
     if (!handle || !out) {
         set_err(err_buf, err_len, "invalid mb_dm_recv argument");
         return -1;
@@ -379,8 +370,9 @@ extern "C" int mb_dm_recv(mb_dm_handle* handle, mb_dm_frame* out, uint32_t timeo
     return 1;
 }
 
-extern "C" void mb_dm_shutdown(mb_dm_handle* handle)
+extern "C" void mb_dm_shutdown(void* opaque_handle)
 {
+    auto* handle = static_cast<mb_dm_handle*>(opaque_handle);
     if (!handle) {
         return;
     }

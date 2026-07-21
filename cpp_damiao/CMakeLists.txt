@@ -3,6 +3,7 @@ project(damiao_cpp VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
 
+# 公共头文件接口：向使用者传递头文件路径和 C++17 要求。
 add_library(damiao_cpp INTERFACE)
 add_library(damiao::cpp ALIAS damiao_cpp)
 
@@ -14,6 +15,7 @@ target_include_directories(
     $<INSTALL_INTERFACE:include>
 )
 
+# C++ 运行时实现：包含控制器、协议编解码和各类总线后端。
 set(
   DAMIAO_RUNTIME_SOURCES
   src/runtime.cpp
@@ -23,6 +25,7 @@ set(
   src/dm_device_shim.cpp
 )
 
+# Windows 与 POSIX 系统使用各自的串口底层实现。
 if(WIN32)
   list(APPEND DAMIAO_RUNTIME_SOURCES src/dm_serial_bus_windows.cpp)
 else()
@@ -36,12 +39,14 @@ target_link_libraries(damiao_runtime PUBLIC damiao::cpp ${CMAKE_DL_LIBS})
 target_include_directories(damiao_runtime PRIVATE ../third_party/dm_device/v1.1.0)
 set_target_properties(damiao_runtime PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# C ABI 动态库：封装 C++ 运行时，供 Python ctypes 等外部调用者加载。
 add_library(motor_abi SHARED src/motor_abi.cpp)
 target_compile_features(motor_abi PRIVATE cxx_std_17)
 target_include_directories(motor_abi PRIVATE include)
 target_link_libraries(motor_abi PRIVATE damiao::runtime)
 set_target_properties(motor_abi PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
+# 测试目标：仅在 BUILD_TESTING 开启时参与构建并注册到 CTest。
 if(BUILD_TESTING)
   add_executable(damiao_protocol_test tests/protocol_test.cpp)
   target_link_libraries(damiao_protocol_test PRIVATE damiao::cpp)
