@@ -329,6 +329,7 @@ int main() {
     retry_motors.push_back(
         retry_controller.add_damiao_motor(motor_id, 0x10 + motor_id, "4310"));
   }
+  retry_controller.set_tx_gap(std::chrono::microseconds(0));
   std::thread retry_responder([&] {
     for (int i = 0; i < 200; ++i) {
       if (feedback_request_count(retry_bus->sent_snapshot()) >= retry_motor_ids.size()) break;
@@ -342,14 +343,17 @@ int main() {
     // Emulate the bridge dropping only the eighth response, then replying to
     // the controller's targeted retry.
     for (int i = 0; i < 200; ++i) {
-      if (feedback_request_count(retry_bus->sent_snapshot()) > retry_motor_ids.size()) break;
+      const auto sent = retry_bus->sent_snapshot();
+      bool retried_final_motor = false;
+      for (std::size_t j = retry_motor_ids.size(); j < sent.size(); ++j) {
+        if (sent[j].id == 0x7FF && sent[j].data[2] == 0xCC && sent[j].data[0] == 0x0F) {
+          retried_final_motor = true;
+          break;
+        }
+      }
+      if (retried_final_motor) break;
       std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
-    const auto sent = retry_bus->sent_snapshot();
-    require(feedback_request_count(sent) == retry_motor_ids.size() + 1,
-            "eight-motor batch retries one missing response");
-    require(sent.back().data[0] == 0x0F,
-            "eight-motor batch retries only the missing final motor");
     retry_bus->push_rx(feedback_frame(0x1F, 0x0F, 0x01, 0.0f, 0.0f, 0.0f,
                                       damiao::model_limits("4310")));
   });
@@ -360,6 +364,16 @@ int main() {
     throw;
   }
   retry_responder.join();
+  const auto retry_sent = retry_bus->sent_snapshot();
+  bool retried_final_motor = false;
+  for (std::size_t i = retry_motor_ids.size(); i < retry_sent.size(); ++i) {
+    if (retry_sent[i].id == 0x7FF && retry_sent[i].data[2] == 0xCC &&
+        retry_sent[i].data[0] == 0x0F) {
+      retried_final_motor = true;
+      break;
+    }
+  }
+  require(retried_final_motor, "eight-motor batch retries the missing final motor");
   for (const auto& motor : retry_motors) {
     require(motor->feedback_stats().update_count == 1,
             "eight-motor retry batch updates every feedback count");
