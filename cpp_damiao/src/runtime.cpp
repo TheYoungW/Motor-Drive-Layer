@@ -12,6 +12,7 @@ namespace {
 
 constexpr auto kRegisterWriteAckTimeout = std::chrono::milliseconds(50);
 constexpr auto kRegisterWriteRetryGap = std::chrono::milliseconds(20);
+constexpr auto kBulkFeedbackRetryDelay = std::chrono::milliseconds(5);
 
 void validate_register(uint8_t rid, RegisterDataType expected_type, bool writing) {
   const auto info = register_info(rid);
@@ -540,17 +541,38 @@ void Controller::request_feedback_all(std::chrono::milliseconds timeout) {
     motor->request_feedback();
   }
 
-  std::vector<uint16_t> missing_ids;
+  // A few serial bridge firmwares occasionally drop the final request or
+  // response in a burst.  Give the normal batch time to complete, then retry
+  // only the motors that are still missing while preserving the caller's one
+  // shared deadline.
+  const auto retry_at =
+      std::min(deadline, std::chrono::steady_clock::now() + kBulkFeedbackRetryDelay);
+  std::vector<std::size_t> missing;
   for (std::size_t i = 0; i < motors.size(); ++i) {
-    if (!motors[i]->wait_for_feedback_after(previous_counts[i], deadline)) {
-      missing_ids.push_back(motors[i]->motor_id());
+    if (!motors[i]->wait_for_feedback_after(previous_counts[i], retry_at)) {
+      missing.push_back(i);
     }
   }
 
-  if (!missing_ids.empty()) {
+  if (!missing.empty() && retry_at < deadline) {
+    for (const auto i : missing) {
+      if (std::chrono::steady_clock::now() >= deadline) break;
+      motors[i]->request_feedback();
+    }
+
+    std::vector<std::size_t> still_missing;
+    for (const auto i : missing) {
+      if (!motors[i]->wait_for_feedback_after(previous_counts[i], deadline)) {
+        still_missing.push_back(i);
+      }
+    }
+    missing = std::move(still_missing);
+  }
+
+  if (!missing.empty()) {
     std::string message = "fresh feedback timed out; missing motor IDs:";
-    for (const auto motor_id : missing_ids) {
-      message += " " + std::to_string(motor_id);
+    for (const auto i : missing) {
+      message += " " + std::to_string(motors[i]->motor_id());
     }
     throw std::runtime_error(message);
   }

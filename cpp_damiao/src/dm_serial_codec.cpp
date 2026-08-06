@@ -61,22 +61,23 @@ std::optional<CanFrame> DmSerialCodec::try_parse_rx() {
     }
 
     std::array<uint8_t, kRxFrameLen> raw{};
-    for (std::size_t i = 0; i < raw.size(); ++i) {
-      raw[i] = rx_buf_[i];
-    }
-    for (std::size_t i = 0; i < raw.size(); ++i) {
-      rx_buf_.pop_front();
-    }
+    for (std::size_t i = 0; i < raw.size(); ++i) raw[i] = rx_buf_[i];
 
     if (raw[15] != 0x55 || raw[1] != 0x11) {
+      // The candidate may contain the start of the next valid frame.  Drop
+      // only the bad sync byte so the following scan can recover that frame.
+      rx_buf_.pop_front();
       continue;
     }
     const uint8_t flags = raw[2];
     const uint8_t dlc = flags & 0x3F;
     const bool is_rtr = (flags & 0x80) != 0;
     if (is_rtr || dlc > 8) {
+      rx_buf_.pop_front();
       continue;
     }
+
+    for (std::size_t i = 0; i < raw.size(); ++i) rx_buf_.pop_front();
 
     CanFrame frame{};
     frame.id = static_cast<uint32_t>(raw[3]) | (static_cast<uint32_t>(raw[4]) << 8) |

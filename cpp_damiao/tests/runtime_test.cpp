@@ -320,6 +320,52 @@ int main() {
           "batch feedback uses one shared timeout instead of one timeout per motor");
   timeout_controller.close_bus();
 
+  auto retry_bus = std::make_shared<FakeBus>();
+  damiao::Controller retry_controller(retry_bus);
+  const std::vector<uint16_t> retry_motor_ids{0x01, 0x09, 0x0A, 0x0B,
+                                               0x0C, 0x0D, 0x0E, 0x0F};
+  std::vector<std::shared_ptr<damiao::MotorHandle>> retry_motors;
+  for (const auto motor_id : retry_motor_ids) {
+    retry_motors.push_back(
+        retry_controller.add_damiao_motor(motor_id, 0x10 + motor_id, "4310"));
+  }
+  std::thread retry_responder([&] {
+    for (int i = 0; i < 200; ++i) {
+      if (feedback_request_count(retry_bus->sent_snapshot()) >= retry_motor_ids.size()) break;
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    for (std::size_t i = 0; i + 1 < retry_motor_ids.size(); ++i) {
+      const auto motor_id = static_cast<uint8_t>(retry_motor_ids[i]);
+      retry_bus->push_rx(feedback_frame(0x10 + motor_id, motor_id, 0x01, 0.0f, 0.0f, 0.0f,
+                                        damiao::model_limits("4310")));
+    }
+    // Emulate the bridge dropping only the eighth response, then replying to
+    // the controller's targeted retry.
+    for (int i = 0; i < 200; ++i) {
+      if (feedback_request_count(retry_bus->sent_snapshot()) > retry_motor_ids.size()) break;
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    const auto sent = retry_bus->sent_snapshot();
+    require(feedback_request_count(sent) == retry_motor_ids.size() + 1,
+            "eight-motor batch retries one missing response");
+    require(sent.back().data[0] == 0x0F,
+            "eight-motor batch retries only the missing final motor");
+    retry_bus->push_rx(feedback_frame(0x1F, 0x0F, 0x01, 0.0f, 0.0f, 0.0f,
+                                      damiao::model_limits("4310")));
+  });
+  try {
+    retry_controller.request_feedback_all(std::chrono::milliseconds(50));
+  } catch (...) {
+    retry_responder.join();
+    throw;
+  }
+  retry_responder.join();
+  for (const auto& motor : retry_motors) {
+    require(motor->feedback_stats().update_count == 1,
+            "eight-motor retry batch updates every feedback count");
+  }
+  retry_controller.close_bus();
+
   bus->push_rx(feedback_frame(0x11, 0x01, 0x01, 1.3f, 0.2f, 0.1f,
                               damiao::model_limits("4340P")));
   for (int i = 0; i < 50 && motor1->feedback_stats().update_count < 2; ++i) {

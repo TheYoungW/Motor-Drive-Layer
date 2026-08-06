@@ -82,6 +82,37 @@ int main() {
   require(parsed_ext->is_extended, "rx preserves extended id flag");
   require(parsed_ext->dlc == 3, "rx preserves dlc");
 
+  damiao::DmSerialCodec resync_codec;
+  const std::array<uint8_t, 8> corrupt_prefix{0xAA, 1, 2, 3, 4, 5, 6, 7};
+  std::vector<uint8_t> corrupt_then_valid(corrupt_prefix.begin(), corrupt_prefix.end());
+  corrupt_then_valid.insert(corrupt_then_valid.end(), raw_rx.begin(), raw_rx.end());
+  resync_codec.push_bytes(corrupt_then_valid.data(), corrupt_then_valid.size());
+  const auto resynced = resync_codec.try_parse_rx();
+  require(resynced.has_value(), "rx resynchronizes without consuming a nested valid frame");
+  require(resynced->id == 0x11, "resynchronized frame id");
+
+  std::vector<uint8_t> burst;
+  for (uint8_t motor_id = 1; motor_id <= 8; ++motor_id) {
+    auto frame = raw_rx;
+    frame[3] = static_cast<uint8_t>(0x10 + motor_id);
+    frame[7] = motor_id;
+    burst.insert(burst.end(), frame.begin(), frame.end());
+  }
+  damiao::DmSerialCodec burst_codec;
+  for (std::size_t batch = 0; batch < 1001; ++batch) {
+    // Vary the split on every batch, including the 64-byte USB bulk-packet boundary.
+    const std::size_t split = batch % (burst.size() + 1);
+    burst_codec.push_bytes(burst.data(), split);
+    burst_codec.push_bytes(burst.data() + split, burst.size() - split);
+    for (uint8_t motor_id = 1; motor_id <= 8; ++motor_id) {
+      const auto frame = burst_codec.try_parse_rx();
+      require(frame.has_value(), "all eight fragmented rx frames are parsed");
+      require(frame->id == static_cast<uint32_t>(0x10 + motor_id),
+              "fragmented rx frame order");
+    }
+    require(!burst_codec.try_parse_rx().has_value(), "eight-frame rx burst is drained");
+  }
+
 #if !defined(_WIN32)
   int pipe_fds[2] = {-1, -1};
   require(::pipe(pipe_fds) == 0, "create fragmented-rx pipe");
