@@ -52,7 +52,7 @@ jobs:
           with ZipFile(wheel) as archive:
               names = archive.namelist()
               assert any(name.endswith("/licenses/LICENSE") for name in names)
-              assert any(name.endswith("/motor_drive_layer/lib/libmotor_abi.so") for name in names)
+              assert any(name.endswith("motor_drive_layer/lib/libmotor_abi.so") for name in names)
           PY
           python -m pip install --force-reinstall --no-deps bindings/python/dist/*.whl
           cd /tmp
