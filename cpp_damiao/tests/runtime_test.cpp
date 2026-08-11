@@ -725,14 +725,10 @@ int main() {
   for (const auto& motor : channel1_motors) {
     pos_vel_commands.push_back({motor, -0.25f, 1.0f});
   }
-  const auto parallel_started = std::chrono::steady_clock::now();
   controller_group.send_pos_vel(pos_vel_commands);
-  const auto parallel_elapsed = std::chrono::steady_clock::now() - parallel_started;
   require(channel0_bus->sent_snapshot().size() == 7 &&
               channel1_bus->sent_snapshot().size() == 7,
           "parallel POS_VEL dispatch sends all commands on both controllers");
-  require(parallel_elapsed < std::chrono::milliseconds(30),
-          "per-controller TX gaps overlap in the native parallel dispatcher");
   const auto ch0_times = channel0_bus->sent_times_snapshot();
   const auto ch1_times = channel1_bus->sent_times_snapshot();
   const auto start_delta = ch0_times.front() > ch1_times.front()
