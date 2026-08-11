@@ -12,6 +12,7 @@ from .abi import (
     CPosVelBatchCommand,
     CState,
     CTransportCapabilities,
+    CTransportHealth,
     get_abi,
 )
 from .dm_device_runtime import ensure_dm_device_runtime
@@ -23,6 +24,7 @@ from .models import (
     MotorState,
     PosVelCommand,
     TransportCapabilities,
+    TransportHealth,
 )
 
 
@@ -216,6 +218,37 @@ class Controller:
             hardware_rx_timestamps=bool(native.hardware_rx_timestamps),
             reconnect=bool(native.reconnect),
             process_session_reuse=bool(native.process_session_reuse),
+        )
+
+    def transport_health(self) -> TransportHealth:
+        if not self._abi.has_transport_health:
+            raise CallError(
+                "the loaded motor_abi does not support transport health; "
+                "upgrade motor-drive-layer"
+            )
+        native = CTransportHealth()
+        _ok(
+            self._abi.lib.motor_controller_get_transport_health(
+                self._require_open(), ctypes.byref(native)
+            ),
+            "controller_get_transport_health",
+        )
+        missing_age = (1 << 64) - 1
+        last_error = bytes(native.last_error).split(b"\0", 1)[0]
+        return TransportHealth(
+            connected=bool(native.connected),
+            healthy=bool(native.healthy),
+            tx_frames=int(native.tx_frames),
+            rx_frames=int(native.rx_frames),
+            send_errors=int(native.send_errors),
+            receive_errors=int(native.receive_errors),
+            last_tx_age_ns=(
+                None if native.last_tx_age_ns == missing_age else int(native.last_tx_age_ns)
+            ),
+            last_rx_age_ns=(
+                None if native.last_rx_age_ns == missing_age else int(native.last_rx_age_ns)
+            ),
+            last_error=last_error.decode(errors="replace") if last_error else None,
         )
 
     def add_damiao_motor(self, motor_id: int, feedback_id: int, model: str) -> "Motor":

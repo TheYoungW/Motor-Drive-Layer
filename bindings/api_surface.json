@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.5.9",
+  "version": "0.5.10",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "abi": {
     "metadata": [
@@ -25,6 +25,7 @@
       "motor_controller_close_bus",
       "motor_controller_set_tx_gap_us",
       "motor_controller_get_transport_capabilities",
+      "motor_controller_get_transport_health",
       "motor_controller_add_damiao_motor"
     ],
     "controller_group": [
@@ -82,6 +83,7 @@
       "Controller.request_feedback_all(timeout_ms)",
       "Controller.set_tx_gap_us(gap_us)",
       "Controller.transport_capabilities()",
+      "Controller.transport_health()",
       "Controller.add_damiao_motor(motor_id, feedback_id, model)"
     ],
     "motor_methods": [
@@ -125,7 +127,8 @@
       "PosVelCommand(motor, pos, vlim)",
       "PreparedMitBatch(group, motors)",
       "PreparedPosVelBatch(group, motors)",
-      "TransportCapabilities"
+      "TransportCapabilities",
+      "TransportHealth"
     ],
     "python": {
       "module_metadata": [

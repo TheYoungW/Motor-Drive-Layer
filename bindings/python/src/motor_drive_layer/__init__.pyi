@@ -41,6 +41,7 @@ from .models import (
     MotorState as MotorState,
     PosVelCommand as PosVelCommand,
     TransportCapabilities as TransportCapabilities,
+    TransportHealth as TransportHealth,
 )
 
 __version__: str

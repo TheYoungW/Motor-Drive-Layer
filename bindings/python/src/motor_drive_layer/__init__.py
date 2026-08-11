@@ -17,6 +17,7 @@ from .models import (
     MotorState,
     PosVelCommand,
     TransportCapabilities,
+    TransportHealth,
 )
 from ._version import VERSION
 
@@ -81,6 +82,7 @@ __all__ = [
     "MitCommand",
     "PosVelCommand",
     "TransportCapabilities",
+    "TransportHealth",
     "RegisterSpec",
     "DAMIAO_RW_REGISTERS",
     "DAMIAO_HIGH_IMPACT_RIDS",

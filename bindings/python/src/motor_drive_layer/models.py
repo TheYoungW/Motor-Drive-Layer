@@ -47,6 +47,19 @@ class TransportCapabilities:
 
 
 @dataclass(frozen=True)
+class TransportHealth:
+    connected: bool
+    healthy: bool
+    tx_frames: int
+    rx_frames: int
+    send_errors: int
+    receive_errors: int
+    last_tx_age_ns: int | None
+    last_rx_age_ns: int | None
+    last_error: str | None
+
+
+@dataclass(frozen=True)
 class MitCommand:
     motor: Motor
     pos: float

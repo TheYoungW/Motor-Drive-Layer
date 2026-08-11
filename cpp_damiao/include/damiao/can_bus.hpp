@@ -26,6 +26,18 @@ struct TransportCapabilities {
   bool process_session_reuse = false;
 };
 
+struct TransportHealth {
+  bool connected = true;
+  bool healthy = true;
+  uint64_t tx_frames = 0;
+  uint64_t rx_frames = 0;
+  uint64_t send_errors = 0;
+  uint64_t receive_errors = 0;
+  std::optional<std::chrono::nanoseconds> last_tx_age;
+  std::optional<std::chrono::nanoseconds> last_rx_age;
+  std::string last_error;
+};
+
 class CanBus {
  public:
   virtual ~CanBus() = default;
@@ -34,6 +46,7 @@ class CanBus {
   virtual std::optional<CanFrame> receive_for(std::chrono::milliseconds timeout) = 0;
   virtual void shutdown() {}
   virtual TransportCapabilities capabilities() const { return {}; }
+  virtual TransportHealth health() const { return {}; }
 };
 
 }  // namespace damiao

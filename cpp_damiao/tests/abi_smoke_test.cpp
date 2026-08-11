@@ -64,6 +64,9 @@ int main() {
           "TX-gap setter rejects a null controller");
   require(motor_controller_request_feedback_all(nullptr, 50) != 0,
           "batch feedback rejects a null controller");
+  MotorTransportHealth transport_health{};
+  require(motor_controller_get_transport_health(nullptr, &transport_health) != 0,
+          "transport health rejects a null controller");
   require(motor_controller_group_new(nullptr, 0) == nullptr,
           "controller group rejects an empty controller list");
   require(motor_controller_group_send_mit(nullptr, nullptr, 0) != 0,

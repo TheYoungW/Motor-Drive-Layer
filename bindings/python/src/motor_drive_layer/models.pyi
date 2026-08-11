@@ -58,6 +58,29 @@ class TransportCapabilities:
         process_session_reuse: bool,
     ) -> None: ...
 
+class TransportHealth:
+    connected: bool
+    healthy: bool
+    tx_frames: int
+    rx_frames: int
+    send_errors: int
+    receive_errors: int
+    last_tx_age_ns: int | None
+    last_rx_age_ns: int | None
+    last_error: str | None
+    def __init__(
+        self,
+        connected: bool,
+        healthy: bool,
+        tx_frames: int,
+        rx_frames: int,
+        send_errors: int,
+        receive_errors: int,
+        last_tx_age_ns: int | None,
+        last_rx_age_ns: int | None,
+        last_error: str | None,
+    ) -> None: ...
+
 class MitCommand:
     motor: Motor
     pos: float

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -97,7 +98,7 @@ const char* motor_abi_version(void) {
 }
 
 const char* motor_abi_capabilities_json(void) {
-  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.5.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"register_metadata":true,"transport_capabilities":true,"dm_device_abis":["v1.0","v1.1"],"dm_device_configurable_bitrates":true,"dm_device_v10_process_session_reuse":true,"parallel_controller_batches":["mit","pos-vel"],"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","enable_all","disable_all","set_tx_gap_us","transport_capabilities"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
+  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.5.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"register_metadata":true,"transport_capabilities":true,"transport_health":true,"dm_device_abis":["v1.0","v1.1"],"dm_device_configurable_bitrates":true,"dm_device_v10_process_session_reuse":true,"parallel_controller_batches":["mit","pos-vel"],"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","enable_all","disable_all","set_tx_gap_us","transport_capabilities","transport_health"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
 }
 
 int32_t motor_damiao_register_info(uint8_t rid, MotorRegisterInfo* out_info) {
@@ -383,6 +384,32 @@ int32_t motor_controller_get_transport_capabilities(
     out_capabilities->reconnect = capabilities.reconnect ? 1 : 0;
     out_capabilities->process_session_reuse =
         capabilities.process_session_reuse ? 1 : 0;
+  });
+}
+
+int32_t motor_controller_get_transport_health(
+    MotorController* controller, MotorTransportHealth* out_health) {
+  if (controller == nullptr) return fail("controller is null");
+  if (out_health == nullptr) return fail("out_health is null");
+  std::lock_guard<std::mutex> lock(controller->mutex);
+  return ffi_call([&] {
+    const auto health = controller->controller->transport_health();
+    std::memset(out_health, 0, sizeof(*out_health));
+    out_health->connected = health.connected ? 1 : 0;
+    out_health->healthy = health.healthy ? 1 : 0;
+    out_health->tx_frames = health.tx_frames;
+    out_health->rx_frames = health.rx_frames;
+    out_health->send_errors = health.send_errors;
+    out_health->receive_errors = health.receive_errors;
+    out_health->last_tx_age_ns = health.last_tx_age.has_value()
+        ? static_cast<uint64_t>(std::max<int64_t>(0, health.last_tx_age->count()))
+        : std::numeric_limits<uint64_t>::max();
+    out_health->last_rx_age_ns = health.last_rx_age.has_value()
+        ? static_cast<uint64_t>(std::max<int64_t>(0, health.last_rx_age->count()))
+        : std::numeric_limits<uint64_t>::max();
+    const auto error_size = std::min(health.last_error.size(),
+                                     sizeof(out_health->last_error) - 1);
+    std::memcpy(out_health->last_error, health.last_error.data(), error_size);
   });
 }
 

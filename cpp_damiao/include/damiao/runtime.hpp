@@ -142,6 +142,7 @@ class Controller {
   void send_pos_vel_batch(const std::vector<PosVelBatchCommand>& commands);
   const std::string& endpoint_label() const { return endpoint_label_; }
   TransportCapabilities transport_capabilities() const;
+  TransportHealth transport_health() const;
 
  private:
   friend class ControllerGroup;

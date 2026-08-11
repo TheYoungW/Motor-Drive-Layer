@@ -185,6 +185,7 @@ top-level `motor_drive_layer` package.
 | `poll_feedback_once()` | Non-blocking drain of frames that have already arrived. |
 | `set_tx_gap_us(gap_us)` | Configure the minimum host-side interval between outgoing frames. |
 | `transport_capabilities()` | Query the active transport's CAN-FD, channel-count, parallel-batch, reconnect, process-session reuse, and hardware RX timestamp capabilities. |
+| `transport_health()` | Read live connection/health flags, TX/RX frame and error counters, last activity ages, and the latest transport error. |
 | `shutdown()` | Attempt to disable every motor, stop polling, and close the bus. |
 | `close_bus()` | Stop polling and close the bus without sending disable commands. |
 | `close()` / `closed` | Free the native Controller handle; `close()` does not actively send disable commands. |

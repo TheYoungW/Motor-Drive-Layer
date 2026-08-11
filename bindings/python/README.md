@@ -32,6 +32,8 @@ motor ID, and native reason.
 For fixed high-rate layouts, `prepare_pos_vel(motors)` and `prepare_mit(motors)` reuse one validated
 ctypes command array across calls. `Controller.transport_capabilities()` reports the active
 transport's CAN-FD, channel, parallel-send, reconnect, session-reuse, and timestamp capabilities.
+`Controller.transport_health()` reports live connection state, TX/RX counters, errors, and last
+activity ages without adding robot-product policy to the transport layer.
 
 The `motor-drive-layer-stress` command provides a feedback-only DM_Device load/reconnect test and
 reports latency plus Linux file-descriptor/thread counts. It never enables or commands motors.

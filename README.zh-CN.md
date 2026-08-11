@@ -163,6 +163,7 @@ states = [motor.get_state() for motor in motors]
 | `poll_feedback_once()` | 非阻塞排空当前已经到达的帧。 |
 | `set_tx_gap_us(gap_us)` | 设置相邻输出帧的最小主机提交间隔。 |
 | `transport_capabilities()` | 查询当前 Transport 实例是否支持 CAN-FD、物理通道数、并行批量、重连、进程会话复用及硬件接收时间戳。 |
+| `transport_health()` | 查询实时连接/健康标志、收发帧与错误计数、最近收发时间以及最后一个 Transport 错误。 |
 | `shutdown()` | 先尝试失能全部电机，再停止接收线程并关闭总线。 |
 | `close_bus()` | 不发送失能命令，直接停止接收并关闭总线。 |
 | `close()` / `closed` | 释放原生 Controller 句柄；`close()` 不主动发送失能命令。 |

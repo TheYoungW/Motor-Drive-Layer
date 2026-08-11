@@ -44,6 +44,20 @@ class CTransportCapabilities(Structure):
     ]
 
 
+class CTransportHealth(Structure):
+    _fields_ = [
+        ("connected", c_int32),
+        ("healthy", c_int32),
+        ("tx_frames", c_uint64),
+        ("rx_frames", c_uint64),
+        ("send_errors", c_uint64),
+        ("receive_errors", c_uint64),
+        ("last_tx_age_ns", c_uint64),
+        ("last_rx_age_ns", c_uint64),
+        ("last_error", ctypes.c_char * 256),
+    ]
+
+
 class CRegisterInfo(Structure):
     _fields_ = [
         ("has_value", c_int32),
@@ -236,6 +250,13 @@ class Abi:
                 POINTER(CTransportCapabilities),
             ]
             lib.motor_controller_get_transport_capabilities.restype = c_int32
+        self.has_transport_health = hasattr(lib, "motor_controller_get_transport_health")
+        if self.has_transport_health:
+            lib.motor_controller_get_transport_health.argtypes = [
+                c_void_p,
+                POINTER(CTransportHealth),
+            ]
+            lib.motor_controller_get_transport_health.restype = c_int32
 
         lib.motor_controller_add_damiao_motor.argtypes = [c_void_p, c_uint16, c_uint16, c_char_p]
         lib.motor_controller_add_damiao_motor.restype = c_void_p

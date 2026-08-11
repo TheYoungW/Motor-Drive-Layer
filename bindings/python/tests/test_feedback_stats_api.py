@@ -5,10 +5,20 @@ import ctypes
 import pytest
 
 import motor_drive_layer.core as core_module
-from motor_drive_layer.abi import CFeedbackStats, CState, CTransportCapabilities
+from motor_drive_layer.abi import (
+    CFeedbackStats,
+    CState,
+    CTransportCapabilities,
+    CTransportHealth,
+)
 from motor_drive_layer.core import Controller, Motor
 from motor_drive_layer.errors import CallError
-from motor_drive_layer.models import FeedbackStats, MotorState, TransportCapabilities
+from motor_drive_layer.models import (
+    FeedbackStats,
+    MotorState,
+    TransportCapabilities,
+    TransportHealth,
+)
 
 
 class FakeLib:
@@ -43,6 +53,19 @@ class FakeLib:
         capabilities.process_session_reuse = 1
         return 0
 
+    def motor_controller_get_transport_health(self, ptr: int, out_health) -> int:
+        health = ctypes.cast(out_health, ctypes.POINTER(CTransportHealth)).contents
+        health.connected = 1
+        health.healthy = 0
+        health.tx_frames = 123
+        health.rx_frames = 120
+        health.send_errors = 1
+        health.receive_errors = 2
+        health.last_tx_age_ns = 50_000
+        health.last_rx_age_ns = (1 << 64) - 1
+        health.last_error = b"injected receive failure"
+        return 0
+
     def motor_handle_request_fresh_state(self, ptr: int, timeout_ms: int, out_state) -> int:
         self.fresh_state_calls.append((ptr, timeout_ms))
         state = ctypes.cast(out_state, ctypes.POINTER(CState)).contents
@@ -69,6 +92,7 @@ class FakeAbi:
     def __init__(self) -> None:
         self.lib = FakeLib()
         self.has_transport_capabilities = True
+        self.has_transport_health = True
 
 
 def test_controller_forwards_configured_tx_gap() -> None:
@@ -105,6 +129,24 @@ def test_controller_exposes_per_transport_capabilities() -> None:
         hardware_rx_timestamps=False,
         reconnect=True,
         process_session_reuse=True,
+    )
+
+
+def test_controller_exposes_runtime_transport_health() -> None:
+    controller = Controller.__new__(Controller)
+    controller._abi = FakeAbi()
+    controller._ptr = 123
+
+    assert controller.transport_health() == TransportHealth(
+        connected=True,
+        healthy=False,
+        tx_frames=123,
+        rx_frames=120,
+        send_errors=1,
+        receive_errors=2,
+        last_tx_age_ns=50_000,
+        last_rx_age_ns=None,
+        last_error="injected receive failure",
     )
 
 

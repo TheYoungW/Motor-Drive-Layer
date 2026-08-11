@@ -86,6 +86,8 @@ transport-specific shared vendor locks remain responsible for vendor-library thr
 Every `CanBus` exposes `TransportCapabilities`; `Controller::transport_capabilities()` and the C
 ABI return the active instance's transport name, canonical payload size, physical channel count,
 CAN-FD, parallel-batch, reconnect, process-session reuse, and hardware RX timestamp flags.
+The generic pacing wrapper also records `TransportHealth`; `Controller::transport_health()` and
+the C ABI expose live connection state, TX/RX counters, activity ages, and transport errors.
 
 For DM_Device v1.0, the shim retains the opened legacy context/device and callbacks at process
 scope after the final client closes. It still closes channel resources and removes every client;

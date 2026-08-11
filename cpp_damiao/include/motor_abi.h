@@ -55,6 +55,18 @@ typedef struct MotorTransportCapabilities {
   int32_t process_session_reuse;
 } MotorTransportCapabilities;
 
+typedef struct MotorTransportHealth {
+  int32_t connected;
+  int32_t healthy;
+  uint64_t tx_frames;
+  uint64_t rx_frames;
+  uint64_t send_errors;
+  uint64_t receive_errors;
+  uint64_t last_tx_age_ns;
+  uint64_t last_rx_age_ns;
+  char last_error[256];
+} MotorTransportHealth;
+
 enum {
   MOTOR_REGISTER_ACCESS_READ_ONLY = 0,
   MOTOR_REGISTER_ACCESS_READ_WRITE = 1,
@@ -146,6 +158,8 @@ int32_t motor_controller_close_bus(MotorController* controller);
 int32_t motor_controller_set_tx_gap_us(MotorController* controller, uint32_t gap_us);
 int32_t motor_controller_get_transport_capabilities(
     MotorController* controller, MotorTransportCapabilities* out_capabilities);
+int32_t motor_controller_get_transport_health(
+    MotorController* controller, MotorTransportHealth* out_health);
 
 MotorHandle* motor_controller_add_damiao_motor(MotorController* controller, uint16_t motor_id, uint16_t feedback_id, const char* model);
 void motor_handle_free(MotorHandle* handle);

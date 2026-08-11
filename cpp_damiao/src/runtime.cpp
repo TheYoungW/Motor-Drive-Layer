@@ -49,26 +49,107 @@ class Controller::PacingBus final : public CanBus {
       }
       last_send_ = std::chrono::steady_clock::now();
     }
-    inner_->send(frame);
+    try {
+      inner_->send(frame);
+      tx_frames_.fetch_add(1, std::memory_order_relaxed);
+      send_healthy_.store(true, std::memory_order_release);
+      std::lock_guard<std::mutex> lock(health_mutex_);
+      last_tx_ = std::chrono::steady_clock::now();
+    } catch (const std::exception& error) {
+      record_error(error.what(), true);
+      throw;
+    } catch (...) {
+      record_error("unknown transport send error", true);
+      throw;
+    }
   }
 
   std::optional<CanFrame> receive_for(std::chrono::milliseconds timeout) override {
-    return inner_->receive_for(timeout);
+    try {
+      auto frame = inner_->receive_for(timeout);
+      if (frame.has_value()) {
+        rx_frames_.fetch_add(1, std::memory_order_relaxed);
+        receive_healthy_.store(true, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(health_mutex_);
+        last_rx_ = std::chrono::steady_clock::now();
+      }
+      return frame;
+    } catch (const std::exception& error) {
+      record_error(error.what(), false);
+      throw;
+    } catch (...) {
+      record_error("unknown transport receive error", false);
+      throw;
+    }
   }
 
-  void shutdown() override { inner_->shutdown(); }
+  void shutdown() override {
+    try {
+      inner_->shutdown();
+    } catch (const std::exception& error) {
+      record_error(error.what(), false);
+      connected_.store(false, std::memory_order_release);
+      throw;
+    } catch (...) {
+      record_error("unknown transport shutdown error", false);
+      connected_.store(false, std::memory_order_release);
+      throw;
+    }
+    connected_.store(false, std::memory_order_release);
+  }
 
   TransportCapabilities capabilities() const override { return inner_->capabilities(); }
+
+  TransportHealth health() const override {
+    TransportHealth value;
+    value.connected = connected_.load(std::memory_order_acquire);
+    value.healthy = value.connected &&
+                    send_healthy_.load(std::memory_order_acquire) &&
+                    receive_healthy_.load(std::memory_order_acquire);
+    value.tx_frames = tx_frames_.load(std::memory_order_relaxed);
+    value.rx_frames = rx_frames_.load(std::memory_order_relaxed);
+    value.send_errors = send_errors_.load(std::memory_order_relaxed);
+    value.receive_errors = receive_errors_.load(std::memory_order_relaxed);
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(health_mutex_);
+    if (last_tx_.has_value()) value.last_tx_age = now - *last_tx_;
+    if (last_rx_.has_value()) value.last_rx_age = now - *last_rx_;
+    value.last_error = last_error_;
+    return value;
+  }
 
   void set_tx_gap(std::chrono::microseconds gap) {
     tx_gap_.store(static_cast<uint64_t>(gap.count()), std::memory_order_release);
   }
 
  private:
+  void record_error(const std::string& error, bool sending) {
+    if (sending) {
+      send_errors_.fetch_add(1, std::memory_order_relaxed);
+      send_healthy_.store(false, std::memory_order_release);
+    } else {
+      receive_errors_.fetch_add(1, std::memory_order_relaxed);
+      receive_healthy_.store(false, std::memory_order_release);
+    }
+    std::lock_guard<std::mutex> lock(health_mutex_);
+    last_error_ = error;
+  }
+
   std::shared_ptr<CanBus> inner_;
   std::atomic<uint64_t> tx_gap_{0};
   std::mutex send_mutex_;
   std::optional<std::chrono::steady_clock::time_point> last_send_;
+  std::atomic<bool> connected_{true};
+  std::atomic<bool> send_healthy_{true};
+  std::atomic<bool> receive_healthy_{true};
+  std::atomic<uint64_t> tx_frames_{0};
+  std::atomic<uint64_t> rx_frames_{0};
+  std::atomic<uint64_t> send_errors_{0};
+  std::atomic<uint64_t> receive_errors_{0};
+  mutable std::mutex health_mutex_;
+  std::optional<std::chrono::steady_clock::time_point> last_tx_;
+  std::optional<std::chrono::steady_clock::time_point> last_rx_;
+  std::string last_error_;
 };
 
 MotorHandle::MotorHandle(std::shared_ptr<CanBus> bus, uint16_t motor_id, uint16_t feedback_id,
@@ -490,6 +571,10 @@ Controller::~Controller() {
 
 TransportCapabilities Controller::transport_capabilities() const {
   return bus_->capabilities();
+}
+
+TransportHealth Controller::transport_health() const {
+  return bus_->health();
 }
 
 std::shared_ptr<MotorHandle> Controller::add_damiao_motor(uint16_t motor_id,

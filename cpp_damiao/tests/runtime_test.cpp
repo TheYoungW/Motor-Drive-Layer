@@ -302,6 +302,41 @@ int main() {
               !transport_capabilities.process_session_reuse,
           "controller forwards the active bus capabilities");
   capability_controller.close_bus();
+  require(!capability_controller.transport_health().connected,
+          "closed controller reports disconnected transport health");
+
+  auto health_bus = std::make_shared<FakeBus>();
+  damiao::Controller health_controller(health_bus);
+  auto health_motor = health_controller.add_damiao_motor(0x01, 0x11, "4340P");
+  auto initial_health = health_controller.transport_health();
+  require(initial_health.connected && initial_health.healthy &&
+              initial_health.tx_frames == 0 && initial_health.rx_frames == 0 &&
+              !initial_health.last_tx_age.has_value() &&
+              !initial_health.last_rx_age.has_value(),
+          "new controller exposes an empty healthy transport snapshot");
+  health_motor->request_feedback();
+  health_bus->push_rx(feedback_frame(0x11, 0x01, 0x01, 0.0f, 0.0f, 0.0f,
+                                     damiao::model_limits("4340P")));
+  for (int i = 0; i < 100; ++i) {
+    const auto health = health_controller.transport_health();
+    if (health.tx_frames >= 1 && health.rx_frames >= 1) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  auto active_health = health_controller.transport_health();
+  require(active_health.tx_frames >= 1 && active_health.rx_frames >= 1 &&
+              active_health.last_tx_age.has_value() &&
+              active_health.last_rx_age.has_value(),
+          "transport health counts successful TX and RX frames");
+  health_bus->fail_next_receives(1);
+  for (int i = 0; i < 100; ++i) {
+    if (health_controller.transport_health().receive_errors >= 1) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto failed_health = health_controller.transport_health();
+  require(!failed_health.healthy && failed_health.receive_errors >= 1 &&
+              failed_health.last_error.find("injected transient") != std::string::npos,
+          "transport receive errors are retained in structured health");
+  health_controller.close_bus();
   auto bus = std::make_shared<FakeBus>();
   damiao::Controller controller(bus);
   auto motor1 = controller.add_damiao_motor(0x01, 0x11, "4340P");
