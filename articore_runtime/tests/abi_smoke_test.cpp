@@ -10,8 +10,9 @@ int main() {
                             ARTICORE_CAP_SAFE_HOLD |
                             ARTICORE_CAP_GRIPPER_PROTECTION |
                             ARTICORE_CAP_SINGLE_CHANNEL |
-                            ARTICORE_CAP_DUAL_CHANNEL;
-  if ((version >> 16) != 1U || (capabilities & required) != required) {
+                            ARTICORE_CAP_DUAL_CHANNEL |
+                            ARTICORE_CAP_CURRENT_POSITION_HOLD;
+  if (version != 0x00010001U || (capabilities & required) != required) {
     std::cerr << "Articore runtime ABI metadata is incomplete\n";
     return 1;
   }

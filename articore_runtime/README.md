@@ -10,9 +10,13 @@ native `steady_clock` watchdog. The worker independently performs command timeou
 feedback and transport-health checks, safe-hold transmission, fault latching, linked disable, and
 disable confirmation while Python is blocked or has stopped running.
 
-PV safe hold preserves the last successful target with a dedicated low velocity limit. MIT safe
-hold preserves position, zeros velocity and feedforward torque, and substitutes product safety
-Kp/Kd. The same persistent worker owns each configured product gripper's
+When an arm enters safe hold, the runtime snapshots every arm motor's current position from the
+non-blocking feedback cache. The snapshot is accepted only when every feedback entry is fresh,
+finite, enabled, and fault-free; otherwise the runtime enters latched `FAULT` instead of replaying
+an old motion target. PV safe hold uses the captured positions with a dedicated low velocity limit.
+MIT safe hold uses the captured positions, zeros velocity and feedforward torque, and substitutes
+product safety Kp/Kd. Grippers keep their independently generated low-stiffness safety targets.
+The same persistent worker owns each configured product gripper's
 `IDLE -> MOVING -> CONTACT -> HOLDING -> OVERLOAD_RETREAT` state machine. It maps public 0..1000
 opening targets to motor position, ramps closing motion with the normal MIT gains, detects contact
 from torque plus a position-motion window and target error, then switches to a low-gain hold with

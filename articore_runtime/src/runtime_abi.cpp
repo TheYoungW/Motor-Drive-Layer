@@ -41,7 +41,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (1U << 16);
+  return (1U << 16) | 1U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -50,7 +50,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_GRIPPER_PROTECTION |
          ARTICORE_CAP_SINGLE_CHANNEL |
          ARTICORE_CAP_DUAL_CHANNEL |
-         ARTICORE_CAP_TRANSPORT_HEALTH;
+         ARTICORE_CAP_TRANSPORT_HEALTH |
+         ARTICORE_CAP_CURRENT_POSITION_HOLD;
 }
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(

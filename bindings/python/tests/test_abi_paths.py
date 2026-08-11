@@ -26,7 +26,8 @@ def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
     library.articore_runtime_abi_version.restype = ctypes.c_uint32
     library.articore_runtime_capabilities.restype = ctypes.c_uint64
 
-    assert library.articore_runtime_abi_version() == 0x00010000
-    assert library.articore_runtime_capabilities() & 0x1F == 0x1F
-    assert abi.articore_runtime_abi_version() == "1.0"
+    assert library.articore_runtime_abi_version() == 0x00010001
+    assert library.articore_runtime_capabilities() & 0x7F == 0x7F
+    assert abi.articore_runtime_abi_version() == "1.1"
     assert abi.articore_runtime_capabilities()["gripper_protection"] is True
+    assert abi.articore_runtime_capabilities()["current_position_hold"] is True

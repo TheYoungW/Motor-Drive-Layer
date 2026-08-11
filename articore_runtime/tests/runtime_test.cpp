@@ -37,6 +37,7 @@ struct FakeDriver {
   uint32_t pv_sends = 0;
   uint32_t mit_sends = 0;
   uint32_t disable_calls[2]{};
+  uint32_t feedback_requests = 0;
   bool fail_group = false;
   bool fail_left_disable = false;
   bool transport_connected[2]{true, true};
@@ -83,7 +84,11 @@ int32_t disable_motor(void* handle) {
   return side == 0 && g_driver->fail_left_disable ? -1 : 0;
 }
 
-int32_t request_feedback(void*, uint32_t) { return 0; }
+int32_t request_feedback(void*, uint32_t) {
+  std::lock_guard<std::mutex> lock(g_driver->mutex);
+  ++g_driver->feedback_requests;
+  return 0;
+}
 
 int32_t get_state(void* handle, ArticoreMotorState* state) {
   std::lock_guard<std::mutex> lock(g_driver->mutex);
@@ -202,6 +207,11 @@ void test_pv_watchdog_safe_hold_and_fault() {
   };
   runtime.submit_pos_vel(commands, 2);
   require(runtime.health().state == ARTICORE_RUNNING, "first command enters RUNNING");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].position = 0.2f;
+    driver.motors[motors[1].motor].position = 0.8f;
+  }
   require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
           "command timeout enters SAFE_HOLD");
   require(wait_for([&] {
@@ -212,8 +222,12 @@ void test_pv_watchdog_safe_hold_and_fault() {
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     require(driver.last_pv.size() == 2 &&
+                std::abs(driver.last_pv[0].target_position - 0.2f) < 1e-6f &&
+                std::abs(driver.last_pv[1].target_position - 0.8f) < 1e-6f &&
                 std::abs(driver.last_pv[0].velocity_limit - 0.15f) < 1e-6f,
-            "PV safe hold replaces user velocity limit");
+            "PV safe hold captures actual positions and limits velocity");
+    require(driver.feedback_requests == 0,
+            "safe-hold entry reads cache without a blocking feedback request");
     driver.fail_group = true;
   }
   require(wait_for([&] { return runtime.health().state == ARTICORE_FAULT; }),
@@ -240,6 +254,11 @@ void test_mit_hold_removes_motion_and_feedforward() {
       {motors[1].motor, -0.4f, -2.0f, 20.0f, 3.0f, -4.0f},
   };
   runtime.submit_mit(commands, 2);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].position = -0.1f;
+    driver.motors[motors[1].motor].position = 0.7f;
+  }
   require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
           "MIT watchdog enters SAFE_HOLD");
   require(wait_for([&] {
@@ -249,12 +268,51 @@ void test_mit_hold_removes_motion_and_feedforward() {
           "MIT safe hold is transmitted");
   std::lock_guard<std::mutex> lock(driver.mutex);
   require(driver.last_arm_mit.size() == 2, "MIT arm hold captured");
-  for (const auto& command : driver.last_arm_mit) {
-    require(command.target_velocity == 0.0f &&
+  const float expected_positions[] = {-0.1f, 0.7f};
+  for (std::size_t index = 0; index < driver.last_arm_mit.size(); ++index) {
+    const auto& command = driver.last_arm_mit[index];
+    require(std::abs(command.target_position - expected_positions[index]) < 1e-6f &&
+                command.target_velocity == 0.0f &&
                 command.feedforward_torque == 0.0f &&
                 command.stiffness == 5.0f && command.damping == 0.5f,
-            "MIT hold zeros velocity/torque and uses safe gains");
+            "MIT hold captures actual position, zeros motion/torque, and uses safe gains");
   }
+}
+
+void test_safe_hold_rejects_stale_current_position() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  ArticorePosVelCommand commands[] = {
+      {motors[0].motor, 0.5f, 2.0f},
+      {motors[1].motor, -0.5f, 2.0f},
+  };
+  runtime.submit_pos_vel(commands, 2);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].age_ns = 300'000'000ULL;
+    driver.fail_group = true;
+  }
+  bool send_failed = false;
+  try {
+    runtime.submit_pos_vel(commands, 2);
+  } catch (const std::runtime_error&) {
+    send_failed = true;
+  }
+  const auto health = runtime.health();
+  require(send_failed && health.state == ARTICORE_FAULT,
+          "stale current-position feedback faults instead of holding an old target");
+  require(std::string(health.fault_reason).find("current-position hold unavailable") !=
+              std::string::npos,
+          "stale current-position fault explains why safe hold was rejected");
+  require(driver.pv_sends == 1,
+          "stale feedback never sends the previous user target as safe hold");
 }
 
 void test_gripper_hold_retreats_once_on_overload() {
@@ -450,11 +508,12 @@ void test_feedback_policy_and_linked_disable() {
     std::lock_guard<std::mutex> lock(driver.mutex);
     driver.motors[motors[0].motor].has_feedback = false;
   }
-  require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
-          "consecutive feedback failures enter SAFE_HOLD");
   require(wait_for([&] { return runtime.health().state == ARTICORE_FAULT; }),
-          "feedback failure during SAFE_HOLD enters FAULT");
-  require(driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0,
+          "missing feedback prevents current-position hold and enters FAULT");
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0;
+          }),
           "feedback fault disables both sides");
 }
 
@@ -603,6 +662,7 @@ int main() {
   try {
     test_pv_watchdog_safe_hold_and_fault();
     test_mit_hold_removes_motion_and_feedforward();
+    test_safe_hold_rejects_stale_current_position();
     test_gripper_hold_retreats_once_on_overload();
     test_gripper_stall_switches_to_contact_hold_target();
     test_gripper_torque_spike_does_not_trigger_contact();

@@ -92,8 +92,8 @@ class SafetyRuntime {
                           uint32_t count, bool grippers_only) const;
   void validate_motor_set(const ArticoreMitCommand* commands,
                           uint32_t count, bool grippers_only) const;
-  bool has_safe_arm_target_locked() const;
-  bool enter_safe_hold_locked(const std::string& reason);
+  bool enter_safe_hold_from_feedback(const std::string& reason,
+                                     std::string& error);
   void enter_fault(const std::string& reason);
   bool send_safe_hold_once(std::string& error);
   bool run_gripper_control_once(std::string& error);

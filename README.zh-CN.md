@@ -14,6 +14,8 @@ Motor-Drive-Layer 是供 Python、C++ 和 ROS 2 SDK 共用的原生 C++ 控制�
 - 带 ACK、重试和超时的寄存器读写。
 - C ABI 动态库和 Python 3.10+ 接口。
 - 独立的 Articore runtime ABI 和常驻安全/夹爪工作线程。
+- 当前位置安全保持：进入时锁存机械臂的新鲜缓存反馈；反馈过期或故障时进入 `FAULT`，
+  不会重放上一条用户目标。
 
 ## 架构边界
 

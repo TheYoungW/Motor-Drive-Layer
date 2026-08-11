@@ -7,7 +7,9 @@ SocketCAN, SocketCAN-FD, Damiao serial bridge, and optional DM_Device transports
 `libmotor_abi` is the generic motor layer; `libarticore_runtime` is the separately versioned
 product safety runtime consumed by Articore SDKs.
 Use `articore_runtime_abi_version()` and `articore_runtime_capabilities()` to inspect that product
-runtime independently from `abi_version()` and `abi_capabilities()`.
+runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 1.1 exposes
+`current_position_hold`: arm safe hold snapshots fresh cached positions and rejects stale or
+faulted feedback instead of replaying the previous user target.
 Published wheels cover Linux x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x64. The serial
 transport is cross-platform; SocketCAN transports remain Linux-only.
 

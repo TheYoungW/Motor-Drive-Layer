@@ -104,7 +104,7 @@ jobs:
       - name: Install and verify wheel
         run: |
           python -c "from pathlib import Path; import subprocess, sys; wheel = next(Path('wheelhouse').glob('*.whl')); subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-deps', str(wheel)])"
-          python -c "from importlib.metadata import version; import motor_drive_layer as mdl; assert mdl.get_version() == version('motor-drive-layer'); assert mdl.abi_version() == '0.5.0-cpp'; assert mdl.abi_capabilities()['features']['register_metadata'] is True; assert mdl.articore_runtime_library_path(); assert mdl.articore_runtime_abi_version() == '1.0'; assert mdl.articore_runtime_capabilities()['gripper_protection'] is True"
+          python -c "from importlib.metadata import version; import motor_drive_layer as mdl; assert mdl.get_version() == version('motor-drive-layer'); assert mdl.abi_version() == '0.5.0-cpp'; assert mdl.abi_capabilities()['features']['register_metadata'] is True; assert mdl.articore_runtime_library_path(); assert mdl.articore_runtime_abi_version() == '1.1'; assert mdl.articore_runtime_capabilities()['gripper_protection'] is True; assert mdl.articore_runtime_capabilities()['current_position_hold'] is True"
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v7

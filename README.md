@@ -14,6 +14,8 @@ Motor-Drive-Layer is the native C++ control foundation shared by Python, C++ and
 - Register read/write helpers with acknowledgement and timeout handling.
 - C ABI shared library and Python 3.10+ bindings.
 - A separate Articore runtime ABI with a persistent safety and gripper worker.
+- Current-position safe hold: fresh cached arm feedback is latched on entry; stale or faulted
+  feedback escalates to `FAULT` instead of replaying a previous user target.
 
 ## Architecture
 

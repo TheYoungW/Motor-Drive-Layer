@@ -270,15 +270,85 @@ void SafetyRuntime::validate_motor_set(const ArticoreMitCommand* commands,
   }
 }
 
-bool SafetyRuntime::has_safe_arm_target_locked() const {
-  return mode_ == ARTICORE_MODE_PV ? !safe_pv_.empty() : !safe_mit_.empty();
-}
+bool SafetyRuntime::enter_safe_hold_from_feedback(const std::string& reason,
+                                                  std::string& error) {
+  ArticoreControlMode mode;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    if (state_ != ARTICORE_RUNNING || !has_successful_command_) {
+      error = "current-position hold requires a running arm command";
+      return false;
+    }
+    mode = mode_;
+  }
 
-bool SafetyRuntime::enter_safe_hold_locked(const std::string& reason) {
-  if (!has_safe_arm_target_locked()) return false;
+  std::vector<ArticorePosVelCommand> pv;
+  std::vector<ArticoreMitCommand> mit;
+  uint64_t maximum_age_ns = 0;
+  std::lock_guard<std::mutex> command_lock(command_mutex_);
+  for (const auto& motor : motors_) {
+    if (motor.descriptor.is_gripper) continue;
+
+    const std::string name(motor.descriptor.name);
+    ArticoreFeedbackStats stats{};
+    if (api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
+        !stats.has_feedback) {
+      error = name + ": current-position feedback is unavailable";
+      return false;
+    }
+    if (stats.age_ns >
+        static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL) {
+      error = name + ": current-position feedback exceeds maximum age";
+      return false;
+    }
+
+    ArticoreMotorState state{};
+    if (api_.motor_get_state(motor.descriptor.motor, &state) != 0 ||
+        !state.has_value) {
+      error = name + ": current-position motor state is unavailable";
+      return false;
+    }
+    if (!finite(state.pos)) {
+      error = name + ": current-position feedback is not finite";
+      return false;
+    }
+    if (state.status_code == 0) {
+      error = name + ": motor is unexpectedly disabled";
+      return false;
+    }
+    if (state.status_code > 1) {
+      error = name + ": motor fault status " +
+              std::to_string(state.status_code);
+      return false;
+    }
+
+    maximum_age_ns = std::max(maximum_age_ns, stats.age_ns);
+    if (mode == ARTICORE_MODE_PV) {
+      pv.push_back(ArticorePosVelCommand{
+          motor.descriptor.motor, state.pos, config_.safe_pv_velocity_limit});
+    } else {
+      mit.push_back(ArticoreMitCommand{
+          motor.descriptor.motor, state.pos, 0.0f,
+          motor.descriptor.safe_kp, motor.descriptor.safe_kd, 0.0f});
+    }
+  }
+  if (pv.empty() && mit.empty()) {
+    error = "current-position hold requires at least one arm motor";
+    return false;
+  }
+
+  const auto now = Clock::now();
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  if (state_ != ARTICORE_RUNNING || !has_successful_command_ || mode_ != mode) {
+    error = "runtime state changed while capturing current positions";
+    return false;
+  }
+  safe_pv_ = std::move(pv);
+  safe_mit_ = std::move(mit);
+  last_fresh_feedback_ = now - std::chrono::nanoseconds(maximum_age_ns);
   state_ = ARTICORE_SAFE_HOLD;
   fault_reason_ = reason;
-  next_safe_hold_ = Clock::now();
+  next_safe_hold_ = now;
   consecutive_hold_failures_ = 0;
   return true;
 }
@@ -295,7 +365,7 @@ void SafetyRuntime::submit_pos_vel(const ArticorePosVelCommand* commands,
   validate_motor_set(commands, count, false);
 
   std::string error;
-  bool should_fault = false;
+  bool send_failed = false;
   {
     std::lock_guard<std::mutex> command_lock(command_mutex_);
     {
@@ -307,18 +377,9 @@ void SafetyRuntime::submit_pos_vel(const ArticorePosVelCommand* commands,
     }
     if (api_.group_send_pos_vel(controller_group_, commands, count) != 0) {
       error = motor_error("ControllerGroup PV send failed");
-      std::lock_guard<std::mutex> state_lock(state_mutex_);
-      ++consecutive_send_failures_;
-      for (uint8_t side = 0; side < 2; ++side) {
-        if (active_sides_[side]) set_side_error_locked(side, error, true);
-      }
-      if (!enter_safe_hold_locked("batch send failed: " + error)) should_fault = true;
+      send_failed = true;
     } else {
       std::lock_guard<std::mutex> state_lock(state_mutex_);
-      safe_pv_.assign(commands, commands + count);
-      for (auto& command : safe_pv_) {
-        command.velocity_limit = config_.safe_pv_velocity_limit;
-      }
       has_successful_command_ = true;
       last_successful_command_ = Clock::now();
       state_ = ARTICORE_RUNNING;
@@ -330,8 +391,22 @@ void SafetyRuntime::submit_pos_vel(const ArticorePosVelCommand* commands,
       }
     }
   }
+  if (send_failed) {
+    {
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
+      ++consecutive_send_failures_;
+      for (uint8_t side = 0; side < 2; ++side) {
+        if (active_sides_[side]) set_side_error_locked(side, error, true);
+      }
+    }
+    std::string hold_error;
+    if (!enter_safe_hold_from_feedback("batch send failed: " + error,
+                                       hold_error)) {
+      enter_fault("batch send failed: " + error +
+                  "; current-position hold unavailable: " + hold_error);
+    }
+  }
   wakeup_.notify_all();
-  if (should_fault) enter_fault("batch send failed without a safe target: " + error);
   if (!error.empty()) throw std::runtime_error(error);
 }
 
@@ -349,7 +424,7 @@ void SafetyRuntime::submit_mit(const ArticoreMitCommand* commands, uint32_t coun
   validate_motor_set(commands, count, false);
 
   std::string error;
-  bool should_fault = false;
+  bool send_failed = false;
   {
     std::lock_guard<std::mutex> command_lock(command_mutex_);
     {
@@ -361,26 +436,9 @@ void SafetyRuntime::submit_mit(const ArticoreMitCommand* commands, uint32_t coun
     }
     if (api_.group_send_mit(controller_group_, commands, count) != 0) {
       error = motor_error("ControllerGroup MIT send failed");
-      std::lock_guard<std::mutex> state_lock(state_mutex_);
-      ++consecutive_send_failures_;
-      for (uint8_t side = 0; side < 2; ++side) {
-        if (active_sides_[side]) set_side_error_locked(side, error, true);
-      }
-      if (!enter_safe_hold_locked("batch send failed: " + error)) should_fault = true;
+      send_failed = true;
     } else {
       std::lock_guard<std::mutex> state_lock(state_mutex_);
-      safe_mit_.assign(commands, commands + count);
-      for (auto& command : safe_mit_) {
-        command.target_velocity = 0.0f;
-        command.feedforward_torque = 0.0f;
-        const auto found = std::find_if(
-            motors_.begin(), motors_.end(),
-            [&](const MotorRecord& motor) { return motor.descriptor.motor == command.motor; });
-        if (found != motors_.end()) {
-          command.stiffness = found->descriptor.safe_kp;
-          command.damping = found->descriptor.safe_kd;
-        }
-      }
       has_successful_command_ = true;
       last_successful_command_ = Clock::now();
       state_ = ARTICORE_RUNNING;
@@ -392,8 +450,22 @@ void SafetyRuntime::submit_mit(const ArticoreMitCommand* commands, uint32_t coun
       }
     }
   }
+  if (send_failed) {
+    {
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
+      ++consecutive_send_failures_;
+      for (uint8_t side = 0; side < 2; ++side) {
+        if (active_sides_[side]) set_side_error_locked(side, error, true);
+      }
+    }
+    std::string hold_error;
+    if (!enter_safe_hold_from_feedback("batch send failed: " + error,
+                                       hold_error)) {
+      enter_fault("batch send failed: " + error +
+                  "; current-position hold unavailable: " + hold_error);
+    }
+  }
   wakeup_.notify_all();
-  if (should_fault) enter_fault("batch send failed without a safe target: " + error);
   if (!error.empty()) throw std::runtime_error(error);
 }
 
@@ -411,7 +483,7 @@ void SafetyRuntime::submit_gripper_mit(const ArticoreMitCommand* commands,
   }
   validate_motor_set(commands, count, true);
   std::string error;
-  bool should_fault = false;
+  bool send_failed = false;
   {
     std::lock_guard<std::mutex> command_lock(command_mutex_);
     {
@@ -420,13 +492,7 @@ void SafetyRuntime::submit_gripper_mit(const ArticoreMitCommand* commands,
     }
     if (api_.group_send_mit(controller_group_, commands, count) != 0) {
       error = motor_error("gripper group send failed");
-      {
-        std::lock_guard<std::mutex> state_lock(state_mutex_);
-        ++consecutive_send_failures_;
-        if (!enter_safe_hold_locked("gripper send failed: " + error)) {
-          should_fault = true;
-        }
-      }
+      send_failed = true;
     } else {
       std::lock_guard<std::mutex> state_lock(state_mutex_);
       for (uint32_t i = 0; i < count; ++i) {
@@ -452,8 +518,19 @@ void SafetyRuntime::submit_gripper_mit(const ArticoreMitCommand* commands,
       }
     }
   }
+  if (send_failed) {
+    {
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
+      ++consecutive_send_failures_;
+    }
+    std::string hold_error;
+    if (!enter_safe_hold_from_feedback("gripper send failed: " + error,
+                                       hold_error)) {
+      enter_fault("gripper send failed: " + error +
+                  "; current-position hold unavailable: " + hold_error);
+    }
+  }
   wakeup_.notify_all();
-  if (should_fault) enter_fault("gripper send failed without a safe arm target: " + error);
   if (!error.empty()) throw std::runtime_error(error);
 }
 
@@ -536,12 +613,20 @@ void SafetyRuntime::report_feedback_failure(uint8_t side,
       should_fault = true;
     } else if (state_ == ARTICORE_RUNNING &&
                consecutive_feedback_failures_ >= config_.feedback_failure_threshold) {
-      should_hold = enter_safe_hold_locked("consecutive feedback failures: " + reason);
-      should_fault = !should_hold;
+      should_hold = true;
     }
   }
   if (should_fault) enter_fault("feedback failed during safe hold: " + reason);
-  if (should_hold) wakeup_.notify_all();
+  if (should_hold) {
+    std::string hold_error;
+    if (!enter_safe_hold_from_feedback(
+            "consecutive feedback failures: " + reason, hold_error)) {
+      enter_fault("consecutive feedback failures: " + reason +
+                  "; current-position hold unavailable: " + hold_error);
+    } else {
+      wakeup_.notify_all();
+    }
+  }
 }
 
 std::string SafetyRuntime::motor_error(const std::string& fallback) const {
@@ -1325,14 +1410,12 @@ void SafetyRuntime::worker_loop() {
       continue;
     }
     if (command_timeout) {
-      bool entered = false;
-      {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        if (state_ == ARTICORE_RUNNING) {
-          entered = enter_safe_hold_locked("command watchdog timed out");
-        }
+      std::string hold_error;
+      if (!enter_safe_hold_from_feedback("command watchdog timed out",
+                                         hold_error)) {
+        enter_fault("command watchdog timed out; current-position hold "
+                    "unavailable: " + hold_error);
       }
-      if (!entered) enter_fault("command watchdog timed out without a safe target");
       continue;
     }
     if (run_feedback_check) {
@@ -1348,7 +1431,8 @@ void SafetyRuntime::worker_loop() {
             error.find("motor fault status") != std::string::npos ||
             error.find("unexpectedly disabled") != std::string::npos ||
             error.find("transport disconnected") != std::string::npos;
-        bool fault = false;
+        bool fault = severe;
+        bool enter_hold = false;
         {
           std::lock_guard<std::mutex> lock(state_mutex_);
           ++consecutive_feedback_failures_;
@@ -1357,8 +1441,15 @@ void SafetyRuntime::worker_loop() {
           } else if (state_ == ARTICORE_RUNNING &&
                      consecutive_feedback_failures_ >=
                          config_.feedback_failure_threshold) {
-            fault = !enter_safe_hold_locked(
-                "consecutive feedback failures: " + error);
+            enter_hold = true;
+          }
+        }
+        if (enter_hold) {
+          std::string hold_error;
+          if (!enter_safe_hold_from_feedback(
+                  "consecutive feedback failures: " + error, hold_error)) {
+            error += "; current-position hold unavailable: " + hold_error;
+            fault = true;
           }
         }
         if (fault) enter_fault(error);
@@ -1371,18 +1462,15 @@ void SafetyRuntime::worker_loop() {
         const bool send_failure =
             error.find("batch failed") != std::string::npos;
         if (send_failure) {
-          bool entered = false;
           {
             std::lock_guard<std::mutex> lock(state_mutex_);
             ++consecutive_send_failures_;
-            if (state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING) {
-              entered = enter_safe_hold_locked(
-                  "gripper control send failed: " + error);
-            }
           }
-          if (!entered) {
-            enter_fault("gripper control send failed without a safe arm target: " +
-                        error);
+          std::string hold_error;
+          if (!enter_safe_hold_from_feedback(
+                  "gripper control send failed: " + error, hold_error)) {
+            enter_fault("gripper control send failed: " + error +
+                        "; current-position hold unavailable: " + hold_error);
           }
         } else {
           enter_fault("gripper control fault: " + error);

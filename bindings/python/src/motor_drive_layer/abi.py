@@ -253,6 +253,7 @@ def articore_runtime_capabilities() -> dict[str, bool]:
         "single_channel": bool(bits & (1 << 3)),
         "dual_channel": bool(bits & (1 << 4)),
         "transport_health": bool(bits & (1 << 5)),
+        "current_position_hold": bool(bits & (1 << 6)),
     }
 
 

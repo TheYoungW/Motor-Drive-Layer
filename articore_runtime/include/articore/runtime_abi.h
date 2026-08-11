@@ -26,6 +26,7 @@ enum ArticoreRuntimeCapability {
   ARTICORE_CAP_SINGLE_CHANNEL = 1ULL << 3,
   ARTICORE_CAP_DUAL_CHANNEL = 1ULL << 4,
   ARTICORE_CAP_TRANSPORT_HEALTH = 1ULL << 5,
+  ARTICORE_CAP_CURRENT_POSITION_HOLD = 1ULL << 6,
 };
 
 enum ArticoreSafetyState {
