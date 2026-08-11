@@ -30,3 +30,4 @@ def test_core_stub_covers_the_runtime_public_api() -> None:
     assert (package / "py.typed").is_file()
     assert _class_methods(stub, "Controller") == _class_methods(runtime, "Controller")
     assert _class_methods(stub, "Motor") == _class_methods(runtime, "Motor")
+    assert _class_methods(stub, "ControllerGroup") == _class_methods(runtime, "ControllerGroup")

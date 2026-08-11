@@ -107,6 +107,39 @@ default.
 interval. These are host-side minimum submission intervals, not hard real-time guarantees for
 physical CAN bus timing.
 
+## Parallel controller batches
+
+`ControllerGroup` keeps one native worker per Controller and reuses those workers on every
+dispatch. One call wakes all member controllers from the same dispatch generation, preserves the
+command order within each controller, waits for every controller, and then returns. This avoids
+creating or scheduling Python threads in a control loop and lets independent per-controller TX
+pacing waits overlap.
+
+```python
+from motor_drive_layer import Controller, ControllerGroup, PosVelCommand
+
+ch0 = Controller.from_dm_device(device="usb2canfd-dual", channel=0)
+ch1 = Controller.from_dm_device(device="usb2canfd-dual", channel=1)
+motors_ch0 = [ch0.add_damiao_motor(i, 0x200 + i, "4340P") for i in range(1, 8)]
+motors_ch1 = [ch1.add_damiao_motor(i, 0x200 + i, "4340P") for i in range(9, 16)]
+targets = [0.0] * (len(motors_ch0) + len(motors_ch1))
+velocity_limit = 2.0
+
+with ControllerGroup([ch0, ch1]) as group:
+    group.send_pos_vel(
+        [PosVelCommand(motor, position, velocity_limit)
+         for motor, position in zip(motors_ch0 + motors_ch1, targets)]
+    )
+```
+
+`send_mit()` accepts `MitCommand` in the same way. A failed dispatch still waits for all member
+controllers and raises `CallError` with the controller index, endpoint/channel, motor ID, and
+underlying send error. Controllers and motors must remain open until the group is closed. Do not
+mix individual motor sends with a group dispatch concurrently because their relative frame order
+is unspecified. The shared DM_Device vendor call remains mutex-protected; only independent pacing
+waits and other per-controller work overlap, so this is synchronized host dispatch rather than a
+hard real-time simultaneous bus transmission guarantee.
+
 ## Fresh feedback
 
 `Motor.request_feedback()` is asynchronous, `Motor.get_state()` reads the current cache, and
@@ -181,6 +214,15 @@ channel, while the physical USB handle is shared and released after the last Con
 | `damiao_get_param_f32/u32(...)` / `damiao_write_param_f32/u32(...)` | Compatibility aliases using parameter-ID terminology. |
 | `store_parameters()` | Persist parameters to the motor and potentially disable it first. |
 | `close()` / `closed` | Free the native Motor handle without sending a disable command. |
+
+### ControllerGroup
+
+| API | Behavior |
+| --- | --- |
+| `ControllerGroup(controllers)` | Create and retain one persistent native send worker per Controller. |
+| `send_pos_vel(commands)` | Dispatch `PosVelCommand` values across their owning controllers and wait for all. |
+| `send_mit(commands)` | Dispatch `MitCommand` values across their owning controllers and wait for all. |
+| `close()` / `closed` | Stop and join the native workers; does not close member controllers. |
 
 Position, velocity, and torque use rad, rad/s, and Nm. `MotorState`, `FeedbackStats`, `Mode`,
 `CallError`, and the register constants are also exported at package level.

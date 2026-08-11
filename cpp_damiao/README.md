@@ -7,6 +7,7 @@
 - Damiao protocol frame packing and decoding.
 - Generic `CanBus` abstraction.
 - Runtime with background RX polling, per-motor state cache, feedback counters, configurable TX pacing, register acknowledgements, and lifecycle cleanup.
+- Persistent multi-controller workers for parallel MIT and POS_VEL batch dispatch.
 - Linux Damiao serial, SocketCAN, SocketCAN-FD, and optional DM_Device transports.
 - Shared C ABI library for Python and other language bindings.
 - Unit, codec, runtime, and ABI smoke tests without hardware.
@@ -61,5 +62,25 @@ motor ID that did not provide a fresh sample.
 `MotorHandle::feedback_stats()` returns whether sensor feedback has been observed, the number of decoded sensor frames, and the age of the latest frame. Register replies and write acknowledgements do not increment the sensor counter.
 
 The C ABI exposes the same information through `motor_handle_get_feedback_stats` and accepts caller-provided pacing through `motor_controller_set_tx_gap_us`.
+
+## Parallel controller batches
+
+Construct `damiao::ControllerGroup` with the Controllers that should participate. Its persistent
+workers start every dispatch from one generation, retain command order within each Controller, and
+wait for all Controllers before returning:
+
+```cpp
+damiao::ControllerGroup group({&ch0, &ch1});
+group.send_pos_vel({
+    {motor_ch0, 0.5f, 2.0f},
+    {motor_ch1, -0.5f, 2.0f},
+});
+```
+
+The equivalent C ABI is `motor_controller_group_new` plus
+`motor_controller_group_send_mit`/`motor_controller_group_send_pos_vel`. Controllers and motor
+handles must outlive the group. On failure, the call waits for all workers and reports the
+controller index, endpoint, motor ID, and underlying error. Per-controller pacing can overlap;
+transport-specific shared vendor locks remain responsible for vendor-library thread safety.
 
 Default C++ tests never open a real motor device.

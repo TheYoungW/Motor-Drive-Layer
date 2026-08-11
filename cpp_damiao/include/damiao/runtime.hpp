@@ -18,6 +18,8 @@
 
 namespace damiao {
 
+class MotorHandle;
+
 struct MotorState {
   uint8_t can_id = 0;
   uint32_t arbitration_id = 0;
@@ -33,6 +35,21 @@ struct FeedbackStats {
   bool has_feedback = false;
   uint64_t update_count = 0;
   std::chrono::nanoseconds age{0};
+};
+
+struct MitBatchCommand {
+  std::shared_ptr<MotorHandle> motor;
+  float pos = 0.0f;
+  float vel = 0.0f;
+  float kp = 0.0f;
+  float kd = 0.0f;
+  float tau = 0.0f;
+};
+
+struct PosVelBatchCommand {
+  std::shared_ptr<MotorHandle> motor;
+  float pos = 0.0f;
+  float velocity_limit = 0.0f;
 };
 
 class MotorHandle {
@@ -105,7 +122,8 @@ class MotorHandle {
 
 class Controller {
  public:
-  explicit Controller(std::shared_ptr<CanBus> bus);
+  explicit Controller(std::shared_ptr<CanBus> bus,
+                      std::string endpoint_label = "controller");
   ~Controller();
 
   Controller(const Controller&) = delete;
@@ -120,12 +138,18 @@ class Controller {
   void shutdown();
   void close_bus();
   void set_tx_gap(std::chrono::microseconds gap);
+  void send_mit_batch(const std::vector<MitBatchCommand>& commands);
+  void send_pos_vel_batch(const std::vector<PosVelBatchCommand>& commands);
+  const std::string& endpoint_label() const { return endpoint_label_; }
 
  private:
+  friend class ControllerGroup;
+
   void start_polling();
   void stop_polling();
   void polling_loop();
   std::vector<std::shared_ptr<MotorHandle>> sorted_motors() const;
+  bool owns_motor(const std::shared_ptr<MotorHandle>& motor) const;
 
   class PacingBus;
 
@@ -139,6 +163,29 @@ class Controller {
   bool bus_closed_ = false;
   bool tx_gap_env_override_ = false;
   std::chrono::milliseconds bulk_op_gap_{2};
+  std::string endpoint_label_;
+};
+
+// Coordinates one persistent native worker per Controller. Each dispatch wakes
+// all workers from one generation, sends each controller's commands in order,
+// and returns only after every controller completes. Controllers and motor
+// handles must outlive the group and must not be freed concurrently with it.
+class ControllerGroup {
+ public:
+  explicit ControllerGroup(std::vector<Controller*> controllers);
+  ~ControllerGroup();
+
+  ControllerGroup(const ControllerGroup&) = delete;
+  ControllerGroup& operator=(const ControllerGroup&) = delete;
+  ControllerGroup(ControllerGroup&&) = delete;
+  ControllerGroup& operator=(ControllerGroup&&) = delete;
+
+  void send_mit(const std::vector<MitBatchCommand>& commands);
+  void send_pos_vel(const std::vector<PosVelBatchCommand>& commands);
+
+ private:
+  class Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace damiao

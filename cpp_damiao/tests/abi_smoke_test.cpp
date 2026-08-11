@@ -32,6 +32,8 @@ int main() {
           "capabilities include configurable DM_Device bitrates");
   require(capabilities.find("register_metadata") != std::string::npos,
           "capabilities include canonical register metadata");
+  require(capabilities.find("parallel_controller_batches") != std::string::npos,
+          "capabilities include parallel controller batches");
 
   MotorRegisterInfo register_info{};
   require(motor_damiao_register_info(11, &register_info) == 0,
@@ -55,6 +57,12 @@ int main() {
           "TX-gap setter rejects a null controller");
   require(motor_controller_request_feedback_all(nullptr, 50) != 0,
           "batch feedback rejects a null controller");
+  require(motor_controller_group_new(nullptr, 0) == nullptr,
+          "controller group rejects an empty controller list");
+  require(motor_controller_group_send_mit(nullptr, nullptr, 0) != 0,
+          "MIT group send rejects a null group");
+  require(motor_controller_group_send_pos_vel(nullptr, nullptr, 0) != 0,
+          "POS_VEL group send rejects a null group");
   MotorFeedbackStats feedback_stats{};
   require(motor_handle_get_feedback_stats(nullptr, &feedback_stats) != 0,
           "feedback stats reject a null motor");

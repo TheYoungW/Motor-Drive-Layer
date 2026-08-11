@@ -5,6 +5,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <limits>
+#include <set>
+#include <sstream>
 #include <stdexcept>
 
 namespace damiao {
@@ -453,7 +455,9 @@ FeedbackStats MotorHandle::feedback_stats() const {
   return stats;
 }
 
-Controller::Controller(std::shared_ptr<CanBus> bus) : bus_(std::make_shared<PacingBus>(bus)) {
+Controller::Controller(std::shared_ptr<CanBus> bus, std::string endpoint_label)
+    : bus_(std::make_shared<PacingBus>(bus)),
+      endpoint_label_(std::move(endpoint_label)) {
   if (const char* raw = std::getenv("MOTOR_DRIVE_LAYER_TX_GAP_US")) {
     uint64_t gap_us = 0;
     const auto* end = raw + std::strlen(raw);
@@ -675,6 +679,256 @@ void Controller::close_bus() {
 
 void Controller::set_tx_gap(std::chrono::microseconds gap) {
   bus_->set_tx_gap(gap);
+}
+
+bool Controller::owns_motor(const std::shared_ptr<MotorHandle>& motor) const {
+  if (!motor) return false;
+  std::lock_guard<std::mutex> lock(motors_mutex_);
+  const auto found = motors_.find(motor->motor_id());
+  return found != motors_.end() && found->second == motor;
+}
+
+void Controller::send_mit_batch(const std::vector<MitBatchCommand>& commands) {
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  if (bus_closed_) throw std::runtime_error(endpoint_label_ + " is closed");
+  for (const auto& command : commands) {
+    if (!command.motor || !owns_motor(command.motor)) {
+      throw std::invalid_argument(endpoint_label_ + " received a motor it does not own");
+    }
+    try {
+      command.motor->send_mit(command.pos, command.vel, command.kp, command.kd,
+                              command.tau);
+    } catch (const std::exception& err) {
+      throw std::runtime_error(endpoint_label_ + ", motor ID " +
+                               std::to_string(command.motor->motor_id()) + ": " + err.what());
+    }
+  }
+}
+
+void Controller::send_pos_vel_batch(const std::vector<PosVelBatchCommand>& commands) {
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  if (bus_closed_) throw std::runtime_error(endpoint_label_ + " is closed");
+  for (const auto& command : commands) {
+    if (!command.motor || !owns_motor(command.motor)) {
+      throw std::invalid_argument(endpoint_label_ + " received a motor it does not own");
+    }
+    try {
+      command.motor->send_pos_vel(command.pos, command.velocity_limit);
+    } catch (const std::exception& err) {
+      throw std::runtime_error(endpoint_label_ + ", motor ID " +
+                               std::to_string(command.motor->motor_id()) + ": " + err.what());
+    }
+  }
+}
+
+class ControllerGroup::Impl {
+ public:
+  explicit Impl(std::vector<Controller*> controllers) : controllers_(std::move(controllers)) {
+    if (controllers_.empty()) {
+      throw std::invalid_argument("controller group requires at least one controller");
+    }
+    std::set<Controller*> unique;
+    for (auto* controller : controllers_) {
+      if (!controller) throw std::invalid_argument("controller group contains a null controller");
+      if (!unique.insert(controller).second) {
+        throw std::invalid_argument("controller group contains a duplicate controller");
+      }
+    }
+    mit_batches_.resize(controllers_.size());
+    pos_vel_batches_.resize(controllers_.size());
+    errors_.resize(controllers_.size());
+    try {
+      for (std::size_t i = 0; i < controllers_.size(); ++i) {
+        workers_.emplace_back([this, i] { worker_loop(i); });
+      }
+    } catch (...) {
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        stopping_ = true;
+      }
+      start_cv_.notify_all();
+      for (auto& worker : workers_) {
+        if (worker.joinable()) worker.join();
+      }
+      throw;
+    }
+  }
+
+  ~Impl() {
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      stopping_ = true;
+    }
+    start_cv_.notify_all();
+    for (auto& worker : workers_) {
+      if (worker.joinable()) worker.join();
+    }
+  }
+
+  const std::vector<Controller*>& controllers() const { return controllers_; }
+
+  void dispatch_mit(std::vector<std::vector<MitBatchCommand>> batches) {
+    std::lock_guard<std::mutex> call_lock(call_mutex_);
+    {
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
+      mit_batches_ = std::move(batches);
+      for (auto& batch : pos_vel_batches_) batch.clear();
+      task_kind_ = TaskKind::Mit;
+      completed_ = 0;
+      std::fill(errors_.begin(), errors_.end(), std::string{});
+      ++generation_;
+    }
+    start_cv_.notify_all();
+    wait_and_raise();
+  }
+
+  void dispatch_pos_vel(std::vector<std::vector<PosVelBatchCommand>> batches) {
+    std::lock_guard<std::mutex> call_lock(call_mutex_);
+    {
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
+      pos_vel_batches_ = std::move(batches);
+      for (auto& batch : mit_batches_) batch.clear();
+      task_kind_ = TaskKind::PosVel;
+      completed_ = 0;
+      std::fill(errors_.begin(), errors_.end(), std::string{});
+      ++generation_;
+    }
+    start_cv_.notify_all();
+    wait_and_raise();
+  }
+
+ private:
+  enum class TaskKind { Mit, PosVel };
+
+  void worker_loop(std::size_t index) {
+    uint64_t seen_generation = 0;
+    for (;;) {
+      TaskKind kind = TaskKind::Mit;
+      std::vector<MitBatchCommand> mit;
+      std::vector<PosVelBatchCommand> pos_vel;
+      {
+        std::unique_lock<std::mutex> lock(state_mutex_);
+        start_cv_.wait(lock, [&] { return stopping_ || generation_ != seen_generation; });
+        if (stopping_) return;
+        seen_generation = generation_;
+        kind = task_kind_;
+        if (kind == TaskKind::Mit) {
+          mit = mit_batches_[index];
+        } else {
+          pos_vel = pos_vel_batches_[index];
+        }
+      }
+
+      std::string error;
+      try {
+        if (kind == TaskKind::Mit) {
+          controllers_[index]->send_mit_batch(mit);
+        } else {
+          controllers_[index]->send_pos_vel_batch(pos_vel);
+        }
+      } catch (const std::exception& err) {
+        error = err.what();
+      } catch (...) {
+        error = "unknown native exception";
+      }
+
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        errors_[index] = std::move(error);
+        ++completed_;
+      }
+      done_cv_.notify_one();
+    }
+  }
+
+  void wait_and_raise() {
+    std::vector<std::string> errors;
+    {
+      std::unique_lock<std::mutex> lock(state_mutex_);
+      done_cv_.wait(lock, [&] { return completed_ == controllers_.size(); });
+      errors = errors_;
+    }
+    std::ostringstream message;
+    bool failed = false;
+    for (std::size_t i = 0; i < errors.size(); ++i) {
+      if (errors[i].empty()) continue;
+      if (!failed) message << "controller group send failed";
+      failed = true;
+      message << "; controller index " << i << ": " << errors[i];
+    }
+    if (failed) throw std::runtime_error(message.str());
+  }
+
+  std::vector<Controller*> controllers_;
+  std::vector<std::thread> workers_;
+  std::mutex call_mutex_;
+  std::mutex state_mutex_;
+  std::condition_variable start_cv_;
+  std::condition_variable done_cv_;
+  bool stopping_ = false;
+  uint64_t generation_ = 0;
+  std::size_t completed_ = 0;
+  TaskKind task_kind_ = TaskKind::Mit;
+  std::vector<std::vector<MitBatchCommand>> mit_batches_;
+  std::vector<std::vector<PosVelBatchCommand>> pos_vel_batches_;
+  std::vector<std::string> errors_;
+};
+
+ControllerGroup::ControllerGroup(std::vector<Controller*> controllers)
+    : impl_(std::make_unique<Impl>(std::move(controllers))) {}
+
+ControllerGroup::~ControllerGroup() = default;
+
+void ControllerGroup::send_mit(const std::vector<MitBatchCommand>& commands) {
+  std::vector<std::vector<MitBatchCommand>> batches(impl_->controllers().size());
+  std::set<const MotorHandle*> unique;
+  for (const auto& command : commands) {
+    if (!command.motor) throw std::invalid_argument("MIT batch contains a null motor");
+    if (!unique.insert(command.motor.get()).second) {
+      throw std::invalid_argument("MIT batch contains duplicate motor ID " +
+                                  std::to_string(command.motor->motor_id()));
+    }
+    bool found = false;
+    for (std::size_t i = 0; i < impl_->controllers().size(); ++i) {
+      if (impl_->controllers()[i]->owns_motor(command.motor)) {
+        batches[i].push_back(command);
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      throw std::invalid_argument("MIT batch motor ID " +
+                                  std::to_string(command.motor->motor_id()) +
+                                  " does not belong to this controller group");
+    }
+  }
+  impl_->dispatch_mit(std::move(batches));
+}
+
+void ControllerGroup::send_pos_vel(const std::vector<PosVelBatchCommand>& commands) {
+  std::vector<std::vector<PosVelBatchCommand>> batches(impl_->controllers().size());
+  std::set<const MotorHandle*> unique;
+  for (const auto& command : commands) {
+    if (!command.motor) throw std::invalid_argument("POS_VEL batch contains a null motor");
+    if (!unique.insert(command.motor.get()).second) {
+      throw std::invalid_argument("POS_VEL batch contains duplicate motor ID " +
+                                  std::to_string(command.motor->motor_id()));
+    }
+    bool found = false;
+    for (std::size_t i = 0; i < impl_->controllers().size(); ++i) {
+      if (impl_->controllers()[i]->owns_motor(command.motor)) {
+        batches[i].push_back(command);
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      throw std::invalid_argument("POS_VEL batch motor ID " +
+                                  std::to_string(command.motor->motor_id()) +
+                                  " does not belong to this controller group");
+    }
+  }
+  impl_->dispatch_pos_vel(std::move(batches));
 }
 
 }  // namespace damiao

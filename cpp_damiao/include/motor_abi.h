@@ -8,7 +8,23 @@ extern "C" {
 #endif
 
 typedef struct MotorController MotorController;
+typedef struct MotorControllerGroup MotorControllerGroup;
 typedef struct MotorHandle MotorHandle;
+
+typedef struct MotorMitBatchCommand {
+  MotorHandle* motor;
+  float target_position;
+  float target_velocity;
+  float stiffness;
+  float damping;
+  float feedforward_torque;
+} MotorMitBatchCommand;
+
+typedef struct MotorPosVelBatchCommand {
+  MotorHandle* motor;
+  float target_position;
+  float velocity_limit;
+} MotorPosVelBatchCommand;
 
 typedef struct MotorState {
   int32_t has_value;
@@ -79,6 +95,9 @@ int32_t motor_damiao_register_info(uint8_t rid, MotorRegisterInfo* out_info);
 //   motor_controller_free or motor_handle_free concurrently with any other
 //   operation using the same pointer, and do not use a pointer after free.
 // - Different handles may be used from different threads.
+// - Controller-group calls are serialized per group. Do not concurrently use
+//   individual send calls for motors participating in a group dispatch; frame
+//   ordering between those independent calls is unspecified.
 // - MotorHandle values are logical children of the MotorController that
 //   created them. Do not perform motor operations after freeing the parent
 //   controller. The handle itself may still be passed to motor_handle_free.
@@ -90,6 +109,23 @@ MotorController* motor_controller_new_dm_device(const char* dm_device_type, cons
 MotorController* motor_controller_new_dm_device_ex(const char* dm_device_type, const char* dm_channel,
                                                    uint32_t bitrate, uint32_t data_bitrate);
 void motor_controller_free(MotorController* controller);
+
+// Creates one persistent native worker for each controller. The controller and
+// all motor handles used in commands must outlive the group. Group sends wake
+// every worker for one shared dispatch generation, preserve command order
+// within each controller, and wait for all controllers before returning. A
+// failed dispatch still waits for every controller and reports controller,
+// endpoint, motor ID, and native error details through motor_last_error_message.
+MotorControllerGroup* motor_controller_group_new(MotorController* const* controllers,
+                                                 uint32_t controller_count);
+void motor_controller_group_free(MotorControllerGroup* group);
+int32_t motor_controller_group_send_mit(MotorControllerGroup* group,
+                                        const MotorMitBatchCommand* commands,
+                                        uint32_t command_count);
+int32_t motor_controller_group_send_pos_vel(MotorControllerGroup* group,
+                                            const MotorPosVelBatchCommand* commands,
+                                            uint32_t command_count);
+
 int32_t motor_controller_poll_feedback_once(MotorController* controller);
 int32_t motor_controller_request_feedback_all(MotorController* controller, uint32_t timeout_ms);
 int32_t motor_controller_enable_all(MotorController* controller);

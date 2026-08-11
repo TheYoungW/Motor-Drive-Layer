@@ -1,5 +1,5 @@
 from .abi import abi_capabilities as abi_capabilities, abi_version as abi_version
-from .core import Controller as Controller, Motor as Motor
+from .core import Controller as Controller, ControllerGroup as ControllerGroup, Motor as Motor
 from .damiao_registers import (
     DAMIAO_HIGH_IMPACT_RIDS as DAMIAO_HIGH_IMPACT_RIDS,
     DAMIAO_PROTECTION_RIDS as DAMIAO_PROTECTION_RIDS,
@@ -28,7 +28,13 @@ from .errors import (
     CallError as CallError,
     MotorBridgeError as MotorBridgeError,
 )
-from .models import FeedbackStats as FeedbackStats, Mode as Mode, MotorState as MotorState
+from .models import (
+    FeedbackStats as FeedbackStats,
+    MitCommand as MitCommand,
+    Mode as Mode,
+    MotorState as MotorState,
+    PosVelCommand as PosVelCommand,
+)
 
 __version__: str
 def get_version() -> str: ...

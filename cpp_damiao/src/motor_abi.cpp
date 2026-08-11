@@ -1,10 +1,13 @@
 #include "motor_abi.h"
 
+#include <algorithm>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "damiao/dm_device_bus.hpp"
 #include "damiao/dm_serial_bus.hpp"
@@ -71,6 +74,18 @@ struct MotorHandle {
   std::mutex mutex;
 };
 
+struct MotorControllerGroup {
+  MotorControllerGroup(std::unique_ptr<damiao::ControllerGroup> value,
+                       std::vector<MotorController*> controllers)
+      : group(std::move(value)), controller_wrappers(std::move(controllers)) {
+    std::sort(controller_wrappers.begin(), controller_wrappers.end(),
+              std::less<MotorController*>{});
+  }
+  std::unique_ptr<damiao::ControllerGroup> group;
+  std::vector<MotorController*> controller_wrappers;
+  std::mutex mutex;
+};
+
 extern "C" {
 
 const char* motor_last_error_message(void) {
@@ -82,7 +97,7 @@ const char* motor_abi_version(void) {
 }
 
 const char* motor_abi_capabilities_json(void) {
-  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.5.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"register_metadata":true,"dm_device_abis":["v1.0","v1.1"],"dm_device_configurable_bitrates":true,"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","enable_all","disable_all","set_tx_gap_us"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
+  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.5.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"register_metadata":true,"dm_device_abis":["v1.0","v1.1"],"dm_device_configurable_bitrates":true,"parallel_controller_batches":["mit","pos-vel"],"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","enable_all","disable_all","set_tx_gap_us"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
 }
 
 int32_t motor_damiao_register_info(uint8_t rid, MotorRegisterInfo* out_info) {
@@ -109,7 +124,8 @@ MotorController* motor_controller_new_socketcan(const char* channel) {
   }
   try {
     auto bus = damiao::SocketCanBus::open(channel);
-    return new MotorController(std::make_unique<damiao::Controller>(bus));
+    return new MotorController(
+        std::make_unique<damiao::Controller>(bus, std::string("socketcan ") + channel));
   } catch (const std::exception& err) {
     set_last_error(err.what());
     return nullptr;
@@ -124,7 +140,8 @@ MotorController* motor_controller_new_socketcanfd(const char* channel) {
   try {
     const bool enable_brs = false;
     auto bus = damiao::SocketCanFdBus::open(channel, enable_brs);
-    return new MotorController(std::make_unique<damiao::Controller>(bus));
+    return new MotorController(
+        std::make_unique<damiao::Controller>(bus, std::string("socketcanfd ") + channel));
   } catch (const std::exception& err) {
     set_last_error(err.what());
     return nullptr;
@@ -138,7 +155,8 @@ MotorController* motor_controller_new_dm_serial(const char* serial_port, uint32_
   }
   try {
     auto bus = damiao::DmSerialBus::open(serial_port, baud);
-    return new MotorController(std::make_unique<damiao::Controller>(bus));
+    return new MotorController(
+        std::make_unique<damiao::Controller>(bus, std::string("dm-serial ") + serial_port));
   } catch (const std::exception& err) {
     set_last_error(err.what());
     return nullptr;
@@ -165,7 +183,8 @@ MotorController* motor_controller_new_dm_device_ex(const char* dm_device_type,
   try {
     auto bus = damiao::DmDeviceBus::open(damiao::parse_dm_device_type(dm_device_type),
                                          dm_channel, bitrate, data_bitrate);
-    return new MotorController(std::make_unique<damiao::Controller>(bus));
+    return new MotorController(std::make_unique<damiao::Controller>(
+        bus, std::string("dm-device channel ") + dm_channel));
   } catch (const std::exception& err) {
     set_last_error(err.what());
     return nullptr;
@@ -174,6 +193,127 @@ MotorController* motor_controller_new_dm_device_ex(const char* dm_device_type,
 
 void motor_controller_free(MotorController* controller) {
   delete controller;
+}
+
+MotorControllerGroup* motor_controller_group_new(MotorController* const* controllers,
+                                                 uint32_t controller_count) {
+  if (controllers == nullptr && controller_count > 0) {
+    set_last_error("controllers is null");
+    return nullptr;
+  }
+  try {
+    std::vector<damiao::Controller*> native;
+    std::vector<MotorController*> wrappers;
+    native.reserve(controller_count);
+    wrappers.reserve(controller_count);
+    for (uint32_t i = 0; i < controller_count; ++i) {
+      if (controllers[i] == nullptr) {
+        throw std::invalid_argument("controller group contains null controller at index " +
+                                    std::to_string(i));
+      }
+      native.push_back(controllers[i]->controller.get());
+      wrappers.push_back(controllers[i]);
+    }
+    return new MotorControllerGroup(std::make_unique<damiao::ControllerGroup>(std::move(native)),
+                                    std::move(wrappers));
+  } catch (const std::exception& err) {
+    set_last_error(err.what());
+    return nullptr;
+  } catch (...) {
+    set_last_error("controller group creation failed with unknown exception");
+    return nullptr;
+  }
+}
+
+void motor_controller_group_free(MotorControllerGroup* group) {
+  delete group;
+}
+
+int32_t motor_controller_group_send_mit(MotorControllerGroup* group,
+                                        const MotorMitBatchCommand* commands,
+                                        uint32_t command_count) {
+  if (group == nullptr) return fail("controller group is null");
+  if (commands == nullptr && command_count > 0) return fail("MIT commands is null");
+  std::lock_guard<std::mutex> group_lock(group->mutex);
+  return ffi_call([&] {
+    std::vector<std::unique_lock<std::mutex>> controller_locks;
+    controller_locks.reserve(group->controller_wrappers.size());
+    for (auto* controller : group->controller_wrappers) {
+      controller_locks.emplace_back(controller->mutex);
+    }
+    std::vector<MotorHandle*> handles;
+    handles.reserve(command_count);
+    for (uint32_t i = 0; i < command_count; ++i) {
+      if (commands[i].motor == nullptr) {
+        throw std::invalid_argument("MIT batch contains null motor at command index " +
+                                    std::to_string(i));
+      }
+      handles.push_back(commands[i].motor);
+    }
+    std::sort(handles.begin(), handles.end(), std::less<MotorHandle*>{});
+    if (std::adjacent_find(handles.begin(), handles.end()) != handles.end()) {
+      throw std::invalid_argument("MIT batch contains a duplicate motor handle");
+    }
+    std::vector<std::unique_lock<std::mutex>> motor_locks;
+    motor_locks.reserve(handles.size());
+    for (auto* handle : handles) motor_locks.emplace_back(handle->mutex);
+
+    std::vector<damiao::MitBatchCommand> native;
+    native.reserve(command_count);
+    for (uint32_t i = 0; i < command_count; ++i) {
+      native.push_back(damiao::MitBatchCommand{
+          commands[i].motor->motor,
+          commands[i].target_position,
+          commands[i].target_velocity,
+          commands[i].stiffness,
+          commands[i].damping,
+          commands[i].feedforward_torque,
+      });
+    }
+    group->group->send_mit(native);
+  });
+}
+
+int32_t motor_controller_group_send_pos_vel(MotorControllerGroup* group,
+                                            const MotorPosVelBatchCommand* commands,
+                                            uint32_t command_count) {
+  if (group == nullptr) return fail("controller group is null");
+  if (commands == nullptr && command_count > 0) return fail("POS_VEL commands is null");
+  std::lock_guard<std::mutex> group_lock(group->mutex);
+  return ffi_call([&] {
+    std::vector<std::unique_lock<std::mutex>> controller_locks;
+    controller_locks.reserve(group->controller_wrappers.size());
+    for (auto* controller : group->controller_wrappers) {
+      controller_locks.emplace_back(controller->mutex);
+    }
+    std::vector<MotorHandle*> handles;
+    handles.reserve(command_count);
+    for (uint32_t i = 0; i < command_count; ++i) {
+      if (commands[i].motor == nullptr) {
+        throw std::invalid_argument("POS_VEL batch contains null motor at command index " +
+                                    std::to_string(i));
+      }
+      handles.push_back(commands[i].motor);
+    }
+    std::sort(handles.begin(), handles.end(), std::less<MotorHandle*>{});
+    if (std::adjacent_find(handles.begin(), handles.end()) != handles.end()) {
+      throw std::invalid_argument("POS_VEL batch contains a duplicate motor handle");
+    }
+    std::vector<std::unique_lock<std::mutex>> motor_locks;
+    motor_locks.reserve(handles.size());
+    for (auto* handle : handles) motor_locks.emplace_back(handle->mutex);
+
+    std::vector<damiao::PosVelBatchCommand> native;
+    native.reserve(command_count);
+    for (uint32_t i = 0; i < command_count; ++i) {
+      native.push_back(damiao::PosVelBatchCommand{
+          commands[i].motor->motor,
+          commands[i].target_position,
+          commands[i].velocity_limit,
+      });
+    }
+    group->group->send_pos_vel(native);
+  });
 }
 
 int32_t motor_controller_poll_feedback_once(MotorController* controller) {

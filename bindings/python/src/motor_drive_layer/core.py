@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import ctypes
+from collections.abc import Sequence
 from ctypes import c_float, c_uint32
+from threading import Lock
 
-from .abi import CFeedbackStats, CState, get_abi
+from .abi import (
+    CFeedbackStats,
+    CMitBatchCommand,
+    CPosVelBatchCommand,
+    CState,
+    get_abi,
+)
 from .dm_device_runtime import ensure_dm_device_runtime
 from .errors import CallError
-from .models import FeedbackStats, Mode, MotorState
+from .models import FeedbackStats, MitCommand, Mode, MotorState, PosVelCommand
 
 
 def _err_text() -> str:
@@ -352,3 +360,109 @@ class Motor:
             update_count=int(stats.update_count),
             age_ns=int(stats.age_ns),
         )
+
+
+class ControllerGroup:
+    """Persistent native workers for synchronized multi-controller batches."""
+
+    def __init__(self, controllers: Sequence[Controller]) -> None:
+        values = tuple(controllers)
+        if not values:
+            raise ValueError("controllers must not be empty")
+        if len({id(controller) for controller in values}) != len(values):
+            raise ValueError("controllers must not contain duplicates")
+        self._abi = get_abi()
+        self._call_lock = Lock()
+        self._ptr = None
+        if not self._abi.has_controller_group:
+            raise CallError(
+                "the loaded motor_abi does not support ControllerGroup; "
+                "upgrade motor-drive-layer"
+            )
+        self._controllers = values
+        pointers = (ctypes.c_void_p * len(values))(
+            *(controller._require_open() for controller in values)
+        )
+        self._ptr = self._abi.lib.motor_controller_group_new(pointers, len(values))
+        if not self._ptr:
+            raise CallError(f"controller_group_new failed: {_err_text()}")
+
+    @property
+    def closed(self) -> bool:
+        return not bool(self._ptr)
+
+    def _require_open(self) -> int:
+        if not self._ptr:
+            raise CallError("controller group is closed")
+        for index, controller in enumerate(self._controllers):
+            if controller.closed:
+                raise CallError(f"controller group member {index} is closed")
+        return self._ptr
+
+    def _validate_motor(self, motor: Motor) -> int:
+        ptr = motor._require_open()
+        if getattr(motor, "_controller", None) not in self._controllers:
+            raise ValueError("command motor does not belong to this ControllerGroup")
+        return ptr
+
+    def send_mit(self, commands: Sequence[MitCommand]) -> None:
+        values = tuple(commands)
+        native = (CMitBatchCommand * len(values))(
+            *(
+                CMitBatchCommand(
+                    self._validate_motor(command.motor),
+                    command.pos,
+                    command.vel,
+                    command.kp,
+                    command.kd,
+                    command.tau,
+                )
+                for command in values
+            )
+        )
+        with self._call_lock:
+            _ok(
+                self._abi.lib.motor_controller_group_send_mit(
+                    self._require_open(), native if values else None, len(values)
+                ),
+                "controller_group_send_mit",
+            )
+
+    def send_pos_vel(self, commands: Sequence[PosVelCommand]) -> None:
+        values = tuple(commands)
+        native = (CPosVelBatchCommand * len(values))(
+            *(
+                CPosVelBatchCommand(
+                    self._validate_motor(command.motor),
+                    command.pos,
+                    command.vlim,
+                )
+                for command in values
+            )
+        )
+        with self._call_lock:
+            _ok(
+                self._abi.lib.motor_controller_group_send_pos_vel(
+                    self._require_open(), native if values else None, len(values)
+                ),
+                "controller_group_send_pos_vel",
+            )
+
+    def close(self) -> None:
+        with self._call_lock:
+            if self._ptr:
+                self._abi.lib.motor_controller_group_free(self._ptr)
+                self._ptr = None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def __enter__(self) -> "ControllerGroup":
+        self._require_open()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()

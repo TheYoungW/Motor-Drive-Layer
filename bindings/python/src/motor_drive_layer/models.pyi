@@ -1,4 +1,8 @@
 from enum import IntEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .core import Motor
 
 class Mode(IntEnum):
     MIT = 1
@@ -32,3 +36,20 @@ class FeedbackStats:
     update_count: int
     age_ns: int
     def __init__(self, has_feedback: bool, update_count: int, age_ns: int) -> None: ...
+
+class MitCommand:
+    motor: Motor
+    pos: float
+    vel: float
+    kp: float
+    kd: float
+    tau: float
+    def __init__(
+        self, motor: Motor, pos: float, vel: float, kp: float, kd: float, tau: float
+    ) -> None: ...
+
+class PosVelCommand:
+    motor: Motor
+    pos: float
+    vlim: float
+    def __init__(self, motor: Motor, pos: float, vlim: float) -> None: ...

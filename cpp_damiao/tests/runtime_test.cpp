@@ -160,6 +160,80 @@ class FakeBus final : public damiao::CanBus {
   bool always_fail_receive_ = false;
 };
 
+class DispatchBarrier {
+ public:
+  void arrive_and_wait() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    const auto generation = generation_;
+    ++arrivals_;
+    if (arrivals_ == 2) {
+      arrivals_ = 0;
+      ++generation_;
+      cv_.notify_all();
+      return;
+    }
+    if (!cv_.wait_for(lock, std::chrono::milliseconds(200),
+                      [&] { return generation_ != generation; })) {
+      throw std::runtime_error("controller workers did not start together");
+    }
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  int arrivals_ = 0;
+  uint64_t generation_ = 0;
+};
+
+class ParallelBatchBus final : public damiao::CanBus {
+ public:
+  explicit ParallelBatchBus(std::shared_ptr<DispatchBarrier> barrier)
+      : barrier_(std::move(barrier)) {}
+
+  void send(const damiao::CanFrame& frame) override {
+    std::size_t index = 0;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      index = sent_.size();
+    }
+    if (index % 7 == 0) barrier_->arrive_and_wait();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (fail_id_.has_value() && frame.id == *fail_id_) {
+        throw std::runtime_error("injected send failure");
+      }
+      sent_.push_back(frame);
+      sent_at_.push_back(std::chrono::steady_clock::now());
+    }
+  }
+
+  std::optional<damiao::CanFrame> receive_for(std::chrono::milliseconds) override {
+    return std::nullopt;
+  }
+
+  void fail_on(uint32_t arbitration_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    fail_id_ = arbitration_id;
+  }
+
+  std::vector<damiao::CanFrame> sent_snapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return sent_;
+  }
+
+  std::vector<std::chrono::steady_clock::time_point> sent_times_snapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return sent_at_;
+  }
+
+ private:
+  std::shared_ptr<DispatchBarrier> barrier_;
+  mutable std::mutex mutex_;
+  std::vector<damiao::CanFrame> sent_;
+  std::vector<std::chrono::steady_clock::time_point> sent_at_;
+  std::optional<uint32_t> fail_id_;
+};
+
 void require(bool condition, const char* message) {
   if (!condition) {
     throw std::runtime_error(message);
@@ -626,6 +700,75 @@ int main() {
   require(write_elapsed < std::chrono::seconds(1),
           "register write uses the Rust ACK retry budget");
   write_timeout_controller.close_bus();
+
+  auto dispatch_barrier = std::make_shared<DispatchBarrier>();
+  auto channel0_bus = std::make_shared<ParallelBatchBus>(dispatch_barrier);
+  auto channel1_bus = std::make_shared<ParallelBatchBus>(dispatch_barrier);
+  damiao::Controller channel0(channel0_bus, "CH0");
+  damiao::Controller channel1(channel1_bus, "CH1");
+  std::vector<std::shared_ptr<damiao::MotorHandle>> channel0_motors;
+  std::vector<std::shared_ptr<damiao::MotorHandle>> channel1_motors;
+  for (uint16_t id = 1; id <= 7; ++id) {
+    channel0_motors.push_back(channel0.add_damiao_motor(id, 0x10 + id, "4310"));
+  }
+  for (uint16_t id = 9; id <= 15; ++id) {
+    channel1_motors.push_back(channel1.add_damiao_motor(id, 0x10 + id, "4310"));
+  }
+  channel0.set_tx_gap(std::chrono::microseconds(3000));
+  channel1.set_tx_gap(std::chrono::microseconds(3000));
+  damiao::ControllerGroup controller_group({&channel0, &channel1});
+
+  std::vector<damiao::PosVelBatchCommand> pos_vel_commands;
+  for (const auto& motor : channel0_motors) {
+    pos_vel_commands.push_back({motor, 0.25f, 1.0f});
+  }
+  for (const auto& motor : channel1_motors) {
+    pos_vel_commands.push_back({motor, -0.25f, 1.0f});
+  }
+  const auto parallel_started = std::chrono::steady_clock::now();
+  controller_group.send_pos_vel(pos_vel_commands);
+  const auto parallel_elapsed = std::chrono::steady_clock::now() - parallel_started;
+  require(channel0_bus->sent_snapshot().size() == 7 &&
+              channel1_bus->sent_snapshot().size() == 7,
+          "parallel POS_VEL dispatch sends all commands on both controllers");
+  require(parallel_elapsed < std::chrono::milliseconds(30),
+          "per-controller TX gaps overlap in the native parallel dispatcher");
+  const auto ch0_times = channel0_bus->sent_times_snapshot();
+  const auto ch1_times = channel1_bus->sent_times_snapshot();
+  const auto start_delta = ch0_times.front() > ch1_times.front()
+                               ? ch0_times.front() - ch1_times.front()
+                               : ch1_times.front() - ch0_times.front();
+  require(start_delta < std::chrono::milliseconds(5),
+          "controller workers begin from one dispatch generation");
+
+  std::vector<damiao::MitBatchCommand> mit_commands;
+  for (const auto& motor : channel0_motors) {
+    mit_commands.push_back({motor, 0.1f, 0.0f, 1.0f, 0.1f, 0.0f});
+  }
+  for (const auto& motor : channel1_motors) {
+    mit_commands.push_back({motor, -0.1f, 0.0f, 1.0f, 0.1f, 0.0f});
+  }
+  controller_group.send_mit(mit_commands);
+  require(channel0_bus->sent_snapshot().size() == 14 &&
+              channel1_bus->sent_snapshot().size() == 14,
+          "persistent workers support a subsequent MIT dispatch");
+
+  channel1_bus->fail_on(0x100 + channel1_motors.back()->motor_id());
+  bool detailed_group_error = false;
+  try {
+    controller_group.send_pos_vel(pos_vel_commands);
+  } catch (const std::runtime_error& error) {
+    const std::string message = error.what();
+    detailed_group_error = message.find("controller index 1") != std::string::npos &&
+                           message.find("CH1") != std::string::npos &&
+                           message.find("motor ID 15") != std::string::npos &&
+                           message.find("injected send failure") != std::string::npos;
+  }
+  require(detailed_group_error,
+          "parallel dispatch errors identify controller, channel label, motor, and reason");
+  channel0.close_bus();
+  channel1.close_bus();
+
   std::cout << "damiao runtime tests passed\n";
   return 0;
   } catch (const std::exception& error) {

@@ -40,6 +40,25 @@ class CRegisterInfo(Structure):
     ]
 
 
+class CMitBatchCommand(Structure):
+    _fields_ = [
+        ("motor", c_void_p),
+        ("target_position", c_float),
+        ("target_velocity", c_float),
+        ("stiffness", c_float),
+        ("damping", c_float),
+        ("feedforward_torque", c_float),
+    ]
+
+
+class CPosVelBatchCommand(Structure):
+    _fields_ = [
+        ("motor", c_void_p),
+        ("target_position", c_float),
+        ("velocity_limit", c_float),
+    ]
+
+
 def _candidate_lib_paths() -> list[Path]:
     candidates: list[Path] = []
     env = os.getenv("MOTOR_DRIVE_LAYER_LIB")
@@ -155,6 +174,31 @@ class Abi:
                 c_uint32,
             ]
             lib.motor_controller_new_dm_device_ex.restype = c_void_p
+        self.has_controller_group = all(
+            hasattr(lib, name)
+            for name in (
+                "motor_controller_group_new",
+                "motor_controller_group_free",
+                "motor_controller_group_send_mit",
+                "motor_controller_group_send_pos_vel",
+            )
+        )
+        if self.has_controller_group:
+            lib.motor_controller_group_new.argtypes = [POINTER(c_void_p), c_uint32]
+            lib.motor_controller_group_new.restype = c_void_p
+            lib.motor_controller_group_free.argtypes = [c_void_p]
+            lib.motor_controller_group_send_mit.argtypes = [
+                c_void_p,
+                POINTER(CMitBatchCommand),
+                c_uint32,
+            ]
+            lib.motor_controller_group_send_mit.restype = c_int32
+            lib.motor_controller_group_send_pos_vel.argtypes = [
+                c_void_p,
+                POINTER(CPosVelBatchCommand),
+                c_uint32,
+            ]
+            lib.motor_controller_group_send_pos_vel.restype = c_int32
         lib.motor_controller_free.argtypes = [c_void_p]
         lib.motor_controller_poll_feedback_once.argtypes = [c_void_p]
         lib.motor_controller_poll_feedback_once.restype = c_int32

@@ -100,6 +100,29 @@ Controller 只有一台电机时，运行时不额外延迟发送。添加第二
 `enable_all()` 和 `disable_all()` 还会默认在电机之间额外等待 2 ms。在创建 Controller 前设置
 `MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS` 可修改这个批量操作间隔。这些数值是主机侧的最小提交间隔，不是对 CAN 总线物理时序的硬实时保证。
 
+## 多 Controller 并行批量发送
+
+`ControllerGroup` 为每个 Controller 常驻一个原生工作线程，并在每次发送时复用。一次调用会用同一批次代数唤醒全部 Controller，保持每个 Controller 内部的命令顺序，等待所有 Controller 完成后统一返回。控制循环不再每周期创建或调度 Python 线程，不同 Controller 的发送间隔等待可以重叠。
+
+```python
+from motor_drive_layer import Controller, ControllerGroup, PosVelCommand
+
+ch0 = Controller.from_dm_device(device="usb2canfd-dual", channel=0)
+ch1 = Controller.from_dm_device(device="usb2canfd-dual", channel=1)
+motors_ch0 = [ch0.add_damiao_motor(i, 0x200 + i, "4340P") for i in range(1, 8)]
+motors_ch1 = [ch1.add_damiao_motor(i, 0x200 + i, "4340P") for i in range(9, 16)]
+targets = [0.0] * (len(motors_ch0) + len(motors_ch1))
+velocity_limit = 2.0
+
+with ControllerGroup([ch0, ch1]) as group:
+    group.send_pos_vel(
+        [PosVelCommand(motor, position, velocity_limit)
+         for motor, position in zip(motors_ch0 + motors_ch1, targets)]
+    )
+```
+
+`send_mit()` 同样接收 `MitCommand`。某一路失败时，批次仍会等待全部 Controller 结束，然后通过 `CallError` 返回 Controller 索引、端点/通道、电机 ID 和底层错误。Controller 和 Motor 必须保持打开，直到 Group 关闭；不要把单电机发送与 Group 发送并发混用，因为两者之间的帧顺序没有定义。DM_Device 厂商调用仍由共享互斥锁保护，重叠的是各通道独立的发送间隔等待及其他通道内工作，因此这是主机侧同步调度，不承诺两条物理总线硬实时同时发帧。
+
 ## 新鲜反馈
 
 `Motor.request_feedback()` 只异步发送请求，`Motor.get_state()` 只读取当前缓存，
@@ -170,6 +193,15 @@ Controller 关闭后完整释放。
 | `damiao_get_param_f32/u32(...)` / `damiao_write_param_f32/u32(...)` | 兼容参数 ID 命名的寄存器访问接口。 |
 | `store_parameters()` | 将参数持久保存到电机，可能先发送失能命令。 |
 | `close()` / `closed` | 释放原生 Motor 句柄；不发送电机失能命令。 |
+
+### ControllerGroup
+
+| 接口 | 作用 |
+| --- | --- |
+| `ControllerGroup(controllers)` | 为每个 Controller 创建并持有一个常驻原生发送线程。 |
+| `send_pos_vel(commands)` | 按 Motor 所属 Controller 并行调度 `PosVelCommand`，并等待全部完成。 |
+| `send_mit(commands)` | 按 Motor 所属 Controller 并行调度 `MitCommand`，并等待全部完成。 |
+| `close()` / `closed` | 停止并回收工作线程；不会关闭成员 Controller。 |
 
 位置、速度和力矩统一使用 rad、rad/s 和 Nm。`MotorState`、`FeedbackStats`、`Mode`、`CallError` 以及寄存器常量也从包顶层公开。
 

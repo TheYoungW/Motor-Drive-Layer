@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "abi": {
     "metadata": [
@@ -25,6 +25,12 @@
       "motor_controller_close_bus",
       "motor_controller_set_tx_gap_us",
       "motor_controller_add_damiao_motor"
+    ],
+    "controller_group": [
+      "motor_controller_group_new",
+      "motor_controller_group_free",
+      "motor_controller_group_send_mit",
+      "motor_controller_group_send_pos_vel"
     ],
     "motor_lifecycle": [
       "motor_handle_free",
@@ -102,6 +108,17 @@
       "Motor.damiao_write_param_u32(param_id, value)",
       "Motor.get_state()",
       "Motor.get_feedback_stats()"
+    ],
+    "controller_group_methods": [
+      "ControllerGroup(controllers)",
+      "ControllerGroup.close()",
+      "ControllerGroup.closed",
+      "ControllerGroup.send_mit(commands)",
+      "ControllerGroup.send_pos_vel(commands)"
+    ],
+    "command_types": [
+      "MitCommand(motor, pos, vel, kp, kd, tau)",
+      "PosVelCommand(motor, pos, vlim)"
     ],
     "python": {
       "module_metadata": [

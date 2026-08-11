@@ -19,16 +19,25 @@ request with the configured TX pacing and waits against one shared deadline; a t
 missing motor IDs. The lower-level `request_feedback()`, `get_state()`, and
 `poll_feedback_once()` methods remain non-blocking asynchronous/cache operations.
 
+For synchronized multi-channel control, `ControllerGroup([ch0, ch1])` creates one persistent
+native worker per Controller. `send_pos_vel([...])` and `send_mit([...])` dispatch typed
+`PosVelCommand` or `MitCommand` values across their owning controllers, overlap independent TX
+pacing waits, and return after every controller finishes. Errors retain the controller/channel,
+motor ID, and native reason.
+
 The wheel includes `py.typed` and `.pyi` declarations for editor completion and static type
 checking. The main public APIs are:
 
 - `Controller(...)`, `from_socketcanfd(...)`, `from_dm_serial(...)`, and `from_dm_device(...)`.
 - `Controller.add_damiao_motor(...)`, `enable_all()`, `disable_all()`,
   `request_feedback_all()`, `set_tx_gap_us()`, `shutdown()`, and `close_bus()`.
+- `ControllerGroup(...)`, `send_pos_vel(...)`, and `send_mit(...)` for persistent native
+  multi-controller dispatch.
 - `Motor.enable()`, `disable()`, `ensure_mode()`, all four control-mode send methods,
   fresh/cached feedback methods, typed register access, parameter aliases, and
   `store_parameters()`.
-- `MotorState`, `FeedbackStats`, `Mode`, register metadata/constants, and SDK exception classes.
+- `MitCommand`, `PosVelCommand`, `MotorState`, `FeedbackStats`, `Mode`, register
+  metadata/constants, and SDK exception classes.
 
 `Motor` is a logical child of its creating `Controller`. After the parent closes, motor operations
 raise `CallError`; `motor.close()` can still release the handle. Both classes support context
