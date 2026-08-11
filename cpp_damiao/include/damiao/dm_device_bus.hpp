@@ -22,7 +22,9 @@ std::string resolve_dm_device_library_path();
 class DmDeviceBus final : public CanBus {
  public:
   static std::shared_ptr<DmDeviceBus> open(DmDeviceType device_type,
-                                           const std::string& dm_channel);
+                                           const std::string& dm_channel,
+                                           uint32_t bitrate = 1'000'000,
+                                           uint32_t data_bitrate = 5'000'000);
   ~DmDeviceBus() override;
 
   DmDeviceBus(const DmDeviceBus&) = delete;

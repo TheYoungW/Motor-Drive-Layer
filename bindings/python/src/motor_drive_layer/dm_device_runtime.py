@@ -15,11 +15,14 @@ from urllib.request import urlopen
 from ._version import VERSION
 
 SDK_VERSION = "v1.1.0"
+LEGACY_SDK_VERSION = "v1.0.0"
 _REPO = "TheYoungW/Motor-Drive-Layer"
+_VENDOR_RAW = "https://gitee.com/kit-miao/dm-device-sdk/raw/master/C%26C%2B%2B/lib"
 
 
 @dataclass(frozen=True)
 class DmDeviceRuntime:
+    version: str
     relpath: str
     lib_name: str
 
@@ -30,21 +33,35 @@ def _truthy(raw: str | None, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "off", "no"}
 
 
-def _platform_runtime() -> DmDeviceRuntime:
+def _platform_runtimes() -> list[DmDeviceRuntime]:
     machine = platform.machine().lower()
     if sys.platform.startswith("linux"):
         if machine in {"x86_64", "amd64"}:
-            return DmDeviceRuntime("linux/x86_64/libdm_device.so", "libdm_device.so")
+            return [
+                DmDeviceRuntime(LEGACY_SDK_VERSION, "linux/libdm_device.so", "libdm_device.so"),
+                DmDeviceRuntime(SDK_VERSION, "linux/x86_64/libdm_device.so", "libdm_device.so"),
+            ]
         if machine in {"aarch64", "arm64"}:
-            return DmDeviceRuntime("linux/arm64/libdm_device.so", "libdm_device.so")
+            return [
+                DmDeviceRuntime(LEGACY_SDK_VERSION, "aarch64/libdm_device.so", "libdm_device.so"),
+                DmDeviceRuntime(SDK_VERSION, "linux/arm64/libdm_device.so", "libdm_device.so"),
+            ]
     if sys.platform == "darwin":
         if machine in {"arm64", "aarch64"}:
-            return DmDeviceRuntime("macos/arm64/libdm_device.dylib", "libdm_device.dylib")
+            return [DmDeviceRuntime(SDK_VERSION, "macos/arm64/libdm_device.dylib", "libdm_device.dylib")]
         if machine in {"x86_64", "amd64"}:
-            return DmDeviceRuntime("macos/x86_64/libdm_device.dylib", "libdm_device.dylib")
+            return [DmDeviceRuntime(SDK_VERSION, "macos/x86_64/libdm_device.dylib", "libdm_device.dylib")]
     if sys.platform.startswith("win") and machine in {"x86_64", "amd64"}:
-        return DmDeviceRuntime("windows/msvc/dm_device.dll", "dm_device.dll")
+        return [
+            DmDeviceRuntime(SDK_VERSION, "windows/msvc/dm_device.dll", "dm_device.dll"),
+            DmDeviceRuntime(LEGACY_SDK_VERSION, "msvc/dm_device.dll", "dm_device.dll"),
+        ]
     raise RuntimeError(f"DM_Device runtime is not available for {sys.platform}/{machine}")
+
+
+def _platform_runtime() -> DmDeviceRuntime:
+    """Return the preferred runtime (kept for callers of the old helper)."""
+    return _platform_runtimes()[0]
 
 
 def _cache_root() -> Path:
@@ -62,7 +79,7 @@ def _packaged_runtime_path(runtime: DmDeviceRuntime) -> Path:
 
 
 def _cache_runtime_path(runtime: DmDeviceRuntime) -> Path:
-    return _cache_root() / SDK_VERSION / runtime.relpath
+    return _cache_root() / runtime.version / runtime.relpath
 
 
 def _source_runtime_path(runtime: DmDeviceRuntime) -> Path | None:
@@ -73,16 +90,17 @@ def _source_runtime_path(runtime: DmDeviceRuntime) -> Path | None:
     third_party_root = repo_root / "third_party" / "dm_device"
     if not third_party_root.exists():
         return None
-    return third_party_root / SDK_VERSION / runtime.relpath
+    return third_party_root / runtime.version / runtime.relpath
 
 
-def _download_base_urls() -> list[str]:
+def _download_base_urls(runtime: DmDeviceRuntime) -> list[str]:
     override = os.getenv("MOTOR_DM_DEVICE_DOWNLOAD_BASE_URL")
     if override:
         return [override.rstrip("/")]
     return [
-        f"https://raw.githubusercontent.com/{_REPO}/v{VERSION}/third_party/dm_device/{SDK_VERSION}",
-        f"https://raw.githubusercontent.com/{_REPO}/main/third_party/dm_device/{SDK_VERSION}",
+        f"https://raw.githubusercontent.com/{_REPO}/v{VERSION}/third_party/dm_device/{runtime.version}",
+        f"https://raw.githubusercontent.com/{_REPO}/main/third_party/dm_device/{runtime.version}",
+        f"{_VENDOR_RAW}/{runtime.version}",
     ]
 
 
@@ -93,7 +111,7 @@ def _url_for(base_url: str, relpath: str) -> str:
 def _download_runtime(runtime: DmDeviceRuntime, dst: Path, quiet: bool) -> Path:
     dst.parent.mkdir(parents=True, exist_ok=True)
     errors: list[str] = []
-    for base_url in _download_base_urls():
+    for base_url in _download_base_urls(runtime):
         url = _url_for(base_url, runtime.relpath)
         if not quiet:
             print(f"[motor-drive-layer] downloading DM_Device runtime: {url}", file=sys.stderr)
@@ -125,20 +143,22 @@ def _download_runtime(runtime: DmDeviceRuntime, dst: Path, quiet: bool) -> Path:
     )
 
 
-def _install_hint(runtime: DmDeviceRuntime) -> str:
-    repo_url = f"https://github.com/{_REPO}/tree/main/third_party/dm_device/{SDK_VERSION}"
+def _install_hint(runtimes: list[DmDeviceRuntime]) -> str:
+    runtime = runtimes[0]
+    repo_url = f"https://gitee.com/kit-miao/dm-device-sdk/tree/master/C%26C%2B%2B/lib"
     raw_url = _url_for(
-        f"https://raw.githubusercontent.com/{_REPO}/main/third_party/dm_device/{SDK_VERSION}",
+        f"{_VENDOR_RAW}/{runtime.version}",
         runtime.relpath,
     )
     cache_path = _cache_runtime_path(runtime)
     source_path = _source_runtime_path(runtime)
     source_line = f"\n- Source checkout path: {source_path}" if source_path is not None else ""
     dep_note = ""
-    if runtime.relpath.startswith("linux/x86_64/"):
+    if runtime.relpath in {"linux/libdm_device.so", "linux/x86_64/libdm_device.so"}:
         dep_note = (
             "\nLinux x86_64 dependency note: install libusb-1.0-0 and make sure "
-            "libstdc++.so.6 provides GLIBCXX_3.4.32."
+            "libstdc++.so.6 provides GLIBCXX_3.4.32. The v1.1 runtime also needs "
+            "libusb_init_context (libusb 1.0.27 or newer); v1.0 is preferred on older distributions."
         )
     elif runtime.relpath.startswith("linux/arm64/"):
         dep_note = (
@@ -152,7 +172,9 @@ def _install_hint(runtime: DmDeviceRuntime) -> str:
         )
     return (
         "DM_Device runtime is not installed for this platform.\n"
-        f"Required runtime: {runtime.relpath}\n"
+        "Compatible runtimes (preferred first):\n"
+        + "\n".join(f"- {item.version}/{item.relpath}" for item in runtimes)
+        + "\n"
         f"Download page: {repo_url}\n"
         f"Direct file URL: {raw_url}\n"
         "Install options:\n"
@@ -173,31 +195,45 @@ def ensure_dm_device_runtime(*, auto_download: bool | None = None, quiet: bool =
             return path
         raise RuntimeError(f"MOTOR_DM_DEVICE_LIB points to a missing file: {path}")
 
-    runtime = _platform_runtime()
+    runtimes = _platform_runtimes()
 
-    packaged = _packaged_runtime_path(runtime)
-    if packaged.exists() and not force:
-        os.environ["MOTOR_DM_DEVICE_LIB"] = str(packaged)
-        return packaged
+    if not force:
+        for runtime in runtimes:
+            packaged = _packaged_runtime_path(runtime)
+            if packaged.exists():
+                os.environ["MOTOR_DM_DEVICE_LIB"] = str(packaged)
+                return packaged
 
-    source_path = _source_runtime_path(runtime)
-    if source_path is not None and source_path.exists() and not force:
-        os.environ["MOTOR_DM_DEVICE_LIB"] = str(source_path)
-        return source_path
+        for runtime in runtimes:
+            source_path = _source_runtime_path(runtime)
+            if source_path is not None and source_path.exists():
+                os.environ["MOTOR_DM_DEVICE_LIB"] = str(source_path)
+                return source_path
 
-    cached = _cache_runtime_path(runtime)
-    if cached.exists() and not force:
-        os.environ["MOTOR_DM_DEVICE_LIB"] = str(cached)
-        return cached
+        for runtime in runtimes:
+            cached = _cache_runtime_path(runtime)
+            if cached.exists():
+                os.environ["MOTOR_DM_DEVICE_LIB"] = str(cached)
+                return cached
 
     if auto_download is None:
         auto_download = _truthy(os.getenv("MOTOR_DM_DEVICE_AUTO_DOWNLOAD"), False)
     if not auto_download:
-        raise RuntimeError(_install_hint(runtime))
+        raise RuntimeError(_install_hint(runtimes))
 
-    downloaded = _download_runtime(runtime, cached, quiet)
-    os.environ["MOTOR_DM_DEVICE_LIB"] = str(downloaded)
-    return downloaded
+    errors: list[str] = []
+    for runtime in runtimes:
+        cached = _cache_runtime_path(runtime)
+        try:
+            downloaded = _download_runtime(runtime, cached, quiet)
+            os.environ["MOTOR_DM_DEVICE_LIB"] = str(downloaded)
+            return downloaded
+        except RuntimeError as exc:
+            errors.append(str(exc))
+    raise RuntimeError(
+        "Failed to install every compatible DM_Device runtime (v1.0/v1.1).\n"
+        + "\n".join(errors)
+    )
 
 
 def main(argv: list[str] | None = None) -> None:

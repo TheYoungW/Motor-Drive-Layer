@@ -74,6 +74,17 @@ if(BUILD_TESTING)
   add_test(NAME socketcan_codec_test COMMAND socketcan_codec_test)
 
   add_executable(dm_device_test tests/dm_device_test.cpp)
+  add_library(mock_dm_device_v10 SHARED tests/mock_dm_device_v10.cpp)
+  add_library(mock_dm_device_v11 SHARED tests/mock_dm_device_v11.cpp)
+  target_include_directories(mock_dm_device_v10 PRIVATE ../third_party/dm_device/v1.1.0)
+  target_include_directories(mock_dm_device_v11 PRIVATE ../third_party/dm_device/v1.1.0)
+  set_target_properties(mock_dm_device_v10 mock_dm_device_v11 PROPERTIES
+    WINDOWS_EXPORT_ALL_SYMBOLS ON)
+  target_include_directories(dm_device_test PRIVATE src)
+  target_compile_definitions(dm_device_test PRIVATE
+    MOCK_DM_DEVICE_V10_PATH="$<TARGET_FILE:mock_dm_device_v10>"
+    MOCK_DM_DEVICE_V11_PATH="$<TARGET_FILE:mock_dm_device_v11>")
+  add_dependencies(dm_device_test mock_dm_device_v10 mock_dm_device_v11)
   target_link_libraries(dm_device_test PRIVATE damiao::runtime)
   add_test(NAME dm_device_test COMMAND dm_device_test)
 endif()

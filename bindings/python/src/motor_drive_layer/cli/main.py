@@ -55,7 +55,12 @@ def _open_controller(args: argparse.Namespace) -> Controller:
         dm_channel = args.dm_channel
         if dm_channel is None:
             dm_channel = "0"
-        return Controller.from_dm_device(args.dm_device_type, dm_channel)
+        return Controller.from_dm_device(
+            args.dm_device_type,
+            dm_channel,
+            bitrate=args.dm_bitrate,
+            data_bitrate=args.dm_data_bitrate,
+        )
     if transport in ("auto", "socketcan"):
         return Controller(args.channel)
     if transport == "socketcanfd":
@@ -76,6 +81,8 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--serial-baud", type=int, default=1_000_000, help="baud rate for dm-serial")
     p.add_argument("--dm-device-type", default="usb2canfd-dual", help="DM_Device SDK adapter type")
     p.add_argument("--dm-channel", default="0", help="DM_Device SDK channel number")
+    p.add_argument("--dm-bitrate", type=int, default=1_000_000, help="DM_Device CAN arbitration bitrate")
+    p.add_argument("--dm-data-bitrate", type=int, default=5_000_000, help="DM_Device CAN-FD data bitrate")
     p.add_argument("--model", default="4340", help="Damiao model name/hint")
     p.add_argument("--motor-id", default="0x01", help="command/device ID")
     p.add_argument("--feedback-id", default="0x11", help="feedback ID")

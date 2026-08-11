@@ -44,6 +44,18 @@ std::string platform_relative_path() {
 #endif
 }
 
+std::string legacy_platform_relative_path() {
+#if defined(__linux__) && defined(__x86_64__)
+  return "linux/libdm_device.so";
+#elif defined(__linux__) && defined(__aarch64__)
+  return "aarch64/libdm_device.so";
+#elif defined(_WIN32)
+  return "msvc/dm_device.dll";
+#else
+  return "";
+#endif
+}
+
 const char* library_basename() {
 #if defined(_WIN32)
   return "dm_device.dll";
@@ -105,7 +117,16 @@ std::string resolve_dm_device_library_path() {
   }
 
   const auto rel = platform_relative_path();
+  const auto legacy_rel = legacy_platform_relative_path();
   std::vector<std::filesystem::path> candidates;
+  if (!legacy_rel.empty()) {
+    candidates.push_back(std::filesystem::current_path() / "third_party/dm_device/v1.0.0" /
+                         legacy_rel);
+    candidates.push_back(std::filesystem::current_path().parent_path() /
+                         "third_party/dm_device/v1.0.0" / legacy_rel);
+    candidates.push_back(std::filesystem::path(__FILE__).parent_path().parent_path() /
+                         "third_party/dm_device/v1.0.0" / legacy_rel);
+  }
   if (!rel.empty()) {
     candidates.push_back(std::filesystem::current_path() / "third_party/dm_device/v1.1.0" / rel);
     candidates.push_back(std::filesystem::current_path().parent_path() /
@@ -124,13 +145,18 @@ std::string resolve_dm_device_library_path() {
 }
 
 std::shared_ptr<DmDeviceBus> DmDeviceBus::open(DmDeviceType device_type,
-                                               const std::string& dm_channel) {
+                                               const std::string& dm_channel,
+                                               uint32_t bitrate,
+                                               uint32_t data_bitrate) {
+  if (bitrate == 0 || data_bitrate == 0) {
+    throw std::invalid_argument("dm-device bitrate and data_bitrate must be positive");
+  }
   const auto channel = parse_dm_channel(device_type, dm_channel);
   const auto library_path = resolve_dm_device_library_path();
   std::array<char, 512> err{};
   void* raw = nullptr;
   const int rc = mb_dm_open(library_path.c_str(), static_cast<int>(device_type), channel,
-                            1000000, 5000000, &raw, err.data(), err.size());
+                            bitrate, data_bitrate, &raw, err.data(), err.size());
   if (rc != 0 || raw == nullptr) {
     throw std::runtime_error(error_message(err, "mb_dm_open failed"));
   }
@@ -189,8 +215,12 @@ std::optional<CanFrame> DmDeviceBus::receive_for(std::chrono::milliseconds timeo
 void DmDeviceBus::shutdown() {
   std::lock_guard<std::mutex> lock(mutex_);
   if (handle_ != nullptr) {
-    mb_dm_shutdown(handle_);
+    std::array<char, 512> err{};
+    const int rc = mb_dm_shutdown(handle_, err.data(), err.size());
     handle_ = nullptr;
+    if (rc != 0) {
+      throw std::runtime_error(error_message(err, "mb_dm_shutdown failed"));
+    }
   }
 }
 

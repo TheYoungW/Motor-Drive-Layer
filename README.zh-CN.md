@@ -130,7 +130,7 @@ states = [motor.get_state() for motor in motors]
 | `Controller(channel="can0")` | 打开经典 Linux SocketCAN。 |
 | `Controller.from_socketcanfd(channel="can0")` | 打开 Linux SocketCAN-FD。 |
 | `Controller.from_dm_serial(serial_port="/dev/ttyACM0", baud=1_000_000)` | 打开达妙串口桥。 |
-| `Controller.from_dm_device(dm_device_type="usb2canfd-dual", dm_channel="0")` | 打开可选 DM_Device 传输。 |
+| `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000, data_bitrate=5_000_000)` | 通过厂商 DM_Device 运行库打开原厂固件，支持 CH0/CH1；旧位置参数和旧关键字仍兼容。 |
 | `add_damiao_motor(motor_id, feedback_id, model)` | 在总线上注册电机并返回 `Motor`。 |
 | `enable_all()` / `disable_all()` | 依次使能或失能所有已注册电机；会发送硬件命令。 |
 | `request_feedback_all(timeout_ms=50)` | 请求并等待所有电机各收到一帧新反馈，共享一个总超时。 |
@@ -139,6 +139,14 @@ states = [motor.get_state() for motor in motors]
 | `shutdown()` | 先尝试失能全部电机，再停止接收线程并关闭总线。 |
 | `close_bus()` | 不发送失能命令，直接停止接收并关闭总线。 |
 | `close()` / `closed` | 释放原生 Controller 句柄；`close()` 不主动发送失能命令。 |
+
+DM_Device 后端不需要刷写 SocketCAN 固件。可执行一次
+`motor-drive-layer-install-dm-device --download` 安装对应厂商运行库，也可通过
+`MOTOR_DM_DEVICE_LIB` 指定官方 `libdm_device`/`dm_device.dll`。加载器会探测 v1.0
+（`damiao_*`/`device_*`）和 v1.1（`dmcan_*`）ABI，并明确报告缺失符号或动态库依赖错误。
+Linux 优先使用兼容范围更广的 v1.0，并支持回退到 v1.1；Windows/macOS 使用相同 Python
+接口。每个 Controller 只管理所选通道，物理 USB 句柄由双通道共享，并在最后一个
+Controller 关闭后完整释放。
 
 ### Motor
 

@@ -12,7 +12,14 @@ class Controller:
     ) -> Controller: ...
     @classmethod
     def from_dm_device(
-        cls, dm_device_type: str = "usb2canfd-dual", dm_channel: str = "0"
+        cls,
+        dm_device_type: str = "usb2canfd-dual",
+        dm_channel: str | int = "0",
+        bitrate: int = 1_000_000,
+        data_bitrate: int = 5_000_000,
+        *,
+        device: str | None = None,
+        channel: str | int | None = None,
     ) -> Controller: ...
     @property
     def closed(self) -> bool: ...

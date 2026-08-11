@@ -39,7 +39,7 @@ int mb_dm_recv(void* handle,
                char* err_buf,
                size_t err_len);
 
-void mb_dm_shutdown(void* handle);
+int mb_dm_shutdown(void* handle, char* err_buf, size_t err_len);
 
 #ifdef __cplusplus
 }

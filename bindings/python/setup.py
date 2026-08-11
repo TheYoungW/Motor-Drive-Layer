@@ -50,6 +50,11 @@ def _candidate_dm_device_paths() -> list[Path]:
     candidates.append(repo_root / "third_party" / "dm_device" / "v1.1.0" / rel)
     candidates.append(repo_root / "dm-device-sdk" / "C&C++" / "lib" / "v1.1.0" / rel)
     candidates.append(repo_root.parent / "dm-device-sdk" / "C&C++" / "lib" / "v1.1.0" / rel)
+    if sys.platform.startswith("linux"):
+        legacy_rel = Path("linux/libdm_device.so") if platform.machine().lower() in {"x86_64", "amd64"} else Path("aarch64/libdm_device.so")
+        candidates.append(repo_root / "third_party" / "dm_device" / "v1.0.0" / legacy_rel)
+        candidates.append(repo_root / "dm-device-sdk" / "C&C++" / "lib" / "v1.0.0" / legacy_rel)
+        candidates.append(repo_root.parent / "dm-device-sdk" / "C&C++" / "lib" / "v1.0.0" / legacy_rel)
     candidates.append(here.parent / "src" / "motor_drive_layer" / "lib" / "dm_device" / rel.name)
     return candidates
 

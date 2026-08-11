@@ -72,15 +72,57 @@ class Controller:
     def from_dm_device(
         cls,
         dm_device_type: str = "usb2canfd-dual",
-        dm_channel: str = "0",
+        dm_channel: str | int = "0",
+        bitrate: int = 1_000_000,
+        data_bitrate: int = 5_000_000,
+        *,
+        device: str | None = None,
+        channel: str | int | None = None,
     ) -> "Controller":
+        """Open a DaMiao device using its original DM_Device firmware/runtime.
+
+        ``device``/``channel`` are the preferred keyword names.  The original
+        ``dm_device_type``/``dm_channel`` names and positional form remain
+        supported for compatibility.
+        """
+        if device is not None:
+            if dm_device_type != "usb2canfd-dual" and dm_device_type != device:
+                raise ValueError("device and dm_device_type specify different values")
+            dm_device_type = device
+        if channel is not None:
+            if str(dm_channel) != "0" and str(dm_channel) != str(channel):
+                raise ValueError("channel and dm_channel specify different values")
+            dm_channel = channel
+        bitrate_value = int(bitrate)
+        data_bitrate_value = int(data_bitrate)
+        if not 1 <= bitrate_value <= 0xFFFFFFFF:
+            raise ValueError("bitrate must be in 1..=4294967295")
+        if not 1 <= data_bitrate_value <= 0xFFFFFFFF:
+            raise ValueError("data_bitrate must be in 1..=4294967295")
+
         self = cls.__new__(cls)
-        ensure_dm_device_runtime(quiet=True)
+        try:
+            ensure_dm_device_runtime(quiet=True)
+        except RuntimeError as exc:
+            raise CallError(f"DM_Device runtime setup failed: {exc}") from exc
         self._abi = get_abi()
-        self._ptr = self._abi.lib.motor_controller_new_dm_device(
-            dm_device_type.encode(),
-            dm_channel.encode(),
-        )
+        if self._abi.has_dm_device_ex:
+            self._ptr = self._abi.lib.motor_controller_new_dm_device_ex(
+                dm_device_type.encode(),
+                str(dm_channel).encode(),
+                bitrate_value,
+                data_bitrate_value,
+            )
+        else:
+            if (bitrate_value, data_bitrate_value) != (1_000_000, 5_000_000):
+                raise CallError(
+                    "the loaded motor_abi does not support configurable DM_Device bitrates; "
+                    "upgrade motor-drive-layer or use 1,000,000/5,000,000"
+                )
+            self._ptr = self._abi.lib.motor_controller_new_dm_device(
+                dm_device_type.encode(),
+                str(dm_channel).encode(),
+            )
         if not self._ptr:
             raise CallError(f"new_dm_device failed: {_err_text()}")
         return self

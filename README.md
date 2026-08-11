@@ -141,7 +141,7 @@ top-level `motor_drive_layer` package.
 | `Controller(channel="can0")` | Open classic Linux SocketCAN. |
 | `Controller.from_socketcanfd(channel="can0")` | Open Linux SocketCAN-FD. |
 | `Controller.from_dm_serial(serial_port="/dev/ttyACM0", baud=1_000_000)` | Open a Damiao serial bridge. |
-| `Controller.from_dm_device(dm_device_type="usb2canfd-dual", dm_channel="0")` | Open the optional DM_Device transport. |
+| `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000, data_bitrate=5_000_000)` | Open original DM-USB2FDCAN firmware through the vendor DM_Device runtime; CH0 and CH1 are supported. Legacy positional/keyword arguments remain valid. |
 | `add_damiao_motor(motor_id, feedback_id, model)` | Register a motor on the bus and return `Motor`. |
 | `enable_all()` / `disable_all()` | Enable or disable every registered motor; these send hardware commands. |
 | `request_feedback_all(timeout_ms=50)` | Request and wait for one fresh frame per motor against one shared timeout. |
@@ -150,6 +150,14 @@ top-level `motor_drive_layer` package.
 | `shutdown()` | Attempt to disable every motor, stop polling, and close the bus. |
 | `close_bus()` | Stop polling and close the bus without sending disable commands. |
 | `close()` / `closed` | Free the native Controller handle; `close()` does not actively send disable commands. |
+
+The DM_Device backend does not require flashing SocketCAN firmware. Install the matching vendor
+runtime once with `motor-drive-layer-install-dm-device --download`, or set
+`MOTOR_DM_DEVICE_LIB` to an official `libdm_device`/`dm_device.dll`. The loader probes both the
+v1.0 (`damiao_*`/`device_*`) and v1.1 (`dmcan_*`) ABIs and reports missing symbols and dynamic
+loader dependency errors explicitly. Linux prefers the broadly usable v1.0 runtime and falls back
+to v1.1; Windows and macOS keep the same Python call. Each Controller owns only its selected
+channel, while the physical USB handle is shared and released after the last Controller closes.
 
 ### Motor
 

@@ -26,6 +26,10 @@ int main() {
           "capabilities include damiao only");
   require(capabilities.find("socketcan") != std::string::npos, "capabilities include socketcan");
   require(capabilities.find("dm-device") != std::string::npos, "capabilities include dm-device");
+  require(capabilities.find("dm_device_abis") != std::string::npos,
+          "capabilities include DM_Device ABI versions");
+  require(capabilities.find("dm_device_configurable_bitrates") != std::string::npos,
+          "capabilities include configurable DM_Device bitrates");
   require(capabilities.find("register_metadata") != std::string::npos,
           "capabilities include canonical register metadata");
 
@@ -62,6 +66,8 @@ int main() {
   require(invalid == nullptr, "null socketcan channel fails");
   require(std::string(motor_last_error_message()).find("channel is null") != std::string::npos,
           "socketcan null channel reports clear error");
+  require(motor_controller_new_dm_device_ex("usb2canfd-dual", "0", 0, 5000000) == nullptr,
+          "DM_Device factory rejects zero arbitration bitrate");
 
   std::cout << "motor ABI smoke tests passed\n";
   return 0;

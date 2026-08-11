@@ -82,7 +82,7 @@ const char* motor_abi_version(void) {
 }
 
 const char* motor_abi_capabilities_json(void) {
-  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.5.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"register_metadata":true,"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","enable_all","disable_all","set_tx_gap_us"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
+  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.5.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"register_metadata":true,"dm_device_abis":["v1.0","v1.1"],"dm_device_configurable_bitrates":true,"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","enable_all","disable_all","set_tx_gap_us"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
 }
 
 int32_t motor_damiao_register_info(uint8_t rid, MotorRegisterInfo* out_info) {
@@ -147,13 +147,24 @@ MotorController* motor_controller_new_dm_serial(const char* serial_port, uint32_
 
 MotorController* motor_controller_new_dm_device(const char* dm_device_type,
                                                 const char* dm_channel) {
+  return motor_controller_new_dm_device_ex(dm_device_type, dm_channel, 1000000, 5000000);
+}
+
+MotorController* motor_controller_new_dm_device_ex(const char* dm_device_type,
+                                                   const char* dm_channel,
+                                                   uint32_t bitrate,
+                                                   uint32_t data_bitrate) {
   if (dm_device_type == nullptr || dm_channel == nullptr) {
     set_last_error("dm_device_type or dm_channel is null");
     return nullptr;
   }
+  if (bitrate == 0 || data_bitrate == 0) {
+    set_last_error("dm-device bitrate and data_bitrate must be positive");
+    return nullptr;
+  }
   try {
     auto bus = damiao::DmDeviceBus::open(damiao::parse_dm_device_type(dm_device_type),
-                                         dm_channel);
+                                         dm_channel, bitrate, data_bitrate);
     return new MotorController(std::make_unique<damiao::Controller>(bus));
   } catch (const std::exception& err) {
     set_last_error(err.what());

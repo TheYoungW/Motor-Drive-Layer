@@ -31,6 +31,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--serial-baud", type=int, default=1_000_000)
     parser.add_argument("--dm-device-type", default="usb2canfd-dual")
     parser.add_argument("--dm-channel", default="0")
+    parser.add_argument("--dm-bitrate", type=int, default=1_000_000)
+    parser.add_argument("--dm-data-bitrate", type=int, default=5_000_000)
     parser.add_argument("--model", default="4340P")
     parser.add_argument("--motor-id", type=_parse_id, default=0x01)
     parser.add_argument("--feedback-id", type=_parse_id, default=0x11)
@@ -47,7 +49,12 @@ def _open_controller(args: argparse.Namespace) -> Controller:
         return Controller.from_socketcanfd(args.channel)
     if args.transport == "dm-serial":
         return Controller.from_dm_serial(args.serial_port, args.serial_baud)
-    return Controller.from_dm_device(args.dm_device_type, args.dm_channel)
+    return Controller.from_dm_device(
+        args.dm_device_type,
+        args.dm_channel,
+        bitrate=args.dm_bitrate,
+        data_bitrate=args.dm_data_bitrate,
+    )
 
 
 def run(argv: Sequence[str] | None = None) -> int:
@@ -55,6 +62,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.serial_baud <= 0:
         parser.error("--serial-baud must be positive")
+    if args.dm_bitrate <= 0 or args.dm_data_bitrate <= 0:
+        parser.error("--dm-bitrate and --dm-data-bitrate must be positive")
     if args.attempts <= 0:
         parser.error("--attempts must be positive")
     if args.interval_ms < 0:

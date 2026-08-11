@@ -7,6 +7,12 @@ SocketCAN, SocketCAN-FD, Damiao serial bridge, and optional DM_Device transports
 Published wheels cover Linux x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x64. The serial
 transport is cross-platform; SocketCAN transports remain Linux-only.
 
+DM-USB2FDCAN Dual works with its original `dual_app` firmware through
+`Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000,
+data_bitrate=5_000_000)`. CH0 and CH1 are independently selectable, old positional arguments remain
+compatible, and the loader probes both vendor v1.0 and v1.1 ABIs. Install the separate vendor
+runtime with `motor-drive-layer-install-dm-device --download` or set `MOTOR_DM_DEVICE_LIB`.
+
 Use `Motor.request_fresh_state(timeout_ms=50)` when the caller must wait for a newly requested
 feedback frame. For multiple motors, `Controller.request_feedback_all(timeout_ms=50)` sends every
 request with the configured TX pacing and waits against one shared deadline; a timeout reports the

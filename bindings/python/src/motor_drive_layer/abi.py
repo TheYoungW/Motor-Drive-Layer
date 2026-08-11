@@ -144,6 +144,17 @@ class Abi:
         lib.motor_controller_new_dm_serial.restype = c_void_p
         lib.motor_controller_new_dm_device.argtypes = [c_char_p, c_char_p]
         lib.motor_controller_new_dm_device.restype = c_void_p
+        # Additive in motor-drive-layer 0.5.7.  Keep the Python package able to
+        # load an older native library and fall back to its fixed 1M/5M entry.
+        self.has_dm_device_ex = hasattr(lib, "motor_controller_new_dm_device_ex")
+        if self.has_dm_device_ex:
+            lib.motor_controller_new_dm_device_ex.argtypes = [
+                c_char_p,
+                c_char_p,
+                c_uint32,
+                c_uint32,
+            ]
+            lib.motor_controller_new_dm_device_ex.restype = c_void_p
         lib.motor_controller_free.argtypes = [c_void_p]
         lib.motor_controller_poll_feedback_once.argtypes = [c_void_p]
         lib.motor_controller_poll_feedback_once.restype = c_int32
