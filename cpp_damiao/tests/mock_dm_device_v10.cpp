@@ -1,6 +1,7 @@
 #include "dmcan.h"
 
 #include <array>
+#include <cstdlib>
 #include <cstring>
 
 struct legacy_device {
@@ -22,7 +23,12 @@ bool device_was_closed = false;
 
 extern "C" {
 legacy_root* damiao_handle_create(int) { return new legacy_root(); }
-void damiao_handle_destroy(legacy_root* root) { delete root; }
+void damiao_handle_destroy(legacy_root*) {
+  // The Linux v1.0 session is retained until process exit. Calling into the
+  // real vendor destructor from static teardown can corrupt libusb state, so
+  // make the test process fail if the shim regresses to that behavior.
+  std::abort();
+}
 int damiao_handle_find_devices(legacy_root*) { return 1; }
 void damiao_handle_get_devices(legacy_root* root, legacy_device** list, int* count) {
   list[0] = &root->device;

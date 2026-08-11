@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "abi": {
     "metadata": [

@@ -199,8 +199,9 @@ to v1.1; Windows and macOS keep the same Python call. Each Controller owns only 
 channel. v1.1 releases the shared physical USB handle after the last Controller closes. Because the
 official Linux v1.0 runtime cannot reliably reopen device index 0 in the same process after a full
 device teardown, v1.0 instead closes each channel and all motor-layer threads/clients but retains
-its legacy context, device handle, callbacks, and loaded library for reuse until process exit, when
-an explicit process-scope cleanup closes and destroys the retained vendor objects.
+its legacy context, device handle, callbacks, and loaded library for reuse until process exit. The
+operating system reclaims those retained vendor objects; calling the vendor destructor during
+static process teardown can race libusb thread cleanup.
 
 ### Motor
 

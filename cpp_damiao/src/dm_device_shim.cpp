@@ -632,6 +632,13 @@ ProcessSessionCleanup::~ProcessSessionCleanup() {
     session = std::move(g_session);
   }
   if (session) {
+    // Linux v1.0 is intentionally retained for the entire process because
+    // the vendor runtime cannot reliably reopen after complete teardown.
+    // Destroying that retained context from a static destructor also races
+    // libusb/Python thread teardown and can corrupt the process heap. At
+    // process exit the operating system safely reclaims these vendor-owned
+    // resources, so only explicitly tear down non-retained sessions here.
+    if (retains_process_session(*session)) return;
     std::string ignored;
     close_session(*session, ignored);
   }

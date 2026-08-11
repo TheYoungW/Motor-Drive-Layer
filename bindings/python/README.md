@@ -15,8 +15,8 @@ runtime with `motor-drive-layer-install-dm-device --download` or set `MOTOR_DM_D
 On final Controller close, v1.1 fully tears down its device session. The Linux v1.0 runtime instead
 closes the selected channels and motor-layer resources but retains its legacy context/device until
 process exit, allowing a later `Controller.from_dm_device(...)` call to reconnect reliably in the
-same Python process. A process-scope cleanup closes and destroys those retained vendor objects at
-normal process exit.
+same Python process. The operating system reclaims those retained vendor objects at exit because
+calling the vendor destructor during static teardown can race libusb thread cleanup.
 
 Use `Motor.request_fresh_state(timeout_ms=50)` when the caller must wait for a newly requested
 feedback frame. For multiple motors, `Controller.request_feedback_all(timeout_ms=50)` sends every

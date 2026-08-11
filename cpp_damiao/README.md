@@ -92,7 +92,8 @@ the C ABI expose live connection state, TX/RX counters, activity ages, and trans
 For DM_Device v1.0, the shim retains the opened legacy context/device and callbacks at process
 scope after the final client closes. It still closes channel resources and removes every client;
 the retained vendor objects avoid the official Linux runtime's failure to reopen device index 0
-after a full in-process teardown. A process-scope destructor performs the final v1.0 vendor cleanup
-at normal process exit. DM_Device v1.1 keeps its documented full teardown behavior.
+after a full in-process teardown. The operating system reclaims the retained vendor objects at
+process exit; invoking the vendor destructor from static teardown can race libusb thread cleanup.
+DM_Device v1.1 keeps its documented full teardown behavior.
 
 Default C++ tests never open a real motor device.
