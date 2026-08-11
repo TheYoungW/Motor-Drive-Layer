@@ -17,7 +17,8 @@ def test_articore_candidate_paths_support_shallow_installs(monkeypatch) -> None:
 
     candidates = abi._candidate_articore_runtime_paths()
 
-    assert Path("/tmp/pkg/lib/libarticore_runtime.so").resolve() in candidates
+    expected = Path("/tmp/pkg/lib") / abi._articore_runtime_lib_name()
+    assert expected.resolve() in candidates
 
 
 def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
