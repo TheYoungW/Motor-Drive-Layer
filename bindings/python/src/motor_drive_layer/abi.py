@@ -109,6 +109,20 @@ def _candidate_lib_paths() -> list[Path]:
         repo_root = here.parents[4]
         candidates.extend(
             [
+                repo_root / "build" / "cpp_damiao" / "libmotor_abi.so",
+                repo_root / "build" / "cpp_damiao" / "libmotor_abi.dylib",
+                repo_root / "build" / "cpp_damiao" / "motor_abi.dll",
+                repo_root
+                / "build"
+                / "cpp_damiao"
+                / "Release"
+                / "libmotor_abi.so",
+                repo_root
+                / "build"
+                / "cpp_damiao"
+                / "Release"
+                / "libmotor_abi.dylib",
+                repo_root / "build" / "cpp_damiao" / "Release" / "motor_abi.dll",
                 repo_root / "cpp_damiao" / "build" / "libmotor_abi.so",
                 repo_root / "cpp_damiao" / "build" / "libmotor_abi.dylib",
                 repo_root / "cpp_damiao" / "build" / "motor_abi.dll",
@@ -121,6 +135,12 @@ def _candidate_lib_paths() -> list[Path]:
     cwd = Path.cwd()
     candidates.extend(
         [
+            cwd / "build" / "cpp_damiao" / "libmotor_abi.so",
+            cwd / "build" / "cpp_damiao" / "libmotor_abi.dylib",
+            cwd / "build" / "cpp_damiao" / "motor_abi.dll",
+            cwd / "build" / "cpp_damiao" / "Release" / "libmotor_abi.so",
+            cwd / "build" / "cpp_damiao" / "Release" / "libmotor_abi.dylib",
+            cwd / "build" / "cpp_damiao" / "Release" / "motor_abi.dll",
             cwd / "cpp_damiao" / "build" / "libmotor_abi.so",
             cwd / "cpp_damiao" / "build" / "libmotor_abi.dylib",
             cwd / "cpp_damiao" / "build" / "motor_abi.dll",
@@ -130,6 +150,110 @@ def _candidate_lib_paths() -> list[Path]:
         ]
     )
     return candidates
+
+
+def _articore_runtime_lib_name() -> str:
+    if sys.platform.startswith("win"):
+        return "articore_runtime.dll"
+    if sys.platform == "darwin":
+        return "libarticore_runtime.dylib"
+    return "libarticore_runtime.so"
+
+
+def _candidate_articore_runtime_paths() -> list[Path]:
+    candidates: list[Path] = []
+    env = os.getenv("ARTICORE_RUNTIME_LIB")
+    if env:
+        candidates.append(Path(env).expanduser())
+
+    here = Path(__file__).resolve()
+    lib_name = _articore_runtime_lib_name()
+    candidates.append(here.parent / "lib" / lib_name)
+    if len(here.parents) > 4:
+        repo_root = here.parents[4]
+        candidates.extend(
+            [
+                repo_root / "build" / "articore_runtime" / lib_name,
+                repo_root
+                / "build"
+                / "articore_runtime"
+                / "Release"
+                / lib_name,
+                repo_root
+                / "cpp_damiao"
+                / "build"
+                / "articore_runtime"
+                / lib_name,
+                repo_root
+                / "cpp_damiao"
+                / "build"
+                / "articore_runtime"
+                / "Release"
+                / lib_name,
+            ]
+        )
+    cwd = Path.cwd()
+    candidates.extend(
+        [
+            cwd / "build" / "articore_runtime" / lib_name,
+            cwd / "build" / "articore_runtime" / "Release" / lib_name,
+            cwd / "cpp_damiao" / "build" / "articore_runtime" / lib_name,
+            cwd
+            / "cpp_damiao"
+            / "build"
+            / "articore_runtime"
+            / "Release"
+            / lib_name,
+        ]
+    )
+    return candidates
+
+
+def articore_runtime_library_path() -> str:
+    """Return the packaged Articore native runtime shared-library path."""
+    tried: list[str] = []
+    for path in _candidate_articore_runtime_paths():
+        tried.append(str(path))
+        if path.exists():
+            return str(path)
+    found = ctypes.util.find_library("articore_runtime")
+    if found:
+        return found
+    raise AbiLoadError(
+        "Failed to locate the Articore native runtime shared library. Tried:\n"
+        + "\n".join(f"- {path}" for path in tried)
+        + "\nHint: install a motor-drive-layer wheel that includes "
+        "libarticore_runtime."
+    )
+
+
+def _articore_runtime_metadata() -> tuple[int, int]:
+    library = ctypes.CDLL(articore_runtime_library_path())
+    library.articore_runtime_abi_version.restype = c_uint32
+    library.articore_runtime_capabilities.restype = c_uint64
+    return (
+        int(library.articore_runtime_abi_version()),
+        int(library.articore_runtime_capabilities()),
+    )
+
+
+def articore_runtime_abi_version() -> str:
+    """Return the separately versioned Articore runtime ABI version."""
+    version, _ = _articore_runtime_metadata()
+    return f"{version >> 16}.{version & 0xFFFF}"
+
+
+def articore_runtime_capabilities() -> dict[str, bool]:
+    """Return product-runtime capabilities independently of motor features."""
+    _, bits = _articore_runtime_metadata()
+    return {
+        "command_watchdog": bool(bits & (1 << 0)),
+        "safe_hold": bool(bits & (1 << 1)),
+        "gripper_protection": bool(bits & (1 << 2)),
+        "single_channel": bool(bits & (1 << 3)),
+        "dual_channel": bool(bits & (1 << 4)),
+        "transport_health": bool(bits & (1 << 5)),
+    }
 
 
 def _platform_dm_device_lib_name() -> str:
@@ -164,7 +288,8 @@ def _load_library() -> ctypes.CDLL:
     raise AbiLoadError(
         "Failed to load motor_abi shared library. Tried:\n"
         + "\n".join(f"- {x}" for x in tried)
-        + "\nHint: build ABI first: cmake -S cpp_damiao -B cpp_damiao/build && cmake --build cpp_damiao/build"
+        + "\nHint: build native libraries first: "
+        "cmake -S . -B build && cmake --build build"
     )
 
 

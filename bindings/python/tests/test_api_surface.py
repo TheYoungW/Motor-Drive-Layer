@@ -9,10 +9,14 @@ def test_api_surface_includes_binding_parity_metadata() -> None:
     surface = json.loads((root / "bindings" / "api_surface.json").read_text(encoding="utf-8"))
 
     assert surface["schema"] == 1
+    assert set(surface["native_libraries"]) == {"motor_abi", "articore_runtime"}
     assert "motor_abi_version" in surface["abi"]["metadata"]
     assert "motor_abi_capabilities_json" in surface["abi"]["metadata"]
     assert "motor_drive_layer.abi_version()" in surface["bindings"]["python"]["module_metadata"]
     assert "motor_abi_version" in surface["bindings"]["cpp_damiao"]["abi_metadata"]
+    assert "motor_drive_layer.articore_runtime_library_path()" in surface["bindings"]["python"]["module_metadata"]
+    assert "motor_drive_layer.articore_runtime_capabilities()" in surface["bindings"]["python"]["module_metadata"]
+    assert "articore_runtime_abi_version" in surface["bindings"]["articore_runtime"]["abi_metadata"]
     assert surface["vendors"] == ["damiao"]
     assert "Controller.add_damiao_motor(motor_id, feedback_id, model)" in surface["bindings"]["controller_methods"]
     assert "Controller.set_tx_gap_us(gap_us)" in surface["bindings"]["controller_methods"]

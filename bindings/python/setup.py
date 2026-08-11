@@ -17,6 +17,14 @@ def _platform_lib_name() -> str:
     return "libmotor_abi.so"
 
 
+def _articore_platform_lib_name() -> str:
+    if sys.platform.startswith("win"):
+        return "articore_runtime.dll"
+    if sys.platform == "darwin":
+        return "libarticore_runtime.dylib"
+    return "libarticore_runtime.so"
+
+
 def _dm_device_platform_relpath() -> Path | None:
     machine = platform.machine().lower()
     if sys.platform.startswith("linux"):
@@ -83,6 +91,8 @@ def _candidate_abi_paths() -> list[Path]:
     if env:
         candidates.append(Path(env).expanduser())
 
+    candidates.append(repo_root / "build" / "cpp_damiao" / lib_name)
+    candidates.append(repo_root / "build" / "cpp_damiao" / "Release" / lib_name)
     candidates.append(repo_root / "cpp_damiao" / "build" / lib_name)
     candidates.append(repo_root / "cpp_damiao" / "build" / "Release" / lib_name)
     candidates.append(here.parent / "src" / "motor_drive_layer" / "lib" / lib_name)
@@ -97,8 +107,46 @@ def _resolve_abi_path() -> Path:
     raise RuntimeError(
         "Cannot locate motor_abi shared library for wheel build.\n"
         f"Tried:\n{tried}\n"
-        "Build ABI first (`cmake -S cpp_damiao -B cpp_damiao/build && cmake --build cpp_damiao/build`) "
+        "Build native libraries first (`cmake -S . -B build && cmake --build build`) "
         "or set MOTOR_DRIVE_LAYER_LIB."
+    )
+
+
+def _resolve_articore_runtime_path() -> Path:
+    here = Path(__file__).resolve()
+    repo_root = here.parents[2]
+    lib_name = _articore_platform_lib_name()
+    candidates = []
+    env = os.getenv("ARTICORE_RUNTIME_LIB")
+    if env:
+        candidates.append(Path(env).expanduser())
+    candidates.extend(
+        [
+            repo_root / "build" / "articore_runtime" / lib_name,
+            repo_root
+            / "build"
+            / "articore_runtime"
+            / "Release"
+            / lib_name,
+            repo_root / "cpp_damiao" / "build" / "articore_runtime" / lib_name,
+            repo_root
+            / "cpp_damiao"
+            / "build"
+            / "articore_runtime"
+            / "Release"
+            / lib_name,
+            here.parent / "src" / "motor_drive_layer" / "lib" / lib_name,
+        ]
+    )
+    for path in candidates:
+        if path.exists():
+            return path
+    tried = "\n".join(f"- {path}" for path in candidates)
+    raise RuntimeError(
+        "Cannot locate articore_runtime shared library for wheel build.\n"
+        f"Tried:\n{tried}\n"
+        "Build the unified native targets first with "
+        "`cmake -S . -B build && cmake --build build`."
     )
 
 
@@ -111,6 +159,8 @@ class BuildPyWithAbi(_build_py):
             shutil.rmtree(dst_dir)
         dst_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(abi_src, dst_dir / abi_src.name)
+        articore_src = _resolve_articore_runtime_path()
+        shutil.copy2(articore_src, dst_dir / articore_src.name)
 
         dm_src = _find_dm_device_path()
         if dm_src is not None:

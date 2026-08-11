@@ -1,6 +1,12 @@
 from importlib import import_module
 
-from .abi import abi_capabilities, abi_version
+from .abi import (
+    abi_capabilities,
+    abi_version,
+    articore_runtime_abi_version,
+    articore_runtime_capabilities,
+    articore_runtime_library_path,
+)
 from .core import (
     Controller,
     ControllerGroup,
@@ -70,6 +76,9 @@ __all__ = [
     "get_version",
     "abi_version",
     "abi_capabilities",
+    "articore_runtime_library_path",
+    "articore_runtime_abi_version",
+    "articore_runtime_capabilities",
     "ensure_dm_device_runtime",
     "Controller",
     "ControllerGroup",

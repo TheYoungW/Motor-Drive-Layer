@@ -1,5 +1,7 @@
 /target
 /cpp_damiao/build/
+/build/
+/build-*/
 /releases/
 *.o
 *.a

@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-Motor-Drive-Layer 是面向达妙电机的开源 C++ / Python 驱动。原生 C++ 运行时负责协议编码、串口/CAN 收发、发送节流、后台反馈接收和状态缓存；Python 通过稳定的 C ABI 调用同一套驱动。
+Motor-Drive-Layer 是供 Python、C++ 和 ROS 2 SDK 共用的原生 C++ 控制底座。通用电机层负责达妙协议与 Transport；独立构建的 Articore 产品运行时负责看门狗、安全保持、故障和夹爪策略，不污染通用接口。
 
 ## 功能
 
@@ -13,26 +13,30 @@ Motor-Drive-Layer 是面向达妙电机的开源 C++ / Python 驱动。原生 C+
 - 多电机 Controller 默认在输出帧之间保持可配置的最小 120 µs 间隔。
 - 带 ACK、重试和超时的寄存器读写。
 - C ABI 动态库和 Python 3.10+ 接口。
+- 独立的 Articore runtime ABI 和常驻安全/夹爪工作线程。
 
 ## 架构边界
 
 ```text
-用户 Python / 应用代码
-        │
-        │ 可编辑参数：串口、波特率、ID、型号、发送间隔
-        ▼
-Python motor-drive-layer API ── ctypes 调用 ── C ABI
-                                      │
-                                      ▼
-                               C++ 达妙运行时
-                                      │
-                POSIX 或 Windows 串口 / SocketCAN / DM_Device
-                                      │
-                                      ▼
-                                适配器与电机
+Python SDK / C++ SDK / ROS 2
+              │
+              ▼
+    libarticore_runtime
+    产品看门狗、安全和夹爪策略
+              │ 稳定函数表 ABI
+              ▼
+         libmotor_abi
+    通用 Controller 与 Motor API
+              │
+              ▼
+      C++ Transport/协议核心
+              │
+              ▼
+串口 / SocketCAN / DM_Device / 电机
 ```
 
-C++ 不保存机器人专用的串口、关节名、电机 ID、反馈 ID 或控制频率。
+通用 `motor/` 层不包含机器人产品策略；产品概念隔离在 `articore_runtime/`，并且只能
+单向依赖稳定的 motor ABI。
 
 ## 安全说明
 
@@ -43,13 +47,16 @@ C++ 不保存机器人专用的串口、关节名、电机 ID、反馈 ID 或控
 需要 C++17 编译器和 CMake 3.16+；SocketCAN 还需要 Linux 开发头文件：
 
 ```bash
-cmake -S cpp_damiao -B cpp_damiao/build
-cmake --build cpp_damiao/build -j
-ctest --test-dir cpp_damiao/build --output-on-failure
+cmake -S . -B build
+cmake --build build -j
+ctest --test-dir build --output-on-failure
 ```
 
-构建结果包含 Linux 的 `libmotor_abi.so`、macOS 的 `libmotor_abi.dylib` 或 Windows 的
-`motor_abi.dll`，以及静态 C++ 运行库。
+构建结果包含两个正式动态库：通用通信使用 `libmotor_abi`，产品安全策略使用
+`libarticore_runtime`。静态 core target 只是内部构建细节。
+
+Python 可分别调用 `abi_capabilities()` 与 `articore_runtime_capabilities()` 查询通用电机层
+和产品运行时能力，避免把两套 ABI 的职责混在同一份能力列表中。
 
 ## 支持平台
 

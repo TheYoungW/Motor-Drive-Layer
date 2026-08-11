@@ -2,8 +2,12 @@
 
 Python bindings for the Motor-Drive-Layer native C++ Damiao motor driver.
 
-The package loads the bundled C ABI library through Python `ctypes` and exposes
+The package loads the two bundled native ABI libraries through Python `ctypes` and exposes
 SocketCAN, SocketCAN-FD, Damiao serial bridge, and optional DM_Device transports.
+`libmotor_abi` is the generic motor layer; `libarticore_runtime` is the separately versioned
+product safety runtime consumed by Articore SDKs.
+Use `articore_runtime_abi_version()` and `articore_runtime_capabilities()` to inspect that product
+runtime independently from `abi_version()` and `abi_capabilities()`.
 Published wheels cover Linux x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x64. The serial
 transport is cross-platform; SocketCAN transports remain Linux-only.
 

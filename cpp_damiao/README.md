@@ -17,12 +17,14 @@ The C++ library does not parse Python YAML and does not contain robot-specific p
 ## Build and test
 
 ```bash
-cmake -S cpp_damiao -B cpp_damiao/build
-cmake --build cpp_damiao/build -j
-ctest --test-dir cpp_damiao/build --output-on-failure
+cmake -S . -B build
+cmake --build build -j
+ctest --test-dir build --output-on-failure
 ```
 
-The build produces `libmotor_abi.so` and `libdamiao_runtime.a` on Linux.
+The unified build produces public `libmotor_abi.so` and
+`articore_runtime/libarticore_runtime.so` libraries on Linux. The static
+`libdamiao_runtime.a` and `libarticore_runtime_core.a` targets are internal.
 
 ## Minimal C++ usage
 

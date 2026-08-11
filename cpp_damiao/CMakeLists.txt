@@ -46,6 +46,15 @@ target_include_directories(motor_abi PRIVATE include)
 target_link_libraries(motor_abi PRIVATE damiao::runtime)
 set_target_properties(motor_abi PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
+include(GNUInstallDirs)
+install(
+  TARGETS motor_abi
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+install(FILES include/motor_abi.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/motor)
+
 # 测试目标：仅在 BUILD_TESTING 开启时参与构建并注册到 CTest。
 if(BUILD_TESTING)
   add_executable(damiao_protocol_test tests/protocol_test.cpp)

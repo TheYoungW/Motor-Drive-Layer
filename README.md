@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Motor-Drive-Layer is an open-source Damiao motor driver for C++ and Python. The native C++ runtime owns protocol encoding, serial/CAN I/O, TX pacing, background feedback reception, and state caching. Python exposes the same driver through a small C ABI.
+Motor-Drive-Layer is the native C++ control foundation shared by Python, C++ and ROS 2 SDKs. Its generic motor layer owns Damiao protocol and transport behavior; the separately built Articore product runtime owns watchdog, safe-hold, fault and gripper policy without contaminating the generic API.
 
 ## Features
 
@@ -13,26 +13,30 @@ Motor-Drive-Layer is an open-source Damiao motor driver for C++ and Python. The 
 - Multi-motor controllers default to a configurable 120 µs minimum interval between outgoing frames.
 - Register read/write helpers with acknowledgement and timeout handling.
 - C ABI shared library and Python 3.10+ bindings.
+- A separate Articore runtime ABI with a persistent safety and gripper worker.
 
 ## Architecture
 
 ```text
-User Python / application code
-        │
-        │ editable values: port, baud, IDs, model, TX gap
-        ▼
-Python motor-drive-layer API ── ctypes call ── C ABI
-                                      │
-                                      ▼
-                              C++ Damiao runtime
-                                      │
-               POSIX or Windows serial / SocketCAN / DM_Device
-                                      │
-                                      ▼
-                              adapter and motors
+Python SDK / C++ SDK / ROS 2
+              │
+              ▼
+    libarticore_runtime
+    product watchdog, safety and gripper policy
+              │ stable function-table ABI
+              ▼
+         libmotor_abi
+    generic controller and motor API
+              │
+              ▼
+     C++ transport/protocol core
+              │
+              ▼
+serial / SocketCAN / DM_Device / motors
 ```
 
-C++ does not contain robot-specific ports, joint names, motor IDs, feedback IDs, or control frequencies.
+The generic `motor/` layer does not contain robot-specific policy. Product concepts remain isolated
+under `articore_runtime/`, with a one-way dependency on the stable motor ABI.
 
 ## Safety
 
@@ -44,13 +48,15 @@ Requirements: a C++17 compiler and CMake 3.16+. SocketCAN additionally requires 
 headers.
 
 ```bash
-cmake -S cpp_damiao -B cpp_damiao/build
-cmake --build cpp_damiao/build -j
-ctest --test-dir cpp_damiao/build --output-on-failure
+cmake -S . -B build
+cmake --build build -j
+ctest --test-dir build --output-on-failure
 ```
 
-The build produces `libmotor_abi.so` on Linux, `libmotor_abi.dylib` on macOS, or
-`motor_abi.dll` on Windows, together with the static C++ runtime library.
+The build produces two public shared libraries: `libmotor_abi` for generic motor communication and
+`libarticore_runtime` for product safety policy. Static core targets are internal build details.
+Python exposes separate `abi_capabilities()` and `articore_runtime_capabilities()` queries so the
+generic and product ABI surfaces cannot be confused.
 
 ## Supported platforms
 
