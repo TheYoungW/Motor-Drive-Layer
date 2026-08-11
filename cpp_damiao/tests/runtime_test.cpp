@@ -40,6 +40,10 @@ static_assert(!std::is_move_constructible_v<damiao::MotorHandle>,
 
 class FakeBus final : public damiao::CanBus {
  public:
+  damiao::TransportCapabilities capabilities() const override {
+    return {"fake-test", 8, 3, true, false, true, true, false};
+  }
+
   void send(const damiao::CanFrame& frame) override {
     std::lock_guard<std::mutex> lock(mutex_);
     sent.push_back(frame);
@@ -286,6 +290,18 @@ std::size_t feedback_request_count(const std::vector<damiao::CanFrame>& frames) 
 
 int main() {
   try {
+  auto capability_bus = std::make_shared<FakeBus>();
+  damiao::Controller capability_controller(capability_bus);
+  const auto transport_capabilities = capability_controller.transport_capabilities();
+  require(transport_capabilities.transport == "fake-test" &&
+              transport_capabilities.channel_count == 3 &&
+              transport_capabilities.can_fd &&
+              !transport_capabilities.parallel_batches &&
+              transport_capabilities.hardware_rx_timestamps &&
+              transport_capabilities.reconnect &&
+              !transport_capabilities.process_session_reuse,
+          "controller forwards the active bus capabilities");
+  capability_controller.close_bus();
   auto bus = std::make_shared<FakeBus>();
   damiao::Controller controller(bus);
   auto motor1 = controller.add_damiao_motor(0x01, 0x11, "4340P");

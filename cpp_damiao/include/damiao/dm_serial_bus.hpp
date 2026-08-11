@@ -40,6 +40,7 @@ class DmSerialBus final : public CanBus {
   void send(const CanFrame& frame) override;
   std::optional<CanFrame> receive_for(std::chrono::milliseconds timeout) override;
   void shutdown() override;
+  TransportCapabilities capabilities() const override;
 
  private:
 #if defined(_WIN32)

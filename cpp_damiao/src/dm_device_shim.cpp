@@ -145,6 +145,12 @@ std::mutex g_registry_mutex;
 std::shared_ptr<Session> g_session;
 std::vector<mb_dm_handle*> g_clients;
 
+struct ProcessSessionCleanup {
+  ~ProcessSessionCleanup();
+};
+
+ProcessSessionCleanup g_process_session_cleanup;
+
 void set_err(char* err_buf, size_t err_len, const std::string& msg) {
   if (!err_buf || err_len == 0) return;
   const size_t n = msg.size() < err_len - 1 ? msg.size() : err_len - 1;
@@ -607,6 +613,30 @@ bool close_session(Session& session, std::string& error) {
   return ok;
 }
 
+bool retains_process_session(const Session& session) {
+  // The official Linux v1.0 runtime cannot reliably open device index 0 again
+  // after device_close/damiao_handle_destroy in the same process. Keep its
+  // device, root context and loaded library alive, while individual clients
+  // still close their channels and release all motor-layer resources.
+  return session.api.abi == VendorAbi::V10;
+}
+
+ProcessSessionCleanup::~ProcessSessionCleanup() {
+  std::lock_guard<std::mutex> lifecycle_lock(g_lifecycle_mutex);
+  std::shared_ptr<Session> session;
+  {
+    std::lock_guard<std::mutex> registry_lock(g_registry_mutex);
+    // Live clients indicate an application-level lifetime bug. Avoid tearing
+    // their callbacks out from under static destructors in another module.
+    if (!g_clients.empty()) return;
+    session = std::move(g_session);
+  }
+  if (session) {
+    std::string ignored;
+    close_session(*session, ignored);
+  }
+}
+
 }  // namespace
 
 extern "C" int mb_dm_open(const char* library_path, int device_type, uint8_t selected_channel,
@@ -644,7 +674,7 @@ extern "C" int mb_dm_open(const char* library_path, int device_type, uint8_t sel
 
     if (!configure_channel(*session, selected_channel,
                            ChannelConfig{can_baudrate, canfd_baudrate}, err_buf, err_len)) {
-      if (created) {
+      if (created && !retains_process_session(*session)) {
         {
           std::lock_guard<std::mutex> registry_lock(g_registry_mutex);
           g_session.reset();
@@ -744,7 +774,9 @@ extern "C" int mb_dm_shutdown(void* opaque_handle, char* err_buf, size_t err_len
         break;
       }
     }
-    if (last_client && g_session == session) g_session.reset();
+    if (last_client && g_session == session && !retains_process_session(*session)) {
+      g_session.reset();
+    }
   }
   {
     std::lock_guard<std::mutex> queue_lock(handle->queue_mutex);
@@ -754,11 +786,23 @@ extern "C" int mb_dm_shutdown(void* opaque_handle, char* err_buf, size_t err_len
 
   std::string error;
   bool ok = release_channel(*session, handle->selected_channel, error);
-  if (last_client && !close_session(*session, error)) ok = false;
+  if (last_client && !retains_process_session(*session) &&
+      !close_session(*session, error)) {
+    ok = false;
+  }
   delete handle;
   if (!ok) {
     set_err(err_buf, err_len, error.empty() ? "DM_Device shutdown failed" : error);
     return -1;
   }
+  return 0;
+}
+
+extern "C" int mb_dm_get_runtime_info(void* opaque_handle, mb_dm_runtime_info* out) {
+  auto* handle = static_cast<mb_dm_handle*>(opaque_handle);
+  if (!handle || !out) return -1;
+  out->abi_generation = handle->session->api.abi == VendorAbi::V10 ? 10 : 11;
+  out->process_session_reuse =
+      static_cast<uint8_t>(retains_process_session(*handle->session) ? 1 : 0);
   return 0;
 }

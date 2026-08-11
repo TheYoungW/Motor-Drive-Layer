@@ -35,6 +35,18 @@ class FeedbackStats:
 
 
 @dataclass(frozen=True)
+class TransportCapabilities:
+    transport: str
+    max_payload_bytes: int
+    channel_count: int
+    can_fd: bool
+    parallel_batches: bool
+    hardware_rx_timestamps: bool
+    reconnect: bool
+    process_session_reuse: bool
+
+
+@dataclass(frozen=True)
 class MitCommand:
     motor: Motor
     pos: float

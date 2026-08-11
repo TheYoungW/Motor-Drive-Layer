@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 from collections.abc import Sequence
 from ctypes import c_float, c_uint32
+from numbers import Real
 from threading import Lock
 
 from .abi import (
@@ -10,11 +11,19 @@ from .abi import (
     CMitBatchCommand,
     CPosVelBatchCommand,
     CState,
+    CTransportCapabilities,
     get_abi,
 )
 from .dm_device_runtime import ensure_dm_device_runtime
 from .errors import CallError
-from .models import FeedbackStats, MitCommand, Mode, MotorState, PosVelCommand
+from .models import (
+    FeedbackStats,
+    MitCommand,
+    Mode,
+    MotorState,
+    PosVelCommand,
+    TransportCapabilities,
+)
 
 
 def _err_text() -> str:
@@ -183,6 +192,30 @@ class Controller:
         _ok(
             self._abi.lib.motor_controller_set_tx_gap_us(self._require_open(), value),
             "set_tx_gap_us",
+        )
+
+    def transport_capabilities(self) -> TransportCapabilities:
+        if not self._abi.has_transport_capabilities:
+            raise CallError(
+                "the loaded motor_abi does not support transport capabilities; "
+                "upgrade motor-drive-layer"
+            )
+        native = CTransportCapabilities()
+        _ok(
+            self._abi.lib.motor_controller_get_transport_capabilities(
+                self._require_open(), ctypes.byref(native)
+            ),
+            "controller_get_transport_capabilities",
+        )
+        return TransportCapabilities(
+            transport=bytes(native.transport).split(b"\0", 1)[0].decode(),
+            max_payload_bytes=int(native.max_payload_bytes),
+            channel_count=int(native.channel_count),
+            can_fd=bool(native.can_fd),
+            parallel_batches=bool(native.parallel_batches),
+            hardware_rx_timestamps=bool(native.hardware_rx_timestamps),
+            reconnect=bool(native.reconnect),
+            process_session_reuse=bool(native.process_session_reuse),
         )
 
     def add_damiao_motor(self, motor_id: int, feedback_id: int, model: str) -> "Motor":
@@ -448,6 +481,12 @@ class ControllerGroup:
                 "controller_group_send_pos_vel",
             )
 
+    def prepare_mit(self, motors: Sequence[Motor]) -> "PreparedMitBatch":
+        return PreparedMitBatch(self, motors)
+
+    def prepare_pos_vel(self, motors: Sequence[Motor]) -> "PreparedPosVelBatch":
+        return PreparedPosVelBatch(self, motors)
+
     def close(self) -> None:
         with self._call_lock:
             if self._ptr:
@@ -466,3 +505,122 @@ class ControllerGroup:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
+
+
+def _check_vector(name: str, values: float | Sequence[float], count: int) -> None:
+    if isinstance(values, Real):
+        return
+    if len(values) != count:
+        raise ValueError(f"{name} must contain exactly {count} values")
+
+
+def _vector_value(values: float | Sequence[float], index: int) -> float:
+    if isinstance(values, Real):
+        return float(values)
+    return float(values[index])
+
+
+class PreparedPosVelBatch:
+    """Reusable fixed-motor POS_VEL batch with one preallocated ctypes array."""
+
+    def __init__(self, group: ControllerGroup, motors: Sequence[Motor]) -> None:
+        self._group = group
+        self._motors = tuple(motors)
+        if not self._motors:
+            raise ValueError("motors must not be empty")
+        group._require_open()
+        pointers = tuple(group._validate_motor(motor) for motor in self._motors)
+        if len(set(pointers)) != len(pointers):
+            raise ValueError("motors must not contain duplicates")
+        self._native = (CPosVelBatchCommand * len(pointers))(
+            *(CPosVelBatchCommand(pointer, 0.0, 0.0) for pointer in pointers)
+        )
+        self._pointers = pointers
+        self._lock = Lock()
+
+    @property
+    def motor_count(self) -> int:
+        return len(self._motors)
+
+    def send(
+        self,
+        positions: Sequence[float],
+        velocity_limits: float | Sequence[float],
+    ) -> None:
+        count = self.motor_count
+        _check_vector("positions", positions, count)
+        _check_vector("velocity_limits", velocity_limits, count)
+        with self._lock, self._group._call_lock:
+            self._group._require_open()
+            for motor, pointer in zip(self._motors, self._pointers):
+                if self._group._validate_motor(motor) != pointer:
+                    raise CallError("prepared batch motor handle changed")
+            for index in range(count):
+                self._native[index].target_position = float(positions[index])
+                self._native[index].velocity_limit = _vector_value(
+                    velocity_limits, index
+                )
+            _ok(
+                self._group._abi.lib.motor_controller_group_send_pos_vel(
+                    self._group._require_open(), self._native, count
+                ),
+                "controller_group_send_pos_vel",
+            )
+
+
+class PreparedMitBatch:
+    """Reusable fixed-motor MIT batch with one preallocated ctypes array."""
+
+    def __init__(self, group: ControllerGroup, motors: Sequence[Motor]) -> None:
+        self._group = group
+        self._motors = tuple(motors)
+        if not self._motors:
+            raise ValueError("motors must not be empty")
+        group._require_open()
+        pointers = tuple(group._validate_motor(motor) for motor in self._motors)
+        if len(set(pointers)) != len(pointers):
+            raise ValueError("motors must not contain duplicates")
+        self._native = (CMitBatchCommand * len(pointers))(
+            *(CMitBatchCommand(pointer, 0.0, 0.0, 0.0, 0.0, 0.0) for pointer in pointers)
+        )
+        self._pointers = pointers
+        self._lock = Lock()
+
+    @property
+    def motor_count(self) -> int:
+        return len(self._motors)
+
+    def send(
+        self,
+        positions: Sequence[float],
+        velocities: float | Sequence[float],
+        stiffness: float | Sequence[float],
+        damping: float | Sequence[float],
+        feedforward_torques: float | Sequence[float],
+    ) -> None:
+        count = self.motor_count
+        _check_vector("positions", positions, count)
+        _check_vector("velocities", velocities, count)
+        _check_vector("stiffness", stiffness, count)
+        _check_vector("damping", damping, count)
+        _check_vector("feedforward_torques", feedforward_torques, count)
+        with self._lock, self._group._call_lock:
+            self._group._require_open()
+            for motor, pointer in zip(self._motors, self._pointers):
+                if self._group._validate_motor(motor) != pointer:
+                    raise CallError("prepared batch motor handle changed")
+            for index in range(count):
+                command = self._native[index]
+                command.target_position = float(positions[index])
+                command.target_velocity = _vector_value(velocities, index)
+                command.stiffness = _vector_value(stiffness, index)
+                command.damping = _vector_value(damping, index)
+                command.feedforward_torque = _vector_value(
+                    feedforward_torques, index
+                )
+            _ok(
+                self._group._abi.lib.motor_controller_group_send_mit(
+                    self._group._require_open(), self._native, count
+                ),
+                "controller_group_send_mit",
+            )

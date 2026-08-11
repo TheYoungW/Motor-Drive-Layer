@@ -37,6 +37,27 @@ class FeedbackStats:
     age_ns: int
     def __init__(self, has_feedback: bool, update_count: int, age_ns: int) -> None: ...
 
+class TransportCapabilities:
+    transport: str
+    max_payload_bytes: int
+    channel_count: int
+    can_fd: bool
+    parallel_batches: bool
+    hardware_rx_timestamps: bool
+    reconnect: bool
+    process_session_reuse: bool
+    def __init__(
+        self,
+        transport: str,
+        max_payload_bytes: int,
+        channel_count: int,
+        can_fd: bool,
+        parallel_batches: bool,
+        hardware_rx_timestamps: bool,
+        reconnect: bool,
+        process_session_reuse: bool,
+    ) -> None: ...
+
 class MitCommand:
     motor: Motor
     pos: float

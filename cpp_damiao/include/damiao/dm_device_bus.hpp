@@ -33,12 +33,16 @@ class DmDeviceBus final : public CanBus {
   void send(const CanFrame& frame) override;
   std::optional<CanFrame> receive_for(std::chrono::milliseconds timeout) override;
   void shutdown() override;
+  TransportCapabilities capabilities() const override;
 
  private:
-  DmDeviceBus(void* handle, uint8_t channel);
+  DmDeviceBus(void* handle, uint8_t channel, DmDeviceType device_type,
+              bool process_session_reuse);
 
   void* handle_;
   uint8_t channel_;
+  DmDeviceType device_type_;
+  bool process_session_reuse_;
   std::mutex mutex_;
 };
 

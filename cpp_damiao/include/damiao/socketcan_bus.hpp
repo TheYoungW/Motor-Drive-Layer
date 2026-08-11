@@ -46,6 +46,7 @@ class SocketCanBus final : public CanBus {
   void send(const CanFrame& frame) override;
   std::optional<CanFrame> receive_for(std::chrono::milliseconds timeout) override;
   void shutdown() override;
+  TransportCapabilities capabilities() const override;
 
  private:
   SocketCanBus(int fd, std::string interface);
@@ -67,6 +68,7 @@ class SocketCanFdBus final : public CanBus {
   void send(const CanFrame& frame) override;
   std::optional<CanFrame> receive_for(std::chrono::milliseconds timeout) override;
   void shutdown() override;
+  TransportCapabilities capabilities() const override;
 
  private:
   SocketCanFdBus(int fd, std::string interface, bool enable_brs);

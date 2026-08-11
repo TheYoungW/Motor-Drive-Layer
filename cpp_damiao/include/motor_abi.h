@@ -44,6 +44,17 @@ typedef struct MotorFeedbackStats {
   uint64_t age_ns;
 } MotorFeedbackStats;
 
+typedef struct MotorTransportCapabilities {
+  char transport[32];
+  uint32_t max_payload_bytes;
+  uint32_t channel_count;
+  int32_t can_fd;
+  int32_t parallel_batches;
+  int32_t hardware_rx_timestamps;
+  int32_t reconnect;
+  int32_t process_session_reuse;
+} MotorTransportCapabilities;
+
 enum {
   MOTOR_REGISTER_ACCESS_READ_ONLY = 0,
   MOTOR_REGISTER_ACCESS_READ_WRITE = 1,
@@ -133,6 +144,8 @@ int32_t motor_controller_disable_all(MotorController* controller);
 int32_t motor_controller_shutdown(MotorController* controller);
 int32_t motor_controller_close_bus(MotorController* controller);
 int32_t motor_controller_set_tx_gap_us(MotorController* controller, uint32_t gap_us);
+int32_t motor_controller_get_transport_capabilities(
+    MotorController* controller, MotorTransportCapabilities* out_capabilities);
 
 MotorHandle* motor_controller_add_damiao_motor(MotorController* controller, uint16_t motor_id, uint16_t feedback_id, const char* model);
 void motor_handle_free(MotorHandle* handle);

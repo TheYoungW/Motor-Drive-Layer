@@ -35,6 +35,7 @@ Repository = "https://github.com/TheYoungW/Motor-Drive-Layer"
 motor-drive-layer = "motor_drive_layer.cli:main"
 motor-drive-layer-cli = "motor_drive_layer.cli:main"
 motor-drive-layer-install-dm-device = "motor_drive_layer.dm_device_runtime:main"
+motor-drive-layer-stress = "motor_drive_layer.stress:main"
 
 [project.optional-dependencies]
 test = ["pytest>=7"]

@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "abi": {
     "metadata": [
@@ -24,6 +24,7 @@
       "motor_controller_shutdown",
       "motor_controller_close_bus",
       "motor_controller_set_tx_gap_us",
+      "motor_controller_get_transport_capabilities",
       "motor_controller_add_damiao_motor"
     ],
     "controller_group": [
@@ -80,6 +81,7 @@
       "Controller.poll_feedback_once()",
       "Controller.request_feedback_all(timeout_ms)",
       "Controller.set_tx_gap_us(gap_us)",
+      "Controller.transport_capabilities()",
       "Controller.add_damiao_motor(motor_id, feedback_id, model)"
     ],
     "motor_methods": [
@@ -114,11 +116,16 @@
       "ControllerGroup.close()",
       "ControllerGroup.closed",
       "ControllerGroup.send_mit(commands)",
-      "ControllerGroup.send_pos_vel(commands)"
+      "ControllerGroup.send_pos_vel(commands)",
+      "ControllerGroup.prepare_mit(motors)",
+      "ControllerGroup.prepare_pos_vel(motors)"
     ],
     "command_types": [
       "MitCommand(motor, pos, vel, kp, kd, tau)",
-      "PosVelCommand(motor, pos, vlim)"
+      "PosVelCommand(motor, pos, vlim)",
+      "PreparedMitBatch(group, motors)",
+      "PreparedPosVelBatch(group, motors)",
+      "TransportCapabilities"
     ],
     "python": {
       "module_metadata": [

@@ -83,4 +83,14 @@ handles must outlive the group. On failure, the call waits for all workers and r
 controller index, endpoint, motor ID, and underlying error. Per-controller pacing can overlap;
 transport-specific shared vendor locks remain responsible for vendor-library thread safety.
 
+Every `CanBus` exposes `TransportCapabilities`; `Controller::transport_capabilities()` and the C
+ABI return the active instance's transport name, canonical payload size, physical channel count,
+CAN-FD, parallel-batch, reconnect, process-session reuse, and hardware RX timestamp flags.
+
+For DM_Device v1.0, the shim retains the opened legacy context/device and callbacks at process
+scope after the final client closes. It still closes channel resources and removes every client;
+the retained vendor objects avoid the official Linux runtime's failure to reopen device index 0
+after a full in-process teardown. A process-scope destructor performs the final v1.0 vendor cleanup
+at normal process exit. DM_Device v1.1 keeps its documented full teardown behavior.
+
 Default C++ tests never open a real motor device.

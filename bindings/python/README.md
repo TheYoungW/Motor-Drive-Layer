@@ -12,6 +12,11 @@ DM-USB2FDCAN Dual works with its original `dual_app` firmware through
 data_bitrate=5_000_000)`. CH0 and CH1 are independently selectable, old positional arguments remain
 compatible, and the loader probes both vendor v1.0 and v1.1 ABIs. Install the separate vendor
 runtime with `motor-drive-layer-install-dm-device --download` or set `MOTOR_DM_DEVICE_LIB`.
+On final Controller close, v1.1 fully tears down its device session. The Linux v1.0 runtime instead
+closes the selected channels and motor-layer resources but retains its legacy context/device until
+process exit, allowing a later `Controller.from_dm_device(...)` call to reconnect reliably in the
+same Python process. A process-scope cleanup closes and destroys those retained vendor objects at
+normal process exit.
 
 Use `Motor.request_fresh_state(timeout_ms=50)` when the caller must wait for a newly requested
 feedback frame. For multiple motors, `Controller.request_feedback_all(timeout_ms=50)` sends every
@@ -24,15 +29,22 @@ native worker per Controller. `send_pos_vel([...])` and `send_mit([...])` dispat
 `PosVelCommand` or `MitCommand` values across their owning controllers, overlap independent TX
 pacing waits, and return after every controller finishes. Errors retain the controller/channel,
 motor ID, and native reason.
+For fixed high-rate layouts, `prepare_pos_vel(motors)` and `prepare_mit(motors)` reuse one validated
+ctypes command array across calls. `Controller.transport_capabilities()` reports the active
+transport's CAN-FD, channel, parallel-send, reconnect, session-reuse, and timestamp capabilities.
+
+The `motor-drive-layer-stress` command provides a feedback-only DM_Device load/reconnect test and
+reports latency plus Linux file-descriptor/thread counts. It never enables or commands motors.
 
 The wheel includes `py.typed` and `.pyi` declarations for editor completion and static type
 checking. The main public APIs are:
 
 - `Controller(...)`, `from_socketcanfd(...)`, `from_dm_serial(...)`, and `from_dm_device(...)`.
 - `Controller.add_damiao_motor(...)`, `enable_all()`, `disable_all()`,
-  `request_feedback_all()`, `set_tx_gap_us()`, `shutdown()`, and `close_bus()`.
+  `request_feedback_all()`, `set_tx_gap_us()`, `transport_capabilities()`, `shutdown()`, and
+  `close_bus()`.
 - `ControllerGroup(...)`, `send_pos_vel(...)`, and `send_mit(...)` for persistent native
-  multi-controller dispatch.
+  multi-controller dispatch, plus reusable prepared batches for fixed layouts.
 - `Motor.enable()`, `disable()`, `ensure_mode()`, all four control-mode send methods,
   fresh/cached feedback methods, typed register access, parameter aliases, and
   `store_parameters()`.

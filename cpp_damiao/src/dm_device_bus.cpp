@@ -160,10 +160,21 @@ std::shared_ptr<DmDeviceBus> DmDeviceBus::open(DmDeviceType device_type,
   if (rc != 0 || raw == nullptr) {
     throw std::runtime_error(error_message(err, "mb_dm_open failed"));
   }
-  return std::shared_ptr<DmDeviceBus>(new DmDeviceBus(raw, channel));
+  mb_dm_runtime_info runtime_info{};
+  if (mb_dm_get_runtime_info(raw, &runtime_info) != 0) {
+    mb_dm_shutdown(raw, err.data(), err.size());
+    throw std::runtime_error("failed to query DM_Device runtime capabilities");
+  }
+  return std::shared_ptr<DmDeviceBus>(new DmDeviceBus(
+      raw, channel, device_type, runtime_info.process_session_reuse != 0));
 }
 
-DmDeviceBus::DmDeviceBus(void* handle, uint8_t channel) : handle_(handle), channel_(channel) {}
+DmDeviceBus::DmDeviceBus(void* handle, uint8_t channel, DmDeviceType device_type,
+                         bool process_session_reuse)
+    : handle_(handle),
+      channel_(channel),
+      device_type_(device_type),
+      process_session_reuse_(process_session_reuse) {}
 
 DmDeviceBus::~DmDeviceBus() {
   try {
@@ -222,6 +233,14 @@ void DmDeviceBus::shutdown() {
       throw std::runtime_error(error_message(err, "mb_dm_shutdown failed"));
     }
   }
+}
+
+TransportCapabilities DmDeviceBus::capabilities() const {
+  uint32_t channels = 1;
+  if (device_type_ == DmDeviceType::Usb2CanFdDual) channels = 2;
+  if (device_type_ == DmDeviceType::LinkX4C) channels = 4;
+  return TransportCapabilities{"dm-device", 8, channels, true, true, false, true,
+                               process_session_reuse_};
 }
 
 }  // namespace damiao

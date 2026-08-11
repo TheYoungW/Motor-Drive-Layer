@@ -94,4 +94,8 @@ std::optional<CanFrame> DmSerialCodec::try_parse_rx() {
   return std::nullopt;
 }
 
+TransportCapabilities DmSerialBus::capabilities() const {
+  return TransportCapabilities{"dm-serial", 8, 1, false, true, false, true, false};
+}
+
 }  // namespace damiao

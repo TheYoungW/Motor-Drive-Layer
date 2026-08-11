@@ -58,6 +58,8 @@ class Controller::PacingBus final : public CanBus {
 
   void shutdown() override { inner_->shutdown(); }
 
+  TransportCapabilities capabilities() const override { return inner_->capabilities(); }
+
   void set_tx_gap(std::chrono::microseconds gap) {
     tx_gap_.store(static_cast<uint64_t>(gap.count()), std::memory_order_release);
   }
@@ -484,6 +486,10 @@ Controller::~Controller() {
     close_bus();
   } catch (...) {
   }
+}
+
+TransportCapabilities Controller::transport_capabilities() const {
+  return bus_->capabilities();
 }
 
 std::shared_ptr<MotorHandle> Controller::add_damiao_motor(uint16_t motor_id,

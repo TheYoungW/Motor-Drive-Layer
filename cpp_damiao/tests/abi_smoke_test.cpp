@@ -30,10 +30,17 @@ int main() {
           "capabilities include DM_Device ABI versions");
   require(capabilities.find("dm_device_configurable_bitrates") != std::string::npos,
           "capabilities include configurable DM_Device bitrates");
+  require(capabilities.find("dm_device_v10_process_session_reuse") != std::string::npos,
+          "capabilities include v1.0 process-session reuse");
   require(capabilities.find("register_metadata") != std::string::npos,
           "capabilities include canonical register metadata");
   require(capabilities.find("parallel_controller_batches") != std::string::npos,
           "capabilities include parallel controller batches");
+  require(capabilities.find("transport_capabilities") != std::string::npos,
+          "capabilities include per-transport capability query");
+
+  require(motor_controller_get_transport_capabilities(nullptr, nullptr) != 0,
+          "transport capabilities rejects null controller and output");
 
   MotorRegisterInfo register_info{};
   require(motor_damiao_register_info(11, &register_info) == 0,

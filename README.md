@@ -116,7 +116,7 @@ creating or scheduling Python threads in a control loop and lets independent per
 pacing waits overlap.
 
 ```python
-from motor_drive_layer import Controller, ControllerGroup, PosVelCommand
+from motor_drive_layer import Controller, ControllerGroup
 
 ch0 = Controller.from_dm_device(device="usb2canfd-dual", channel=0)
 ch1 = Controller.from_dm_device(device="usb2canfd-dual", channel=1)
@@ -126,10 +126,8 @@ targets = [0.0] * (len(motors_ch0) + len(motors_ch1))
 velocity_limit = 2.0
 
 with ControllerGroup([ch0, ch1]) as group:
-    group.send_pos_vel(
-        [PosVelCommand(motor, position, velocity_limit)
-         for motor, position in zip(motors_ch0 + motors_ch1, targets)]
-    )
+    batch = group.prepare_pos_vel(motors_ch0 + motors_ch1)
+    batch.send(targets, velocity_limit)
 ```
 
 `send_mit()` accepts `MitCommand` in the same way. A failed dispatch still waits for all member
@@ -139,6 +137,12 @@ mix individual motor sends with a group dispatch concurrently because their rela
 is unspecified. The shared DM_Device vendor call remains mutex-protected; only independent pacing
 waits and other per-controller work overlap, so this is synchronized host dispatch rather than a
 hard real-time simultaneous bus transmission guarantee.
+
+For a fixed motor layout in a high-rate loop, `prepare_pos_vel()` and `prepare_mit()` retain the
+validated motor pointers and reuse one preallocated Python/ctypes command array. This removes
+per-cycle command dataclass and ctypes-array construction. The native ABI still validates and
+partitions each call, so this is a reduced-allocation path rather than a zero-allocation or
+hard-real-time guarantee.
 
 ## Fresh feedback
 
@@ -180,6 +184,7 @@ top-level `motor_drive_layer` package.
 | `request_feedback_all(timeout_ms=50)` | Request and wait for one fresh frame per motor against one shared timeout. |
 | `poll_feedback_once()` | Non-blocking drain of frames that have already arrived. |
 | `set_tx_gap_us(gap_us)` | Configure the minimum host-side interval between outgoing frames. |
+| `transport_capabilities()` | Query the active transport's CAN-FD, channel-count, parallel-batch, reconnect, process-session reuse, and hardware RX timestamp capabilities. |
 | `shutdown()` | Attempt to disable every motor, stop polling, and close the bus. |
 | `close_bus()` | Stop polling and close the bus without sending disable commands. |
 | `close()` / `closed` | Free the native Controller handle; `close()` does not actively send disable commands. |
@@ -190,7 +195,11 @@ runtime once with `motor-drive-layer-install-dm-device --download`, or set
 v1.0 (`damiao_*`/`device_*`) and v1.1 (`dmcan_*`) ABIs and reports missing symbols and dynamic
 loader dependency errors explicitly. Linux prefers the broadly usable v1.0 runtime and falls back
 to v1.1; Windows and macOS keep the same Python call. Each Controller owns only its selected
-channel, while the physical USB handle is shared and released after the last Controller closes.
+channel. v1.1 releases the shared physical USB handle after the last Controller closes. Because the
+official Linux v1.0 runtime cannot reliably reopen device index 0 in the same process after a full
+device teardown, v1.0 instead closes each channel and all motor-layer threads/clients but retains
+its legacy context, device handle, callbacks, and loaded library for reuse until process exit, when
+an explicit process-scope cleanup closes and destroys the retained vendor objects.
 
 ### Motor
 
@@ -222,7 +231,24 @@ channel, while the physical USB handle is shared and released after the last Con
 | `ControllerGroup(controllers)` | Create and retain one persistent native send worker per Controller. |
 | `send_pos_vel(commands)` | Dispatch `PosVelCommand` values across their owning controllers and wait for all. |
 | `send_mit(commands)` | Dispatch `MitCommand` values across their owning controllers and wait for all. |
+| `prepare_pos_vel(motors)` | Create a reusable fixed-layout POS_VEL batch; scalar velocity limits are broadcast. |
+| `prepare_mit(motors)` | Create a reusable fixed-layout MIT batch; all fields except position accept scalars or vectors. |
 | `close()` / `closed` | Stop and join the native workers; does not close member controllers. |
+
+### Feedback/reconnect stress diagnostic
+
+`motor-drive-layer-stress` repeatedly opens the requested DM_Device channels, requests feedback,
+closes them, and reopens them in the same process. It records latency, failures, file-descriptor
+counts, and thread counts. The tool never enables a motor and never sends a control command:
+
+```bash
+motor-drive-layer-stress \
+  --motor 0:0x09:0x19:4310 \
+  --motor 1:0x0f:0x1f:4310 \
+  --iterations 1000 --reconnect-cycles 10 --output stress.json
+```
+
+Repeat `--motor` for the real channel/motor/feedback/model mapping. The example IDs are illustrative.
 
 Position, velocity, and torque use rad, rad/s, and Nm. `MotorState`, `FeedbackStats`, `Mode`,
 `CallError`, and the register constants are also exported at package level.

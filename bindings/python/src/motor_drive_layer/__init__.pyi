@@ -1,5 +1,11 @@
 from .abi import abi_capabilities as abi_capabilities, abi_version as abi_version
-from .core import Controller as Controller, ControllerGroup as ControllerGroup, Motor as Motor
+from .core import (
+    Controller as Controller,
+    ControllerGroup as ControllerGroup,
+    Motor as Motor,
+    PreparedMitBatch as PreparedMitBatch,
+    PreparedPosVelBatch as PreparedPosVelBatch,
+)
 from .damiao_registers import (
     DAMIAO_HIGH_IMPACT_RIDS as DAMIAO_HIGH_IMPACT_RIDS,
     DAMIAO_PROTECTION_RIDS as DAMIAO_PROTECTION_RIDS,
@@ -34,6 +40,7 @@ from .models import (
     Mode as Mode,
     MotorState as MotorState,
     PosVelCommand as PosVelCommand,
+    TransportCapabilities as TransportCapabilities,
 )
 
 __version__: str

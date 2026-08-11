@@ -5,10 +5,10 @@ import ctypes
 import pytest
 
 import motor_drive_layer.core as core_module
-from motor_drive_layer.abi import CFeedbackStats, CState
+from motor_drive_layer.abi import CFeedbackStats, CState, CTransportCapabilities
 from motor_drive_layer.core import Controller, Motor
 from motor_drive_layer.errors import CallError
-from motor_drive_layer.models import FeedbackStats, MotorState
+from motor_drive_layer.models import FeedbackStats, MotorState, TransportCapabilities
 
 
 class FakeLib:
@@ -27,6 +27,20 @@ class FakeLib:
 
     def motor_controller_request_feedback_all(self, ptr: int, timeout_ms: int) -> int:
         self.batch_feedback_calls.append((ptr, timeout_ms))
+        return 0
+
+    def motor_controller_get_transport_capabilities(self, ptr: int, out_capabilities) -> int:
+        capabilities = ctypes.cast(
+            out_capabilities, ctypes.POINTER(CTransportCapabilities)
+        ).contents
+        capabilities.transport = b"dm-device"
+        capabilities.max_payload_bytes = 8
+        capabilities.channel_count = 2
+        capabilities.can_fd = 1
+        capabilities.parallel_batches = 1
+        capabilities.hardware_rx_timestamps = 0
+        capabilities.reconnect = 1
+        capabilities.process_session_reuse = 1
         return 0
 
     def motor_handle_request_fresh_state(self, ptr: int, timeout_ms: int, out_state) -> int:
@@ -54,6 +68,7 @@ class FakeLib:
 class FakeAbi:
     def __init__(self) -> None:
         self.lib = FakeLib()
+        self.has_transport_capabilities = True
 
 
 def test_controller_forwards_configured_tx_gap() -> None:
@@ -74,6 +89,23 @@ def test_controller_requests_fresh_feedback_with_one_deadline() -> None:
     controller.request_feedback_all(75)
 
     assert controller._abi.lib.batch_feedback_calls == [(123, 75)]
+
+
+def test_controller_exposes_per_transport_capabilities() -> None:
+    controller = Controller.__new__(Controller)
+    controller._abi = FakeAbi()
+    controller._ptr = 123
+
+    assert controller.transport_capabilities() == TransportCapabilities(
+        transport="dm-device",
+        max_payload_bytes=8,
+        channel_count=2,
+        can_fd=True,
+        parallel_batches=True,
+        hardware_rx_timestamps=False,
+        reconnect=True,
+        process_session_reuse=True,
+    )
 
 
 def test_motor_exposes_feedback_count_and_age() -> None:

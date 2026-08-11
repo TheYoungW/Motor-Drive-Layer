@@ -31,6 +31,19 @@ class CFeedbackStats(Structure):
     ]
 
 
+class CTransportCapabilities(Structure):
+    _fields_ = [
+        ("transport", ctypes.c_char * 32),
+        ("max_payload_bytes", c_uint32),
+        ("channel_count", c_uint32),
+        ("can_fd", c_int32),
+        ("parallel_batches", c_int32),
+        ("hardware_rx_timestamps", c_int32),
+        ("reconnect", c_int32),
+        ("process_session_reuse", c_int32),
+    ]
+
+
 class CRegisterInfo(Structure):
     _fields_ = [
         ("has_value", c_int32),
@@ -214,6 +227,15 @@ class Abi:
         lib.motor_controller_close_bus.restype = c_int32
         lib.motor_controller_set_tx_gap_us.argtypes = [c_void_p, c_uint32]
         lib.motor_controller_set_tx_gap_us.restype = c_int32
+        self.has_transport_capabilities = hasattr(
+            lib, "motor_controller_get_transport_capabilities"
+        )
+        if self.has_transport_capabilities:
+            lib.motor_controller_get_transport_capabilities.argtypes = [
+                c_void_p,
+                POINTER(CTransportCapabilities),
+            ]
+            lib.motor_controller_get_transport_capabilities.restype = c_int32
 
         lib.motor_controller_add_damiao_motor.argtypes = [c_void_p, c_uint16, c_uint16, c_char_p]
         lib.motor_controller_add_damiao_motor.restype = c_void_p

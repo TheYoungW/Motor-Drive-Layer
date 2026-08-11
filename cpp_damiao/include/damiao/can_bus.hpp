@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace damiao {
 
@@ -14,6 +15,17 @@ struct CanFrame {
   bool is_extended = false;
 };
 
+struct TransportCapabilities {
+  std::string transport = "custom";
+  uint32_t max_payload_bytes = 8;
+  uint32_t channel_count = 1;
+  bool can_fd = false;
+  bool parallel_batches = true;
+  bool hardware_rx_timestamps = false;
+  bool reconnect = false;
+  bool process_session_reuse = false;
+};
+
 class CanBus {
  public:
   virtual ~CanBus() = default;
@@ -21,6 +33,7 @@ class CanBus {
   virtual void send(const CanFrame& frame) = 0;
   virtual std::optional<CanFrame> receive_for(std::chrono::milliseconds timeout) = 0;
   virtual void shutdown() {}
+  virtual TransportCapabilities capabilities() const { return {}; }
 };
 
 }  // namespace damiao

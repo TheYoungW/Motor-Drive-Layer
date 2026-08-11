@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+
 import pytest
 
 import motor_drive_layer.core as core_module
@@ -19,6 +21,8 @@ class FakeGroupLib:
         self.mit: list[tuple[int, float, float, float, float, float]] = []
         self.pos_vel: list[tuple[int, float, float]] = []
         self.freed: list[int] = []
+        self.mit_addresses: list[int] = []
+        self.pos_vel_addresses: list[int] = []
         self.fail_pos_vel = False
 
     def motor_controller_group_new(self, controllers, count: int) -> int:
@@ -29,6 +33,8 @@ class FakeGroupLib:
         self.freed.append(ptr)
 
     def motor_controller_group_send_mit(self, _group, commands, count: int) -> int:
+        if count:
+            self.mit_addresses.append(ctypes.addressof(commands))
         self.mit = [
             (
                 int(commands[i].motor),
@@ -43,6 +49,8 @@ class FakeGroupLib:
         return 0
 
     def motor_controller_group_send_pos_vel(self, _group, commands, count: int) -> int:
+        if count:
+            self.pos_vel_addresses.append(ctypes.addressof(commands))
         self.pos_vel = [
             (
                 int(commands[i].motor),
@@ -126,4 +134,53 @@ def test_controller_group_rejects_foreign_or_closed_members(monkeypatch) -> None
     ch0._ptr = None
     with pytest.raises(CallError, match="member 0 is closed"):
         group.send_pos_vel([])
+    group.close()
+
+
+def test_prepared_batches_reuse_native_arrays_and_support_scalar_broadcast(monkeypatch) -> None:
+    abi = FakeGroupAbi()
+    monkeypatch.setattr(core_module, "get_abi", lambda: abi)
+    ch0 = controller(100)
+    ch1 = controller(200)
+    m0 = Motor(1001, ch0)
+    m1 = Motor(2001, ch1)
+
+    with ControllerGroup([ch0, ch1]) as group:
+        pos_vel = group.prepare_pos_vel([m0, m1])
+        assert pos_vel.motor_count == 2
+        pos_vel.send([0.25, -0.5], 1.5)
+        pos_vel.send([0.75, -1.0], [2.0, 3.0])
+
+        mit = group.prepare_mit([m0, m1])
+        assert mit.motor_count == 2
+        mit.send([1.0, -1.0], 0.0, [4.0, 5.0], 0.2, [0.1, -0.1])
+        mit.send([2.0, -2.0], [0.5, -0.5], 6.0, [0.3, 0.4], 0.0)
+
+    assert len(set(abi.lib.pos_vel_addresses)) == 1
+    assert abi.lib.pos_vel == [(1001, 0.75, 2.0), (2001, -1.0, 3.0)]
+    assert len(set(abi.lib.mit_addresses)) == 1
+    assert abi.lib.mit == [
+        (1001, 2.0, 0.5, 6.0, pytest.approx(0.3), 0.0),
+        (2001, -2.0, -0.5, 6.0, pytest.approx(0.4), 0.0),
+    ]
+
+
+def test_prepared_batches_validate_fixed_layout(monkeypatch) -> None:
+    abi = FakeGroupAbi()
+    monkeypatch.setattr(core_module, "get_abi", lambda: abi)
+    ch0 = controller(100)
+    foreign = controller(300)
+    m0 = Motor(1001, ch0)
+    group = ControllerGroup([ch0])
+
+    with pytest.raises(ValueError, match="duplicates"):
+        group.prepare_pos_vel([m0, m0])
+    with pytest.raises(ValueError, match="does not belong"):
+        group.prepare_mit([Motor(3001, foreign)])
+    prepared = group.prepare_pos_vel([m0])
+    with pytest.raises(ValueError, match="positions must contain exactly 1"):
+        prepared.send([], 1.0)
+    m0._ptr = None
+    with pytest.raises(CallError, match="motor handle is closed"):
+        prepared.send([0.0], 1.0)
     group.close()

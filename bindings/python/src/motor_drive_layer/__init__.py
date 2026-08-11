@@ -1,10 +1,23 @@
 from importlib import import_module
 
 from .abi import abi_capabilities, abi_version
-from .core import Controller, ControllerGroup, Motor
+from .core import (
+    Controller,
+    ControllerGroup,
+    Motor,
+    PreparedMitBatch,
+    PreparedPosVelBatch,
+)
 from .dm_device_runtime import ensure_dm_device_runtime
 from .errors import AbiLoadError, CallError, MotorBridgeError
-from .models import FeedbackStats, MitCommand, Mode, MotorState, PosVelCommand
+from .models import (
+    FeedbackStats,
+    MitCommand,
+    Mode,
+    MotorState,
+    PosVelCommand,
+    TransportCapabilities,
+)
 from ._version import VERSION
 
 
@@ -59,12 +72,15 @@ __all__ = [
     "ensure_dm_device_runtime",
     "Controller",
     "ControllerGroup",
+    "PreparedMitBatch",
+    "PreparedPosVelBatch",
     "Motor",
     "Mode",
     "MotorState",
     "FeedbackStats",
     "MitCommand",
     "PosVelCommand",
+    "TransportCapabilities",
     "RegisterSpec",
     "DAMIAO_RW_REGISTERS",
     "DAMIAO_HIGH_IMPACT_RIDS",

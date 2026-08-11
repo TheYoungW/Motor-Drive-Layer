@@ -179,6 +179,10 @@ void SocketCanBus::shutdown() {
 #endif
 }
 
+TransportCapabilities SocketCanBus::capabilities() const {
+  return TransportCapabilities{"socketcan", 8, 1, false, true, false, true, false};
+}
+
 std::shared_ptr<SocketCanFdBus> SocketCanFdBus::open(const std::string& interface,
                                                      bool enable_brs) {
 #if defined(__linux__)
@@ -252,6 +256,12 @@ void SocketCanFdBus::shutdown() {
     fd_ = -1;
   }
 #endif
+}
+
+TransportCapabilities SocketCanFdBus::capabilities() const {
+  // Motor-Drive-Layer's canonical Damiao frame is currently limited to the
+  // protocol's eight-byte payload even though the transport uses CAN-FD.
+  return TransportCapabilities{"socketcanfd", 8, 1, true, true, false, true, false};
 }
 
 }  // namespace damiao

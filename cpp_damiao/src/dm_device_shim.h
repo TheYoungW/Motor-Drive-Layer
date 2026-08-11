@@ -16,6 +16,11 @@ struct mb_dm_frame {
   uint8_t canfd;
 };
 
+struct mb_dm_runtime_info {
+  uint8_t abi_generation;
+  uint8_t process_session_reuse;
+};
+
 int mb_dm_open(const char* library_path,
                int device_type,
                uint8_t selected_channel,
@@ -40,6 +45,7 @@ int mb_dm_recv(void* handle,
                size_t err_len);
 
 int mb_dm_shutdown(void* handle, char* err_buf, size_t err_len);
+int mb_dm_get_runtime_info(void* handle, struct mb_dm_runtime_info* out);
 
 #ifdef __cplusplus
 }

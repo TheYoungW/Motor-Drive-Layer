@@ -17,6 +17,7 @@ using legacy_recv_callback = void (*)(usb_rx_frame_t*);
 using legacy_err_callback = void (*)(usb_rx_frame_t*);
 legacy_recv_callback recv_callback = nullptr;
 legacy_err_callback err_callback = nullptr;
+bool device_was_closed = false;
 }
 
 extern "C" {
@@ -28,12 +29,15 @@ void damiao_handle_get_devices(legacy_root* root, legacy_device** list, int* cou
   *count = 1;
 }
 bool device_open(legacy_device* dev) {
-  if (dev->open) return false;
+  // Match the observed vendor v1.0 behavior: once the process closes the
+  // physical device, a newly-created legacy context cannot reopen index 0.
+  if (dev->open || device_was_closed) return false;
   dev->open = true;
   return true;
 }
 bool device_close(legacy_device* dev) {
   dev->open = false;
+  device_was_closed = true;
   return true;
 }
 bool device_open_channel(legacy_device* dev, uint8_t channel) {

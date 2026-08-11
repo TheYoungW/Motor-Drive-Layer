@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -13,6 +14,22 @@ void require(bool condition, const char* message) {
   }
 }
 
+void set_test_env(const char* name, const char* value) {
+#if defined(_WIN32)
+  _putenv_s(name, value);
+#else
+  ::setenv(name, value, 1);
+#endif
+}
+
+void unset_test_env(const char* name) {
+#if defined(_WIN32)
+  _putenv_s(name, "");
+#else
+  ::unsetenv(name);
+#endif
+}
+
 template <typename Fn>
 void require_throws(const char* label, const Fn& fn) {
   try {
@@ -23,7 +40,8 @@ void require_throws(const char* label, const Fn& fn) {
   throw std::runtime_error(label);
 }
 
-void test_vendor_abi(const char* path) {
+void test_vendor_abi(const char* path, uint8_t expected_abi_generation,
+                     bool expected_process_session_reuse) {
   char error[512]{};
   void* channel0 = nullptr;
   void* channel1 = nullptr;
@@ -33,6 +51,13 @@ void test_vendor_abi(const char* path) {
   require(mb_dm_open(path, 1, 1, 1'000'000, 5'000'000, &channel1, error,
                      sizeof(error)) == 0,
           error);
+  mb_dm_runtime_info runtime_info{};
+  require(mb_dm_get_runtime_info(channel0, &runtime_info) == 0,
+          "runtime info query succeeds");
+  require(runtime_info.abi_generation == expected_abi_generation &&
+              (runtime_info.process_session_reuse != 0) ==
+                  expected_process_session_reuse,
+          "runtime info identifies vendor ABI and process-session behavior");
 
   const uint8_t payload[] = {1, 2, 3, 4};
   require(mb_dm_send(channel0, 0x101, 0, sizeof(payload), payload, error,
@@ -57,12 +82,19 @@ void test_vendor_abi(const char* path) {
           "channel 1 remains usable after closing channel 0");
   require(mb_dm_shutdown(channel1, error, sizeof(error)) == 0, error);
 
-  // The last shutdown must release the vendor context/device so a new session
-  // can enumerate, open, configure and close cleanly.
+  // Reconnect in the same process. v1.1 tears down and opens a new session;
+  // v1.0 must reuse its process-level legacy context/device because the real
+  // Linux runtime cannot device_open(index=0) after a complete close.
   channel0 = nullptr;
   require(mb_dm_open(path, 1, 0, 500'000, 2'000'000, &channel0, error,
                      sizeof(error)) == 0,
           error);
+  require(mb_dm_send(channel0, 0x304, 0, sizeof(payload), payload, error,
+                     sizeof(error)) == 0,
+          "reconnected channel can send");
+  require(mb_dm_recv(channel0, &frame, 10, error, sizeof(error)) == 1 &&
+              frame.can_id == 0x304,
+          "reconnected channel receives through the retained callbacks");
   require(mb_dm_shutdown(channel0, error, sizeof(error)) == 0, error);
 }
 
@@ -94,8 +126,20 @@ int main() {
   const auto path = damiao::resolve_dm_device_library_path();
   require(!path.empty(), "dm device library path is resolved");
 
-  test_vendor_abi(MOCK_DM_DEVICE_V11_PATH);
-  test_vendor_abi(MOCK_DM_DEVICE_V10_PATH);
+  test_vendor_abi(MOCK_DM_DEVICE_V11_PATH, 11, false);
+  test_vendor_abi(MOCK_DM_DEVICE_V10_PATH, 10, true);
+
+  set_test_env("MOTOR_DM_DEVICE_LIB", MOCK_DM_DEVICE_V10_PATH);
+  auto bus = damiao::DmDeviceBus::open(damiao::DmDeviceType::Usb2CanFdDual, "1",
+                                       1'000'000, 5'000'000);
+  const auto capabilities = bus->capabilities();
+  require(capabilities.transport == "dm-device" && capabilities.can_fd &&
+              capabilities.channel_count == 2 && capabilities.parallel_batches &&
+              capabilities.reconnect && capabilities.process_session_reuse &&
+              !capabilities.hardware_rx_timestamps,
+          "DM_Device bus reports instance capabilities from the v1.0 runtime");
+  bus->shutdown();
+  unset_test_env("MOTOR_DM_DEVICE_LIB");
 
   std::cout << "dm device tests passed\n";
   return 0;

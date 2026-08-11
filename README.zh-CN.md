@@ -105,7 +105,7 @@ Controller 只有一台电机时，运行时不额外延迟发送。添加第二
 `ControllerGroup` 为每个 Controller 常驻一个原生工作线程，并在每次发送时复用。一次调用会用同一批次代数唤醒全部 Controller，保持每个 Controller 内部的命令顺序，等待所有 Controller 完成后统一返回。控制循环不再每周期创建或调度 Python 线程，不同 Controller 的发送间隔等待可以重叠。
 
 ```python
-from motor_drive_layer import Controller, ControllerGroup, PosVelCommand
+from motor_drive_layer import Controller, ControllerGroup
 
 ch0 = Controller.from_dm_device(device="usb2canfd-dual", channel=0)
 ch1 = Controller.from_dm_device(device="usb2canfd-dual", channel=1)
@@ -115,13 +115,16 @@ targets = [0.0] * (len(motors_ch0) + len(motors_ch1))
 velocity_limit = 2.0
 
 with ControllerGroup([ch0, ch1]) as group:
-    group.send_pos_vel(
-        [PosVelCommand(motor, position, velocity_limit)
-         for motor, position in zip(motors_ch0 + motors_ch1, targets)]
-    )
+    batch = group.prepare_pos_vel(motors_ch0 + motors_ch1)
+    batch.send(targets, velocity_limit)
 ```
 
 `send_mit()` 同样接收 `MitCommand`。某一路失败时，批次仍会等待全部 Controller 结束，然后通过 `CallError` 返回 Controller 索引、端点/通道、电机 ID 和底层错误。Controller 和 Motor 必须保持打开，直到 Group 关闭；不要把单电机发送与 Group 发送并发混用，因为两者之间的帧顺序没有定义。DM_Device 厂商调用仍由共享互斥锁保护，重叠的是各通道独立的发送间隔等待及其他通道内工作，因此这是主机侧同步调度，不承诺两条物理总线硬实时同时发帧。
+
+固定电机布局的高频循环可使用 `prepare_pos_vel()` 和 `prepare_mit()`：它们会保留已校验的
+Motor 指针并复用同一块 Python/ctypes 命令数组，避免每周期创建命令 dataclass 和 ctypes
+数组。原生 ABI 每次仍会做校验和按 Controller 分组，因此这是“减少分配”的路径，不承诺
+零分配或硬实时。
 
 ## 新鲜反馈
 
@@ -159,6 +162,7 @@ states = [motor.get_state() for motor in motors]
 | `request_feedback_all(timeout_ms=50)` | 请求并等待所有电机各收到一帧新反馈，共享一个总超时。 |
 | `poll_feedback_once()` | 非阻塞排空当前已经到达的帧。 |
 | `set_tx_gap_us(gap_us)` | 设置相邻输出帧的最小主机提交间隔。 |
+| `transport_capabilities()` | 查询当前 Transport 实例是否支持 CAN-FD、物理通道数、并行批量、重连、进程会话复用及硬件接收时间戳。 |
 | `shutdown()` | 先尝试失能全部电机，再停止接收线程并关闭总线。 |
 | `close_bus()` | 不发送失能命令，直接停止接收并关闭总线。 |
 | `close()` / `closed` | 释放原生 Controller 句柄；`close()` 不主动发送失能命令。 |
@@ -168,8 +172,11 @@ DM_Device 后端不需要刷写 SocketCAN 固件。可执行一次
 `MOTOR_DM_DEVICE_LIB` 指定官方 `libdm_device`/`dm_device.dll`。加载器会探测 v1.0
 （`damiao_*`/`device_*`）和 v1.1（`dmcan_*`）ABI，并明确报告缺失符号或动态库依赖错误。
 Linux 优先使用兼容范围更广的 v1.0，并支持回退到 v1.1；Windows/macOS 使用相同 Python
-接口。每个 Controller 只管理所选通道，物理 USB 句柄由双通道共享，并在最后一个
-Controller 关闭后完整释放。
+接口。每个 Controller 只管理所选通道。v1.1 会在最后一个 Controller 关闭后释放共享物理
+USB 句柄。由于官方 Linux v1.0 运行库在同一进程内完整销毁后无法可靠地再次打开设备索引
+0，v1.0 会关闭各通道并释放 motor 层线程、client 和队列，但保留 legacy context、device
+句柄、回调及动态库到进程退出，供后续 Controller 重连复用；正常退出时进程级清理器会关闭
+并销毁这些保留的厂商对象。
 
 ### Motor
 
@@ -201,7 +208,23 @@ Controller 关闭后完整释放。
 | `ControllerGroup(controllers)` | 为每个 Controller 创建并持有一个常驻原生发送线程。 |
 | `send_pos_vel(commands)` | 按 Motor 所属 Controller 并行调度 `PosVelCommand`，并等待全部完成。 |
 | `send_mit(commands)` | 按 Motor 所属 Controller 并行调度 `MitCommand`，并等待全部完成。 |
+| `prepare_pos_vel(motors)` | 创建固定电机布局且可复用的 POS_VEL 批次；速度限制可用一个标量广播。 |
+| `prepare_mit(motors)` | 创建固定电机布局且可复用的 MIT 批次；除位置外各字段可传标量或向量。 |
 | `close()` / `closed` | 停止并回收工作线程；不会关闭成员 Controller。 |
+
+### 反馈与重连压力诊断
+
+`motor-drive-layer-stress` 会在同一进程内重复打开指定 DM_Device 通道、请求反馈、关闭并重连，
+同时记录延迟、失败、文件描述符数量和线程数量。该工具不会使能电机，也不会发送控制命令：
+
+```bash
+motor-drive-layer-stress \
+  --motor 0:0x09:0x19:4310 \
+  --motor 1:0x0f:0x1f:4310 \
+  --iterations 1000 --reconnect-cycles 10 --output stress.json
+```
+
+请按实际通道、电机 ID、反馈 ID 和型号重复填写 `--motor`；示例 ID 仅用于说明格式。
 
 位置、速度和力矩统一使用 rad、rad/s 和 Nm。`MotorState`、`FeedbackStats`、`Mode`、`CallError` 以及寄存器常量也从包顶层公开。
 

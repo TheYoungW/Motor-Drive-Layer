@@ -97,7 +97,7 @@ const char* motor_abi_version(void) {
 }
 
 const char* motor_abi_capabilities_json(void) {
-  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.5.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"register_metadata":true,"dm_device_abis":["v1.0","v1.1"],"dm_device_configurable_bitrates":true,"parallel_controller_batches":["mit","pos-vel"],"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","enable_all","disable_all","set_tx_gap_us"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
+  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.5.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"register_metadata":true,"transport_capabilities":true,"dm_device_abis":["v1.0","v1.1"],"dm_device_configurable_bitrates":true,"dm_device_v10_process_session_reuse":true,"parallel_controller_batches":["mit","pos-vel"],"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","enable_all","disable_all","set_tx_gap_us","transport_capabilities"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
 }
 
 int32_t motor_damiao_register_info(uint8_t rid, MotorRegisterInfo* out_info) {
@@ -360,6 +360,29 @@ int32_t motor_controller_set_tx_gap_us(MotorController* controller, uint32_t gap
   std::lock_guard<std::mutex> lock(controller->mutex);
   return ffi_call([&] {
     controller->controller->set_tx_gap(std::chrono::microseconds(gap_us));
+  });
+}
+
+int32_t motor_controller_get_transport_capabilities(
+    MotorController* controller, MotorTransportCapabilities* out_capabilities) {
+  if (controller == nullptr) return fail("controller is null");
+  if (out_capabilities == nullptr) return fail("out_capabilities is null");
+  std::lock_guard<std::mutex> lock(controller->mutex);
+  return ffi_call([&] {
+    const auto capabilities = controller->controller->transport_capabilities();
+    std::memset(out_capabilities, 0, sizeof(*out_capabilities));
+    const auto name_size = std::min(capabilities.transport.size(),
+                                    sizeof(out_capabilities->transport) - 1);
+    std::memcpy(out_capabilities->transport, capabilities.transport.data(), name_size);
+    out_capabilities->max_payload_bytes = capabilities.max_payload_bytes;
+    out_capabilities->channel_count = capabilities.channel_count;
+    out_capabilities->can_fd = capabilities.can_fd ? 1 : 0;
+    out_capabilities->parallel_batches = capabilities.parallel_batches ? 1 : 0;
+    out_capabilities->hardware_rx_timestamps =
+        capabilities.hardware_rx_timestamps ? 1 : 0;
+    out_capabilities->reconnect = capabilities.reconnect ? 1 : 0;
+    out_capabilities->process_session_reuse =
+        capabilities.process_session_reuse ? 1 : 0;
   });
 }
 
