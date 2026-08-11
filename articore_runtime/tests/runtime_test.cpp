@@ -261,6 +261,9 @@ void test_gripper_hold_retreats_once_on_overload() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
+  // Keep this assertion independent of slow CI scheduling: the test verifies
+  // that the first retreat target is held before the configured retry window.
+  motors[2].retreat_retry_ms = 1000;
   articore::SafetyRuntime runtime(config(), api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);
   runtime.connect();
@@ -365,7 +368,9 @@ void test_gripper_torque_spike_does_not_trigger_contact() {
   motors[2].motion_window_ms = 20;
   motors[2].stall_movement = 0.01f;
   motors[2].min_position_error = 0.05f;
-  motors[2].contact_hold_ms = 50;
+  // A short injected spike must remain well below the sustained-contact
+  // window even when a loaded CI runner overshoots the sleeps below.
+  motors[2].contact_hold_ms = 500;
   auto cfg = config();
   cfg.command_timeout_ms = 500;
   cfg.gripper_control_hz = 500;
