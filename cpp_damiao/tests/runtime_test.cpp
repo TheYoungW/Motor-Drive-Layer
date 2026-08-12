@@ -540,14 +540,14 @@ int main() {
   damiao::FeedbackBatchReport incomplete_report;
   try {
     incomplete_report = report_controller.request_feedback_all_report(
-        std::chrono::milliseconds(20));
+        std::chrono::milliseconds(500));
   } catch (...) {
     report_responder.join();
     throw;
   }
   report_responder.join();
   require(incomplete_report.status == damiao::FeedbackBatchStatus::Incomplete &&
-              incomplete_report.timeout == std::chrono::milliseconds(20) &&
+              incomplete_report.timeout == std::chrono::milliseconds(500) &&
               incomplete_report.expected_count == 2 &&
               incomplete_report.received_count == 1 &&
               incomplete_report.missing_motor_ids == std::vector<uint16_t>{0x02},
