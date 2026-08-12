@@ -55,6 +55,12 @@ class SafetyRuntime {
   ArticoreEnableReport last_enable_report() const;
   void submit_pos_vel(const ArticorePosVelCommand* commands, uint32_t count);
   void submit_mit(const ArticoreMitCommand* commands, uint32_t count);
+  void submit_pos_vel_ex(const ArticorePosVelCommand* commands,
+                         uint32_t count,
+                         ArticoreCommandLifetime lifetime);
+  void submit_mit_ex(const ArticoreMitCommand* commands,
+                     uint32_t count,
+                     ArticoreCommandLifetime lifetime);
   void submit_gripper_mit(const ArticoreMitCommand* commands, uint32_t count);
   void set_gripper_openings(const ArticoreGripperTarget* targets,
                             uint32_t count);
@@ -100,6 +106,7 @@ class SafetyRuntime {
     bool stalled = false;
     bool overload = false;
     uint64_t feedback_age_ns = ~uint64_t{0};
+    uint32_t consecutive_feedback_failures = 0;
     float last_torque = 0.0f;
     std::string gripper_fault_reason;
     Clock::time_point last_gripper_update{};
@@ -139,6 +146,8 @@ class SafetyRuntime {
   struct ArmMailbox {
     bool valid = false;
     bool user_command = false;
+    bool trajectory_endpoint_hold = false;
+    ArticoreCommandLifetime lifetime = ARTICORE_COMMAND_STREAMING;
     uint64_t generation = 0;
     uint64_t sent_generation = 0;
     Clock::time_point submitted_at{};
@@ -197,10 +206,11 @@ class SafetyRuntime {
                           uint32_t count, bool grippers_only) const;
   bool enter_safe_hold_from_feedback(const std::string& reason,
                                      std::string& error);
-  void enter_fault(const std::string& reason);
+  void enter_fault(const std::string& reason, bool torque_off = false);
   bool send_safe_hold_once(std::string& error);
   bool run_gripper_control_once(std::string& error);
   bool send_gripper_hold_once(std::string& error);
+  bool prepare_protective_hold(std::string& error);
   bool disable_hardware(bool request_feedback, bool preserve_grippers,
                         std::string& error);
   bool refresh_feedback_health(bool recovery_check, bool allow_held_grippers,
@@ -263,6 +273,9 @@ class SafetyRuntime {
   std::vector<ArticorePosVelCommand> safe_pv_;
   std::vector<ArticoreMitCommand> safe_mit_;
   std::vector<ArticoreMitCommand> safe_grippers_;
+  std::vector<ArticorePosVelCommand> last_sent_pv_;
+  std::vector<ArticoreMitCommand> last_sent_mit_;
+  bool fault_hold_active_ = false;
   ArticoreEnableReport last_enable_report_{};
 };
 

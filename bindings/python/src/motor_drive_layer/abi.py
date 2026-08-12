@@ -298,6 +298,9 @@ def articore_runtime_capabilities() -> dict[str, bool]:
         "realtime_joint_mailbox": bool(bits & (1 << 8)),
         "joint_trajectory": bool(bits & (1 << 9)),
         "atomic_enable": bool(bits & (1 << 10)),
+        "command_lifetime": bool(bits & (1 << 11)),
+        "nonpreemptive_trajectory": bool(bits & (1 << 12)),
+        "protective_fault_hold": bool(bits & (1 << 13)),
     }
 
 

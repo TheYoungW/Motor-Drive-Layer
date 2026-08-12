@@ -4,14 +4,31 @@ This directory contains single- and dual-arm Articore product policy. It is a se
 library in the Motor-Drive-Layer repository and depends on the generic motor C ABI without adding
 Yunyi or Articore concepts to `libmotor_abi`.
 
+The public runtime remains one `libarticore_runtime` library and one
+`SafetyRuntime` state owner. Its implementation is split by responsibility:
+
+- `runtime.cpp`: lifetime, connection, presence, and shutdown facade.
+- `runtime_commands.cpp`: command validation, latest-value mailbox, and the arm send cycle.
+- `runtime_enable.cpp`: atomic enable, explicit disable, estop, and recovery transactions.
+- `runtime_gripper.cpp`: gripper command mapping, contact/stall detection, hold, and overload retreat.
+- `runtime_safety.cpp`: feedback/transport supervision, protective hold, fault policy, and health snapshots.
+- `runtime_trajectory.cpp`: single-slot trajectory lifecycle and time-parameterized profiles.
+- `runtime_worker.cpp`: persistent absolute-deadline scheduler and safety event dispatch.
+
+The split does not create additional shared libraries or independent state machines; it only gives
+the existing state owner smaller compilation units while preserving its ABI and lock ordering.
+
 The runtime owns one persistent worker thread. Its arm loop uses `steady_clock` absolute deadlines
 at the configured control rate (500 Hz for Articore products), skips missed periods, and never
-replays expired frames. Complete PV or MIT commands overwrite a capacity-one latest-value mailbox;
-the control thread keeps transmitting the latest valid target through `ControllerGroup`. Only the
-first successful full-group transmission of a newly submitted target refreshes the native
-watchdog. The worker independently performs command timeout handling,
-feedback and transport-health checks, safe-hold transmission, fault latching, linked disable, and
-disable confirmation while Python is blocked or has stopped running.
+replays expired frames. Complete PV or MIT commands atomically overwrite a capacity-one
+latest-value mailbox; if A, B, and C arrive before the next tick, only C is sent. The 500 Hz
+control path reads the mailbox storage directly without copying a command queue or allocating a
+per-tick snapshot, and keeps transmitting the latest valid target through `ControllerGroup`. Streaming
+commands must be refreshed by the caller and are covered by the native watchdog; explicit
+persistent setpoints and completed trajectory endpoints remain active until replaced. The worker
+independently performs command timeout handling,
+feedback and transport-health checks, safe-hold transmission, fault latching, protective fault
+hold, and explicit-disable confirmation while Python is blocked or has stopped running.
 
 Runtime ABI 1.4 makes enable a native all-or-nothing transaction. It refreshes both channels in
 parallel while motors are disabled, captures current positions, enables CH0 and CH1 concurrently,
@@ -24,7 +41,7 @@ only clears it after disabled feedback and transport health have been confirmed.
 the runtime enable entry point directly instead of enabling individual arms first. If a complete
 fresh confirmation shows one motor is still `DISABLED`, the runtime retries only that motor once;
 there is no unbounded enable retry loop.
-SDK bindings create ABI 1.4 runtimes with `articore_runtime_create_ex()` and pass the generic
+SDK bindings create ABI 1.4-or-newer runtimes with `articore_runtime_create_ex()` and pass the generic
 `motor_controller_enable_all` and `motor_handle_enable` function pointers. This preserves the
 separate-library boundary and avoids a direct DLL/dylib dependency between the product runtime and
 `libmotor_abi`; the original `articore_runtime_create()` remains available for ABI 1.3 callers.
@@ -36,21 +53,35 @@ health, motor status, and unexpected disable; mechanical feedback protection req
 defined thresholds, tolerance, and persistence rather than reusing URDF command limits.
 Transient missing or stale feedback is counted but does not cancel an active trajectory until the
 configured consecutive-failure threshold is reached. Motor fault status, unexpected disable, and
-transport disconnect remain immediate hard faults.
+transport disconnect remain immediate hard faults, but a hard fault does not automatically torque
+off unrelated healthy motors.
 
 Runtime ABI 1.3 added time-parameterized joint trajectories. The runtime stores exactly one active
 trajectory as start/goal/time/profile state and computes the current position and velocity at each
 control tick; it does not allocate a point FIFO. `MIN_JERK` uses the normalized quintic profile and
 accounts for its 1.875 peak-velocity factor when choosing duration; `LINEAR` is the only other
-profile. A direct joint command preempts the trajectory synchronously, a new trajectory replaces
-the old one, and terminal status remains queryable as `COMPLETED`, `PREEMPTED`, `FAILED`, or
-`CANCELED`. Enabling always seeds the mailbox from complete fresh motor feedback, while disable,
-fault, recovery, and close clear both the old target and active trajectory.
+profile. Exactly one trajectory may be active. Another trajectory or a direct joint command is
+rejected with a busy error until it completes; there is no trajectory waiting queue and ordinary
+commands cannot preempt it. Disable, emergency stop, close, communication failure, and other safety
+faults may still cancel or fail it. Terminal status remains queryable as `COMPLETED`, `PREEMPTED`,
+`FAILED`, or `CANCELED`, and the result history is bounded to 64 entries. Enabling always seeds the
+mailbox from complete fresh motor feedback, while disable, fault, recovery, and close clear both
+the old target and active trajectory.
+After a trajectory reaches `COMPLETED`, its exact endpoint remains an explicit internal trajectory
+hold and is transmitted at the normal control rate. The user-command watchdog does not time out
+this native hold.
+
+Runtime ABI 1.5 separates command update lifetime from physical motion duration. The legacy direct
+submission entry points remain `STREAMING`: callers must refresh them before `command_timeout_ms`.
+The new `_ex` entry points accept either `ARTICORE_COMMAND_STREAMING` or
+`ARTICORE_COMMAND_HOLD_UNTIL_REPLACED`. Product SDK one-shot position APIs use the latter, so a slow
+move may take longer than the watchdog timeout while the native control thread keeps transmitting
+its latest setpoint. Real-time servo loops use `STREAMING`, so a stalled caller still enters
+`SAFE_HOLD`. Persistent MIT commands require zero target velocity and zero feedforward torque;
+time-parameterized MIT motion should use the native trajectory API.
 
 When an arm enters safe hold, the runtime snapshots every arm motor's current position from the
-non-blocking feedback cache. The snapshot is accepted only when every feedback entry is fresh,
-finite, enabled, and fault-free; otherwise the runtime enters latched `FAULT` instead of replaying
-an old motion target. PV safe hold uses the captured positions with a dedicated low velocity limit.
+non-blocking feedback cache. PV safe hold uses the captured positions with a dedicated low velocity limit.
 MIT safe hold uses the captured positions, zeros velocity and feedforward torque, and substitutes
 product safety Kp/Kd. Grippers keep their independently generated low-stiffness safety targets.
 The same persistent worker owns each configured product gripper's
@@ -58,13 +89,29 @@ The same persistent worker owns each configured product gripper's
 opening targets to motor position, ramps closing motion with the normal MIT gains, detects contact
 from torque plus a position-motion window and target error, then switches to a low-gain hold with
 zero feedforward torque. Sustained overload produces a rate-limited bounded retreat. No Python
-gripper control loop is involved in the native dual-arm path.
+gripper control loop is involved in the native dual-arm path. During `ENABLED` and `RUNNING`, the
+gripper state machine and MIT output run at the same `control_hz` as the arm (500 Hz for Yunyi).
+Only `SAFE_HOLD` and protective `FAULT` holding use `safe_hold_hz` (normally 100 Hz). The legacy
+`gripper_control_hz` config field remains in the ABI layout but no longer down-samples normal
+gripper control.
 
-In `FAULT`, arms are always linked-disabled while the product setting chooses whether grippers
-keep the last safe target or are disabled. A failed gripper hold falls back to individual motor
-disable attempts. An explicit `disable()` disables every held gripper without clearing the fault;
-recovery confirms fresh disabled feedback before returning to `READY`. If no complete arm safety target exists, command failure enters
-`FAULT` instead of sending an empty arm hold.
+Operational faults use protective fault hold rather than linked torque-off. One missing feedback
+sample only increments the failure counters: arms continue their current 500 Hz output and a
+gripper retransmits its last successful safe output. At the configured consecutive-failure
+threshold, active trajectories stop and both arms enter protection. The runtime captures a fresh
+current position where feedback remains usable, falls back to the last successfully transmitted
+position for a motor whose feedback is missing, and excludes a motor that is confirmed disabled or
+faulted. A gripper with missing feedback keeps its last safe low-gain target; a confirmed gripper
+fault is latched and is never automatically re-enabled.
+
+Fault holds are dispatched separately per channel. A disconnected or failing channel therefore
+does not prevent a still-controllable channel from continuing its hold, and a hold-send failure
+never automatically disables another channel. `FAULT` remains latched and rejects ordinary motion.
+An explicit `disable()` always attempts every motor, records any motor whose disabled state was not
+confirmed, and does not clear the latch. `recover()` returns to `READY` only after fresh disabled
+feedback and transport health are confirmed. `estop()` currently applies the explicit product
+policy: arm joints are torque-disabled, while `gripper_fault_action` selects low-gain gripper hold
+or gripper disable. A later explicit `disable()` always disables held grippers as well.
 
 `runtime_abi.h` is the stable boundary used by `arx_d_can.sdk.native_safety`. The optional generic
 motor-drive-layer transport-health callback is used when available; the wrapper remains compatible

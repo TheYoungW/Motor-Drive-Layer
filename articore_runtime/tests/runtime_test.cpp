@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -36,6 +37,7 @@ struct FakeDriver {
   std::vector<ArticoreMitCommand> last_mit;
   std::vector<ArticoreMitCommand> last_arm_mit;
   std::vector<std::vector<ArticorePosVelCommand>> pv_history;
+  std::vector<std::vector<ArticoreMitCommand>> mit_history;
   std::vector<std::vector<ArticoreMitCommand>> arm_mit_history;
   uint32_t pv_sends = 0;
   uint32_t mit_sends = 0;
@@ -48,7 +50,10 @@ struct FakeDriver {
   uint32_t feedback_expected = 2;
   uint32_t feedback_received = 2;
   std::vector<uint32_t> feedback_missing_ids;
+  uint32_t feedback_timeouts_remaining = 0;
+  bool feedback_timeout_consumes_deadline = false;
   bool fail_group = false;
+  bool fail_send_side[2]{};
   bool fail_left_disable = false;
   bool fail_enable[2]{};
   bool skip_left_enable_once = false;
@@ -64,6 +69,10 @@ void* g_right_controller = reinterpret_cast<void*>(0x102);
 int32_t send_pv(void*, const ArticorePosVelCommand* commands, uint32_t count) {
   std::lock_guard<std::mutex> lock(g_driver->mutex);
   if (g_driver->fail_group) return -1;
+  if (count > 0) {
+    const bool left = commands[0].motor == reinterpret_cast<void*>(0x201);
+    if (g_driver->fail_send_side[left ? 0 : 1]) return -1;
+  }
   g_driver->last_pv.assign(commands, commands + count);
   g_driver->pv_history.emplace_back(commands, commands + count);
   ++g_driver->pv_sends;
@@ -73,7 +82,12 @@ int32_t send_pv(void*, const ArticorePosVelCommand* commands, uint32_t count) {
 int32_t send_mit(void*, const ArticoreMitCommand* commands, uint32_t count) {
   std::lock_guard<std::mutex> lock(g_driver->mutex);
   if (g_driver->fail_group) return -1;
+  if (count > 0) {
+    const bool left = commands[0].motor == reinterpret_cast<void*>(0x201);
+    if (g_driver->fail_send_side[left ? 0 : 1]) return -1;
+  }
   g_driver->last_mit.assign(commands, commands + count);
+  g_driver->mit_history.emplace_back(commands, commands + count);
   if (count == 2) {
     g_driver->last_arm_mit.assign(commands, commands + count);
     g_driver->arm_mit_history.emplace_back(commands, commands + count);
@@ -127,22 +141,32 @@ int32_t disable_motor(void* handle) {
 int32_t request_feedback(void*, uint32_t timeout_ms,
                          ArticoreFeedbackReport* report,
                          uint32_t* missing_ids, uint32_t missing_capacity) {
-  std::lock_guard<std::mutex> lock(g_driver->mutex);
+  std::unique_lock<std::mutex> lock(g_driver->mutex);
   ++g_driver->feedback_requests;
+  const bool injected_timeout = g_driver->feedback_timeouts_remaining > 0;
+  if (injected_timeout) --g_driver->feedback_timeouts_remaining;
   if (report) {
     report->struct_size = sizeof(*report);
     report->timeout_ms = timeout_ms;
     report->expected_count = g_driver->feedback_expected;
-    report->received_count = g_driver->feedback_received;
-    report->missing_count = static_cast<uint32_t>(
-        g_driver->feedback_missing_ids.size());
+    report->received_count = injected_timeout ? 0 : g_driver->feedback_received;
+    report->missing_count = injected_timeout
+        ? g_driver->feedback_expected
+        : static_cast<uint32_t>(g_driver->feedback_missing_ids.size());
     const auto copied = std::min<std::size_t>(
         g_driver->feedback_missing_ids.size(), missing_capacity);
     for (std::size_t i = 0; i < copied; ++i) {
       missing_ids[i] = g_driver->feedback_missing_ids[i];
     }
   }
-  return g_driver->feedback_code;
+  const auto result = injected_timeout ? 3 : g_driver->feedback_code;
+  const bool consume_deadline =
+      injected_timeout && g_driver->feedback_timeout_consumes_deadline;
+  lock.unlock();
+  if (consume_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms + 1));
+  }
+  return result;
 }
 
 int32_t get_state(void* handle, ArticoreMotorState* state) {
@@ -306,14 +330,17 @@ void test_pv_watchdog_safe_hold_and_fault() {
   require(wait_for([&] {
             const auto health = runtime.health();
             return health.state == ARTICORE_FAULT &&
-                   health.disable_confirmed == 1;
+                   health.safe_holding == 1 &&
+                   health.disable_confirmed == 0;
           }),
-          "FAULT confirms linked disable");
+          "failed safe hold latches FAULT without automatic torque-off");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
-    require(driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0,
-            "FAULT attempts both controllers");
+    require(driver.disable_calls[0] == 0 && driver.disable_calls[1] == 0,
+            "ordinary FAULT does not disable either controller");
+    driver.fail_group = false;
   }
+  runtime.disable();
   runtime.recover();
   require(runtime.health().state == ARTICORE_READY,
           "recover returns only to READY");
@@ -558,7 +585,7 @@ void test_gripper_torque_spike_does_not_trigger_contact() {
           "short torque spike does not satisfy sustained contact detection");
 }
 
-void test_fault_policy_can_hold_gripper_until_recovery() {
+void test_estop_obeys_configured_gripper_hold_policy() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
@@ -571,28 +598,50 @@ void test_fault_policy_can_hold_gripper_until_recovery() {
   runtime.estop("test estop");
 
   const auto fault = runtime.health();
-  require(fault.state == ARTICORE_FAULT && fault.disable_confirmed == 0,
-          "hold fault policy reports that not every motor is disabled");
-  require(fault.grippers[0].control_state == ARTICORE_GRIPPER_HOLDING,
-          "fault policy keeps the gripper in low-gain hold");
+  require(fault.state == ARTICORE_FAULT && fault.disable_confirmed == 0 &&
+              fault.safe_holding == 1,
+          "estop latches FAULT while the configured gripper hold remains active");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     require(driver.motors[motors[0].motor].status == 0 &&
                 driver.motors[motors[1].motor].status == 0 &&
                 driver.motors[motors[2].motor].status == 1,
-            "fault hold disables both arms but preserves the gripper");
+            "estop disables arm joints but preserves the configured gripper hold");
   }
   runtime.disable();
   require(runtime.health().state == ARTICORE_FAULT &&
               runtime.health().disable_confirmed == 1,
-          "disable in FAULT physically disables the held gripper");
+          "explicit disable also disables the gripper without clearing FAULT");
   runtime.recover();
   require(runtime.health().state == ARTICORE_READY &&
               runtime.health().disable_confirmed == 1,
           "recover clears the latch only after physical disable is confirmed");
 }
 
-void test_feedback_policy_and_linked_disable() {
+void test_estop_can_disable_gripper_by_product_policy() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.gripper_fault_action = ARTICORE_GRIPPER_FAULT_DISABLE;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  runtime.estop("test torque-off estop");
+
+  const auto fault = runtime.health();
+  require(fault.state == ARTICORE_FAULT && fault.disable_confirmed == 1 &&
+              fault.safe_holding == 0,
+          "disable-policy estop confirms full torque-off");
+  std::lock_guard<std::mutex> lock(driver.mutex);
+  require(driver.motors[motors[0].motor].status == 0 &&
+              driver.motors[motors[1].motor].status == 0 &&
+              driver.motors[motors[2].motor].status == 0,
+          "disable-policy estop disables arms and gripper");
+}
+
+void test_feedback_fault_uses_protective_hold_without_linked_disable() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
@@ -610,12 +659,104 @@ void test_feedback_policy_and_linked_disable() {
     driver.motors[motors[0].motor].has_feedback = false;
   }
   require(wait_for([&] { return runtime.health().state == ARTICORE_FAULT; }),
-          "missing feedback prevents current-position hold and enters FAULT");
+          "continuous missing feedback stops normal motion and latches FAULT");
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
-            return driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0;
+            return std::any_of(
+                driver.pv_history.begin(), driver.pv_history.end(),
+                [&](const auto& batch) {
+                  return batch.size() == 1 &&
+                         batch[0].motor == motors[1].motor;
+                });
           }),
-          "feedback fault disables both sides");
+          "healthy joint continues receiving a protective hold target");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.disable_calls[0] == 0 && driver.disable_calls[1] == 0,
+            "feedback fault does not automatically disable either side");
+  }
+  const auto health = runtime.health();
+  require(health.safe_holding == 1 && health.disable_confirmed == 0,
+          "feedback fault reports active protective holding");
+}
+
+void test_single_gripper_feedback_miss_reuses_current_output() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  cfg.feedback_check_hz = 1;
+  cfg.gripper_control_hz = 100;
+  cfg.feedback_failure_threshold = 3;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+  ArticoreMitCommand arm_commands[] = {
+      {motors[0].motor, 0.2f, 0.0f, 5.0f, 0.5f, 0.0f},
+      {motors[1].motor, 0.8f, 0.0f, 5.0f, 0.5f, 0.0f},
+  };
+  runtime.submit_mit_ex(
+      arm_commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
+  ArticoreGripperTarget gripper{motors[2].motor, 625.0f};
+  runtime.set_gripper_openings(&gripper, 1);
+
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return std::any_of(
+                driver.mit_history.begin(), driver.mit_history.end(),
+                [&](const auto& batch) {
+                  return batch.size() == 1 &&
+                         batch[0].motor == motors[2].motor &&
+                         std::abs(batch[0].target_position - 0.75f) < 1e-6f;
+                });
+          }),
+          "gripper establishes a successful current output before the miss");
+
+  std::size_t history_before = 0;
+  ArticoreMitCommand output_before{};
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    history_before = driver.mit_history.size();
+    for (auto it = driver.mit_history.rbegin();
+         it != driver.mit_history.rend(); ++it) {
+      if (it->size() == 1 && (*it)[0].motor == motors[2].motor) {
+        output_before = (*it)[0];
+        break;
+      }
+    }
+    driver.motors[motors[2].motor].has_feedback = false;
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            for (std::size_t i = history_before; i < driver.mit_history.size(); ++i) {
+              const auto& batch = driver.mit_history[i];
+              if (batch.size() == 1 && batch[0].motor == motors[2].motor &&
+                  std::abs(batch[0].target_position -
+                           output_before.target_position) < 1e-6f &&
+                  batch[0].target_velocity == output_before.target_velocity &&
+                  batch[0].stiffness == output_before.stiffness &&
+                  batch[0].damping == output_before.damping &&
+                  batch[0].feedforward_torque ==
+                      output_before.feedforward_torque) {
+                return true;
+              }
+            }
+            return false;
+          }, 100ms),
+          "one missing gripper feedback sample resends the current output");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[2].motor].has_feedback = true;
+  }
+  require(runtime.health().state == ARTICORE_RUNNING,
+          "one gripper feedback miss only counts and does not stop motion");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.disable_calls[0] == 0 && driver.disable_calls[1] == 0,
+            "one gripper feedback miss never triggers automatic disable");
+  }
 }
 
 void test_feedback_measurements_do_not_reuse_command_limits() {
@@ -837,7 +978,35 @@ void test_disable_uses_structured_feedback_report() {
   }
 }
 
-void test_transport_disconnect_faults_and_links_both_sides() {
+void test_disable_retries_one_full_feedback_deadline() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.disable_feedback_timeout_ms = 10;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  uint32_t requests_before = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    requests_before = driver.feedback_requests;
+    driver.feedback_timeouts_remaining = 1;
+    driver.feedback_timeout_consumes_deadline = true;
+  }
+  runtime.disable();
+  require(runtime.health().state == ARTICORE_READY &&
+              runtime.health().disable_confirmed == 1,
+          "one full-deadline feedback timeout is retried after physical disable");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.feedback_requests >= requests_before + 3,
+            "disable confirmation performs one bounded outer retry");
+  }
+}
+
+void test_transport_disconnect_holds_the_connected_side() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
@@ -858,17 +1027,74 @@ void test_transport_disconnect_faults_and_links_both_sides() {
   require(wait_for([&] {
             if (runtime.health().state != ARTICORE_FAULT) return false;
             std::lock_guard<std::mutex> lock(driver.mutex);
-            return driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0;
+            return std::any_of(
+                driver.pv_history.begin(), driver.pv_history.end(),
+                [&](const auto& batch) {
+                  return batch.size() == 1 &&
+                         batch[0].motor == motors[0].motor;
+                });
           }),
-          "a disconnected transport enters FAULT and attempts linked disable");
+          "a disconnected transport faults normal motion and holds the connected side");
   const auto health = runtime.health();
   require(health.right_transport.connected == 0 &&
               health.right_transport.healthy == 0,
           "structured health identifies the disconnected side");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
-    require(driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0,
-            "transport disconnect still attempts linked disable on both sides");
+    require(driver.disable_calls[0] == 0 && driver.disable_calls[1] == 0,
+            "transport disconnect does not torque off the controllable side");
+  }
+}
+
+void test_fault_hold_failure_isolated_per_channel() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  cfg.safe_hold_hz = 200;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  ArticorePosVelCommand commands[] = {
+      {motors[0].motor, 0.25f, 1.0f}, {motors[1].motor, 0.75f, 1.0f}};
+  runtime.submit_pos_vel_ex(
+      commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
+  require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
+          "per-channel hold test reaches RUNNING");
+
+  runtime.report_feedback_failure(0, "injected miss 1");
+  runtime.report_feedback_failure(0, "injected miss 2");
+  runtime.report_feedback_failure(0, "injected miss 3");
+  require(runtime.health().state == ARTICORE_SAFE_HOLD,
+          "consecutive feedback misses enter protective SAFE_HOLD");
+  runtime.report_feedback_failure(0, "injected miss during hold");
+  require(runtime.health().state == ARTICORE_FAULT &&
+              runtime.health().safe_holding == 1,
+          "feedback failure during hold latches FAULT but preserves holding");
+
+  std::size_t history_before = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    history_before = driver.pv_history.size();
+    driver.fail_send_side[0] = true;
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            for (std::size_t i = history_before; i < driver.pv_history.size(); ++i) {
+              const auto& batch = driver.pv_history[i];
+              if (batch.size() == 1 && batch[0].motor == motors[1].motor) {
+                return true;
+              }
+            }
+            return false;
+          }),
+          "right channel keeps receiving hold frames when left hold send fails");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.disable_calls[0] == 0 && driver.disable_calls[1] == 0,
+            "one failed hold channel does not disable the controllable channel");
   }
 }
 
@@ -1053,6 +1279,60 @@ void test_single_side_runtime_and_gripper() {
           "single-side disable confirms only active motors");
 }
 
+void test_normal_gripper_uses_arm_control_rate() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.control_hz = 500;
+  cfg.command_timeout_ms = 500;
+  // This legacy field used to down-sample normal gripper output. Keep it at
+  // the old product value to prove that normal control now follows control_hz.
+  cfg.gripper_control_hz = 100;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+  ArticoreMitCommand arm_commands[] = {
+      {motors[0].motor, 0.2f, 0.0f, 5.0f, 0.5f, 0.0f},
+      {motors[1].motor, 0.8f, 0.0f, 5.0f, 0.5f, 0.0f},
+  };
+  runtime.submit_mit_ex(
+      arm_commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
+  ArticoreGripperTarget target{motors[2].motor, 500.0f};
+  runtime.set_gripper_openings(&target, 1);
+
+  std::size_t arm_baseline = 0;
+  std::size_t gripper_baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    arm_baseline = driver.arm_mit_history.size();
+    gripper_baseline = static_cast<std::size_t>(std::count_if(
+        driver.mit_history.begin(), driver.mit_history.end(),
+        [&](const auto& batch) {
+          return batch.size() == 1 && batch[0].motor == motors[2].motor;
+        }));
+  }
+
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.arm_mit_history.size() >= arm_baseline + 30;
+          }, 250ms),
+          "normal arm control reaches its configured 500 Hz cadence");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto arm_count = driver.arm_mit_history.size() - arm_baseline;
+    const auto gripper_total = static_cast<std::size_t>(std::count_if(
+        driver.mit_history.begin(), driver.mit_history.end(),
+        [&](const auto& batch) {
+          return batch.size() == 1 && batch[0].motor == motors[2].motor;
+        }));
+    const auto gripper_count = gripper_total - gripper_baseline;
+    require(gripper_count + 2 >= arm_count,
+            "normal gripper output follows arm control_hz instead of the legacy 100 Hz field");
+  }
+}
+
 void test_motor_presence_is_fixed_and_fault_aware() {
   FakeDriver driver;
   g_driver = &driver;
@@ -1145,7 +1425,55 @@ void test_latest_value_mailbox_drops_superseded_targets() {
           "A and B are overwritten; the next tick sends only C");
 }
 
-void test_min_jerk_trajectory_and_direct_preemption() {
+void test_latest_value_mailbox_stays_bounded_under_fast_producer() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.control_hz = 500;
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  std::size_t baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    baseline = driver.pv_history.size();
+  }
+  ArticorePosVelCommand commands[] = {
+      {motors[0].motor, 0.0f, 1.0f},
+      {motors[1].motor, 1.0f, 1.0f},
+  };
+  for (int sequence = 0; sequence < 5000; ++sequence) {
+    const auto ratio = static_cast<float>(sequence % 100) / 100.0f;
+    commands[0].target_position = 0.2f * ratio;
+    commands[1].target_position = 1.0f - 0.2f * ratio;
+    runtime.submit_pos_vel_ex(
+        commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
+  }
+  commands[0].target_position = 0.333f;
+  commands[1].target_position = 0.667f;
+  runtime.submit_pos_vel_ex(
+      commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
+
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_pv.size() == 2 &&
+                   std::abs(driver.last_pv[0].target_position - 0.333f) < 1e-6f &&
+                   std::abs(driver.last_pv[1].target_position - 0.667f) < 1e-6f;
+          }, 300ms),
+          "the final producer value reaches the 500 Hz sender");
+  std::this_thread::sleep_for(10ms);
+  std::lock_guard<std::mutex> lock(driver.mutex);
+  require(driver.pv_history.size() - baseline < 5000 &&
+              std::abs(driver.last_pv[0].target_position - 0.333f) < 1e-6f &&
+              std::abs(driver.last_pv[1].target_position - 0.667f) < 1e-6f,
+          "fast producer values are coalesced into one slot and no stale target reappears");
+}
+
+void test_min_jerk_trajectory_rejects_ordinary_preemption() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
@@ -1185,30 +1513,325 @@ void test_min_jerk_trajectory_and_direct_preemption() {
   }
 
   ArticoreJointTrajectoryTarget long_target[] = {
-      {motors[0].motor, 1.0f, 1.0f}, {motors[1].motor, 0.0f, 1.0f}};
-  const auto preempted_id = runtime.start_joint_trajectory(
+      {motors[0].motor, 0.3f, 1.0f}, {motors[1].motor, 0.7f, 1.0f}};
+  const auto protected_id = runtime.start_joint_trajectory(
       long_target, 2, ARTICORE_TRAJECTORY_LINEAR);
   std::this_thread::sleep_for(8ms);
+
+  ArticoreJointTrajectoryTarget queued_target[] = {
+      {motors[0].motor, 0.4f, 1.0f}, {motors[1].motor, 0.6f, 1.0f}};
+  bool second_trajectory_rejected = false;
+  try {
+    runtime.start_joint_trajectory(
+        queued_target, 2, ARTICORE_TRAJECTORY_MIN_JERK);
+  } catch (const std::runtime_error& error) {
+    second_trajectory_rejected =
+        std::string(error.what()).find("already active") != std::string::npos;
+  }
+  require(second_trajectory_rejected,
+          "a second trajectory is rejected instead of queued or preempting");
+
   ArticoreMitCommand direct[] = {
       {motors[0].motor, -0.25f, 0.0f, 20.0f, 3.0f, 0.0f},
       {motors[1].motor, 0.25f, 0.0f, 20.0f, 3.0f, 0.0f},
   };
+  bool direct_rejected = false;
+  try {
+    runtime.submit_mit(direct, 2);
+  } catch (const std::runtime_error& error) {
+    direct_rejected =
+        std::string(error.what()).find("trajectory is active") !=
+        std::string::npos;
+  }
+  require(direct_rejected,
+          "a direct command is rejected while the trajectory is active");
+  require(runtime.trajectory_info(protected_id).status ==
+              ARTICORE_TRAJECTORY_RUNNING,
+          "rejected ordinary commands leave the original trajectory running");
+
+  const auto protected_result = runtime.wait_trajectory(protected_id, 1s);
+  require(protected_result.status == ARTICORE_TRAJECTORY_COMPLETED,
+          "the original trajectory reaches its endpoint normally");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto& endpoint = driver.arm_mit_history.back();
+    require(std::abs(endpoint[0].target_position - 0.3f) < 1e-6f &&
+                std::abs(endpoint[1].target_position - 0.7f) < 1e-6f,
+            "no rejected trajectory or direct-command frame is transmitted");
+  }
+
+  const auto sequential_id = runtime.start_joint_trajectory(
+      queued_target, 2, ARTICORE_TRAJECTORY_MIN_JERK);
+  require(runtime.wait_trajectory(sequential_id, 1s).status ==
+              ARTICORE_TRAJECTORY_COMPLETED,
+          "trajectory B is accepted only after trajectory A completes");
+}
+
+void test_trajectory_result_history_is_bounded() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  ArticoreJointTrajectoryTarget target[] = {
+      {motors[0].motor, 0.0f, 5.0f}, {motors[1].motor, 1.0f, 5.0f}};
+  uint64_t first_id = 0;
+  uint64_t last_id = 0;
+  for (int index = 0; index < 66; ++index) {
+    last_id = runtime.start_joint_trajectory(
+        target, 2, ARTICORE_TRAJECTORY_LINEAR);
+    if (index == 0) first_id = last_id;
+    require(runtime.wait_trajectory(last_id, 200ms).status ==
+                ARTICORE_TRAJECTORY_COMPLETED,
+            "sequential zero-distance trajectory completes");
+  }
+  bool oldest_evicted = false;
+  try {
+    (void)runtime.trajectory_info(first_id);
+  } catch (const std::invalid_argument&) {
+    oldest_evicted = true;
+  }
+  require(oldest_evicted &&
+              runtime.trajectory_info(last_id).status ==
+                  ARTICORE_TRAJECTORY_COMPLETED,
+          "trajectory result history stays at its fixed 64-entry bound");
+}
+
+void test_mit_trajectory_endpoint_hold_bypasses_user_watchdog() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 50;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+
+  ArticoreJointTrajectoryTarget targets[] = {
+      {motors[0].motor, 0.1f, 5.0f}, {motors[1].motor, 0.9f, 5.0f}};
+  const auto id = runtime.start_joint_trajectory(
+      targets, 2, ARTICORE_TRAJECTORY_MIN_JERK);
+  require(runtime.wait_trajectory(id, 500ms).status ==
+              ARTICORE_TRAJECTORY_COMPLETED,
+          "MIT trajectory completes before endpoint hold validation");
+  std::size_t baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    baseline = driver.arm_mit_history.size();
+  }
+  std::this_thread::sleep_for(170ms);
+  const auto health = runtime.health();
+  require(health.state == ARTICORE_RUNNING && health.safe_holding == 0 &&
+              health.last_successful_command_age_ns >= 150'000'000ULL,
+          "MIT endpoint hold remains RUNNING beyond three watchdog periods");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.arm_mit_history.size() >= baseline + 25,
+            "MIT endpoint hold continues at the native control rate");
+    const auto& endpoint = driver.arm_mit_history.back();
+    require(endpoint.size() == 2 &&
+                std::abs(endpoint[0].target_position - 0.1f) < 1e-6f &&
+                std::abs(endpoint[1].target_position - 0.9f) < 1e-6f &&
+                endpoint[0].target_velocity == 0.0f &&
+                endpoint[1].target_velocity == 0.0f &&
+                endpoint[0].stiffness == 20.0f &&
+                endpoint[1].stiffness == 20.0f &&
+                endpoint[0].damping == 3.0f &&
+                endpoint[1].damping == 3.0f,
+            "MIT endpoint hold preserves exact goal, zero velocity, and configured gains");
+  }
+
+  ArticoreMitCommand direct[] = {
+      {motors[0].motor, 0.2f, 0.0f, 20.0f, 3.0f, 0.0f},
+      {motors[1].motor, 0.8f, 0.0f, 20.0f, 3.0f, 0.0f},
+  };
   runtime.submit_mit(direct, 2);
-  require(runtime.trajectory_info(preempted_id).status ==
-              ARTICORE_TRAJECTORY_PREEMPTED,
-          "direct command synchronously preempts the active trajectory");
-  require(wait_for([&] {
-            std::lock_guard<std::mutex> lock(driver.mutex);
-            return driver.last_arm_mit.size() == 2 &&
-                   std::abs(driver.last_arm_mit[0].target_position + 0.25f) < 1e-6f &&
-                   std::abs(driver.last_arm_mit[1].target_position - 0.25f) < 1e-6f;
-          }),
-          "direct target is active within one control cycle");
-  std::this_thread::sleep_for(8ms);
-  std::lock_guard<std::mutex> lock(driver.mutex);
-  require(std::abs(driver.last_arm_mit[0].target_position + 0.25f) < 1e-6f &&
-              std::abs(driver.last_arm_mit[1].target_position - 0.25f) < 1e-6f,
-          "no preempted trajectory frame reappears after direct command returns");
+  require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
+          "a direct MIT command restores ordinary user-command watchdog behavior");
+}
+
+void test_pv_trajectory_endpoint_hold_bypasses_user_watchdog() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 50;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  ArticoreJointTrajectoryTarget targets[] = {
+      {motors[0].motor, 0.1f, 5.0f}, {motors[1].motor, 0.9f, 5.0f}};
+  const auto id = runtime.start_joint_trajectory(
+      targets, 2, ARTICORE_TRAJECTORY_MIN_JERK);
+  require(runtime.wait_trajectory(id, 500ms).status ==
+              ARTICORE_TRAJECTORY_COMPLETED,
+          "PV trajectory completes before endpoint hold validation");
+  std::size_t baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    baseline = driver.pv_history.size();
+  }
+  std::this_thread::sleep_for(170ms);
+  const auto health = runtime.health();
+  require(health.state == ARTICORE_RUNNING && health.safe_holding == 0 &&
+              health.last_successful_command_age_ns >= 150'000'000ULL,
+          "PV endpoint hold remains RUNNING beyond three watchdog periods");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.pv_history.size() >= baseline + 25,
+            "PV endpoint hold continues at the native control rate");
+    const auto& endpoint = driver.pv_history.back();
+    require(endpoint.size() == 2 &&
+                std::abs(endpoint[0].target_position - 0.1f) < 1e-6f &&
+                std::abs(endpoint[1].target_position - 0.9f) < 1e-6f &&
+                endpoint[0].velocity_limit == 5.0f &&
+                endpoint[1].velocity_limit == 5.0f,
+            "PV endpoint hold preserves exact goal and configured velocity limits");
+  }
+
+  ArticorePosVelCommand direct[] = {
+      {motors[0].motor, 0.2f, 2.0f},
+      {motors[1].motor, 0.8f, 2.0f},
+  };
+  runtime.submit_pos_vel(direct, 2);
+  require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
+          "a direct PV command restores ordinary user-command watchdog behavior");
+}
+
+void test_persistent_setpoints_outlive_watchdog_but_streaming_still_times_out() {
+  {
+    FakeDriver driver;
+    g_driver = &driver;
+    auto motors = descriptors(driver);
+    auto cfg = config();
+    cfg.command_timeout_ms = 50;
+    articore::SafetyRuntime runtime(
+        cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+        g_right_controller, motors);
+    const auto configured = joint_configs(motors);
+    runtime.configure_joints(configured.data(),
+                             static_cast<uint32_t>(configured.size()));
+    runtime.connect();
+    runtime.enable(ARTICORE_MODE_MIT);
+
+    ArticoreMitCommand persistent[] = {
+        {motors[0].motor, 0.4f, 0.0f, 20.0f, 3.0f, 0.0f},
+        {motors[1].motor, 0.6f, 0.0f, 20.0f, 3.0f, 0.0f},
+    };
+    runtime.submit_mit_ex(
+        persistent, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
+    require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
+            "persistent MIT setpoint enters RUNNING");
+    std::size_t baseline = 0;
+    {
+      std::lock_guard<std::mutex> lock(driver.mutex);
+      baseline = driver.arm_mit_history.size();
+    }
+    std::this_thread::sleep_for(170ms);
+    require(runtime.health().state == ARTICORE_RUNNING &&
+                runtime.health().safe_holding == 0,
+            "one-shot MIT setpoint remains RUNNING beyond three watchdog periods");
+    {
+      std::lock_guard<std::mutex> lock(driver.mutex);
+      require(driver.arm_mit_history.size() >= baseline + 25 &&
+                  std::abs(driver.arm_mit_history.back()[0].target_position -
+                           0.4f) < 1e-6f,
+              "persistent MIT setpoint continues to transmit while motion may be slow");
+    }
+
+    runtime.submit_mit_ex(persistent, 2, ARTICORE_COMMAND_STREAMING);
+    require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
+            "explicit streaming MIT still times out when updates stop");
+  }
+
+  {
+    FakeDriver driver;
+    g_driver = &driver;
+    auto motors = descriptors(driver);
+    auto cfg = config();
+    cfg.command_timeout_ms = 50;
+    articore::SafetyRuntime runtime(
+        cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+        g_right_controller, motors);
+    const auto configured = joint_configs(motors);
+    runtime.configure_joints(configured.data(),
+                             static_cast<uint32_t>(configured.size()));
+    runtime.connect();
+    runtime.enable(ARTICORE_MODE_PV);
+
+    ArticorePosVelCommand persistent[] = {
+        {motors[0].motor, 0.4f, 0.05f},
+        {motors[1].motor, 0.6f, 0.05f},
+    };
+    runtime.submit_pos_vel_ex(
+        persistent, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
+    require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
+            "persistent slow PV setpoint enters RUNNING");
+    std::this_thread::sleep_for(170ms);
+    require(runtime.health().state == ARTICORE_RUNNING &&
+                runtime.health().safe_holding == 0,
+            "slow PV motion may outlive the command watchdog");
+
+    runtime.submit_pos_vel_ex(persistent, 2, ARTICORE_COMMAND_STREAMING);
+    require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
+            "explicit streaming PV still times out when updates stop");
+  }
+}
+
+void test_persistent_mit_rejects_unbounded_motion_terms() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  articore::SafetyRuntime runtime(config(), api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+
+  ArticoreMitCommand moving[] = {
+      {motors[0].motor, 0.4f, 0.1f, 20.0f, 3.0f, 0.0f},
+      {motors[1].motor, 0.6f, 0.0f, 20.0f, 3.0f, 0.0f},
+  };
+  bool velocity_rejected = false;
+  try {
+    runtime.submit_mit_ex(
+        moving, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
+  } catch (const std::invalid_argument&) {
+    velocity_rejected = true;
+  }
+  require(velocity_rejected,
+          "persistent MIT rejects nonzero target velocity");
+
+  moving[0].target_velocity = 0.0f;
+  moving[0].feedforward_torque = 0.1f;
+  bool torque_rejected = false;
+  try {
+    runtime.submit_mit_ex(
+        moving, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
+  } catch (const std::invalid_argument&) {
+    torque_rejected = true;
+  }
+  require(torque_rejected,
+          "persistent MIT rejects nonzero feedforward torque");
 }
 
 void test_deadline_skips_missed_periods_and_reenable_seeds_feedback() {
@@ -1269,24 +1892,35 @@ int main() {
     RUN_TEST(test_gripper_hold_retreats_once_on_overload);
     RUN_TEST(test_gripper_stall_switches_to_contact_hold_target);
     RUN_TEST(test_gripper_torque_spike_does_not_trigger_contact);
-    RUN_TEST(test_fault_policy_can_hold_gripper_until_recovery);
-    RUN_TEST(test_feedback_policy_and_linked_disable);
+    RUN_TEST(test_estop_obeys_configured_gripper_hold_policy);
+    RUN_TEST(test_estop_can_disable_gripper_by_product_policy);
+    RUN_TEST(test_feedback_fault_uses_protective_hold_without_linked_disable);
+    RUN_TEST(test_single_gripper_feedback_miss_reuses_current_output);
     RUN_TEST(test_feedback_measurements_do_not_reuse_command_limits);
     RUN_TEST(test_feedback_seed_and_trajectory_start_ignore_command_limits);
     RUN_TEST(test_feedback_fault_diagnostics_include_identity_value_and_threshold);
     RUN_TEST(test_single_stale_feedback_sample_does_not_cancel_trajectory);
     RUN_TEST(test_disable_does_not_stop_after_one_side_fails);
     RUN_TEST(test_disable_uses_structured_feedback_report);
-    RUN_TEST(test_transport_disconnect_faults_and_links_both_sides);
+    RUN_TEST(test_disable_retries_one_full_feedback_deadline);
+    RUN_TEST(test_transport_disconnect_holds_the_connected_side);
+    RUN_TEST(test_fault_hold_failure_isolated_per_channel);
     RUN_TEST(test_enable_grace_and_fault_latch);
     RUN_TEST(test_atomic_enable_starts_hold_and_confirms_both_sides);
     RUN_TEST(test_atomic_enable_retries_one_disabled_motor_once);
     RUN_TEST(test_atomic_enable_failure_rolls_back_and_fault_disable_is_allowed);
     RUN_TEST(test_repeated_runtime_lifecycle);
     RUN_TEST(test_single_side_runtime_and_gripper);
+    RUN_TEST(test_normal_gripper_uses_arm_control_rate);
     RUN_TEST(test_motor_presence_is_fixed_and_fault_aware);
     RUN_TEST(test_latest_value_mailbox_drops_superseded_targets);
-    RUN_TEST(test_min_jerk_trajectory_and_direct_preemption);
+    RUN_TEST(test_latest_value_mailbox_stays_bounded_under_fast_producer);
+    RUN_TEST(test_min_jerk_trajectory_rejects_ordinary_preemption);
+    RUN_TEST(test_trajectory_result_history_is_bounded);
+    RUN_TEST(test_mit_trajectory_endpoint_hold_bypasses_user_watchdog);
+    RUN_TEST(test_pv_trajectory_endpoint_hold_bypasses_user_watchdog);
+    RUN_TEST(test_persistent_setpoints_outlive_watchdog_but_streaming_still_times_out);
+    RUN_TEST(test_persistent_mit_rejects_unbounded_motion_terms);
     RUN_TEST(test_deadline_skips_missed_periods_and_reenable_seeds_feedback);
 #undef RUN_TEST
     std::cout << "Articore runtime tests passed\n";

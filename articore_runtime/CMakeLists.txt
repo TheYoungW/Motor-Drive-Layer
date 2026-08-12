@@ -5,7 +5,16 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_library(articore_runtime_core STATIC src/runtime.cpp)
+add_library(
+  articore_runtime_core STATIC
+  src/runtime.cpp
+  src/runtime_commands.cpp
+  src/runtime_enable.cpp
+  src/runtime_gripper.cpp
+  src/runtime_safety.cpp
+  src/runtime_trajectory.cpp
+  src/runtime_worker.cpp
+)
 add_library(articore::runtime_core ALIAS articore_runtime_core)
 target_include_directories(articore_runtime_core PUBLIC include src)
 target_compile_features(articore_runtime_core PUBLIC cxx_std_17)

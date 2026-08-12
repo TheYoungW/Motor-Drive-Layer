@@ -42,7 +42,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (1U << 16) | 4U;
+  return (1U << 16) | 5U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -56,7 +56,10 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_MOTOR_PRESENCE |
          ARTICORE_CAP_REALTIME_JOINT_MAILBOX |
          ARTICORE_CAP_JOINT_TRAJECTORY |
-         ARTICORE_CAP_ATOMIC_ENABLE;
+         ARTICORE_CAP_ATOMIC_ENABLE |
+         ARTICORE_CAP_COMMAND_LIFETIME |
+         ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY |
+         ARTICORE_CAP_PROTECTIVE_FAULT_HOLD;
 }
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
@@ -147,6 +150,28 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit(
     const ArticoreMitCommand* commands,
     uint32_t command_count) {
   return call([&] { checked(runtime).submit_mit(commands, command_count); });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pos_vel_ex(
+    ArticoreRuntime* runtime,
+    const ArticorePosVelCommand* commands,
+    uint32_t command_count,
+    int32_t lifetime) {
+  return call([&] {
+    checked(runtime).submit_pos_vel_ex(
+        commands, command_count, static_cast<ArticoreCommandLifetime>(lifetime));
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_ex(
+    ArticoreRuntime* runtime,
+    const ArticoreMitCommand* commands,
+    uint32_t command_count,
+    int32_t lifetime) {
+  return call([&] {
+    checked(runtime).submit_mit_ex(
+        commands, command_count, static_cast<ArticoreCommandLifetime>(lifetime));
+  });
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_gripper_mit(

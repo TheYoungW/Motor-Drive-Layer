@@ -31,6 +31,12 @@ enum ArticoreRuntimeCapability {
   ARTICORE_CAP_REALTIME_JOINT_MAILBOX = 1ULL << 8,
   ARTICORE_CAP_JOINT_TRAJECTORY = 1ULL << 9,
   ARTICORE_CAP_ATOMIC_ENABLE = 1ULL << 10,
+  ARTICORE_CAP_COMMAND_LIFETIME = 1ULL << 11,
+  ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY = 1ULL << 12,
+  // Operational faults latch FAULT and stop trajectories, but keep sending
+  // protective holds to motors/channels that remain controllable. Only an
+  // explicit disable or product estop policy requests torque-off.
+  ARTICORE_CAP_PROTECTIVE_FAULT_HOLD = 1ULL << 13,
 };
 
 enum ArticorePresenceState {
@@ -58,6 +64,14 @@ enum ArticoreSafetyState {
 enum ArticoreControlMode {
   ARTICORE_MODE_PV = 1,
   ARTICORE_MODE_MIT = 2,
+};
+
+// A persistent setpoint is retransmitted at the control rate until another
+// command, trajectory, disable, or fault replaces it. A streaming command
+// must be refreshed before command_timeout_ms expires.
+enum ArticoreCommandLifetime {
+  ARTICORE_COMMAND_STREAMING = 1,
+  ARTICORE_COMMAND_HOLD_UNTIL_REPLACED = 2,
 };
 
 enum ArticoreTrajectoryProfile {
@@ -238,6 +252,8 @@ typedef struct ArticoreRuntimeConfig {
   uint32_t safe_hold_failure_threshold;
   uint32_t disable_feedback_timeout_ms;
   float safe_pv_velocity_limit;
+  // Retained for ABI compatibility. Normal gripper control follows
+  // control_hz; safe gripper holding follows safe_hold_hz.
   uint32_t gripper_control_hz;
   int32_t gripper_fault_action;
 } ArticoreRuntimeConfig;
@@ -368,7 +384,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joints(
     uint32_t config_count);
 // Direct arm commands are validated and atomically overwrite a capacity-one
 // mailbox. Success means accepted; the persistent control thread transmits the
-// latest accepted value on the next control tick.
+// latest accepted value on the next control tick. These ABI 1.0 entry points
+// retain their original STREAMING watchdog behavior.
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pos_vel(
     ArticoreRuntime* runtime,
     const ArticorePosVelCommand* commands,
@@ -377,6 +394,20 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit(
     ArticoreRuntime* runtime,
     const ArticoreMitCommand* commands,
     uint32_t command_count);
+// ABI 1.5 entry points. HOLD_UNTIL_REPLACED is intended for one-shot position
+// setpoints whose physical motion may legitimately exceed command_timeout_ms.
+// Persistent MIT setpoints require target_velocity=0 and
+// feedforward_torque=0; ongoing velocity/feedforward control must be STREAMING.
+ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pos_vel_ex(
+    ArticoreRuntime* runtime,
+    const ArticorePosVelCommand* commands,
+    uint32_t command_count,
+    int32_t lifetime);
+ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_ex(
+    ArticoreRuntime* runtime,
+    const ArticoreMitCommand* commands,
+    uint32_t command_count,
+    int32_t lifetime);
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_gripper_mit(
     ArticoreRuntime* runtime,
     const ArticoreMitCommand* commands,
@@ -385,9 +416,11 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_gripper_openings(
     ArticoreRuntime* runtime,
     const ArticoreGripperTarget* targets,
     uint32_t target_count);
-// Starts one time-parameterized trajectory. A new trajectory preempts the
-// previous trajectory; a direct submit_pos_vel/submit_mit command also
-// preempts it. Returns 0 on failure and sets articore_runtime_last_error().
+// Starts one time-parameterized trajectory. Exactly one trajectory may be
+// active: another trajectory or a direct submit_pos_vel/submit_mit command is
+// rejected until it completes. Disable, estop, close, and safety faults may
+// still cancel/fail it. Returns 0 on failure and sets
+// articore_runtime_last_error().
 ARTICORE_RUNTIME_API uint64_t articore_runtime_start_joint_trajectory(
     ArticoreRuntime* runtime,
     const ArticoreJointTrajectoryTarget* targets,
@@ -407,6 +440,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_report_feedback_failure(
 // Valid in every connected state, including latched FAULT. A successful call
 // confirms physical disable but intentionally does not clear a FAULT latch.
 ARTICORE_RUNTIME_API int32_t articore_runtime_disable(ArticoreRuntime* runtime);
+// Latches FAULT and torque-disables all arm joints. Grippers follow the
+// configured product estop action (hold or disable).
 ARTICORE_RUNTIME_API int32_t articore_runtime_estop(
     ArticoreRuntime* runtime, const char* reason);
 ARTICORE_RUNTIME_API int32_t articore_runtime_recover(ArticoreRuntime* runtime);
