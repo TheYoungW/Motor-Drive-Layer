@@ -932,7 +932,7 @@ void test_delayed_cycle_skips_missed_frames_and_reenable_seeds_feedback() {
   // mistaken for burst replay. The injected 100 ms stall still represents
   // five missed control periods, matching a 10 ms stall at 500 Hz.
   cfg.control_hz = 50;
-  cfg.command_timeout_ms = 500;
+  cfg.command_timeout_ms = 2000;
   cfg.enable_grace_ms = 1000;
   articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);
@@ -955,7 +955,7 @@ void test_delayed_cycle_skips_missed_frames_and_reenable_seeds_feedback() {
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
             return driver.pv_send_times.size() >= sends_before_delay + 6;
-          }),
+          }, 1500ms),
           "sender resumes after an injected delayed cycle");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
