@@ -23,6 +23,7 @@ void require(bool condition, const char* message) {
 struct FakeMotor {
   uint8_t status = 1;
   float position = 0.0f;
+  float velocity = 0.0f;
   float torque = 0.0f;
   uint64_t age_ns = 0;
   bool has_feedback = true;
@@ -150,8 +151,11 @@ int32_t get_state(void* handle, ArticoreMotorState* state) {
   if (found == g_driver->motors.end()) return -1;
   *state = {};
   state->has_value = found->second.has_feedback ? 1 : 0;
+  state->can_id = static_cast<uint8_t>(
+      reinterpret_cast<std::uintptr_t>(handle) - 0x200U);
   state->status_code = found->second.status;
   state->pos = found->second.position;
+  state->vel = found->second.velocity;
   state->torq = found->second.torque;
   return 0;
 }
@@ -230,7 +234,7 @@ std::vector<ArticoreMotorDescriptor> descriptors(FakeDriver& driver) {
     values[i].lower_position = -2.0f;
     values[i].upper_position = 2.0f;
     driver.motors[handles[i]] =
-        FakeMotor{1, static_cast<float>(i), 0.0f, 0, true};
+        FakeMotor{1, static_cast<float>(i), 0.0f, 0.0f, 0, true};
   }
   return values;
 }
@@ -612,6 +616,124 @@ void test_feedback_policy_and_linked_disable() {
             return driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0;
           }),
           "feedback fault disables both sides");
+}
+
+void test_feedback_measurements_do_not_reuse_command_limits() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  cfg.feedback_check_hz = 200;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  ArticorePosVelCommand valid[] = {
+      {motors[0].motor, 0.25f, 1.0f}, {motors[1].motor, 0.75f, 1.0f}};
+  runtime.submit_pos_vel(valid, 2);
+  require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
+          "valid command reaches RUNNING before feedback excursion");
+
+  uint32_t feedback_checks = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    feedback_checks = driver.feedback_stats_calls;
+    driver.motors[motors[0].motor].position = 2.001f;
+    driver.motors[motors[0].motor].velocity = 5.1f;
+    driver.motors[motors[0].motor].torque = 10.1f;
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.feedback_stats_calls >= feedback_checks + motors.size() * 3;
+          }),
+          "multiple feedback-health cycles observe out-of-command-limit data");
+  require(runtime.health().state == ARTICORE_RUNNING,
+          "finite fresh feedback outside command limits does not fault");
+
+  bool command_rejected = false;
+  ArticorePosVelCommand invalid[] = {
+      {motors[0].motor, 2.001f, 1.0f}, {motors[1].motor, 0.75f, 1.0f}};
+  try {
+    runtime.submit_pos_vel(invalid, 2);
+  } catch (const std::invalid_argument&) {
+    command_rejected = true;
+  }
+  require(command_rejected,
+          "the same out-of-limit value is still rejected as a user command");
+}
+
+void test_feedback_seed_and_trajectory_start_ignore_command_limits() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].position = 2.001f;
+    driver.motors[motors[0].motor].velocity = 5.1f;
+    driver.motors[motors[0].motor].torque = 10.1f;
+  }
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  require(runtime.health().state == ARTICORE_ENABLED,
+          "feedback-seeded current-position hold does not apply command limits");
+
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].position = 0.25f;
+    driver.motors[motors[0].motor].velocity = 5.1f;
+    driver.motors[motors[0].motor].torque = 10.1f;
+  }
+  ArticoreJointTrajectoryTarget targets[] = {
+      {motors[0].motor, 0.3f, 1.0f}, {motors[1].motor, 0.9f, 1.0f}};
+  const auto id = runtime.start_joint_trajectory(
+      targets, 2, ARTICORE_TRAJECTORY_MIN_JERK);
+  const auto completed = runtime.wait_trajectory(id, 500ms);
+  require(completed.status == ARTICORE_TRAJECTORY_COMPLETED,
+          "trajectory accepts finite fresh start feedback outside command velocity and torque limits");
+}
+
+void test_feedback_fault_diagnostics_include_identity_value_and_threshold() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  cfg.feedback_check_hz = 200;
+  cfg.feedback_failure_threshold = 1;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  ArticorePosVelCommand valid[] = {
+      {motors[0].motor, 0.25f, 1.0f}, {motors[1].motor, 0.75f, 1.0f}};
+  runtime.submit_pos_vel(valid, 2);
+  require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
+          "diagnostic test reaches RUNNING");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].velocity =
+        std::numeric_limits<float>::quiet_NaN();
+  }
+  require(wait_for([&] { return runtime.health().state == ARTICORE_FAULT; }),
+          "non-finite feedback eventually faults");
+  const std::string reason(runtime.health().fault_reason);
+  require(reason.find("CH0/left/joint1") != std::string::npos &&
+              reason.find("CAN ID 1") != std::string::npos &&
+              reason.find("velocity=nan") != std::string::npos &&
+              reason.find("threshold=all feedback values finite") !=
+                  std::string::npos,
+          "feedback fault identifies channel, motor, CAN ID, actual value, and threshold");
 }
 
 void test_disable_does_not_stop_after_one_side_fails() {
@@ -1109,6 +1231,9 @@ int main() {
     RUN_TEST(test_gripper_torque_spike_does_not_trigger_contact);
     RUN_TEST(test_fault_policy_can_hold_gripper_until_recovery);
     RUN_TEST(test_feedback_policy_and_linked_disable);
+    RUN_TEST(test_feedback_measurements_do_not_reuse_command_limits);
+    RUN_TEST(test_feedback_seed_and_trajectory_start_ignore_command_limits);
+    RUN_TEST(test_feedback_fault_diagnostics_include_identity_value_and_threshold);
     RUN_TEST(test_disable_does_not_stop_after_one_side_fails);
     RUN_TEST(test_disable_uses_structured_feedback_report);
     RUN_TEST(test_transport_disconnect_faults_and_links_both_sides);

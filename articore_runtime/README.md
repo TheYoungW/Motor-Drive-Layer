@@ -29,6 +29,12 @@ SDK bindings create ABI 1.4 runtimes with `articore_runtime_create_ex()` and pas
 separate-library boundary and avoids a direct DLL/dylib dependency between the product runtime and
 `libmotor_abi`; the original `articore_runtime_create()` remains available for ABI 1.3 callers.
 
+Feedback health is deliberately separate from command validation. Runtime command limits apply to
+user targets and generated trajectory commands before transmission, but are not applied to measured
+position, velocity, or torque. Feedback monitoring checks finite values, freshness, transport
+health, motor status, and unexpected disable; mechanical feedback protection requires separately
+defined thresholds, tolerance, and persistence rather than reusing URDF command limits.
+
 Runtime ABI 1.3 added time-parameterized joint trajectories. The runtime stores exactly one active
 trajectory as start/goal/time/profile state and computes the current position and velocity at each
 control tick; it does not allocate a point FIFO. `MIN_JERK` uses the normalized quintic profile and

@@ -284,8 +284,6 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
               ? ": fresh enabled feedback is required before enable"
               : ": fresh fault-free feedback is required before enable"));
     }
-    validate_position_velocity_torque(
-        motor.descriptor.motor, state.pos, 0.0f, 0.0f);
     if (mode == ARTICORE_MODE_PV) {
       initialized.pv.push_back(ArticorePosVelCommand{
           motor.descriptor.motor, state.pos, config_.safe_pv_velocity_limit});
@@ -402,8 +400,6 @@ uint64_t SafetyRuntime::start_joint_trajectory(
           std::string(motor->descriptor.name) +
           ": complete fresh enabled feedback is required for trajectory");
     }
-    validate_position_velocity_torque(
-        target.motor, state.pos, state.vel, state.torq);
     const auto distance = std::abs(
         static_cast<double>(target.target_position) - state.pos);
     const auto factor = profile == ARTICORE_TRAJECTORY_MIN_JERK ? 1.875 : 1.0;
@@ -1713,11 +1709,26 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
   for (const auto& motor : motors_) {
     const std::string name(motor.descriptor.name);
     ArticoreFeedbackStats stats{};
+    ArticoreMotorState state{};
+    const bool has_state =
+        api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+        state.has_value;
+    const auto identity = [&]() {
+      std::ostringstream detail;
+      detail << "CH" << static_cast<unsigned>(motor.descriptor.side) << "/"
+             << name << " (CAN ID ";
+      if (has_state) detail << static_cast<unsigned>(state.can_id);
+      else detail << "unavailable";
+      detail << ")";
+      return detail.str();
+    };
     if (api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
         !stats.has_feedback) {
       faulted_presence.push_back(motor.descriptor.motor);
       side_ok[motor.descriptor.side] = false;
-      side_error[motor.descriptor.side] = motor_error("feedback statistics unavailable");
+      side_error[motor.descriptor.side] =
+          identity() + ": feedback statistics unavailable; actual=missing, "
+                       "threshold=valid fresh feedback required";
       if (recovery_check) mark_unconfirmed(name);
       continue;
     }
@@ -1726,48 +1737,56 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
     if (stats.age_ns > static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL) {
       faulted_presence.push_back(motor.descriptor.motor);
       side_ok[motor.descriptor.side] = false;
-      side_error[motor.descriptor.side] = "feedback exceeds maximum age";
+      side_error[motor.descriptor.side] =
+          identity() + ": feedback exceeds maximum age; actual_age_ns=" +
+          std::to_string(stats.age_ns) + ", threshold_age_ns<=" +
+          std::to_string(static_cast<uint64_t>(config_.feedback_max_age_ms) *
+                         1'000'000ULL);
       if (recovery_check) mark_unconfirmed(name);
     }
-    ArticoreMotorState state{};
-    if (api_.motor_get_state(motor.descriptor.motor, &state) != 0 || !state.has_value) {
+    if (!has_state) {
       faulted_presence.push_back(motor.descriptor.motor);
       side_ok[motor.descriptor.side] = false;
-      side_error[motor.descriptor.side] = motor_error("motor state unavailable");
+      side_error[motor.descriptor.side] =
+          identity() + ": motor state unavailable; actual=missing, "
+                       "threshold=valid motor state required";
       if (recovery_check) mark_unconfirmed(name);
       continue;
     }
     if (!finite(state.pos) || !finite(state.vel) || !finite(state.torq)) {
       faulted_presence.push_back(motor.descriptor.motor);
       side_ok[motor.descriptor.side] = false;
-      side_error[motor.descriptor.side] = "motor feedback is not finite";
+      std::ostringstream detail;
+      detail << identity() << ": motor feedback is not finite; actual={position="
+             << state.pos << ", velocity=" << state.vel << ", torque="
+             << state.torq << "}, threshold=all feedback values finite";
+      side_error[motor.descriptor.side] = detail.str();
       if (recovery_check) mark_unconfirmed(name);
       continue;
-    }
-    if (!motor.descriptor.is_gripper) {
-      try {
-        validate_position_velocity_torque(
-            motor.descriptor.motor, state.pos, state.vel, state.torq);
-      } catch (const std::exception& limit_error) {
-        faulted_presence.push_back(motor.descriptor.motor);
-        side_ok[motor.descriptor.side] = false;
-        side_error[motor.descriptor.side] = limit_error.what();
-        motor_faults.push_back(name);
-        continue;
-      }
     }
     if (state.status_code > 1) {
       motor_faults.push_back(name);
       faulted_presence.push_back(motor.descriptor.motor);
+      side_ok[motor.descriptor.side] = false;
+      side_error[motor.descriptor.side] =
+          identity() + ": motor fault status reported; actual_status=" +
+          std::to_string(state.status_code) + ", threshold_status<=1";
     }
-    if (recovery_check && state.status_code != 0 &&
+    if (state.status_code <= 1 && recovery_check && state.status_code != 0 &&
         !(allow_held_grippers && motor.descriptor.is_gripper)) {
       mark_unconfirmed(name);
+      side_ok[motor.descriptor.side] = false;
+      side_error[motor.descriptor.side] =
+          identity() + ": motor is not disabled; actual_status=" +
+          std::to_string(state.status_code) + ", threshold_status=0";
     }
     if (!recovery_check && state.status_code == 0) {
-      error = "motor unexpectedly disabled: " + name;
+      error = identity() +
+          ": motor unexpectedly disabled; actual_status=0, threshold_status=1";
       motor_faults.push_back(name);
       faulted_presence.push_back(motor.descriptor.motor);
+      side_ok[motor.descriptor.side] = false;
+      side_error[motor.descriptor.side] = error;
     }
   }
 
