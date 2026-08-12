@@ -9,7 +9,9 @@ Supported ABI families:
 - v1.0.0: `damiao_handle_*` and `device_*` symbols. This is used by Linux x86_64 and is packaged
   with an isolated compatible libstdc++ runtime.
 - v1.1.0: `dmcan_*` symbols. This is the normal Windows/macOS runtime and is also supported on
-  Linux ARM64.
+  Linux ARM64. ARM64 wheels pair it with a private libusb 1.0.27 built by
+  `scripts/build_private_libusb.sh` because Ubuntu 22.04's libusb lacks
+  `libusb_init_context`.
 
 Normal users receive the runtime automatically with `pip install motor-drive-layer`.
 `motor-drive-layer-install-dm-device --download` and `MOTOR_DM_DEVICE_LIB` remain recovery and

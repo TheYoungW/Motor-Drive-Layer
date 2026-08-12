@@ -22,6 +22,8 @@ included in every platform wheel; no separate download command is required. Set
 `MOTOR_DM_DEVICE_LIB` only when intentionally overriding the packaged runtime.
 The current official macOS v1.1 dylib requires macOS 26, and the packaged wheel is tagged
 accordingly rather than claiming compatibility with an older system.
+Linux ARM64 wheels include a private libusb 1.0.27 build so the vendor v1.1 runtime can use
+`libusb_init_context` on Ubuntu 22.04 without replacing the host's libusb 1.0.25 package.
 On final Controller close, v1.1 fully tears down its device session. The Linux v1.0 runtime instead
 closes the selected channels and motor-layer resources but retains its legacy context/device until
 process exit, allowing a later `Controller.from_dm_device(...)` call to reconnect reliably in the

@@ -252,8 +252,10 @@ can still override the packaged library for development, and the motor-layer ins
 remains a recovery fallback. The loader probes both the
 v1.0 (`damiao_*`/`device_*`) and v1.1 (`dmcan_*`) ABIs and reports missing symbols and dynamic
 loader dependency errors explicitly. Linux x86_64 uses v1.0 with an isolated compatible C++
-runtime; Linux ARM64, Windows, and macOS use v1.1. Each Controller owns only its selected
-channel. v1.1 releases the shared physical USB handle after the last Controller closes. Because the
+runtime; Linux ARM64 uses v1.1 with a private libusb 1.0.27 runtime because Ubuntu 22.04's
+libusb 1.0.25 does not export `libusb_init_context`; Windows and macOS use v1.1. Each Controller
+owns only its selected channel. v1.1 releases the shared physical USB handle after the last
+Controller closes. Because the
 official Linux v1.0 runtime cannot reliably reopen device index 0 in the same process after a full
 device teardown, v1.0 instead closes each channel and all motor-layer threads/clients but retains
 its legacy context, device handle, callbacks, and loaded library for reuse until process exit. The

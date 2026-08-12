@@ -1,0 +1,14 @@
+libusb runtime notice
+=====================
+
+Linux ARM64 wheels include libusb 1.0.27 as a private shared-library
+dependency of DaMiao's DM_Device v1.1 runtime.
+
+Upstream source:
+https://github.com/libusb/libusb/releases/tag/v1.0.27
+
+Source archive SHA256:
+ffaa41d741a8a3bee244ac8e54a72ea05bf2879663c098c82fc5757853441575
+
+libusb is distributed under LGPL-2.1-or-later. The license text accompanies
+this notice.
