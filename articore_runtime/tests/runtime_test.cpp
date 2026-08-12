@@ -788,6 +788,11 @@ void test_latest_value_mailbox_drops_superseded_targets() {
   auto cfg = config();
   cfg.control_hz = 20;
   cfg.command_timeout_ms = 500;
+  // This test intentionally stretches the control period to 50 ms so all
+  // three submissions land before the next tick. Keep the enable grace well
+  // above that period; otherwise a delayed CI runner can fault before the
+  // pending mailbox command gets its first send opportunity.
+  cfg.enable_grace_ms = 1000;
   articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);
   runtime.connect();
