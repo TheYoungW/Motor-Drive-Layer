@@ -393,7 +393,6 @@ void test_safe_hold_rejects_stale_current_position() {
     driver.motors[motors[0].motor].age_ns = 300'000'000ULL;
     driver.fail_group = true;
   }
-  runtime.submit_pos_vel(commands, 2);
   require(wait_for([&] { return runtime.health().state == ARTICORE_FAULT; }),
           "asynchronous send failure reaches FAULT");
   const auto health = runtime.health();
