@@ -34,6 +34,9 @@ user targets and generated trajectory commands before transmission, but are not 
 position, velocity, or torque. Feedback monitoring checks finite values, freshness, transport
 health, motor status, and unexpected disable; mechanical feedback protection requires separately
 defined thresholds, tolerance, and persistence rather than reusing URDF command limits.
+Transient missing or stale feedback is counted but does not cancel an active trajectory until the
+configured consecutive-failure threshold is reached. Motor fault status, unexpected disable, and
+transport disconnect remain immediate hard faults.
 
 Runtime ABI 1.3 added time-parameterized joint trajectories. The runtime stores exactly one active
 trajectory as start/goal/time/profile state and computes the current position and velocity at each

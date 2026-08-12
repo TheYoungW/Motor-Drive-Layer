@@ -1386,14 +1386,6 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
       return false;
     }
     motor.feedback_age_ns = stats.age_ns;
-    if (stats.age_ns >
-        static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL) {
-      motor.gripper_fault_reason = "gripper feedback exceeds maximum age";
-      mark_motor_faulted(motor.descriptor.motor);
-      error = std::string(motor.descriptor.name) + ": " +
-              motor.gripper_fault_reason;
-      return false;
-    }
     if (state.status_code > 1 || state.status_code == 0) {
       motor.gripper_state = ARTICORE_GRIPPER_FAULT;
       motor.gripper_fault_reason = state.status_code == 0
@@ -2425,7 +2417,6 @@ void SafetyRuntime::worker_loop() {
       if (!still_active) continue;
       if (!healthy) {
         const bool severe =
-            error.find("maximum age") != std::string::npos ||
             error.find("motor fault status") != std::string::npos ||
             error.find("unexpectedly disabled") != std::string::npos ||
             error.find("transport disconnected") != std::string::npos;
@@ -2434,7 +2425,11 @@ void SafetyRuntime::worker_loop() {
         {
           std::lock_guard<std::mutex> lock(state_mutex_);
           ++consecutive_feedback_failures_;
-          const bool trajectory_failed = active_trajectory_.has_value();
+          const bool threshold_reached =
+              consecutive_feedback_failures_ >=
+              config_.feedback_failure_threshold;
+          const bool trajectory_failed =
+              active_trajectory_.has_value() && (severe || threshold_reached);
           if (trajectory_failed) {
             cancel_active_trajectory_locked(
                 ARTICORE_TRAJECTORY_FAILED,
@@ -2444,9 +2439,7 @@ void SafetyRuntime::worker_loop() {
           if (state_ == ARTICORE_SAFE_HOLD || severe) {
             fault = true;
           } else if (state_ == ARTICORE_RUNNING &&
-                     (trajectory_failed ||
-                      consecutive_feedback_failures_ >=
-                          config_.feedback_failure_threshold)) {
+                     threshold_reached) {
             enter_hold = true;
           }
         }

@@ -736,6 +736,46 @@ void test_feedback_fault_diagnostics_include_identity_value_and_threshold() {
           "feedback fault identifies channel, motor, CAN ID, actual value, and threshold");
 }
 
+void test_single_stale_feedback_sample_does_not_cancel_trajectory() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  cfg.feedback_check_hz = 20;
+  cfg.feedback_failure_threshold = 3;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+  ArticoreJointTrajectoryTarget targets[] = {
+      {motors[0].motor, 0.05f, 0.5f}, {motors[1].motor, 0.95f, 0.5f}};
+  const auto id = runtime.start_joint_trajectory(
+      targets, 2, ARTICORE_TRAJECTORY_MIN_JERK);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[2].motor].age_ns = 201'000'000ULL;
+  }
+  require(wait_for([&] {
+            return runtime.health().consecutive_feedback_failures == 1;
+          }, 200ms),
+          "one stale feedback-health sample is counted");
+  require(runtime.trajectory_info(id).status == ARTICORE_TRAJECTORY_RUNNING,
+          "one stale sample does not cancel an active trajectory");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[2].motor].age_ns = 0;
+  }
+  const auto completed = runtime.wait_trajectory(id, 500ms);
+  require(completed.status == ARTICORE_TRAJECTORY_COMPLETED &&
+              runtime.health().state == ARTICORE_RUNNING &&
+              runtime.health().consecutive_feedback_failures == 0,
+          "fresh feedback clears the transient failure and trajectory completes");
+}
+
 void test_disable_does_not_stop_after_one_side_fails() {
   FakeDriver driver;
   g_driver = &driver;
@@ -1234,6 +1274,7 @@ int main() {
     RUN_TEST(test_feedback_measurements_do_not_reuse_command_limits);
     RUN_TEST(test_feedback_seed_and_trajectory_start_ignore_command_limits);
     RUN_TEST(test_feedback_fault_diagnostics_include_identity_value_and_threshold);
+    RUN_TEST(test_single_stale_feedback_sample_does_not_cancel_trajectory);
     RUN_TEST(test_disable_does_not_stop_after_one_side_fails);
     RUN_TEST(test_disable_uses_structured_feedback_report);
     RUN_TEST(test_transport_disconnect_faults_and_links_both_sides);
