@@ -41,7 +41,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (1U << 16) | 1U;
+  return (1U << 16) | 2U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -51,7 +51,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_SINGLE_CHANNEL |
          ARTICORE_CAP_DUAL_CHANNEL |
          ARTICORE_CAP_TRANSPORT_HEALTH |
-         ARTICORE_CAP_CURRENT_POSITION_HOLD;
+         ARTICORE_CAP_CURRENT_POSITION_HOLD |
+         ARTICORE_CAP_MOTOR_PRESENCE;
 }
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
@@ -159,6 +160,42 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_health(
     return -1;
   }
   return call([&] { *health = checked(runtime).health(); });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_declare_motor_presence(
+    ArticoreRuntime* runtime, const char* motor_role, int32_t state) {
+  if (!motor_role) {
+    g_last_error = "motor_role is null";
+    return -1;
+  }
+  return call([&] {
+    checked(runtime).declare_motor_presence(
+        motor_role, static_cast<ArticorePresenceState>(state));
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_motor_presence(
+    ArticoreRuntime* runtime, const char* motor_role, int32_t* state) {
+  if (!motor_role || !state) {
+    g_last_error = "motor_role or state output is null";
+    return -1;
+  }
+  return call([&] { *state = checked(runtime).motor_presence(motor_role); });
+}
+
+ARTICORE_RUNTIME_API uint64_t articore_runtime_active_capabilities(
+    ArticoreRuntime* runtime) {
+  try {
+    const auto value = checked(runtime).active_capabilities();
+    g_last_error = "ok";
+    return value;
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return 0;
+  } catch (...) {
+    g_last_error = "unknown Articore runtime exception";
+    return 0;
+  }
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_close(ArticoreRuntime* runtime) {

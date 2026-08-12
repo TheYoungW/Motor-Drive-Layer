@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -39,6 +40,10 @@ class SafetyRuntime {
   void estop(const std::string& reason);
   void recover();
   ArticoreSafetyHealth health() const;
+  void declare_motor_presence(const std::string& role,
+                              ArticorePresenceState state);
+  ArticorePresenceState motor_presence(const std::string& role) const;
+  uint64_t active_capabilities() const;
   void close();
 
  private:
@@ -107,6 +112,7 @@ class SafetyRuntime {
   std::string motor_error(const std::string& fallback) const;
   void set_side_error_locked(uint8_t side, const std::string& error,
                              bool send_failure);
+  void mark_motor_faulted(void* motor);
   static bool finite(float value);
   static float clamp_opening(float opening);
   static float opening_to_position(const MotorRecord& motor, float opening);
@@ -118,6 +124,8 @@ class SafetyRuntime {
   void* controllers_[2]{};
   bool active_sides_[2]{};
   std::vector<MotorRecord> motors_;
+  std::map<std::string, ArticorePresenceState> presence_;
+  std::map<void*, std::string> motor_roles_;
 
   mutable std::mutex state_mutex_;
   mutable std::mutex command_mutex_;

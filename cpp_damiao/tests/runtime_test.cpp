@@ -46,6 +46,10 @@ class FakeBus final : public damiao::CanBus {
 
   void send(const damiao::CanFrame& frame) override {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (send_failures_ > 0) {
+      --send_failures_;
+      throw std::runtime_error("injected send failure");
+    }
     sent.push_back(frame);
     sent_at.push_back(std::chrono::steady_clock::now());
     if (auto_ack_writes_ && frame.id == 0x7FF && frame.data[2] == 0x55) {
@@ -99,6 +103,11 @@ class FakeBus final : public damiao::CanBus {
   void fail_next_receives(int count) {
     std::lock_guard<std::mutex> lock(mutex_);
     receive_failures_ = count;
+  }
+
+  void fail_next_sends(int count) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    send_failures_ = count;
   }
 
   void set_always_fail_receive(bool enabled) {
@@ -161,6 +170,7 @@ class FakeBus final : public damiao::CanBus {
   std::map<uint8_t, std::array<uint8_t, 4>> registers_;
   int shutdown_count_ = 0;
   int receive_failures_ = 0;
+  int send_failures_ = 0;
   bool always_fail_receive_ = false;
 };
 
@@ -305,6 +315,76 @@ int main() {
   require(!capability_controller.transport_health().connected,
           "closed controller reports disconnected transport health");
 
+  auto discovery_bus = std::make_shared<FakeBus>();
+  damiao::Controller discovery_controller(discovery_bus, "test discovery endpoint");
+  const std::vector<damiao::MotorCandidate> discovery_candidates{
+      {"joint", 0x09, 0x19, "4310", damiao::PresencePolicy::Required},
+      {"gripper", 0x01, 0x11, "4340P", damiao::PresencePolicy::Optional},
+      {"disabled_tool", 0x02, 0x12, "4340P", damiao::PresencePolicy::Disabled},
+  };
+  std::thread discovery_responder([&] {
+    for (int i = 0; i < 200; ++i) {
+      if (feedback_request_count(discovery_bus->sent_snapshot()) >= 2) break;
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    discovery_bus->push_rx(feedback_frame(
+        0x19, 0x09, 0x01, 0.0f, 0.0f, 0.0f, damiao::model_limits("4310")));
+  });
+  std::vector<damiao::MotorDiscoveryResult> discovery;
+  try {
+    discovery = discovery_controller.discover_damiao_motors(
+        discovery_candidates, std::chrono::milliseconds(20), 1);
+  } catch (...) {
+    discovery_responder.join();
+    throw;
+  }
+  discovery_responder.join();
+  require(discovery.size() == 3 &&
+              discovery[0].state == damiao::PresenceState::Present &&
+              discovery[0].motor &&
+              discovery[1].state == damiao::PresenceState::NotInstalled &&
+              !discovery[1].motor &&
+              discovery[2].state == damiao::PresenceState::NotInstalled &&
+              !discovery[2].motor,
+          "discovery keeps required present and tolerates optional/disabled absence");
+  const auto discovery_sent = discovery_bus->sent_snapshot();
+  require(std::none_of(discovery_sent.begin(), discovery_sent.end(),
+                       [](const damiao::CanFrame& frame) {
+                         return frame.id == 0x7FF && frame.data[2] == 0xCC &&
+                                frame.data[0] == 0x02;
+                       }),
+          "disabled candidates are never probed");
+  bool frozen_rejected = false;
+  try {
+    discovery_controller.add_damiao_motor(0x03, 0x13, "4310");
+  } catch (const std::logic_error&) {
+    frozen_rejected = true;
+  }
+  require(frozen_rejected,
+          "successful discovery freezes the active motor set for the connection");
+  discovery_controller.close_bus();
+
+  auto required_bus = std::make_shared<FakeBus>();
+  damiao::Controller required_controller(required_bus, "test required endpoint");
+  std::string required_error;
+  try {
+    required_controller.discover_damiao_motors(
+        {{"required_joint", 0x0F, 0x1F, "4310",
+          damiao::PresencePolicy::Required}},
+        std::chrono::milliseconds(5), 0);
+  } catch (const std::runtime_error& error) {
+    required_error = error.what();
+  }
+  require(required_error.find("test required endpoint") != std::string::npos &&
+              required_error.find("required_joint") != std::string::npos &&
+              required_error.find("motor_id=15") != std::string::npos,
+          "required discovery failure identifies endpoint, role, and motor ID");
+  auto after_failed_discovery =
+      required_controller.add_damiao_motor(0x0F, 0x1F, "4310");
+  require(after_failed_discovery != nullptr,
+          "failed discovery rolls back candidate registration");
+  required_controller.close_bus();
+
   auto health_bus = std::make_shared<FakeBus>();
   damiao::Controller health_controller(health_bus);
   auto health_motor = health_controller.add_damiao_motor(0x01, 0x11, "4340P");
@@ -444,6 +524,67 @@ int main() {
   require(batch_timeout_elapsed < std::chrono::milliseconds(300),
           "batch feedback uses one shared timeout instead of one timeout per motor");
   timeout_controller.close_bus();
+
+  auto report_bus = std::make_shared<FakeBus>();
+  damiao::Controller report_controller(report_bus);
+  report_controller.add_damiao_motor(0x01, 0x11, "4340P");
+  report_controller.add_damiao_motor(0x02, 0x12, "4310");
+  std::thread report_responder([&] {
+    for (int i = 0; i < 200; ++i) {
+      if (feedback_request_count(report_bus->sent_snapshot()) >= 2) break;
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    report_bus->push_rx(feedback_frame(0x11, 0x01, 0x01, 0.0f, 0.0f, 0.0f,
+                                       damiao::model_limits("4340P")));
+  });
+  damiao::FeedbackBatchReport incomplete_report;
+  try {
+    incomplete_report = report_controller.request_feedback_all_report(
+        std::chrono::milliseconds(20));
+  } catch (...) {
+    report_responder.join();
+    throw;
+  }
+  report_responder.join();
+  require(incomplete_report.status == damiao::FeedbackBatchStatus::Incomplete &&
+              incomplete_report.timeout == std::chrono::milliseconds(20) &&
+              incomplete_report.expected_count == 2 &&
+              incomplete_report.received_count == 1 &&
+              incomplete_report.missing_motor_ids == std::vector<uint16_t>{0x02},
+          "structured feedback report distinguishes a partial response");
+  report_controller.close_bus();
+
+  auto no_feedback_bus = std::make_shared<FakeBus>();
+  damiao::Controller no_feedback_controller(no_feedback_bus);
+  no_feedback_controller.add_damiao_motor(0x01, 0x11, "4340P");
+  no_feedback_controller.add_damiao_motor(0x02, 0x12, "4310");
+  const auto no_feedback_report =
+      no_feedback_controller.request_feedback_all_report(std::chrono::milliseconds(10));
+  require(no_feedback_report.status == damiao::FeedbackBatchStatus::Timeout &&
+              no_feedback_report.expected_count == 2 &&
+              no_feedback_report.received_count == 0 &&
+              no_feedback_report.missing_motor_ids ==
+                  std::vector<uint16_t>({0x01, 0x02}),
+          "structured feedback report distinguishes a complete timeout");
+  no_feedback_controller.close_bus();
+
+  auto transport_failure_bus = std::make_shared<FakeBus>();
+  damiao::Controller transport_failure_controller(transport_failure_bus);
+  transport_failure_controller.add_damiao_motor(0x01, 0x11, "4340P");
+  transport_failure_bus->fail_next_sends(1);
+  const auto transport_failure_report =
+      transport_failure_controller.request_feedback_all_report(
+          std::chrono::milliseconds(10));
+  require(transport_failure_report.status ==
+                  damiao::FeedbackBatchStatus::TransportError &&
+              transport_failure_report.expected_count == 1 &&
+              transport_failure_report.received_count == 0 &&
+              transport_failure_report.missing_motor_ids ==
+                  std::vector<uint16_t>{0x01} &&
+              transport_failure_report.error.find("injected send failure") !=
+                  std::string::npos,
+          "structured feedback report distinguishes transport failure");
+  transport_failure_controller.close_bus();
 
   auto retry_bus = std::make_shared<FakeBus>();
   damiao::Controller retry_controller(retry_bus);

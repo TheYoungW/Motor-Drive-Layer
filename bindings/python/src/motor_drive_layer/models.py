@@ -15,6 +15,51 @@ class Mode(IntEnum):
     FORCE_POS = 4
 
 
+class PresencePolicy(IntEnum):
+    REQUIRED = 1
+    OPTIONAL = 2
+    DISABLED = 3
+
+    @classmethod
+    def resolve(
+        cls, override: bool | None, model_default: PresencePolicy
+    ) -> PresencePolicy:
+        """Resolve True/False/None against a model's default policy."""
+        if override is True:
+            return cls.REQUIRED
+        if override is False:
+            return cls.DISABLED
+        if override is None:
+            return cls(model_default)
+        raise TypeError("presence override must be True, False, or None")
+
+
+class PresenceState(IntEnum):
+    NOT_INSTALLED = 1
+    PRESENT = 2
+    FAULTED = 3
+
+
+@dataclass(frozen=True)
+class MotorCandidate:
+    role: str
+    motor_id: int
+    feedback_id: int
+    model: str
+    policy: PresencePolicy = PresencePolicy.REQUIRED
+
+
+@dataclass(frozen=True)
+class MotorDiscoveryResult:
+    role: str
+    motor_id: int
+    feedback_id: int
+    policy: PresencePolicy
+    state: PresenceState
+    motor: Motor | None
+    reason: str | None
+
+
 @dataclass(frozen=True)
 class MotorState:
     can_id: int

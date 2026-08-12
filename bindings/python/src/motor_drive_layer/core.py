@@ -7,6 +7,8 @@ from numbers import Real
 from threading import Lock
 
 from .abi import (
+    CDiscoveryCandidate,
+    CDiscoveryResult,
     CFeedbackStats,
     CMitBatchCommand,
     CPosVelBatchCommand,
@@ -21,8 +23,12 @@ from .models import (
     FeedbackStats,
     MitCommand,
     Mode,
+    MotorCandidate,
+    MotorDiscoveryResult,
     MotorState,
     PosVelCommand,
+    PresencePolicy,
+    PresenceState,
     TransportCapabilities,
     TransportHealth,
 )
@@ -258,6 +264,86 @@ class Controller:
         if not m:
             raise CallError(f"add_damiao_motor failed: {_err_text()}")
         return Motor(m, self)
+
+    def discover_damiao_motors(
+        self,
+        candidates: Sequence[MotorCandidate],
+        timeout_ms: int = 50,
+        retries: int = 1,
+    ) -> tuple[MotorDiscoveryResult, ...]:
+        """Probe a fixed candidate set without enabling or moving any motor.
+
+        Required candidates make discovery fail when absent, optional candidates
+        return ``NOT_INSTALLED``, and disabled candidates are not registered or
+        probed. After success, only present motors belong to this controller for
+        the remainder of the connection.
+        """
+        if not self._abi.has_motor_presence_discovery:
+            raise CallError(
+                "the loaded motor_abi does not support motor presence discovery; "
+                "upgrade motor-drive-layer"
+            )
+        retry_value = int(retries)
+        if retry_value < 0 or retry_value > 10:
+            raise ValueError("retries must be in 0..=10")
+        timeout_value = _timeout_u32(timeout_ms)
+        if timeout_value == 0:
+            raise ValueError("timeout_ms must be positive")
+
+        values = tuple(candidates)
+        encoded_roles: list[bytes] = []
+        encoded_models: list[bytes] = []
+        native_candidates = (CDiscoveryCandidate * len(values))()
+        for index, candidate in enumerate(values):
+            role = str(candidate.role)
+            model = str(candidate.model)
+            if not role:
+                raise ValueError(f"candidate role is empty at index {index}")
+            if len(role.encode()) > 63:
+                raise ValueError(f"candidate role exceeds 63 UTF-8 bytes at index {index}")
+            if not model and PresencePolicy(candidate.policy) != PresencePolicy.DISABLED:
+                raise ValueError(f"candidate model is empty at index {index}")
+            motor_id = int(candidate.motor_id)
+            feedback_id = int(candidate.feedback_id)
+            if not 0 <= motor_id <= 0xFFFF:
+                raise ValueError(f"candidate motor_id is outside 0..=65535 at index {index}")
+            if not 0 <= feedback_id <= 0xFFFF:
+                raise ValueError(f"candidate feedback_id is outside 0..=65535 at index {index}")
+            policy = PresencePolicy(candidate.policy)
+            encoded_roles.append(role.encode())
+            encoded_models.append(model.encode())
+            native_candidates[index] = CDiscoveryCandidate(
+                encoded_roles[-1], motor_id, feedback_id, encoded_models[-1], int(policy)
+            )
+
+        native_results = (CDiscoveryResult * len(values))()
+        _ok(
+            self._abi.lib.motor_controller_discover_damiao_motors(
+                self._require_open(),
+                native_candidates,
+                len(values),
+                timeout_value,
+                retry_value,
+                native_results,
+                len(values),
+            ),
+            "discover_damiao_motors",
+        )
+        discovered: list[MotorDiscoveryResult] = []
+        for native in native_results:
+            reason = bytes(native.reason).split(b"\0", 1)[0]
+            discovered.append(
+                MotorDiscoveryResult(
+                    role=bytes(native.role).split(b"\0", 1)[0].decode(errors="replace"),
+                    motor_id=int(native.motor_id),
+                    feedback_id=int(native.feedback_id),
+                    policy=PresencePolicy(native.policy),
+                    state=PresenceState(native.state),
+                    motor=Motor(native.motor, self) if native.motor else None,
+                    reason=reason.decode(errors="replace") if reason else None,
+                )
+            )
+        return tuple(discovered)
 
     def __enter__(self) -> "Controller":
         return self

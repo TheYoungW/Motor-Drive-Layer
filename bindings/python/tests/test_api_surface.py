@@ -26,6 +26,7 @@ def test_api_surface_includes_binding_parity_metadata() -> None:
     assert "motor_controller_new_dm_device_ex" in surface["abi"]["controller"]
     assert "motor_controller_get_transport_capabilities" in surface["abi"]["controller"]
     assert "motor_controller_get_transport_health" in surface["abi"]["controller"]
+    assert "motor_controller_request_feedback_all_ex" in surface["abi"]["controller"]
     assert "motor_controller_group_send_mit" in surface["abi"]["controller_group"]
     assert "motor_controller_group_send_pos_vel" in surface["abi"]["controller_group"]
     assert "ControllerGroup.send_mit(commands)" in surface["bindings"]["controller_group_methods"]

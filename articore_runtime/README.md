@@ -35,6 +35,13 @@ with the motor function-table ABI and falls back to motor feedback health when t
 present. ABI version and capability functions make mismatches fail during runtime creation rather
 than during motion.
 
+Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
+omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations
+are rejected after connect, and a present motor that loses fresh feedback, reports a motor fault,
+or belongs to a disconnected transport becomes `FAULTED` rather than disappearing from the
+layout. `articore_runtime_motor_presence()` and
+`articore_runtime_active_capabilities()` expose those decisions to language bindings.
+
 Build and run the native tests with:
 
 ```bash

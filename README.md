@@ -101,6 +101,32 @@ with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
 
 All values are supplied by the caller; the C++ driver does not assume these example IDs.
 
+Models with replaceable end effectors can discover one fixed motor set per connection:
+
+```python
+from motor_drive_layer import Controller, MotorCandidate, PresencePolicy
+
+controller = Controller.from_dm_serial("/dev/ttyACM0", 1_000_000)
+try:
+    discovered = controller.discover_damiao_motors(
+        (
+            MotorCandidate("joint1", 0x09, 0x19, "4310"),
+            MotorCandidate(
+                "gripper", 0x01, 0x11, "4340P", PresencePolicy.OPTIONAL
+            ),
+        ),
+        timeout_ms=50,
+        retries=1,
+    )
+finally:
+    controller.close()  # close without sending enable, motion, or disable frames
+```
+
+`REQUIRED` absence fails with endpoint, role and CAN IDs. `OPTIONAL` absence returns
+`NOT_INSTALLED`; `DISABLED` is not registered or probed. Only identity-matched fresh feedback can
+produce `PRESENT`. A successful discovery freezes the active motor set until the Controller is
+closed, so a motor that later drops offline cannot silently become `NOT_INSTALLED`.
+
 ## TX pacing
 
 A controller starts without an artificial TX delay while it has one motor. When a second motor
@@ -188,6 +214,7 @@ top-level `motor_drive_layer` package.
 | `Controller.from_dm_serial(serial_port="/dev/ttyACM0", baud=1_000_000)` | Open a Damiao serial bridge. |
 | `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000, data_bitrate=5_000_000)` | Open original DM-USB2FDCAN firmware through the vendor DM_Device runtime; CH0 and CH1 are supported. Legacy positional/keyword arguments remain valid. |
 | `add_damiao_motor(motor_id, feedback_id, model)` | Register a motor on the bus and return `Motor`. |
+| `discover_damiao_motors(candidates, timeout_ms=50, retries=1)` | Probe Required/Optional/Disabled model candidates without enabling or moving them and freeze the present motor set for this connection. |
 | `enable_all()` / `disable_all()` | Enable or disable every registered motor; these send hardware commands. |
 | `request_feedback_all(timeout_ms=50)` | Request and wait for one fresh frame per motor against one shared timeout. |
 | `poll_feedback_once()` | Non-blocking drain of frames that have already arrived. |
@@ -197,6 +224,17 @@ top-level `motor_drive_layer` package.
 | `shutdown()` | Attempt to disable every motor, stop polling, and close the bus. |
 | `close_bus()` | Stop polling and close the bus without sending disable commands. |
 | `close()` / `closed` | Free the native Controller handle; `close()` does not actively send disable commands. |
+
+Native callers that need stable feedback failure classification should use
+`motor_controller_request_feedback_all_ex()`. It returns `MOTOR_OK`,
+`MOTOR_ERROR_FEEDBACK_TIMEOUT`, `MOTOR_ERROR_FEEDBACK_INCOMPLETE`,
+`MOTOR_ERROR_TRANSPORT`, or `MOTOR_ERROR_INVALID_ARGUMENT` and fills
+`MotorFeedbackReport` plus a caller-owned missing-motor-ID buffer. A zero-capacity null ID buffer
+is valid for count-only queries; `missing_count` always reports the complete number of missing
+motors. The legacy `motor_controller_request_feedback_all()` remains 0/-1 compatible, and
+`motor_last_error_message()` remains diagnostic text rather than a classification API. Check the
+`structured_feedback_report` capability before resolving the additive entry point from an older
+shared library.
 
 The DM_Device backend does not require flashing SocketCAN firmware. Install the matching vendor
 runtime once with `motor-drive-layer-install-dm-device --download`, or set

@@ -31,6 +31,24 @@ class CFeedbackStats(Structure):
     ]
 
 
+class CFeedbackReport(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32),
+        ("timeout_ms", c_uint32),
+        ("expected_count", c_uint32),
+        ("received_count", c_uint32),
+        ("missing_count", c_uint32),
+    ]
+
+
+MOTOR_OK = 0
+MOTOR_ERROR_INVALID_ARGUMENT = 1
+MOTOR_ERROR_TRANSPORT = 2
+MOTOR_ERROR_FEEDBACK_TIMEOUT = 3
+MOTOR_ERROR_FEEDBACK_INCOMPLETE = 4
+MOTOR_ERROR_MOTOR_FAULT = 5
+
+
 class CTransportCapabilities(Structure):
     _fields_ = [
         ("transport", ctypes.c_char * 32),
@@ -55,6 +73,28 @@ class CTransportHealth(Structure):
         ("last_tx_age_ns", c_uint64),
         ("last_rx_age_ns", c_uint64),
         ("last_error", ctypes.c_char * 256),
+    ]
+
+
+class CDiscoveryCandidate(Structure):
+    _fields_ = [
+        ("role", c_char_p),
+        ("motor_id", c_uint16),
+        ("feedback_id", c_uint16),
+        ("model", c_char_p),
+        ("policy", c_int32),
+    ]
+
+
+class CDiscoveryResult(Structure):
+    _fields_ = [
+        ("role", ctypes.c_char * 64),
+        ("motor_id", c_uint16),
+        ("feedback_id", c_uint16),
+        ("policy", c_int32),
+        ("state", c_int32),
+        ("motor", c_void_p),
+        ("reason", ctypes.c_char * 256),
     ]
 
 
@@ -254,6 +294,7 @@ def articore_runtime_capabilities() -> dict[str, bool]:
         "dual_channel": bool(bits & (1 << 4)),
         "transport_health": bool(bits & (1 << 5)),
         "current_position_hold": bool(bits & (1 << 6)),
+        "motor_presence": bool(bits & (1 << 7)),
     }
 
 
@@ -357,6 +398,18 @@ class Abi:
         lib.motor_controller_poll_feedback_once.restype = c_int32
         lib.motor_controller_request_feedback_all.argtypes = [c_void_p, c_uint32]
         lib.motor_controller_request_feedback_all.restype = c_int32
+        self.has_structured_feedback_report = hasattr(
+            lib, "motor_controller_request_feedback_all_ex"
+        )
+        if self.has_structured_feedback_report:
+            lib.motor_controller_request_feedback_all_ex.argtypes = [
+                c_void_p,
+                c_uint32,
+                POINTER(CFeedbackReport),
+                POINTER(c_uint32),
+                c_uint32,
+            ]
+            lib.motor_controller_request_feedback_all_ex.restype = c_int32
         lib.motor_controller_enable_all.argtypes = [c_void_p]
         lib.motor_controller_enable_all.restype = c_int32
         lib.motor_controller_disable_all.argtypes = [c_void_p]
@@ -386,6 +439,20 @@ class Abi:
 
         lib.motor_controller_add_damiao_motor.argtypes = [c_void_p, c_uint16, c_uint16, c_char_p]
         lib.motor_controller_add_damiao_motor.restype = c_void_p
+        self.has_motor_presence_discovery = hasattr(
+            lib, "motor_controller_discover_damiao_motors"
+        )
+        if self.has_motor_presence_discovery:
+            lib.motor_controller_discover_damiao_motors.argtypes = [
+                c_void_p,
+                POINTER(CDiscoveryCandidate),
+                c_uint32,
+                c_uint32,
+                c_uint32,
+                POINTER(CDiscoveryResult),
+                c_uint32,
+            ]
+            lib.motor_controller_discover_damiao_motors.restype = c_int32
 
         lib.motor_handle_free.argtypes = [c_void_p]
         lib.motor_handle_enable.argtypes = [c_void_p]

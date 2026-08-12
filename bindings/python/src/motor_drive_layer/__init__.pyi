@@ -44,8 +44,12 @@ from .models import (
     FeedbackStats as FeedbackStats,
     MitCommand as MitCommand,
     Mode as Mode,
+    MotorCandidate as MotorCandidate,
+    MotorDiscoveryResult as MotorDiscoveryResult,
     MotorState as MotorState,
     PosVelCommand as PosVelCommand,
+    PresencePolicy as PresencePolicy,
+    PresenceState as PresenceState,
     TransportCapabilities as TransportCapabilities,
     TransportHealth as TransportHealth,
 )

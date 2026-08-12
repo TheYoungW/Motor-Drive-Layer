@@ -99,6 +99,32 @@ with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
 
 这些值全部由调用者提供；C++ 不会假设示例 ID。
 
+可更换末端的产品模型可以在每次连接时探测并冻结本次活动电机集合：
+
+```python
+from motor_drive_layer import Controller, MotorCandidate, PresencePolicy
+
+controller = Controller.from_dm_serial("/dev/ttyACM0", 1_000_000)
+try:
+    discovered = controller.discover_damiao_motors(
+        (
+            MotorCandidate("joint1", 0x09, 0x19, "4310"),
+            MotorCandidate(
+                "gripper", 0x01, 0x11, "4340P", PresencePolicy.OPTIONAL
+            ),
+        ),
+        timeout_ms=50,
+        retries=1,
+    )
+finally:
+    controller.close()  # 不发送使能、运动或失能帧，直接释放连接
+```
+
+`REQUIRED` 缺失会报告端点、角色和 CAN ID；`OPTIONAL` 缺失返回 `NOT_INSTALLED`；
+`DISABLED` 不注册也不探测。只有身份匹配且校验有效的新鲜反馈才能确认 `PRESENT`。
+探测成功后，本次 Controller 的活动电机集合不再变化，因此运行中掉线不会被静默降级成
+`NOT_INSTALLED`。
+
 ## 发送间隔
 
 Controller 只有一台电机时，运行时不额外延迟发送。添加第二台电机后，运行时会在所有输出帧之间保持最小
@@ -167,6 +193,7 @@ states = [motor.get_state() for motor in motors]
 | `Controller.from_dm_serial(serial_port="/dev/ttyACM0", baud=1_000_000)` | 打开达妙串口桥。 |
 | `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000, data_bitrate=5_000_000)` | 通过厂商 DM_Device 运行库打开原厂固件，支持 CH0/CH1；旧位置参数和旧关键字仍兼容。 |
 | `add_damiao_motor(motor_id, feedback_id, model)` | 在总线上注册电机并返回 `Motor`。 |
+| `discover_damiao_motors(candidates, timeout_ms=50, retries=1)` | 不使能、不运动地探测 Required/Optional/Disabled 候选电机，并冻结本次连接中实际存在的电机集合。 |
 | `enable_all()` / `disable_all()` | 依次使能或失能所有已注册电机；会发送硬件命令。 |
 | `request_feedback_all(timeout_ms=50)` | 请求并等待所有电机各收到一帧新反馈，共享一个总超时。 |
 | `poll_feedback_once()` | 非阻塞排空当前已经到达的帧。 |
@@ -176,6 +203,16 @@ states = [motor.get_state() for motor in motors]
 | `shutdown()` | 先尝试失能全部电机，再停止接收线程并关闭总线。 |
 | `close_bus()` | 不发送失能命令，直接停止接收并关闭总线。 |
 | `close()` / `closed` | 释放原生 Controller 句柄；`close()` 不主动发送失能命令。 |
+
+需要稳定区分反馈故障的原生调用方应使用
+`motor_controller_request_feedback_all_ex()`。该接口返回 `MOTOR_OK`、
+`MOTOR_ERROR_FEEDBACK_TIMEOUT`、`MOTOR_ERROR_FEEDBACK_INCOMPLETE`、
+`MOTOR_ERROR_TRANSPORT` 或 `MOTOR_ERROR_INVALID_ARGUMENT`，并填写
+`MotorFeedbackReport` 以及由调用方提供的缺失电机 ID 缓冲区。允许用空指针和零容量只查询
+数量；`missing_count` 始终返回完整缺失数量。旧的
+`motor_controller_request_feedback_all()` 继续保持 0/-1 语义，
+`motor_last_error_message()` 仅用于日志，不再承担错误分类。加载旧版动态库时，应先检查
+`structured_feedback_report` capability 再解析新增符号。
 
 DM_Device 后端不需要刷写 SocketCAN 固件。可执行一次
 `motor-drive-layer-install-dm-device --download` 安装对应厂商运行库，也可通过

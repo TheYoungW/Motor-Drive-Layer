@@ -11,6 +11,54 @@ typedef struct MotorController MotorController;
 typedef struct MotorControllerGroup MotorControllerGroup;
 typedef struct MotorHandle MotorHandle;
 
+enum MotorErrorCode {
+  MOTOR_OK = 0,
+  MOTOR_ERROR_INVALID_ARGUMENT = 1,
+  MOTOR_ERROR_TRANSPORT = 2,
+  MOTOR_ERROR_FEEDBACK_TIMEOUT = 3,
+  MOTOR_ERROR_FEEDBACK_INCOMPLETE = 4,
+  MOTOR_ERROR_MOTOR_FAULT = 5,
+};
+
+typedef struct MotorFeedbackReport {
+  // Caller must initialize this to sizeof(MotorFeedbackReport).
+  uint32_t struct_size;
+  uint32_t timeout_ms;
+  uint32_t expected_count;
+  uint32_t received_count;
+  uint32_t missing_count;
+} MotorFeedbackReport;
+
+enum MotorPresencePolicy {
+  MOTOR_PRESENCE_REQUIRED = 1,
+  MOTOR_PRESENCE_OPTIONAL = 2,
+  MOTOR_PRESENCE_DISABLED = 3,
+};
+
+enum MotorPresenceState {
+  MOTOR_NOT_INSTALLED = 1,
+  MOTOR_PRESENT = 2,
+  MOTOR_FAULTED = 3,
+};
+
+typedef struct MotorDiscoveryCandidate {
+  const char* role;
+  uint16_t motor_id;
+  uint16_t feedback_id;
+  const char* model;
+  int32_t policy;
+} MotorDiscoveryCandidate;
+
+typedef struct MotorDiscoveryResult {
+  char role[64];
+  uint16_t motor_id;
+  uint16_t feedback_id;
+  int32_t policy;
+  int32_t state;
+  MotorHandle* motor;
+  char reason[256];
+} MotorDiscoveryResult;
+
 typedef struct MotorMitBatchCommand {
   MotorHandle* motor;
   float target_position;
@@ -150,7 +198,19 @@ int32_t motor_controller_group_send_pos_vel(MotorControllerGroup* group,
                                             uint32_t command_count);
 
 int32_t motor_controller_poll_feedback_once(MotorController* controller);
+// Legacy compatibility entry point: returns 0 on success and -1 on every
+// failure. Use motor_controller_request_feedback_all_ex for stable error codes.
 int32_t motor_controller_request_feedback_all(MotorController* controller, uint32_t timeout_ms);
+// Returns MotorErrorCode. The report is filled for OK, timeout, incomplete,
+// and transport outcomes. Up to missing_motor_ids_capacity missing IDs are
+// written; report->missing_count always reports the full required count, so a
+// null buffer with zero capacity may be used to query the size.
+int32_t motor_controller_request_feedback_all_ex(
+    MotorController* controller,
+    uint32_t timeout_ms,
+    MotorFeedbackReport* report,
+    uint32_t* missing_motor_ids,
+    uint32_t missing_motor_ids_capacity);
 int32_t motor_controller_enable_all(MotorController* controller);
 int32_t motor_controller_disable_all(MotorController* controller);
 int32_t motor_controller_shutdown(MotorController* controller);
@@ -162,6 +222,18 @@ int32_t motor_controller_get_transport_health(
     MotorController* controller, MotorTransportHealth* out_health);
 
 MotorHandle* motor_controller_add_damiao_motor(MotorController* controller, uint16_t motor_id, uint16_t feedback_id, const char* model);
+// Discovers a complete candidate set without enabling or commanding motors.
+// One result is returned for every candidate (including Disabled candidates).
+// Present result handles are owned by the caller and must be released with
+// motor_handle_free. On failure no result handles are returned.
+int32_t motor_controller_discover_damiao_motors(
+    MotorController* controller,
+    const MotorDiscoveryCandidate* candidates,
+    uint32_t candidate_count,
+    uint32_t timeout_ms,
+    uint32_t retry_count,
+    MotorDiscoveryResult* results,
+    uint32_t result_capacity);
 void motor_handle_free(MotorHandle* handle);
 
 int32_t motor_handle_enable(MotorHandle* handle);

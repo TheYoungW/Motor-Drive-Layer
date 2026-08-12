@@ -10,6 +10,54 @@ class Mode(IntEnum):
     VEL = 3
     FORCE_POS = 4
 
+class PresencePolicy(IntEnum):
+    REQUIRED = 1
+    OPTIONAL = 2
+    DISABLED = 3
+    @classmethod
+    def resolve(
+        cls, override: bool | None, model_default: PresencePolicy
+    ) -> PresencePolicy: ...
+
+class PresenceState(IntEnum):
+    NOT_INSTALLED = 1
+    PRESENT = 2
+    FAULTED = 3
+
+class MotorCandidate:
+    role: str
+    motor_id: int
+    feedback_id: int
+    model: str
+    policy: PresencePolicy
+    def __init__(
+        self,
+        role: str,
+        motor_id: int,
+        feedback_id: int,
+        model: str,
+        policy: PresencePolicy = PresencePolicy.REQUIRED,
+    ) -> None: ...
+
+class MotorDiscoveryResult:
+    role: str
+    motor_id: int
+    feedback_id: int
+    policy: PresencePolicy
+    state: PresenceState
+    motor: Motor | None
+    reason: str | None
+    def __init__(
+        self,
+        role: str,
+        motor_id: int,
+        feedback_id: int,
+        policy: PresencePolicy,
+        state: PresenceState,
+        motor: Motor | None,
+        reason: str | None,
+    ) -> None: ...
+
 class MotorState:
     can_id: int
     arbitration_id: int

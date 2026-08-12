@@ -52,6 +52,49 @@ struct PosVelBatchCommand {
   float velocity_limit = 0.0f;
 };
 
+enum class PresencePolicy : uint8_t {
+  Required = 1,
+  Optional = 2,
+  Disabled = 3,
+};
+
+enum class PresenceState : uint8_t {
+  NotInstalled = 1,
+  Present = 2,
+  Faulted = 3,
+};
+
+struct MotorCandidate {
+  std::string role;
+  uint16_t motor_id = 0;
+  uint16_t feedback_id = 0;
+  std::string model;
+  PresencePolicy policy = PresencePolicy::Required;
+};
+
+struct MotorDiscoveryResult {
+  MotorCandidate candidate;
+  PresenceState state = PresenceState::NotInstalled;
+  std::shared_ptr<MotorHandle> motor;
+  std::string reason;
+};
+
+enum class FeedbackBatchStatus : uint8_t {
+  Ok = 0,
+  Timeout = 1,
+  Incomplete = 2,
+  TransportError = 3,
+};
+
+struct FeedbackBatchReport {
+  FeedbackBatchStatus status = FeedbackBatchStatus::Ok;
+  std::chrono::milliseconds timeout{0};
+  uint32_t expected_count = 0;
+  uint32_t received_count = 0;
+  std::vector<uint16_t> missing_motor_ids;
+  std::string error;
+};
+
 class MotorHandle {
  public:
   MotorHandle(std::shared_ptr<CanBus> bus, uint16_t motor_id, uint16_t feedback_id,
@@ -131,7 +174,13 @@ class Controller {
 
   std::shared_ptr<MotorHandle> add_damiao_motor(uint16_t motor_id, uint16_t feedback_id,
                                                 const std::string& model);
+  std::vector<MotorDiscoveryResult> discover_damiao_motors(
+      const std::vector<MotorCandidate>& candidates,
+      std::chrono::milliseconds timeout,
+      uint32_t retry_count);
   void poll_feedback_once();
+  FeedbackBatchReport request_feedback_all_report(
+      std::chrono::milliseconds timeout);
   void request_feedback_all(std::chrono::milliseconds timeout);
   void enable_all();
   void disable_all();
@@ -164,6 +213,7 @@ class Controller {
   std::mutex lifecycle_mutex_;
   bool bus_closed_ = false;
   bool tx_gap_env_override_ = false;
+  bool discovery_finalized_ = false;
   std::chrono::milliseconds bulk_op_gap_{2};
   std::string endpoint_label_;
 };

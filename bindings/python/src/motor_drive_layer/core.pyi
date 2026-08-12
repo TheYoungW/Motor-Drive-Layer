@@ -5,6 +5,8 @@ from .models import (
     FeedbackStats,
     MitCommand,
     Mode,
+    MotorCandidate,
+    MotorDiscoveryResult,
     MotorState,
     PosVelCommand,
     TransportCapabilities,
@@ -43,6 +45,12 @@ class Controller:
     def transport_capabilities(self) -> TransportCapabilities: ...
     def transport_health(self) -> TransportHealth: ...
     def add_damiao_motor(self, motor_id: int, feedback_id: int, model: str) -> Motor: ...
+    def discover_damiao_motors(
+        self,
+        candidates: Sequence[MotorCandidate],
+        timeout_ms: int = 50,
+        retries: int = 1,
+    ) -> tuple[MotorDiscoveryResult, ...]: ...
     def __enter__(self) -> Controller: ...
     def __exit__(
         self,

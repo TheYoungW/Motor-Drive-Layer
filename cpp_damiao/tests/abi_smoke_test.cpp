@@ -38,6 +38,10 @@ int main() {
           "capabilities include parallel controller batches");
   require(capabilities.find("transport_capabilities") != std::string::npos,
           "capabilities include per-transport capability query");
+  require(capabilities.find("motor_presence_discovery") != std::string::npos,
+          "capabilities include motor presence discovery");
+  require(capabilities.find("structured_feedback_report") != std::string::npos,
+          "capabilities include structured feedback reports");
 
   require(motor_controller_get_transport_capabilities(nullptr, nullptr) != 0,
           "transport capabilities rejects null controller and output");
@@ -64,6 +68,15 @@ int main() {
           "TX-gap setter rejects a null controller");
   require(motor_controller_request_feedback_all(nullptr, 50) != 0,
           "batch feedback rejects a null controller");
+  MotorFeedbackReport feedback_report{};
+  feedback_report.struct_size = sizeof(feedback_report);
+  require(motor_controller_request_feedback_all_ex(
+              nullptr, 50, &feedback_report, nullptr, 0) ==
+              MOTOR_ERROR_INVALID_ARGUMENT,
+          "structured batch feedback returns a stable invalid-argument code");
+  require(motor_controller_discover_damiao_motors(
+              nullptr, nullptr, 0, 50, 1, nullptr, 0) != 0,
+          "motor discovery rejects a null controller");
   MotorTransportHealth transport_health{};
   require(motor_controller_get_transport_health(nullptr, &transport_health) != 0,
           "transport health rejects a null controller");

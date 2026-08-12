@@ -583,6 +583,10 @@ std::shared_ptr<MotorHandle> Controller::add_damiao_motor(uint16_t motor_id,
   auto motor = std::make_shared<MotorHandle>(bus_, motor_id, feedback_id, model);
   {
     std::lock_guard<std::mutex> lock(motors_mutex_);
+    if (discovery_finalized_) {
+      throw std::logic_error(
+          "controller motor set is fixed for this connection after discovery");
+    }
     if (motors_.find(motor_id) != motors_.end()) {
       throw std::invalid_argument("device with motor_id already exists");
     }
@@ -593,6 +597,177 @@ std::shared_ptr<MotorHandle> Controller::add_damiao_motor(uint16_t motor_id,
   }
   start_polling();
   return motor;
+}
+
+std::vector<MotorDiscoveryResult> Controller::discover_damiao_motors(
+    const std::vector<MotorCandidate>& candidates,
+    std::chrono::milliseconds timeout,
+    uint32_t retry_count) {
+  if (timeout <= std::chrono::milliseconds::zero()) {
+    throw std::invalid_argument("motor discovery timeout must be positive");
+  }
+  if (retry_count > 10) {
+    throw std::invalid_argument("motor discovery retry_count must be in 0..=10");
+  }
+
+  std::set<std::string> roles;
+  std::set<uint16_t> motor_ids;
+  std::set<uint16_t> feedback_ids;
+  for (const auto& candidate : candidates) {
+    if (candidate.role.empty()) {
+      throw std::invalid_argument("motor discovery candidate role is empty");
+    }
+    if (!roles.insert(candidate.role).second) {
+      throw std::invalid_argument("duplicate motor discovery role: " + candidate.role);
+    }
+    if (candidate.policy != PresencePolicy::Required &&
+        candidate.policy != PresencePolicy::Optional &&
+        candidate.policy != PresencePolicy::Disabled) {
+      throw std::invalid_argument("invalid presence policy for role " + candidate.role);
+    }
+    if (candidate.policy == PresencePolicy::Disabled) continue;
+    if (candidate.model.empty()) {
+      throw std::invalid_argument("motor model is empty for role " + candidate.role);
+    }
+    if (!motor_ids.insert(candidate.motor_id).second) {
+      throw std::invalid_argument("duplicate active motor_id in discovery: " +
+                                  std::to_string(candidate.motor_id));
+    }
+    if (!feedback_ids.insert(candidate.feedback_id).second) {
+      throw std::invalid_argument("duplicate active feedback_id in discovery: " +
+                                  std::to_string(candidate.feedback_id));
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(motors_mutex_);
+    if (discovery_finalized_) {
+      throw std::logic_error("motor discovery is already finalized for this connection");
+    }
+    if (!motors_.empty()) {
+      throw std::logic_error(
+          "motor discovery must run before adding individual motors");
+    }
+  }
+
+  std::vector<MotorDiscoveryResult> results;
+  results.reserve(candidates.size());
+  std::vector<std::size_t> pending;
+  std::vector<uint64_t> previous_counts(candidates.size(), 0);
+  try {
+    {
+      std::lock_guard<std::mutex> lock(motors_mutex_);
+      for (std::size_t i = 0; i < candidates.size(); ++i) {
+        MotorDiscoveryResult result;
+        result.candidate = candidates[i];
+        if (candidates[i].policy == PresencePolicy::Disabled) {
+          result.reason = "disabled by policy";
+        } else {
+          result.motor = std::make_shared<MotorHandle>(
+              bus_, candidates[i].motor_id, candidates[i].feedback_id,
+              candidates[i].model);
+          motors_.emplace(candidates[i].motor_id, result.motor);
+          previous_counts[i] = result.motor->feedback_stats().update_count;
+          pending.push_back(i);
+        }
+        results.push_back(std::move(result));
+      }
+      if (!tx_gap_env_override_ && motors_.size() >= 2) {
+        bus_->set_tx_gap(std::chrono::microseconds(120));
+      }
+    }
+    if (!pending.empty()) start_polling();
+
+    for (uint32_t attempt = 0; attempt <= retry_count && !pending.empty(); ++attempt) {
+      const auto deadline = std::chrono::steady_clock::now() + timeout;
+      for (const auto index : pending) {
+        results[index].motor->request_feedback();
+      }
+
+      std::vector<std::size_t> still_pending;
+      for (const auto index : pending) {
+        auto& result = results[index];
+        if (!result.motor->wait_for_feedback_after(previous_counts[index], deadline)) {
+          result.reason = "fresh feedback timed out on attempt " +
+                          std::to_string(attempt + 1) + " of " +
+                          std::to_string(retry_count + 1);
+          still_pending.push_back(index);
+          continue;
+        }
+
+        const auto state = result.motor->latest_state();
+        const auto expected_can_id =
+            static_cast<uint8_t>(result.candidate.motor_id & 0x0F);
+        if (!state.has_value() || state->can_id != expected_can_id ||
+            state->arbitration_id != result.candidate.feedback_id) {
+          std::ostringstream reason;
+          reason << "received feedback with mismatched identity; expected motor_id="
+                 << result.candidate.motor_id << " feedback_id="
+                 << result.candidate.feedback_id;
+          if (state.has_value()) {
+            reason << ", got can_id=" << static_cast<unsigned>(state->can_id)
+                   << " arbitration_id=" << state->arbitration_id;
+          }
+          result.reason = reason.str();
+          previous_counts[index] = result.motor->feedback_stats().update_count;
+          still_pending.push_back(index);
+          continue;
+        }
+
+        result.state = PresenceState::Present;
+        result.reason.clear();
+      }
+      pending = std::move(still_pending);
+    }
+
+    std::vector<std::size_t> missing_required;
+    {
+      std::lock_guard<std::mutex> lock(motors_mutex_);
+      for (const auto index : pending) {
+        const auto& candidate = results[index].candidate;
+        if (candidate.policy == PresencePolicy::Required) {
+          missing_required.push_back(index);
+        } else {
+          motors_.erase(candidate.motor_id);
+          results[index].motor.reset();
+        }
+      }
+      if (!missing_required.empty()) {
+        for (const auto& candidate : candidates) {
+          if (candidate.policy != PresencePolicy::Disabled) {
+            motors_.erase(candidate.motor_id);
+          }
+        }
+      } else {
+        discovery_finalized_ = true;
+      }
+    }
+
+    if (!missing_required.empty()) {
+      std::ostringstream message;
+      message << "motor discovery failed on " << endpoint_label_
+              << "; missing required motors:";
+      for (const auto index : missing_required) {
+        const auto& result = results[index];
+        message << " " << result.candidate.role
+                << " (motor_id=" << result.candidate.motor_id
+                << ", feedback_id=" << result.candidate.feedback_id
+                << ", reason=" << result.reason << ")";
+      }
+      throw std::runtime_error(message.str());
+    }
+    return results;
+  } catch (...) {
+    std::lock_guard<std::mutex> lock(motors_mutex_);
+    if (!discovery_finalized_) {
+      for (const auto& candidate : candidates) {
+        if (candidate.policy != PresencePolicy::Disabled) {
+          motors_.erase(candidate.motor_id);
+        }
+      }
+    }
+    throw;
+  }
 }
 
 std::vector<std::shared_ptr<MotorHandle>> Controller::sorted_motors() const {
@@ -621,19 +796,44 @@ void Controller::poll_feedback_once() {
   }
 }
 
-void Controller::request_feedback_all(std::chrono::milliseconds timeout) {
+FeedbackBatchReport Controller::request_feedback_all_report(
+    std::chrono::milliseconds timeout) {
+  if (timeout <= std::chrono::milliseconds::zero()) {
+    throw std::invalid_argument("feedback timeout must be positive");
+  }
   const auto motors = sorted_motors();
-  if (motors.empty()) return;
+  FeedbackBatchReport report;
+  report.timeout = timeout;
+  report.expected_count = static_cast<uint32_t>(motors.size());
+  if (motors.empty()) return report;
 
   std::vector<uint64_t> previous_counts;
   previous_counts.reserve(motors.size());
   for (const auto& motor : motors) {
     previous_counts.push_back(motor->feedback_stats().update_count);
   }
+  const auto capture_current_counts = [&] {
+    report.missing_motor_ids.clear();
+    for (std::size_t i = 0; i < motors.size(); ++i) {
+      if (motors[i]->feedback_stats().update_count <= previous_counts[i]) {
+        report.missing_motor_ids.push_back(motors[i]->motor_id());
+      }
+    }
+    report.received_count = report.expected_count -
+                            static_cast<uint32_t>(report.missing_motor_ids.size());
+  };
 
+  const auto health_before = bus_->health();
   const auto deadline = std::chrono::steady_clock::now() + timeout;
-  for (const auto& motor : motors) {
-    motor->request_feedback();
+  try {
+    for (const auto& motor : motors) {
+      motor->request_feedback();
+    }
+  } catch (const std::exception& error) {
+    report.status = FeedbackBatchStatus::TransportError;
+    report.error = error.what();
+    capture_current_counts();
+    return report;
   }
 
   // A few serial bridge firmwares occasionally drop the final request or
@@ -650,9 +850,16 @@ void Controller::request_feedback_all(std::chrono::milliseconds timeout) {
   }
 
   if (!missing.empty() && retry_at < deadline) {
-    for (const auto i : missing) {
-      if (std::chrono::steady_clock::now() >= deadline) break;
-      motors[i]->request_feedback();
+    try {
+      for (const auto i : missing) {
+        if (std::chrono::steady_clock::now() >= deadline) break;
+        motors[i]->request_feedback();
+      }
+    } catch (const std::exception& error) {
+      report.status = FeedbackBatchStatus::TransportError;
+      report.error = error.what();
+      capture_current_counts();
+      return report;
     }
 
     std::vector<std::size_t> still_missing;
@@ -664,13 +871,41 @@ void Controller::request_feedback_all(std::chrono::milliseconds timeout) {
     missing = std::move(still_missing);
   }
 
-  if (!missing.empty()) {
-    std::string message = "fresh feedback timed out; missing motor IDs:";
-    for (const auto i : missing) {
-      message += " " + std::to_string(motors[i]->motor_id());
-    }
-    throw std::runtime_error(message);
+  for (const auto i : missing) {
+    report.missing_motor_ids.push_back(motors[i]->motor_id());
   }
+  report.received_count = report.expected_count -
+                          static_cast<uint32_t>(report.missing_motor_ids.size());
+
+  const auto health_after = bus_->health();
+  if (!health_after.connected ||
+      health_after.send_errors > health_before.send_errors ||
+      health_after.receive_errors > health_before.receive_errors) {
+    report.status = FeedbackBatchStatus::TransportError;
+    report.error = health_after.last_error.empty()
+        ? "transport disconnected or reported an I/O error during feedback request"
+        : health_after.last_error;
+  } else if (report.missing_motor_ids.empty()) {
+    report.status = FeedbackBatchStatus::Ok;
+  } else if (report.received_count == 0) {
+    report.status = FeedbackBatchStatus::Timeout;
+  } else {
+    report.status = FeedbackBatchStatus::Incomplete;
+  }
+  return report;
+}
+
+void Controller::request_feedback_all(std::chrono::milliseconds timeout) {
+  const auto report = request_feedback_all_report(timeout);
+  if (report.status == FeedbackBatchStatus::Ok) return;
+  if (report.status == FeedbackBatchStatus::TransportError) {
+    throw std::runtime_error("feedback transport failed: " + report.error);
+  }
+  std::string message = "fresh feedback timed out; missing motor IDs:";
+  for (const auto motor_id : report.missing_motor_ids) {
+    message += " " + std::to_string(motor_id);
+  }
+  throw std::runtime_error(message);
 }
 
 void Controller::enable_all() {

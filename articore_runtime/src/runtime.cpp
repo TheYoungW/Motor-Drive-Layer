@@ -113,6 +113,11 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
       throw std::invalid_argument("invalid safe-hold motor descriptor");
     }
     active_sides_[motor.side] = true;
+    const std::string role(motor.name);
+    if (!presence_.emplace(role, ARTICORE_PRESENT).second) {
+      throw std::invalid_argument("duplicate Articore motor role: " + role);
+    }
+    motor_roles_.emplace(motor.motor, role);
     MotorRecord record;
     record.descriptor = motor;
     if (motor.is_gripper) {
@@ -159,6 +164,71 @@ void SafetyRuntime::connect() {
     sides_[side].connected = active_sides_[side];
     sides_[side].healthy = active_sides_[side];
   }
+}
+
+void SafetyRuntime::declare_motor_presence(const std::string& role,
+                                           ArticorePresenceState state) {
+  if (role.empty()) throw std::invalid_argument("motor role is empty");
+  if (state != ARTICORE_NOT_INSTALLED && state != ARTICORE_PRESENT) {
+    throw std::invalid_argument(
+        "only NotInstalled or Present may be declared before connect");
+  }
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (state_ != ARTICORE_DISCONNECTED) {
+    throw std::runtime_error(
+        "motor presence is fixed after the runtime connects");
+  }
+  const auto found = presence_.find(role);
+  if (found != presence_.end() && found->second == ARTICORE_PRESENT &&
+      state != ARTICORE_PRESENT) {
+    throw std::invalid_argument(
+        "an active motor descriptor cannot be declared NotInstalled: " + role);
+  }
+  if (found == presence_.end() && state == ARTICORE_PRESENT) {
+    throw std::invalid_argument(
+        "Present motor role requires an active motor descriptor: " + role);
+  }
+  presence_[role] = state;
+}
+
+ArticorePresenceState SafetyRuntime::motor_presence(
+    const std::string& role) const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  const auto found = presence_.find(role);
+  if (found == presence_.end()) {
+    throw std::invalid_argument("unknown motor role: " + role);
+  }
+  return found->second;
+}
+
+uint64_t SafetyRuntime::active_capabilities() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  uint64_t capabilities = 0;
+  for (const auto& motor : motors_) {
+    const auto found = motor_roles_.find(motor.descriptor.motor);
+    if (found == motor_roles_.end()) continue;
+    const auto presence = presence_.find(found->second);
+    if (presence == presence_.end() ||
+        presence->second == ARTICORE_NOT_INSTALLED) {
+      continue;
+    }
+    if (motor.descriptor.is_gripper) {
+      capabilities |= motor.descriptor.side == 0
+          ? ARTICORE_ACTIVE_GRIPPER_SIDE_0
+          : ARTICORE_ACTIVE_GRIPPER_SIDE_1;
+    } else {
+      capabilities |= motor.descriptor.side == 0
+          ? ARTICORE_ACTIVE_ARM_SIDE_0
+          : ARTICORE_ACTIVE_ARM_SIDE_1;
+    }
+  }
+  return capabilities;
+}
+
+void SafetyRuntime::mark_motor_faulted(void* motor) {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  const auto role = motor_roles_.find(motor);
+  if (role != motor_roles_.end()) presence_[role->second] = ARTICORE_FAULTED;
 }
 
 void SafetyRuntime::enable(ArticoreControlMode mode) {
@@ -680,6 +750,7 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
         api_.motor_get_state(motor.descriptor.motor, &state) != 0 ||
         !state.has_value) {
       motor.gripper_fault_reason = motor_error("gripper feedback unavailable");
+      mark_motor_faulted(motor.descriptor.motor);
       error = std::string(motor.descriptor.name) + ": " +
               motor.gripper_fault_reason;
       return false;
@@ -688,6 +759,7 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
     if (stats.age_ns >
         static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL) {
       motor.gripper_fault_reason = "gripper feedback exceeds maximum age";
+      mark_motor_faulted(motor.descriptor.motor);
       error = std::string(motor.descriptor.name) + ": " +
               motor.gripper_fault_reason;
       return false;
@@ -697,6 +769,7 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
       motor.gripper_fault_reason = state.status_code == 0
           ? "gripper unexpectedly disabled"
           : "gripper motor fault status " + std::to_string(state.status_code);
+      mark_motor_faulted(motor.descriptor.motor);
       error = std::string(motor.descriptor.name) + ": " +
               motor.gripper_fault_reason;
       return false;
@@ -908,6 +981,7 @@ bool SafetyRuntime::send_gripper_hold_once(std::string& error) {
       found->gripper_state = ARTICORE_GRIPPER_FAULT;
       found->gripper_fault_reason =
           motor_error("safe-hold gripper feedback unavailable");
+      mark_motor_faulted(command.motor);
       error = std::string(found->descriptor.name) + ": " +
               found->gripper_fault_reason;
       return false;
@@ -925,6 +999,7 @@ bool SafetyRuntime::send_gripper_hold_once(std::string& error) {
           ? "safe-hold gripper feedback exceeds maximum age"
           : (state.status_code == 0 ? "safe-hold gripper unexpectedly disabled"
                                     : "safe-hold gripper motor fault");
+      mark_motor_faulted(command.motor);
       error = std::string(found->descriptor.name) + ": " +
               found->gripper_fault_reason;
       return false;
@@ -988,6 +1063,7 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
   uint64_t maximum_age[2] = {0, 0};
   std::vector<std::string> motor_faults;
   std::vector<std::string> unconfirmed;
+  std::vector<void*> faulted_presence;
   const auto mark_unconfirmed = [&](const std::string& name) {
     if (std::find(unconfirmed.begin(), unconfirmed.end(), name) ==
         unconfirmed.end()) {
@@ -1001,6 +1077,7 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
     ArticoreFeedbackStats stats{};
     if (api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
         !stats.has_feedback) {
+      faulted_presence.push_back(motor.descriptor.motor);
       side_ok[motor.descriptor.side] = false;
       side_error[motor.descriptor.side] = motor_error("feedback statistics unavailable");
       if (recovery_check) mark_unconfirmed(name);
@@ -1009,18 +1086,23 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
     maximum_age[motor.descriptor.side] =
         std::max(maximum_age[motor.descriptor.side], stats.age_ns);
     if (stats.age_ns > static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL) {
+      faulted_presence.push_back(motor.descriptor.motor);
       side_ok[motor.descriptor.side] = false;
       side_error[motor.descriptor.side] = "feedback exceeds maximum age";
       if (recovery_check) mark_unconfirmed(name);
     }
     ArticoreMotorState state{};
     if (api_.motor_get_state(motor.descriptor.motor, &state) != 0 || !state.has_value) {
+      faulted_presence.push_back(motor.descriptor.motor);
       side_ok[motor.descriptor.side] = false;
       side_error[motor.descriptor.side] = motor_error("motor state unavailable");
       if (recovery_check) mark_unconfirmed(name);
       continue;
     }
-    if (state.status_code > 1) motor_faults.push_back(name);
+    if (state.status_code > 1) {
+      motor_faults.push_back(name);
+      faulted_presence.push_back(motor.descriptor.motor);
+    }
     if (recovery_check && state.status_code != 0 &&
         !(allow_held_grippers && motor.descriptor.is_gripper)) {
       mark_unconfirmed(name);
@@ -1028,6 +1110,7 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
     if (!recovery_check && state.status_code == 0) {
       error = "motor unexpectedly disabled: " + name;
       motor_faults.push_back(name);
+      faulted_presence.push_back(motor.descriptor.motor);
     }
   }
 
@@ -1037,6 +1120,10 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     motor_faults_ = std::move(motor_faults);
+    for (auto* motor : faulted_presence) {
+      const auto role = motor_roles_.find(motor);
+      if (role != motor_roles_.end()) presence_[role->second] = ARTICORE_FAULTED;
+    }
     if (recovery_check) unconfirmed_disable_ = std::move(unconfirmed);
     for (uint8_t side = 0; side < 2; ++side) {
       if (!active_sides_[side]) continue;
@@ -1105,6 +1192,15 @@ bool SafetyRuntime::refresh_transport_health(std::string& error) {
       const std::string detail(native.last_error);
       if (!detail.empty()) output.last_error = detail;
       if (!output.connected || !output.transport_healthy) healthy = false;
+      if (!output.connected) {
+        for (const auto& motor : motors_) {
+          if (motor.descriptor.side != side) continue;
+          const auto role = motor_roles_.find(motor.descriptor.motor);
+          if (role != motor_roles_.end()) {
+            presence_[role->second] = ARTICORE_FAULTED;
+          }
+        }
+      }
     }
     if (!healthy && error.empty()) {
       error = std::string(side == 0 ? "CH0" : "CH1") +
@@ -1274,6 +1370,9 @@ void SafetyRuntime::recover() {
   safe_grippers_.clear();
   has_successful_command_ = false;
   hardware_transition_ = false;
+  for (auto& entry : presence_) {
+    if (entry.second == ARTICORE_FAULTED) entry.second = ARTICORE_PRESENT;
+  }
 }
 
 ArticoreSafetyHealth SafetyRuntime::health() const {

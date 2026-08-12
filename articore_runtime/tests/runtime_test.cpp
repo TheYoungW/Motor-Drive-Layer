@@ -656,6 +656,49 @@ void test_single_side_runtime_and_gripper() {
           "single-side disable confirms only active motors");
 }
 
+void test_motor_presence_is_fixed_and_fault_aware() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.feedback_check_hz = 500;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.declare_motor_presence("left/optional_tool", ARTICORE_NOT_INSTALLED);
+  require(runtime.motor_presence("left/optional_tool") == ARTICORE_NOT_INSTALLED &&
+              runtime.motor_presence("right/gripper") == ARTICORE_PRESENT,
+          "runtime distinguishes absent optional roles from present motors");
+  const auto capabilities = runtime.active_capabilities();
+  require((capabilities & ARTICORE_ACTIVE_ARM_SIDE_0) != 0 &&
+              (capabilities & ARTICORE_ACTIVE_ARM_SIDE_1) != 0 &&
+              (capabilities & ARTICORE_ACTIVE_GRIPPER_SIDE_1) != 0 &&
+              (capabilities & ARTICORE_ACTIVE_GRIPPER_SIDE_0) == 0,
+          "active capabilities reflect the fixed discovered descriptor set");
+  runtime.connect();
+  bool mutation_rejected = false;
+  try {
+    runtime.declare_motor_presence("late_tool", ARTICORE_NOT_INSTALLED);
+  } catch (const std::runtime_error&) {
+    mutation_rejected = true;
+  }
+  require(mutation_rejected,
+          "presence declarations cannot change after connect");
+  runtime.enable(ARTICORE_MODE_PV);
+  ArticorePosVelCommand commands[] = {
+      {motors[0].motor, 0.1f, 1.0f},
+      {motors[1].motor, -0.1f, 1.0f},
+  };
+  runtime.submit_pos_vel(commands, 2);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[2].motor].has_feedback = false;
+  }
+  require(wait_for([&] {
+            return runtime.motor_presence("right/gripper") == ARTICORE_FAULTED;
+          }),
+          "a present motor that loses feedback becomes Faulted, not NotInstalled");
+}
+
 }  // namespace
 
 int main() {
@@ -673,6 +716,7 @@ int main() {
     test_enable_grace_and_fault_latch();
     test_repeated_runtime_lifecycle();
     test_single_side_runtime_and_gripper();
+    test_motor_presence_is_fixed_and_fault_aware();
     std::cout << "Articore runtime tests passed\n";
     return 0;
   } catch (const std::exception& error) {

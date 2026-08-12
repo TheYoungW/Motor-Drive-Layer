@@ -61,6 +61,27 @@ void copy_motor_state(const damiao::MotorState& state, ::MotorState* out_state) 
   out_state->t_rotor = state.t_rotor;
 }
 
+template <std::size_t Size>
+void copy_text(const std::string& value, char (&output)[Size]) {
+  std::memset(output, 0, Size);
+  const auto count = std::min(value.size(), Size - 1);
+  std::memcpy(output, value.data(), count);
+}
+
+damiao::PresencePolicy presence_policy(int32_t value) {
+  switch (value) {
+    case MOTOR_PRESENCE_REQUIRED:
+      return damiao::PresencePolicy::Required;
+    case MOTOR_PRESENCE_OPTIONAL:
+      return damiao::PresencePolicy::Optional;
+    case MOTOR_PRESENCE_DISABLED:
+      return damiao::PresencePolicy::Disabled;
+    default:
+      throw std::invalid_argument("invalid motor presence policy: " +
+                                  std::to_string(value));
+  }
+}
+
 }  // namespace
 
 struct MotorController {
@@ -98,7 +119,7 @@ const char* motor_abi_version(void) {
 }
 
 const char* motor_abi_capabilities_json(void) {
-  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.5.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"register_metadata":true,"transport_capabilities":true,"transport_health":true,"dm_device_abis":["v1.0","v1.1"],"dm_device_configurable_bitrates":true,"dm_device_v10_process_session_reuse":true,"parallel_controller_batches":["mit","pos-vel"],"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","enable_all","disable_all","set_tx_gap_us","transport_capabilities","transport_health"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
+  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.5.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"structured_feedback_report":true,"register_metadata":true,"transport_capabilities":true,"transport_health":true,"motor_presence_discovery":true,"dm_device_abis":["v1.0","v1.1"],"dm_device_configurable_bitrates":true,"dm_device_v10_process_session_reuse":true,"parallel_controller_batches":["mit","pos-vel"],"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","request_feedback_all_ex","discover_damiao_motors","enable_all","disable_all","set_tx_gap_us","transport_capabilities","transport_health"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
 }
 
 int32_t motor_damiao_register_info(uint8_t rid, MotorRegisterInfo* out_info) {
@@ -323,13 +344,86 @@ int32_t motor_controller_poll_feedback_once(MotorController* controller) {
   return ffi_call([&] { controller->controller->poll_feedback_once(); });
 }
 
+int32_t motor_controller_request_feedback_all_ex(
+    MotorController* controller,
+    uint32_t timeout_ms,
+    MotorFeedbackReport* report,
+    uint32_t* missing_motor_ids,
+    uint32_t missing_motor_ids_capacity) {
+  if (controller == nullptr) {
+    set_last_error("controller is null");
+    return MOTOR_ERROR_INVALID_ARGUMENT;
+  }
+  if (report == nullptr) {
+    set_last_error("feedback report is null");
+    return MOTOR_ERROR_INVALID_ARGUMENT;
+  }
+  if (report->struct_size < sizeof(MotorFeedbackReport)) {
+    set_last_error("feedback report struct_size is too small");
+    return MOTOR_ERROR_INVALID_ARGUMENT;
+  }
+  if (missing_motor_ids == nullptr && missing_motor_ids_capacity > 0) {
+    set_last_error("missing_motor_ids is null with non-zero capacity");
+    return MOTOR_ERROR_INVALID_ARGUMENT;
+  }
+  if (timeout_ms == 0) {
+    set_last_error("feedback timeout must be positive");
+    return MOTOR_ERROR_INVALID_ARGUMENT;
+  }
+
+  std::memset(report, 0, sizeof(*report));
+  report->struct_size = sizeof(*report);
+  report->timeout_ms = timeout_ms;
+  try {
+    std::lock_guard<std::mutex> lock(controller->mutex);
+    const auto native = controller->controller->request_feedback_all_report(
+        std::chrono::milliseconds(timeout_ms));
+    report->expected_count = native.expected_count;
+    report->received_count = native.received_count;
+    report->missing_count =
+        static_cast<uint32_t>(native.missing_motor_ids.size());
+    const auto copy_count = std::min<std::size_t>(
+        native.missing_motor_ids.size(), missing_motor_ids_capacity);
+    for (std::size_t i = 0; i < copy_count; ++i) {
+      missing_motor_ids[i] = native.missing_motor_ids[i];
+    }
+
+    if (native.status == damiao::FeedbackBatchStatus::Ok) {
+      set_last_error("ok");
+      return MOTOR_OK;
+    }
+    if (native.status == damiao::FeedbackBatchStatus::TransportError) {
+      set_last_error("feedback transport failed: " + native.error);
+      return MOTOR_ERROR_TRANSPORT;
+    }
+
+    std::string message = "fresh feedback timed out; missing motor IDs:";
+    for (const auto motor_id : native.missing_motor_ids) {
+      message += " " + std::to_string(motor_id);
+    }
+    set_last_error(message);
+    return native.status == damiao::FeedbackBatchStatus::Timeout
+        ? MOTOR_ERROR_FEEDBACK_TIMEOUT
+        : MOTOR_ERROR_FEEDBACK_INCOMPLETE;
+  } catch (const std::invalid_argument& error) {
+    set_last_error(error.what());
+    return MOTOR_ERROR_INVALID_ARGUMENT;
+  } catch (const std::exception& error) {
+    set_last_error(error.what());
+    return MOTOR_ERROR_TRANSPORT;
+  } catch (...) {
+    set_last_error("unknown feedback request exception");
+    return MOTOR_ERROR_TRANSPORT;
+  }
+}
+
 int32_t motor_controller_request_feedback_all(MotorController* controller,
                                               uint32_t timeout_ms) {
-  if (controller == nullptr) return fail("controller is null");
-  std::lock_guard<std::mutex> lock(controller->mutex);
-  return ffi_call([&] {
-    controller->controller->request_feedback_all(std::chrono::milliseconds(timeout_ms));
-  });
+  MotorFeedbackReport report{};
+  report.struct_size = sizeof(report);
+  const auto code = motor_controller_request_feedback_all_ex(
+      controller, timeout_ms, &report, nullptr, 0);
+  return code == MOTOR_OK ? 0 : -1;
 }
 
 int32_t motor_controller_enable_all(MotorController* controller) {
@@ -432,6 +526,82 @@ MotorHandle* motor_controller_add_damiao_motor(MotorController* controller,
   } catch (const std::exception& err) {
     set_last_error(err.what());
     return nullptr;
+  }
+}
+
+int32_t motor_controller_discover_damiao_motors(
+    MotorController* controller,
+    const MotorDiscoveryCandidate* candidates,
+    uint32_t candidate_count,
+    uint32_t timeout_ms,
+    uint32_t retry_count,
+    MotorDiscoveryResult* results,
+    uint32_t result_capacity) {
+  if (controller == nullptr) return fail("controller is null");
+  if (candidates == nullptr && candidate_count > 0) return fail("candidates is null");
+  if (results == nullptr && candidate_count > 0) return fail("results is null");
+  if (result_capacity < candidate_count) return fail("result capacity is too small");
+
+  std::lock_guard<std::mutex> lock(controller->mutex);
+  std::vector<MotorHandle*> allocated;
+  try {
+    std::vector<damiao::MotorCandidate> native;
+    native.reserve(candidate_count);
+    for (uint32_t i = 0; i < candidate_count; ++i) {
+      if (candidates[i].role == nullptr) {
+        throw std::invalid_argument("candidate role is null at index " +
+                                    std::to_string(i));
+      }
+      if (candidates[i].model == nullptr) {
+        throw std::invalid_argument("candidate model is null at index " +
+                                    std::to_string(i));
+      }
+      if (std::strlen(candidates[i].role) >=
+          sizeof(static_cast<MotorDiscoveryResult*>(nullptr)->role)) {
+        throw std::invalid_argument("candidate role exceeds 63 bytes at index " +
+                                    std::to_string(i));
+      }
+      native.push_back(damiao::MotorCandidate{
+          candidates[i].role,
+          candidates[i].motor_id,
+          candidates[i].feedback_id,
+          candidates[i].model,
+          presence_policy(candidates[i].policy),
+      });
+    }
+
+    for (uint32_t i = 0; i < candidate_count; ++i) {
+      std::memset(&results[i], 0, sizeof(results[i]));
+    }
+    const auto discovered = controller->controller->discover_damiao_motors(
+        native, std::chrono::milliseconds(timeout_ms), retry_count);
+    for (uint32_t i = 0; i < candidate_count; ++i) {
+      const auto& value = discovered[i];
+      copy_text(value.candidate.role, results[i].role);
+      results[i].motor_id = value.candidate.motor_id;
+      results[i].feedback_id = value.candidate.feedback_id;
+      results[i].policy = static_cast<int32_t>(value.candidate.policy);
+      results[i].state = static_cast<int32_t>(value.state);
+      copy_text(value.reason, results[i].reason);
+      if (value.motor) {
+        results[i].motor = new MotorHandle(value.motor);
+        allocated.push_back(results[i].motor);
+      }
+    }
+    set_last_error("ok");
+    return 0;
+  } catch (const std::exception& error) {
+    for (auto* handle : allocated) delete handle;
+    for (uint32_t i = 0; i < candidate_count; ++i) {
+      std::memset(&results[i], 0, sizeof(results[i]));
+    }
+    return fail(error.what());
+  } catch (...) {
+    for (auto* handle : allocated) delete handle;
+    for (uint32_t i = 0; i < candidate_count; ++i) {
+      std::memset(&results[i], 0, sizeof(results[i]));
+    }
+    return fail("unknown motor discovery exception");
   }
 }
 

@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",
@@ -23,6 +23,7 @@
       "motor_controller_free",
       "motor_controller_poll_feedback_once",
       "motor_controller_request_feedback_all",
+      "motor_controller_request_feedback_all_ex",
       "motor_controller_enable_all",
       "motor_controller_disable_all",
       "motor_controller_shutdown",
@@ -30,6 +31,7 @@
       "motor_controller_set_tx_gap_us",
       "motor_controller_get_transport_capabilities",
       "motor_controller_get_transport_health",
+      "motor_controller_discover_damiao_motors",
       "motor_controller_add_damiao_motor"
     ],
     "controller_group": [
@@ -88,6 +90,7 @@
       "Controller.set_tx_gap_us(gap_us)",
       "Controller.transport_capabilities()",
       "Controller.transport_health()",
+      "Controller.discover_damiao_motors(candidates, timeout_ms, retries)",
       "Controller.add_damiao_motor(motor_id, feedback_id, model)"
     ],
     "motor_methods": [
@@ -132,7 +135,11 @@
       "PreparedMitBatch(group, motors)",
       "PreparedPosVelBatch(group, motors)",
       "TransportCapabilities",
-      "TransportHealth"
+      "TransportHealth",
+      "PresencePolicy",
+      "PresenceState",
+      "MotorCandidate",
+      "MotorDiscoveryResult"
     ],
     "python": {
       "module_metadata": [

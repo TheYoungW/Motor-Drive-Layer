@@ -27,6 +27,20 @@ enum ArticoreRuntimeCapability {
   ARTICORE_CAP_DUAL_CHANNEL = 1ULL << 4,
   ARTICORE_CAP_TRANSPORT_HEALTH = 1ULL << 5,
   ARTICORE_CAP_CURRENT_POSITION_HOLD = 1ULL << 6,
+  ARTICORE_CAP_MOTOR_PRESENCE = 1ULL << 7,
+};
+
+enum ArticorePresenceState {
+  ARTICORE_NOT_INSTALLED = 1,
+  ARTICORE_PRESENT = 2,
+  ARTICORE_FAULTED = 3,
+};
+
+enum ArticoreActiveCapability {
+  ARTICORE_ACTIVE_ARM_SIDE_0 = 1ULL << 0,
+  ARTICORE_ACTIVE_ARM_SIDE_1 = 1ULL << 1,
+  ARTICORE_ACTIVE_GRIPPER_SIDE_0 = 1ULL << 2,
+  ARTICORE_ACTIVE_GRIPPER_SIDE_1 = 1ULL << 3,
 };
 
 enum ArticoreSafetyState {
@@ -267,6 +281,17 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_estop(
 ARTICORE_RUNTIME_API int32_t articore_runtime_recover(ArticoreRuntime* runtime);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_health(
     ArticoreRuntime* runtime, ArticoreSafetyHealth* health);
+// Declares roles omitted from the active motor descriptor set. This is only
+// valid while DISCONNECTED and is intended for Optional/Disabled model roles.
+// Active descriptor names are registered as PRESENT automatically.
+ARTICORE_RUNTIME_API int32_t articore_runtime_declare_motor_presence(
+    ArticoreRuntime* runtime, const char* motor_role, int32_t state);
+ARTICORE_RUNTIME_API int32_t articore_runtime_motor_presence(
+    ArticoreRuntime* runtime, const char* motor_role, int32_t* state);
+// Returns ArticoreActiveCapability bits for the fixed motor set discovered for
+// this connection. Faulted motors remain active; NotInstalled motors do not.
+ARTICORE_RUNTIME_API uint64_t articore_runtime_active_capabilities(
+    ArticoreRuntime* runtime);
 ARTICORE_RUNTIME_API int32_t articore_runtime_close(ArticoreRuntime* runtime);
 ARTICORE_RUNTIME_API const char* articore_runtime_last_error(void);
 
