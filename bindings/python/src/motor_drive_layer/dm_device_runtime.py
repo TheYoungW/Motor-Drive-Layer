@@ -75,7 +75,30 @@ def _cache_root() -> Path:
 
 
 def _packaged_runtime_path(runtime: DmDeviceRuntime) -> Path:
-    return Path(__file__).resolve().parent / "lib" / "dm_device" / runtime.lib_name
+    return Path(__file__).resolve().parent / "lib" / "dm_device" / runtime.version / runtime.lib_name
+
+
+def _select_runtime_abi(runtimes: list[DmDeviceRuntime]) -> list[DmDeviceRuntime]:
+    requested = os.getenv("MOTOR_DM_DEVICE_ABI")
+    if not requested:
+        return runtimes
+    normalized = requested.strip().lower().removeprefix("v")
+    if normalized in {"1.0", "1.0.0", "10"}:
+        version = LEGACY_SDK_VERSION
+    elif normalized in {"1.1", "1.1.0", "11"}:
+        version = SDK_VERSION
+    else:
+        raise RuntimeError(
+            "MOTOR_DM_DEVICE_ABI must be v1.0 or v1.1, "
+            f"not {requested!r}"
+        )
+    selected = [runtime for runtime in runtimes if runtime.version == version]
+    if not selected:
+        raise RuntimeError(
+            f"DM_Device {version} is not available for "
+            f"{sys.platform}/{platform.machine().lower()}"
+        )
+    return selected
 
 
 def _cache_runtime_path(runtime: DmDeviceRuntime) -> Path:
@@ -195,7 +218,7 @@ def ensure_dm_device_runtime(*, auto_download: bool | None = None, quiet: bool =
             return path
         raise RuntimeError(f"MOTOR_DM_DEVICE_LIB points to a missing file: {path}")
 
-    runtimes = _platform_runtimes()
+    runtimes = _select_runtime_abi(_platform_runtimes())
 
     if not force:
         for runtime in runtimes:

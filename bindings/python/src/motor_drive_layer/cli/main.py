@@ -6,7 +6,7 @@ import time
 
 from .. import get_version
 from ..core import Controller
-from ..models import Mode
+from ..models import Mode, MotorCandidate, PresencePolicy, PresenceState
 from .platform_hints import preflight_can_runtime
 
 
@@ -287,23 +287,65 @@ def _run_command(args: argparse.Namespace) -> None:
 def _scan_command(args: argparse.Namespace) -> None:
     start_id = _parse_id(args.start_id)
     end_id = _parse_id(args.end_id)
-    found = 0
-    for mid in range(start_id, end_id + 1):
-        scan_args = argparse.Namespace(**vars(args))
-        scan_args.motor_id = str(mid)
-        scan_args.feedback_id = hex(_parse_id(args.feedback_base) + (mid & 0x0F))
+    if start_id < 0 or end_id > 0xFFFF or start_id > end_id:
+        raise ValueError("scan ID range must satisfy 0 <= start_id <= end_id <= 0xffff")
+    feedback_base = _parse_id(args.feedback_base)
+    candidates = tuple(
+        MotorCandidate(
+            role=f"scan-0x{motor_id:X}",
+            motor_id=motor_id,
+            feedback_id=feedback_base + (motor_id & 0x0F),
+            model=args.model,
+            policy=PresencePolicy.OPTIONAL,
+        )
+        for motor_id in range(start_id, end_id + 1)
+    )
+    feedback_ids = [candidate.feedback_id for candidate in candidates]
+    if any(feedback_id > 0xFFFF for feedback_id in feedback_ids):
+        raise ValueError("scan feedback ID is outside 0..=0xffff")
+    if len(feedback_ids) != len(set(feedback_ids)):
+        raise ValueError(
+            "scan range maps multiple motors to the same feedback ID; "
+            "scan at most one 16-ID bank at a time"
+        )
+
+    controller: Controller | None = None
+    discovered = ()
+    try:
+        # A scan owns exactly one Controller for the whole candidate batch.
+        # Presence discovery only requests fresh feedback; it never enables,
+        # disables, or commands a motor.
+        controller = _open_controller(args)
+        discovered = controller.discover_damiao_motors(
+            candidates,
+            timeout_ms=max(args.timeout_ms, 10),
+            retries=args.retries,
+        )
+        found = 0
+        for result in discovered:
+            if result.state == PresenceState.PRESENT and result.motor is not None:
+                found += 1
+                print(
+                    f"[hit] id=0x{result.motor_id:X} "
+                    f"feedback_id=0x{result.feedback_id:X} state={result.motor.get_state()}"
+                )
+            else:
+                reason = result.reason or "no fresh matching feedback"
+                print(f"[.. ] id=0x{result.motor_id:X} no reply: {reason}")
+        print(f"[scan] done vendor=damiao hits={found}")
+    finally:
         try:
-            with _open_controller(scan_args) as ctrl:
-                motor = _add_motor(ctrl, scan_args)
+            for result in reversed(discovered):
+                if result.motor is not None:
+                    result.motor.close()
+        finally:
+            if controller is not None:
+                # shutdown() sends disable frames. A read-only scanner must only
+                # stop polling/release the transport and then free the wrapper.
                 try:
-                    state = motor.request_fresh_state(max(args.timeout_ms, 10))
-                    found += 1
-                    print(f"[hit] id=0x{mid:X} feedback_id={scan_args.feedback_id} state={state}")
+                    controller.close_bus()
                 finally:
-                    motor.close()
-        except Exception as e:
-            print(f"[.. ] id=0x{mid:X} no reply: {e}")
-    print(f"[scan] done vendor=damiao hits={found}")
+                    controller.close()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -321,6 +363,7 @@ def _build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--end-id", default="0x10")
     scan.add_argument("--feedback-base", default="0x10")
     scan.add_argument("--timeout-ms", type=int, default=80)
+    scan.add_argument("--retries", type=int, default=1)
     scan.set_defaults(dm_channel=None)
 
     dump = sub.add_parser("id-dump", help="read Damiao ID/mode/limit registers")

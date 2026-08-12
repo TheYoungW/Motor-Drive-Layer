@@ -24,6 +24,9 @@ jobs:
       - name: Install Python test tools
         run: python -m pip install --upgrade build pytest
 
+      - name: Build private libusb runtime
+        run: bash scripts/build_private_libusb.sh "$RUNNER_TEMP/libusb-1.0.27"
+
       - name: Configure C++ ABI
         run: cmake -S . -B build
 
@@ -39,6 +42,8 @@ jobs:
         run: python -m pytest -q bindings/python/tests
 
       - name: Build Python wheel with C++ ABI
+        env:
+          MOTOR_PRIVATE_LIBUSB_LIB: ${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0
         run: python -m build --wheel bindings/python
 
       - name: Verify and install built wheel
@@ -54,15 +59,16 @@ jobs:
               assert any(name.endswith("/licenses/LICENSE") for name in names)
               assert any(name.endswith("motor_drive_layer/lib/libmotor_abi.so") for name in names)
               assert any(name.endswith("motor_drive_layer/lib/libarticore_runtime.so") for name in names)
-              assert any(name.endswith("motor_drive_layer/lib/dm_device/libdm_device.so") for name in names)
+              assert any(name.endswith("motor_drive_layer/lib/dm_device/v1.0.0/libdm_device.so") for name in names)
+              assert any(name.endswith("motor_drive_layer/lib/dm_device/v1.1.0/libdm_device.so") for name in names)
               assert any(name.endswith("motor_drive_layer/lib/dm_device/libstdc++.so.6") for name in names)
+              assert any(name.endswith("motor_drive_layer/lib/dm_device/libusb-1.0.so.0") for name in names)
           PY
           python -m pip install --force-reinstall --no-deps bindings/python/dist/*.whl
           cd /tmp
           python - <<'PY'
           import motor_drive_layer
           import ctypes
-          import ctypes.util
           from importlib.metadata import version
 
           assert motor_drive_layer.get_version() == version("motor-drive-layer")
@@ -77,12 +83,17 @@ jobs:
           assert motor_drive_layer.articore_runtime_capabilities()["realtime_joint_mailbox"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["joint_trajectory"] is True
           vendor_path = motor_drive_layer.ensure_dm_device_runtime(auto_download=False)
-          assert vendor_path.parent.name == "dm_device"
+          assert vendor_path.parent.name == "v1.0.0"
           assert vendor_path.is_file()
-          libusb = ctypes.util.find_library("usb-1.0")
-          assert libusb
-          ctypes.CDLL(libusb, mode=ctypes.RTLD_GLOBAL)
-          ctypes.CDLL(str(vendor_path))
+          package_dm = vendor_path.parent.parent
+          private_libusb = package_dm / "libusb-1.0.so.0"
+          assert private_libusb.is_file()
+          support = ctypes.CDLL(str(private_libusb), mode=ctypes.RTLD_GLOBAL)
+          assert support.libusb_init_context
+          private_stdcxx = package_dm / "libstdc++.so.6"
+          ctypes.CDLL(str(private_stdcxx), mode=ctypes.RTLD_GLOBAL)
+          vendor = ctypes.CDLL(str(package_dm / "v1.1.0" / "libdm_device.so"))
+          assert vendor.dmcan_context_create
           PY
 
       - name: Check shell helper syntax

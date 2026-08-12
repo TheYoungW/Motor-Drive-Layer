@@ -328,7 +328,7 @@ int main() {
       std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
     discovery_bus->push_rx(feedback_frame(
-        0x19, 0x09, 0x01, 0.0f, 0.0f, 0.0f, damiao::model_limits("4310")));
+        0x209, 0x09, 0x01, 0.0f, 0.0f, 0.0f, damiao::model_limits("4310")));
   });
   std::vector<damiao::MotorDiscoveryResult> discovery;
   try {

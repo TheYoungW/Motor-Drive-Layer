@@ -251,13 +251,16 @@ matching vendor runtime, so installing `motor-drive-layer` is sufficient. `MOTOR
 can still override the packaged library for development, and the motor-layer installer/downloader
 remains a recovery fallback. The loader probes both the
 v1.0 (`damiao_*`/`device_*`) and v1.1 (`dmcan_*`) ABIs and reports missing symbols and dynamic
-loader dependency errors explicitly. Linux x86_64 uses v1.0 with an isolated compatible C++
-runtime; Linux ARM64 uses v1.1 with a private libusb 1.0.27 runtime because Ubuntu 22.04's
-libusb 1.0.25 does not export `libusb_init_context`; Windows and macOS use v1.1. Each Controller
+loader dependency errors explicitly. Linux x86_64 wheels contain both v1.0 and the complete v1.1
+environment (private compatible C++ runtime plus libusb 1.0.27). x86_64 defaults to v1.0 because
+the official v1.1 runtime delivers receive callbacks in roughly 100 ms batches with
+`dual_app v1.0.0.3`; set `MOTOR_DM_DEVICE_ABI=v1.1` to opt in without installing host libraries.
+Linux ARM64 uses v1.1 with a private libusb 1.0.27 runtime because Ubuntu 22.04's libusb 1.0.25
+does not export `libusb_init_context`; Windows and macOS use v1.1. Each Controller
 owns only its selected channel. v1.1 releases the shared physical USB handle after the last
 Controller closes. Because the
 official Linux v1.0 runtime cannot reliably reopen device index 0 in the same process after a full
-device teardown, v1.0 instead closes each channel and all motor-layer threads/clients but retains
+device teardown, retained v1.0 sessions instead close each channel and all motor-layer threads/clients but retain
 its legacy context, device handle, callbacks, and loaded library for reuse until process exit. The
 operating system reclaims those retained vendor objects; calling the vendor destructor during
 static process teardown can race libusb thread cleanup.
@@ -310,6 +313,23 @@ motor-drive-layer-stress \
 ```
 
 Repeat `--motor` for the real channel/motor/feedback/model mapping. The example IDs are illustrative.
+
+The `scan` command opens one Controller for the complete ID range and calls
+`discover_damiao_motors()` once with all candidates. It is strictly read-only: after discovery it
+releases motor handles, calls `close_bus()`, and then `close()`; it never uses `shutdown()` because
+that lifecycle method intentionally sends disable frames.
+
+For USB-handle lifecycle validation, `scripts/test_dm_device_scan_lifecycle.py` alternates a scanner
+subprocess with a fresh CH0/CH1 reader subprocess. It defaults to 100 cycles and DM_Device v1.1:
+
+```bash
+python scripts/test_dm_device_scan_lifecycle.py \
+  --motor 0:0x09:0x19:8009 \
+  --motor 1:0x01:0x11:8009
+```
+
+Repeat `--motor` for every installed motor. The test only requests feedback and never enables,
+disables, or commands a motor.
 
 Position, velocity, and torque use rad, rad/s, and Nm. `MotorState`, `FeedbackStats`, `Mode`,
 `CallError`, and the register constants are also exported at package level.

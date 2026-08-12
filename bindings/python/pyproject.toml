@@ -47,4 +47,4 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-motor_drive_layer = ["lib/*", "lib/dm_device/*", "*.pyi", "py.typed"]
+motor_drive_layer = ["lib/*", "lib/dm_device/*", "lib/dm_device/**/*", "*.pyi", "py.typed"]

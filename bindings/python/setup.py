@@ -51,31 +51,13 @@ def _dm_device_platform_sources() -> list[tuple[str, Path]]:
     return []
 
 
-def _candidate_dm_device_paths() -> list[Path]:
+def _candidate_dm_device_paths(version: str, rel: Path) -> list[Path]:
     here = Path(__file__).resolve()
     repo_root = here.parents[2]
-    sources = _dm_device_platform_sources()
     candidates: list[Path] = []
-
-    env = os.getenv("MOTOR_DM_DEVICE_LIB")
-    if env:
-        candidates.append(Path(env).expanduser())
-
-    if not sources:
-        return candidates
-
-    for version, rel in sources:
-        candidates.append(repo_root / "third_party" / "dm_device" / version / rel)
-        candidates.append(repo_root / "dm-device-sdk" / "C&C++" / "lib" / version / rel)
-        candidates.append(repo_root.parent / "dm-device-sdk" / "C&C++" / "lib" / version / rel)
-    candidates.append(
-        here.parent
-        / "src"
-        / "motor_drive_layer"
-        / "lib"
-        / "dm_device"
-        / sources[0][1].name
-    )
+    candidates.append(repo_root / "third_party" / "dm_device" / version / rel)
+    candidates.append(repo_root / "dm-device-sdk" / "C&C++" / "lib" / version / rel)
+    candidates.append(repo_root.parent / "dm-device-sdk" / "C&C++" / "lib" / version / rel)
     return candidates
 
 
@@ -84,17 +66,33 @@ def _bundle_dm_device_runtime() -> bool:
     return raw not in {"0", "false", "off", "no"}
 
 
-def _find_dm_device_path() -> Path | None:
+def _find_dm_device_paths() -> list[tuple[str, Path]]:
     if not _bundle_dm_device_runtime():
-        return None
-    candidates = _candidate_dm_device_paths()
-    for path in candidates:
+        return []
+    env = os.getenv("MOTOR_DM_DEVICE_LIB")
+    if env:
+        path = Path(env).expanduser()
         if path.exists():
-            return path
-    tried = "\n".join(f"- {path}" for path in candidates)
+            sources = _dm_device_platform_sources()
+            version = sources[0][0] if sources else "override"
+            return [(version, path)]
+        raise RuntimeError(f"MOTOR_DM_DEVICE_LIB points to a missing file: {path}")
+
+    found: list[tuple[str, Path]] = []
+    tried: list[Path] = []
+    for version, rel in _dm_device_platform_sources():
+        candidates = _candidate_dm_device_paths(version, rel)
+        tried.extend(candidates)
+        path = next((candidate for candidate in candidates if candidate.exists()), None)
+        if path is not None:
+            found.append((version, path))
+    if found:
+        return found
     raise RuntimeError(
         "DM_Device runtime bundling is enabled, but no vendor library was found.\n"
-        f"Tried:\n{tried}\n"
+        + "Tried:\n"
+        + "\n".join(f"- {path}" for path in tried)
+        + "\n"
         "Add the redistributable runtime under third_party/dm_device or set "
         "MOTOR_DM_DEVICE_LIB. Set MOTOR_DM_DEVICE_BUNDLE=0 only for an "
         "intentional runtime-free development build."
@@ -109,17 +107,29 @@ def _find_dm_device_support_libraries() -> list[Path]:
         return []
     here = Path(__file__).resolve()
     repo_root = here.parents[2]
-    candidates = [
+    stdcxx_candidates = [
         repo_root / "third_party" / "libstdcxx" / "linux" / "x86_64" / "libstdc++.so.6"
     ]
-    for path in candidates:
-        if path.exists():
-            return [path]
-    tried = "\n".join(f"- {path}" for path in candidates)
-    raise RuntimeError(
-        "The bundled Linux x86_64 DM_Device runtime requires its compatible "
-        f"libstdc++.so.6, but it was not found.\nTried:\n{tried}"
-    )
+    stdcxx = next((path for path in stdcxx_candidates if path.exists()), None)
+    if stdcxx is None:
+        tried = "\n".join(f"- {path}" for path in stdcxx_candidates)
+        raise RuntimeError(
+            "The bundled Linux x86_64 DM_Device runtime requires its compatible "
+            f"libstdc++.so.6, but it was not found.\nTried:\n{tried}"
+        )
+
+    private_libusb = os.getenv("MOTOR_PRIVATE_LIBUSB_LIB")
+    if not private_libusb:
+        raise RuntimeError(
+            "The bundled Linux x86_64 DM_Device v1.1 runtime requires private "
+            "libusb 1.0.27 or newer. Build it with "
+            "scripts/build_private_libusb.sh and set "
+            "MOTOR_PRIVATE_LIBUSB_LIB=/path/to/libusb-1.0.so.0."
+        )
+    libusb = Path(private_libusb).expanduser()
+    if not libusb.exists():
+        raise RuntimeError(f"MOTOR_PRIVATE_LIBUSB_LIB points to a missing file: {libusb}")
+    return [stdcxx, libusb]
 
 
 def _candidate_abi_paths() -> list[Path]:
@@ -203,13 +213,17 @@ class BuildPyWithAbi(_build_py):
         articore_src = _resolve_articore_runtime_path()
         shutil.copy2(articore_src, dst_dir / articore_src.name)
 
-        dm_src = _find_dm_device_path()
-        if dm_src is not None:
+        dm_sources = _find_dm_device_paths()
+        if dm_sources:
             dm_dst_dir = dst_dir / "dm_device"
             dm_dst_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(dm_src, dm_dst_dir / dm_src.name)
-            for support_src in _find_dm_device_support_libraries():
+            support_libraries = _find_dm_device_support_libraries()
+            for support_src in support_libraries:
                 shutil.copy2(support_src, dm_dst_dir / support_src.name)
+            for version, dm_src in dm_sources:
+                version_dir = dm_dst_dir / version
+                version_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(dm_src, version_dir / dm_src.name)
 
 class BdistWheelWithAbi(_bdist_wheel):
     def finalize_options(self):

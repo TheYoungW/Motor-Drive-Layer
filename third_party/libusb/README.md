@@ -1,9 +1,9 @@
-# Private ARM64 libusb runtime
+# Private Linux libusb runtime
 
 DaMiao's Linux ARM64 DM_Device v1.1 library imports `libusb_init_context`, but
-Ubuntu 22.04 supplies libusb 1.0.25 without that symbol. The ARM64 wheel build
-therefore compiles libusb 1.0.27 and lets `auditwheel` copy and rename the
-resulting shared library as a wheel-private dependency.
+Ubuntu 22.04 supplies libusb 1.0.25 without that symbol. Linux wheel builds
+therefore compile libusb 1.0.27. The x86_64 wheel places it beside the vendor
+library, while `auditwheel` copies and renames it for the ARM64 wheel.
 
 Pinned source:
 

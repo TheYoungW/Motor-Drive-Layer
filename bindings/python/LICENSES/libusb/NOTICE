@@ -1,7 +1,7 @@
 libusb runtime notice
 =====================
 
-Linux ARM64 wheels include libusb 1.0.27 as a private shared-library
+Linux x86_64 and ARM64 wheels include libusb 1.0.27 as a private shared-library
 dependency of DaMiao's DM_Device v1.1 runtime.
 
 Upstream source:

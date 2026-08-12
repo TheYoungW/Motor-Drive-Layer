@@ -24,6 +24,10 @@ The current official macOS v1.1 dylib requires macOS 26, and the packaged wheel 
 accordingly rather than claiming compatibility with an older system.
 Linux ARM64 wheels include a private libusb 1.0.27 build so the vendor v1.1 runtime can use
 `libusb_init_context` on Ubuntu 22.04 without replacing the host's libusb 1.0.25 package.
+Linux x86_64 wheels contain both v1.0 and a complete v1.1 environment using the same private
+libusb together with a private compatible libstdc++. v1.0 remains the default on x86_64 because
+the official v1.1 runtime batches receive callbacks at roughly 100 ms with `dual_app v1.0.0.3`;
+set `MOTOR_DM_DEVICE_ABI=v1.1` to opt in without installing any host runtime.
 On final Controller close, v1.1 fully tears down its device session. The Linux v1.0 runtime instead
 closes the selected channels and motor-layer resources but retains its legacy context/device until
 process exit, allowing a later `Controller.from_dm_device(...)` call to reconnect reliably in the
@@ -54,6 +58,10 @@ activity ages without adding robot-product policy to the transport layer.
 
 The `motor-drive-layer-stress` command provides a feedback-only DM_Device load/reconnect test and
 reports latency plus Linux file-descriptor/thread counts. It never enables or commands motors.
+The CLI `scan` command similarly uses one Controller and one batch
+`discover_damiao_motors()` call for its entire candidate range, then uses
+`close_bus()` plus `close()` so scanning never emits disable frames. The repository's
+`scripts/test_dm_device_scan_lifecycle.py` runs 100 scan-process/CH0+CH1-reader-process cycles.
 
 The wheel includes `py.typed` and `.pyi` declarations for editor completion and static type
 checking. The main public APIs are:

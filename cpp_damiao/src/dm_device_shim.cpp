@@ -178,7 +178,8 @@ void close_library(void* lib) {
 void* load_symbol(void* lib, const char* name) {
   return reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(lib), name));
 }
-void* open_usb_dependency() { return nullptr; }
+void* open_private_usb_dependency(const char*) { return nullptr; }
+void* open_system_usb_dependency() { return nullptr; }
 #else
 std::string loader_error() {
   const char* raw = dlerror();
@@ -196,7 +197,35 @@ void* load_symbol(void* lib, const char* name) {
   dlerror();
   return dlsym(lib, name);
 }
-void* open_usb_dependency() {
+void* open_private_usb_dependency(const char* vendor_library_path) {
+#if defined(__APPLE__)
+  (void)vendor_library_path;
+  return nullptr;
+#else
+  // Wheels place their private libusb next to libdm_device.so. Load that
+  // absolute sibling first so Ubuntu's older system libusb cannot satisfy the
+  // SONAME while missing v1.1 symbols such as libusb_init_context.
+  if (vendor_library_path && *vendor_library_path) {
+    const std::string vendor_path(vendor_library_path);
+    const auto separator = vendor_path.find_last_of("/\\");
+    if (separator != std::string::npos) {
+      const std::string vendor_dir = vendor_path.substr(0, separator);
+      const std::array<std::string, 2> private_candidates{
+          vendor_dir + "/libusb-1.0.so.0",
+          vendor_dir + "/../libusb-1.0.so.0",
+      };
+      for (const auto& candidate : private_candidates) {
+        if (void* private_libusb =
+                dlopen(candidate.c_str(), RTLD_NOW | RTLD_GLOBAL)) {
+          return private_libusb;
+        }
+      }
+    }
+  }
+  return nullptr;
+#endif
+}
+void* open_system_usb_dependency() {
 #if defined(__APPLE__)
   return dlopen("libusb-1.0.dylib", RTLD_NOW | RTLD_GLOBAL);
 #else
@@ -285,17 +314,25 @@ bool load_legacy_api(Api& api, char* err_buf, size_t err_len) {
 }
 
 bool load_api(Api& api, const char* library_path, char* err_buf, size_t err_len) {
+  // Preload libusb before the first vendor-library dlopen.  On Ubuntu 22.04,
+  // trying the v1.1 library first may partially load the system libusb 1.0.25
+  // before failing on libusb_init_context. Loading the wheel-private sibling
+  // afterwards leaves both libusb implementations in the process and breaks
+  // the vendor runtime's asynchronous receive transfers.  Preloading also
+  // supplies the otherwise undeclared libusb symbols used by Linux v1.0.
+  api.usb_dependency = open_private_usb_dependency(library_path);
   api.lib = open_library(library_path);
-  std::string load_error;
-  if (!api.lib) {
-    load_error = loader_error();
-    // The official Linux v1.0 binary references libusb symbols without a
-    // DT_NEEDED entry.  Load the system libusb globally and retry so users do
-    // not have to discover an LD_PRELOAD workaround.
-    api.usb_dependency = open_usb_dependency();
+  std::string load_error = api.lib ? std::string{} : loader_error();
+  if (!api.lib && !api.usb_dependency) {
+    // Legacy Linux v1.0 does not declare libusb as DT_NEEDED. A source-tree
+    // or system override may therefore need the host library loaded globally.
+    // Do this only after the first vendor load fails: repaired ARM wheels must
+    // be allowed to load their auditwheel-private dependency without mixing it
+    // with Ubuntu's older system libusb.
+    api.usb_dependency = open_system_usb_dependency();
     if (api.usb_dependency) {
       api.lib = open_library(library_path);
-      if (!api.lib) load_error += "; after loading libusb: " + loader_error();
+      if (!api.lib) load_error += "; after loading system libusb: " + loader_error();
     }
   }
   if (!api.lib) {

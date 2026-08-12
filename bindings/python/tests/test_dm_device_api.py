@@ -61,7 +61,7 @@ def test_from_dm_device_rejects_zero_rates_before_open(monkeypatch) -> None:
         Controller.from_dm_device(bitrate=0)
 
 
-def test_linux_runtime_candidates_include_v10_fallback(monkeypatch) -> None:
+def test_linux_x86_prefers_low_latency_v10_with_bundled_v11_fallback(monkeypatch) -> None:
     monkeypatch.setattr(runtime_module.sys, "platform", "linux")
     monkeypatch.setattr(runtime_module.platform, "machine", lambda: "x86_64")
 
@@ -69,6 +69,17 @@ def test_linux_runtime_candidates_include_v10_fallback(monkeypatch) -> None:
 
     assert [item.version for item in candidates] == ["v1.0.0", "v1.1.0"]
     assert candidates[0].relpath == "linux/libdm_device.so"
+
+
+def test_linux_x86_can_explicitly_select_bundled_v11(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module.sys, "platform", "linux")
+    monkeypatch.setattr(runtime_module.platform, "machine", lambda: "x86_64")
+    monkeypatch.setenv("MOTOR_DM_DEVICE_ABI", "v1.1")
+
+    candidates = runtime_module._select_runtime_abi(runtime_module._platform_runtimes())
+
+    assert [item.version for item in candidates] == ["v1.1.0"]
+    assert candidates[0].relpath == "linux/x86_64/libdm_device.so"
 
 
 def test_linux_arm_prefers_compatible_v11_runtime(monkeypatch) -> None:

@@ -698,8 +698,23 @@ std::vector<MotorDiscoveryResult> Controller::discover_damiao_motors(
         const auto state = result.motor->latest_state();
         const auto expected_can_id =
             static_cast<uint8_t>(result.candidate.motor_id & 0x0F);
+        // DM-USB2FDCAN Dual reports motor feedback as 0x200 | motor_id,
+        // while the same motor's configured MST_ID is conventionally
+        // 0x10 | motor_id. Other transports report the configured feedback
+        // ID directly. Accept those two protocol-defined representations,
+        // but still reject arbitrary arbitration IDs that merely contain a
+        // matching motor nibble in the payload.
+        const auto configured_standard_feedback_id =
+            static_cast<uint16_t>(0x10U | expected_can_id);
+        const auto dm_device_feedback_id =
+            static_cast<uint32_t>(0x200U | expected_can_id);
+        const bool arbitration_id_matches =
+            state.has_value() &&
+            (state->arbitration_id == result.candidate.feedback_id ||
+             (result.candidate.feedback_id == configured_standard_feedback_id &&
+              state->arbitration_id == dm_device_feedback_id));
         if (!state.has_value() || state->can_id != expected_can_id ||
-            state->arbitration_id != result.candidate.feedback_id) {
+            !arbitration_id_matches) {
           std::ostringstream reason;
           reason << "received feedback with mismatched identity; expected motor_id="
                  << result.candidate.motor_id << " feedback_id="

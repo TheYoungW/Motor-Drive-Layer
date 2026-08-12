@@ -65,7 +65,13 @@ void dmcan_device_hook_err_callback(dmcan_device_handle* dev, dev_err_callback c
 bool dmcan_device_send_can(dmcan_device_handle* dev, uint8_t channel, uint32_t can_id,
                            bool canfd, bool ext, bool rtr, bool brs, uint8_t dlen,
                            uint8_t* payload) {
-  if (!dev->open || channel >= dev->enabled.size() || !dev->enabled[channel]) return false;
+  // DaMiao motor commands are classic CAN frames even when the adapter and
+  // channel are CAN-FD capable. Reject accidental FD/BRS/RTR flags so the
+  // shim's v1.1 ABI argument mapping remains covered by this mock.
+  if (!dev->open || channel >= dev->enabled.size() || !dev->enabled[channel] || canfd || brs ||
+      rtr) {
+    return false;
+  }
   usb_rx_frame_t frame{};
   frame.head.can_id = can_id;
   frame.head.channel = channel;
