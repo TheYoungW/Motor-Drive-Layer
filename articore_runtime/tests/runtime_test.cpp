@@ -41,6 +41,7 @@ struct FakeDriver {
   uint32_t mit_sends = 0;
   uint32_t disable_calls[2]{};
   uint32_t feedback_requests = 0;
+  uint32_t feedback_stats_calls = 0;
   int32_t feedback_code = 0;
   uint32_t feedback_expected = 2;
   uint32_t feedback_received = 2;
@@ -137,6 +138,7 @@ int32_t get_state(void* handle, ArticoreMotorState* state) {
 
 int32_t get_feedback_stats(void* handle, ArticoreFeedbackStats* stats) {
   std::lock_guard<std::mutex> lock(g_driver->mutex);
+  ++g_driver->feedback_stats_calls;
   const auto found = g_driver->motors.find(handle);
   if (found == g_driver->motors.end()) return -1;
   *stats = {};
@@ -346,6 +348,11 @@ void test_safe_hold_rejects_stale_current_position() {
                                   g_left_controller, g_right_controller, motors);
   runtime.connect();
   runtime.enable(ARTICORE_MODE_PV);
+  uint32_t feedback_stats_baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    feedback_stats_baseline = driver.feedback_stats_calls;
+  }
   ArticorePosVelCommand commands[] = {
       {motors[0].motor, 0.5f, 2.0f},
       {motors[1].motor, -0.5f, 2.0f},
@@ -353,7 +360,12 @@ void test_safe_hold_rejects_stale_current_position() {
   runtime.submit_pos_vel(commands, 2);
   require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
           "first PV target is transmitted before failure injection");
-  std::this_thread::sleep_for(10ms);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.feedback_stats_calls >=
+                   feedback_stats_baseline + motors.size();
+          }),
+          "initial running feedback check completes before failure injection");
   uint32_t sends_before_failure = 0;
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
