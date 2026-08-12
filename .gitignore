@@ -6,6 +6,8 @@
 *.o
 *.a
 *.so
+!third_party/dm_device/v1.0.0/linux/libdm_device.so
+!third_party/dm_device/v1.1.0/linux/arm64/libdm_device.so
 *.out
 *.exe
 c_abi_demo

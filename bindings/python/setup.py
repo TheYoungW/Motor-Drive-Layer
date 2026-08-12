@@ -25,60 +25,101 @@ def _articore_platform_lib_name() -> str:
     return "libarticore_runtime.so"
 
 
-def _dm_device_platform_relpath() -> Path | None:
+def _dm_device_platform_sources() -> list[tuple[str, Path]]:
     machine = platform.machine().lower()
     if sys.platform.startswith("linux"):
         if machine in {"x86_64", "amd64"}:
-            return Path("linux/x86_64/libdm_device.so")
+            return [
+                ("v1.0.0", Path("linux/libdm_device.so")),
+                ("v1.1.0", Path("linux/x86_64/libdm_device.so")),
+            ]
         if machine in {"aarch64", "arm64"}:
-            return Path("linux/arm64/libdm_device.so")
+            return [
+                ("v1.1.0", Path("linux/arm64/libdm_device.so")),
+                ("v1.0.0", Path("aarch64/libdm_device.so")),
+            ]
     if sys.platform == "darwin":
         if machine in {"arm64", "aarch64"}:
-            return Path("macos/arm64/libdm_device.dylib")
+            return [("v1.1.0", Path("macos/arm64/libdm_device.dylib"))]
         if machine in {"x86_64", "amd64"}:
-            return Path("macos/x86_64/libdm_device.dylib")
+            return [("v1.1.0", Path("macos/x86_64/libdm_device.dylib"))]
     if sys.platform.startswith("win") and machine in {"x86_64", "amd64"}:
-        return Path("windows/msvc/dm_device.dll")
-    return None
+        return [
+            ("v1.1.0", Path("windows/msvc/dm_device.dll")),
+            ("v1.0.0", Path("msvc/dm_device.dll")),
+        ]
+    return []
 
 
 def _candidate_dm_device_paths() -> list[Path]:
     here = Path(__file__).resolve()
     repo_root = here.parents[2]
-    rel = _dm_device_platform_relpath()
+    sources = _dm_device_platform_sources()
     candidates: list[Path] = []
 
     env = os.getenv("MOTOR_DM_DEVICE_LIB")
     if env:
         candidates.append(Path(env).expanduser())
 
-    if rel is None:
+    if not sources:
         return candidates
 
-    candidates.append(repo_root / "third_party" / "dm_device" / "v1.1.0" / rel)
-    candidates.append(repo_root / "dm-device-sdk" / "C&C++" / "lib" / "v1.1.0" / rel)
-    candidates.append(repo_root.parent / "dm-device-sdk" / "C&C++" / "lib" / "v1.1.0" / rel)
-    if sys.platform.startswith("linux"):
-        legacy_rel = Path("linux/libdm_device.so") if platform.machine().lower() in {"x86_64", "amd64"} else Path("aarch64/libdm_device.so")
-        candidates.append(repo_root / "third_party" / "dm_device" / "v1.0.0" / legacy_rel)
-        candidates.append(repo_root / "dm-device-sdk" / "C&C++" / "lib" / "v1.0.0" / legacy_rel)
-        candidates.append(repo_root.parent / "dm-device-sdk" / "C&C++" / "lib" / "v1.0.0" / legacy_rel)
-    candidates.append(here.parent / "src" / "motor_drive_layer" / "lib" / "dm_device" / rel.name)
+    for version, rel in sources:
+        candidates.append(repo_root / "third_party" / "dm_device" / version / rel)
+        candidates.append(repo_root / "dm-device-sdk" / "C&C++" / "lib" / version / rel)
+        candidates.append(repo_root.parent / "dm-device-sdk" / "C&C++" / "lib" / version / rel)
+    candidates.append(
+        here.parent
+        / "src"
+        / "motor_drive_layer"
+        / "lib"
+        / "dm_device"
+        / sources[0][1].name
+    )
     return candidates
 
 
 def _bundle_dm_device_runtime() -> bool:
-    raw = os.getenv("MOTOR_DM_DEVICE_BUNDLE", "0").strip().lower()
+    raw = os.getenv("MOTOR_DM_DEVICE_BUNDLE", "1").strip().lower()
     return raw not in {"0", "false", "off", "no"}
 
 
 def _find_dm_device_path() -> Path | None:
     if not _bundle_dm_device_runtime():
         return None
-    for path in _candidate_dm_device_paths():
+    candidates = _candidate_dm_device_paths()
+    for path in candidates:
         if path.exists():
             return path
-    return None
+    tried = "\n".join(f"- {path}" for path in candidates)
+    raise RuntimeError(
+        "DM_Device runtime bundling is enabled, but no vendor library was found.\n"
+        f"Tried:\n{tried}\n"
+        "Add the redistributable runtime under third_party/dm_device or set "
+        "MOTOR_DM_DEVICE_LIB. Set MOTOR_DM_DEVICE_BUNDLE=0 only for an "
+        "intentional runtime-free development build."
+    )
+
+
+def _find_dm_device_support_libraries() -> list[Path]:
+    if not _bundle_dm_device_runtime():
+        return []
+    machine = platform.machine().lower()
+    if not sys.platform.startswith("linux") or machine not in {"x86_64", "amd64"}:
+        return []
+    here = Path(__file__).resolve()
+    repo_root = here.parents[2]
+    candidates = [
+        repo_root / "third_party" / "libstdcxx" / "linux" / "x86_64" / "libstdc++.so.6"
+    ]
+    for path in candidates:
+        if path.exists():
+            return [path]
+    tried = "\n".join(f"- {path}" for path in candidates)
+    raise RuntimeError(
+        "The bundled Linux x86_64 DM_Device runtime requires its compatible "
+        f"libstdc++.so.6, but it was not found.\nTried:\n{tried}"
+    )
 
 
 def _candidate_abi_paths() -> list[Path]:
@@ -167,6 +208,8 @@ class BuildPyWithAbi(_build_py):
             dm_dst_dir = dst_dir / "dm_device"
             dm_dst_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(dm_src, dm_dst_dir / dm_src.name)
+            for support_src in _find_dm_device_support_libraries():
+                shutil.copy2(support_src, dm_dst_dir / support_src.name)
 
 class BdistWheelWithAbi(_bdist_wheel):
     def finalize_options(self):

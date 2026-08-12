@@ -43,8 +43,8 @@ def _platform_runtimes() -> list[DmDeviceRuntime]:
             ]
         if machine in {"aarch64", "arm64"}:
             return [
-                DmDeviceRuntime(LEGACY_SDK_VERSION, "aarch64/libdm_device.so", "libdm_device.so"),
                 DmDeviceRuntime(SDK_VERSION, "linux/arm64/libdm_device.so", "libdm_device.so"),
+                DmDeviceRuntime(LEGACY_SDK_VERSION, "aarch64/libdm_device.so", "libdm_device.so"),
             ]
     if sys.platform == "darwin":
         if machine in {"arm64", "aarch64"}:
@@ -217,7 +217,7 @@ def ensure_dm_device_runtime(*, auto_download: bool | None = None, quiet: bool =
                 return cached
 
     if auto_download is None:
-        auto_download = _truthy(os.getenv("MOTOR_DM_DEVICE_AUTO_DOWNLOAD"), False)
+        auto_download = _truthy(os.getenv("MOTOR_DM_DEVICE_AUTO_DOWNLOAD"), True)
     if not auto_download:
         raise RuntimeError(_install_hint(runtimes))
 

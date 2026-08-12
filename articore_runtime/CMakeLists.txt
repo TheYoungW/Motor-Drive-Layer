@@ -32,6 +32,11 @@ target_compile_definitions(
 )
 if(UNIX AND NOT APPLE)
   target_link_options(articore_runtime PRIVATE "-Wl,--exclude-libs,ALL")
+  set_target_properties(
+    articore_runtime PROPERTIES
+    BUILD_RPATH "\$ORIGIN/dm_device"
+    INSTALL_RPATH "\$ORIGIN/dm_device"
+  )
 endif()
 set_target_properties(
   articore_runtime PROPERTIES

@@ -64,8 +64,9 @@ generic and product ABI surfaces cannot be confused.
 
 PyPI wheels are built by GitHub Actions for Linux x86_64 and ARM64, macOS Intel and Apple Silicon,
 and Windows x64. The Damiao serial transport is available on all of those platforms. SocketCAN and
-SocketCAN-FD are Linux-only. The optional direct `dm-device` transport also requires the matching
-vendor runtime and USB driver for the host platform.
+SocketCAN-FD are Linux-only. The direct `dm-device` transport includes the matching redistributable
+vendor runtime in every platform wheel. A host USB driver may still be required where the
+operating system does not already provide one.
 
 Typical serial device names are `/dev/ttyACM0` on Linux, `/dev/cu.usbmodem*` on macOS, and `COM3`
 on Windows.
@@ -243,12 +244,13 @@ uses the structured entry point internally and maps its result to `FeedbackTimeo
 `FeedbackReport`. The Articore runtime callback uses the same structured signature, so safety
 decisions never depend on parsing `motor_last_error_message()`.
 
-The DM_Device backend does not require flashing SocketCAN firmware. Install the matching vendor
-runtime once with `motor-drive-layer-install-dm-device --download`, or set
-`MOTOR_DM_DEVICE_LIB` to an official `libdm_device`/`dm_device.dll`. The loader probes both the
+The DM_Device backend does not require flashing SocketCAN firmware. Platform wheels include the
+matching vendor runtime, so installing `motor-drive-layer` is sufficient. `MOTOR_DM_DEVICE_LIB`
+can still override the packaged library for development, and the motor-layer installer/downloader
+remains a recovery fallback. The loader probes both the
 v1.0 (`damiao_*`/`device_*`) and v1.1 (`dmcan_*`) ABIs and reports missing symbols and dynamic
-loader dependency errors explicitly. Linux prefers the broadly usable v1.0 runtime and falls back
-to v1.1; Windows and macOS keep the same Python call. Each Controller owns only its selected
+loader dependency errors explicitly. Linux x86_64 uses v1.0 with an isolated compatible C++
+runtime; Linux ARM64, Windows, and macOS use v1.1. Each Controller owns only its selected
 channel. v1.1 releases the shared physical USB handle after the last Controller closes. Because the
 official Linux v1.0 runtime cannot reliably reopen device index 0 in the same process after a full
 device teardown, v1.0 instead closes each channel and all motor-layer threads/clients but retains

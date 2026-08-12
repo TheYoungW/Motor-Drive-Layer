@@ -54,11 +54,15 @@ jobs:
               assert any(name.endswith("/licenses/LICENSE") for name in names)
               assert any(name.endswith("motor_drive_layer/lib/libmotor_abi.so") for name in names)
               assert any(name.endswith("motor_drive_layer/lib/libarticore_runtime.so") for name in names)
+              assert any(name.endswith("motor_drive_layer/lib/dm_device/libdm_device.so") for name in names)
+              assert any(name.endswith("motor_drive_layer/lib/dm_device/libstdc++.so.6") for name in names)
           PY
           python -m pip install --force-reinstall --no-deps bindings/python/dist/*.whl
           cd /tmp
           python - <<'PY'
           import motor_drive_layer
+          import ctypes
+          import ctypes.util
           from importlib.metadata import version
 
           assert motor_drive_layer.get_version() == version("motor-drive-layer")
@@ -72,6 +76,13 @@ jobs:
           assert motor_drive_layer.articore_runtime_capabilities()["current_position_hold"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["realtime_joint_mailbox"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["joint_trajectory"] is True
+          vendor_path = motor_drive_layer.ensure_dm_device_runtime(auto_download=False)
+          assert vendor_path.parent.name == "dm_device"
+          assert vendor_path.is_file()
+          libusb = ctypes.util.find_library("usb-1.0")
+          assert libusb
+          ctypes.CDLL(libusb, mode=ctypes.RTLD_GLOBAL)
+          ctypes.CDLL(str(vendor_path))
           PY
 
       - name: Check shell helper syntax

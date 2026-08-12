@@ -45,6 +45,13 @@ target_compile_features(motor_abi PRIVATE cxx_std_17)
 target_include_directories(motor_abi PRIVATE include)
 target_link_libraries(motor_abi PRIVATE damiao::runtime)
 set_target_properties(motor_abi PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+if(UNIX AND NOT APPLE)
+  set_target_properties(
+    motor_abi PROPERTIES
+    BUILD_RPATH "\$ORIGIN/dm_device"
+    INSTALL_RPATH "\$ORIGIN/dm_device"
+  )
+endif()
 
 include(GNUInstallDirs)
 install(

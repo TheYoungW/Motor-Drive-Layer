@@ -21,7 +21,11 @@ jobs:
             runner: ubuntu-22.04
             family: linux
             deployment_target: ""
-            wheel_platform: ""
+            # The bundled v1.0 vendor runtime needs two newer GLIBCXX symbols,
+            # which are supplied by the wheel's private libstdc++.  Auditwheel
+            # treats libstdc++ as a system library and would therefore
+            # over-tag this Ubuntu 22.04-compatible wheel as manylinux_2_39.
+            wheel_platform: "manylinux_2_34_x86_64"
           - name: linux-aarch64
             runner: ubuntu-22.04-arm
             family: linux
@@ -72,7 +76,13 @@ jobs:
         run: python -m pytest -q bindings/python/tests
 
       - name: Build platform wheel
-        if: matrix.family != 'macos'
+        if: matrix.family != 'macos' && matrix.name != 'linux-x86_64'
+        run: python -m build --wheel bindings/python
+
+      - name: Build self-contained Linux x86_64 wheel
+        if: matrix.name == 'linux-x86_64'
+        env:
+          _PYTHON_HOST_PLATFORM: ${{ matrix.wheel_platform }}
         run: python -m build --wheel bindings/python
 
       - name: Build macOS platform wheel
@@ -83,10 +93,16 @@ jobs:
         run: python -m build --wheel bindings/python
 
       - name: Repair Linux wheel
-        if: matrix.family == 'linux'
+        if: matrix.family == 'linux' && matrix.name != 'linux-x86_64'
         run: |
           python -m pip install --upgrade auditwheel patchelf
           python -m auditwheel repair bindings/python/dist/*.whl --wheel-dir wheelhouse
+
+      - name: Collect self-contained Linux x86_64 wheel
+        if: matrix.name == 'linux-x86_64'
+        run: |
+          mkdir -p wheelhouse
+          cp bindings/python/dist/*.whl wheelhouse/
 
       - name: Repair macOS wheel
         if: matrix.family == 'macos'
@@ -104,7 +120,47 @@ jobs:
       - name: Install and verify wheel
         run: |
           python -c "from pathlib import Path; import subprocess, sys; wheel = next(Path('wheelhouse').glob('*.whl')); subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-deps', str(wheel)])"
-          python -c "from importlib.metadata import version; import motor_drive_layer as mdl; assert mdl.get_version() == version('motor-drive-layer'); assert mdl.abi_version() == '0.5.0-cpp'; assert mdl.abi_capabilities()['features']['register_metadata'] is True; assert mdl.articore_runtime_library_path(); assert mdl.articore_runtime_abi_version() == '1.3'; assert mdl.articore_runtime_capabilities()['gripper_protection'] is True; assert mdl.articore_runtime_capabilities()['current_position_hold'] is True; assert mdl.articore_runtime_capabilities()['motor_presence'] is True; assert mdl.articore_runtime_capabilities()['realtime_joint_mailbox'] is True; assert mdl.articore_runtime_capabilities()['joint_trajectory'] is True"
+          python -c "from importlib.metadata import version; import motor_drive_layer as mdl; assert mdl.get_version() == version('motor-drive-layer'); assert mdl.abi_version() == '0.5.0-cpp'; assert mdl.abi_capabilities()['features']['register_metadata'] is True; assert mdl.articore_runtime_library_path(); assert mdl.articore_runtime_abi_version() == '1.3'; assert mdl.articore_runtime_capabilities()['gripper_protection'] is True; assert mdl.articore_runtime_capabilities()['current_position_hold'] is True; assert mdl.articore_runtime_capabilities()['motor_presence'] is True; assert mdl.articore_runtime_capabilities()['realtime_joint_mailbox'] is True; assert mdl.articore_runtime_capabilities()['joint_trajectory'] is True; vendor = mdl.ensure_dm_device_runtime(auto_download=False); assert vendor.parent.name == 'dm_device' and vendor.is_file()"
+
+      - name: Verify bundled Linux x86_64 vendor dependencies
+        if: matrix.name == 'linux-x86_64'
+        run: |
+          cd /tmp
+          env -u LD_LIBRARY_PATH -u MOTOR_DM_DEVICE_LIB python - <<'PY'
+          import ctypes
+          import ctypes.util
+          import re
+          import subprocess
+          from pathlib import Path
+          import motor_drive_layer as mdl
+
+          # Loading motor_abi first resolves libstdc++ from its private RPATH.
+          assert mdl.abi_version() == "0.5.0-cpp"
+          vendor = mdl.ensure_dm_device_runtime(auto_download=False)
+          package_lib = Path(mdl.__file__).resolve().parent / "lib"
+          linkage = subprocess.check_output(
+              ["ldd", str(package_lib / "libmotor_abi.so")], text=True
+          )
+          assert "/dm_device/libstdc++.so.6" in linkage, linkage
+
+          # We intentionally supply the newer GLIBCXX definitions privately;
+          # all ELF files must still stay within the claimed glibc baseline.
+          for library in package_lib.rglob("*.so*"):
+              versions = re.findall(
+                  r"GLIBC_(\d+)\.(\d+)",
+                  subprocess.check_output(
+                      ["readelf", "--version-info", str(library)], text=True
+                  ),
+              )
+              assert not versions or max(
+                  (int(major), int(minor)) for major, minor in versions
+              ) <= (2, 34), library
+
+          libusb = ctypes.util.find_library("usb-1.0")
+          assert libusb, "libusb-1.0 was not found on the runner"
+          ctypes.CDLL(libusb, mode=ctypes.RTLD_GLOBAL)
+          ctypes.CDLL(str(vendor))
+          PY
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v7

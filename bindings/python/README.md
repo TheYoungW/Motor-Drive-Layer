@@ -17,8 +17,9 @@ transport is cross-platform; SocketCAN transports remain Linux-only.
 DM-USB2FDCAN Dual works with its original `dual_app` firmware through
 `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000,
 data_bitrate=5_000_000)`. CH0 and CH1 are independently selectable, old positional arguments remain
-compatible, and the loader probes both vendor v1.0 and v1.1 ABIs. Install the separate vendor
-runtime with `motor-drive-layer-install-dm-device --download` or set `MOTOR_DM_DEVICE_LIB`.
+compatible, and the loader probes both vendor v1.0 and v1.1 ABIs. The matching vendor runtime is
+included in every platform wheel; no separate download command is required. Set
+`MOTOR_DM_DEVICE_LIB` only when intentionally overriding the packaged runtime.
 On final Controller close, v1.1 fully tears down its device session. The Linux v1.0 runtime instead
 closes the selected channels and motor-layer resources but retains its legacy context/device until
 process exit, allowing a later `Controller.from_dm_device(...)` call to reconnect reliably in the

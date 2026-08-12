@@ -71,6 +71,16 @@ def test_linux_runtime_candidates_include_v10_fallback(monkeypatch) -> None:
     assert candidates[0].relpath == "linux/libdm_device.so"
 
 
+def test_linux_arm_prefers_compatible_v11_runtime(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module.sys, "platform", "linux")
+    monkeypatch.setattr(runtime_module.platform, "machine", lambda: "aarch64")
+
+    candidates = runtime_module._platform_runtimes()
+
+    assert [item.version for item in candidates] == ["v1.1.0", "v1.0.0"]
+    assert candidates[0].relpath == "linux/arm64/libdm_device.so"
+
+
 def test_runtime_download_falls_back_to_v10(monkeypatch, tmp_path) -> None:
     candidates = [
         runtime_module.DmDeviceRuntime("v1.1.0", "linux/x86_64/libdm_device.so", "libdm_device.so"),
@@ -99,3 +109,30 @@ def test_runtime_download_falls_back_to_v10(monkeypatch, tmp_path) -> None:
     assert attempts == ["v1.1.0", "v1.0.0"]
     assert path.read_bytes() == b"legacy runtime"
     assert path.parts[-3:] == ("v1.0.0", "linux", "libdm_device.so")
+
+
+def test_runtime_auto_download_is_enabled_by_default(monkeypatch, tmp_path) -> None:
+    candidate = runtime_module.DmDeviceRuntime(
+        "v1.0.0", "linux/libdm_device.so", "libdm_device.so"
+    )
+    monkeypatch.delenv("MOTOR_DM_DEVICE_LIB", raising=False)
+    monkeypatch.delenv("MOTOR_DM_DEVICE_AUTO_DOWNLOAD", raising=False)
+    monkeypatch.setattr(runtime_module, "_platform_runtimes", lambda: [candidate])
+    monkeypatch.setattr(
+        runtime_module,
+        "_packaged_runtime_path",
+        lambda _item: tmp_path / "missing-package" / "libdm_device.so",
+    )
+    monkeypatch.setattr(runtime_module, "_source_runtime_path", lambda _item: None)
+    monkeypatch.setattr(runtime_module, "_cache_root", lambda: tmp_path / "cache")
+
+    def download(_item, dst, _quiet):
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"downloaded by motor layer")
+        return dst
+
+    monkeypatch.setattr(runtime_module, "_download_runtime", download)
+
+    path = runtime_module.ensure_dm_device_runtime(quiet=True)
+
+    assert path.read_bytes() == b"downloaded by motor layer"
