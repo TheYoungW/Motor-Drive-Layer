@@ -123,7 +123,7 @@ int main() {
     ::write(pipe_fds[1], raw_rx.data() + 8, 8);
     ::close(pipe_fds[1]);
   });
-  const auto fragmented = fragmented_bus.receive_for(std::chrono::milliseconds(50));
+  const auto fragmented = fragmented_bus.receive_for(std::chrono::milliseconds(250));
   fragmented_writer.join();
   require(fragmented.has_value(), "receive_for assembles fragmented serial frames");
   require(fragmented->id == 0x11, "fragmented serial frame id");

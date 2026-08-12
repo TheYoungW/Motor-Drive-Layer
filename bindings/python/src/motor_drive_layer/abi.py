@@ -268,10 +268,6 @@ def articore_runtime_library_path() -> str:
 
 
 def _articore_runtime_metadata() -> tuple[int, int]:
-    # Articore runtime 1.4 calls the generic motor ABI for native enable
-    # transactions. Preload the adjacent dependency for Windows and macOS
-    # loaders before opening the product runtime itself.
-    get_abi()
     library = ctypes.CDLL(articore_runtime_library_path())
     library.articore_runtime_abi_version.restype = c_uint32
     library.articore_runtime_capabilities.restype = c_uint64

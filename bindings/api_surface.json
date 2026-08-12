@@ -170,6 +170,7 @@
       "abi_metadata": [
         "articore_runtime_abi_version",
         "articore_runtime_capabilities",
+        "articore_runtime_create_ex",
         "articore_runtime_get_last_enable_report"
       ],
       "status": "aligned"

@@ -333,6 +333,19 @@ ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
     void* right_controller,
     const ArticoreMotorDescriptor* motors,
     uint32_t motor_count);
+// ABI 1.4 entry point. The two additive callbacks let the product runtime own
+// native enable without creating a shared-library dependency on libmotor_abi.
+// Language bindings pass motor_controller_enable_all and motor_handle_enable.
+ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex(
+    const ArticoreRuntimeConfig* config,
+    const ArticoreMotorApi* motor_api,
+    void* controller_group,
+    void* left_controller,
+    void* right_controller,
+    const ArticoreMotorDescriptor* motors,
+    uint32_t motor_count,
+    ArticoreControllerCallFn controller_enable_all,
+    ArticoreControllerCallFn motor_enable);
 ARTICORE_RUNTIME_API void articore_runtime_free(ArticoreRuntime* runtime);
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_connect(ArticoreRuntime* runtime);

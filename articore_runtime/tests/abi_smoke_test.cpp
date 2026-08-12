@@ -4,6 +4,8 @@
 #include "articore/runtime_abi.h"
 
 int main() {
+  const auto create_ex = &articore_runtime_create_ex;
+  const auto enable_report = &articore_runtime_get_last_enable_report;
   const auto version = articore_runtime_abi_version();
   const auto capabilities = articore_runtime_capabilities();
   const uint64_t required = ARTICORE_CAP_COMMAND_WATCHDOG |
@@ -16,7 +18,8 @@ int main() {
                             ARTICORE_CAP_REALTIME_JOINT_MAILBOX |
                             ARTICORE_CAP_JOINT_TRAJECTORY |
                             ARTICORE_CAP_ATOMIC_ENABLE;
-  if (version != 0x00010004U || (capabilities & required) != required) {
+  if (!create_ex || !enable_report || version != 0x00010004U ||
+      (capabilities & required) != required) {
     std::cerr << "Articore runtime ABI metadata is incomplete\n";
     return 1;
   }

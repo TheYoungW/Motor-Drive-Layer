@@ -5,7 +5,6 @@
 #include <vector>
 
 #include "articore/runtime_abi.h"
-#include "motor_abi.h"
 #include "runtime.hpp"
 
 struct ArticoreRuntime {
@@ -38,15 +37,6 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
   return *runtime->runtime;
 }
 
-int32_t native_controller_enable_all(void* controller) {
-  return motor_controller_enable_all(
-      static_cast<MotorController*>(controller));
-}
-
-int32_t native_motor_enable(void* motor) {
-  return motor_handle_enable(static_cast<MotorHandle*>(motor));
-}
-
 }  // namespace
 
 extern "C" {
@@ -77,6 +67,21 @@ ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
     void* right_controller,
     const ArticoreMotorDescriptor* motors,
     uint32_t motor_count) {
+  return articore_runtime_create_ex(
+      config, motor_api, controller_group, left_controller, right_controller,
+      motors, motor_count, nullptr, nullptr);
+}
+
+ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex(
+    const ArticoreRuntimeConfig* config,
+    const ArticoreMotorApi* motor_api,
+    void* controller_group,
+    void* left_controller,
+    void* right_controller,
+    const ArticoreMotorDescriptor* motors,
+    uint32_t motor_count,
+    ArticoreControllerCallFn controller_enable_all,
+    ArticoreControllerCallFn motor_enable) {
   if (!config || !motor_api || (!motors && motor_count > 0)) {
     g_last_error = "invalid Articore runtime creation arguments";
     return nullptr;
@@ -85,8 +90,7 @@ ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
     std::vector<ArticoreMotorDescriptor> descriptors(motors, motors + motor_count);
     auto value = std::make_unique<articore::SafetyRuntime>(
         *config, *motor_api, controller_group, left_controller, right_controller,
-        std::move(descriptors), native_controller_enable_all,
-        native_motor_enable);
+        std::move(descriptors), controller_enable_all, motor_enable);
     g_last_error = "ok";
     return new ArticoreRuntime(std::move(value));
   } catch (const std::exception& error) {

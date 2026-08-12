@@ -24,6 +24,10 @@ only clears it after disabled feedback and transport health have been confirmed.
 the runtime enable entry point directly instead of enabling individual arms first. If a complete
 fresh confirmation shows one motor is still `DISABLED`, the runtime retries only that motor once;
 there is no unbounded enable retry loop.
+SDK bindings create ABI 1.4 runtimes with `articore_runtime_create_ex()` and pass the generic
+`motor_controller_enable_all` and `motor_handle_enable` function pointers. This preserves the
+separate-library boundary and avoids a direct DLL/dylib dependency between the product runtime and
+`libmotor_abi`; the original `articore_runtime_create()` remains available for ABI 1.3 callers.
 
 Runtime ABI 1.3 added time-parameterized joint trajectories. The runtime stores exactly one active
 trajectory as start/goal/time/profile state and computes the current position and velocity at each

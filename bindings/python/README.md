@@ -13,6 +13,8 @@ confirmation, and all-motor rollback. Runtime ABI 1.3 exposes the
 native latest-value joint mailbox and single active trajectory engine in addition to
 `current_position_hold`: arm safe hold snapshots fresh cached positions and rejects stale or
 faulted feedback instead of replaying the previous user target.
+SDK bindings use `articore_runtime_create_ex()` and pass the motor enable callbacks explicitly;
+the two packaged native libraries remain independently loadable on Linux, Windows, and macOS.
 Published wheels cover Linux x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x64. The serial
 transport is cross-platform; SocketCAN transports remain Linux-only.
 
