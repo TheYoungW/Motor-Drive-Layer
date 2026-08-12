@@ -66,7 +66,9 @@ PyPI wheels are built by GitHub Actions for Linux x86_64 and ARM64, macOS Intel 
 and Windows x64. The Damiao serial transport is available on all of those platforms. SocketCAN and
 SocketCAN-FD are Linux-only. The direct `dm-device` transport includes the matching redistributable
 vendor runtime in every platform wheel. A host USB driver may still be required where the
-operating system does not already provide one.
+operating system does not already provide one. DaMiao's current official macOS v1.1 runtime
+declares macOS 26 as its minimum deployment target, so wheels containing that runtime carry the
+matching `macosx_26_0` tag.
 
 Typical serial device names are `/dev/ttyACM0` on Linux, `/dev/cu.usbmodem*` on macOS, and `COM3`
 on Windows.

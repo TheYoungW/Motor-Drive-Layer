@@ -20,6 +20,8 @@ data_bitrate=5_000_000)`. CH0 and CH1 are independently selectable, old position
 compatible, and the loader probes both vendor v1.0 and v1.1 ABIs. The matching vendor runtime is
 included in every platform wheel; no separate download command is required. Set
 `MOTOR_DM_DEVICE_LIB` only when intentionally overriding the packaged runtime.
+The current official macOS v1.1 dylib requires macOS 26, and the packaged wheel is tagged
+accordingly rather than claiming compatibility with an older system.
 On final Controller close, v1.1 fully tears down its device session. The Linux v1.0 runtime instead
 closes the selected channels and motor-layer resources but retains its legacy context/device until
 process exit, allowing a later `Controller.from_dm_device(...)` call to reconnect reliably in the
