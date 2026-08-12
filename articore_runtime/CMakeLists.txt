@@ -18,13 +18,14 @@ set_target_properties(
 
 add_library(articore_runtime SHARED src/runtime_abi.cpp)
 add_library(articore::runtime ALIAS articore_runtime)
-target_link_libraries(articore_runtime PRIVATE articore::runtime_core)
+target_link_libraries(articore_runtime PRIVATE articore::runtime_core motor_abi)
 target_include_directories(
   articore_runtime
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
     $<INSTALL_INTERFACE:include>
   PRIVATE src
+          ../cpp_damiao/include
 )
 target_compile_features(articore_runtime PUBLIC cxx_std_17)
 target_compile_definitions(
@@ -34,8 +35,14 @@ if(UNIX AND NOT APPLE)
   target_link_options(articore_runtime PRIVATE "-Wl,--exclude-libs,ALL")
   set_target_properties(
     articore_runtime PROPERTIES
-    BUILD_RPATH "\$ORIGIN/dm_device"
-    INSTALL_RPATH "\$ORIGIN/dm_device"
+    BUILD_RPATH "\$ORIGIN:\$ORIGIN/dm_device"
+    INSTALL_RPATH "\$ORIGIN:\$ORIGIN/dm_device"
+  )
+elseif(APPLE)
+  set_target_properties(
+    articore_runtime PROPERTIES
+    BUILD_RPATH "@loader_path"
+    INSTALL_RPATH "@loader_path"
   )
 endif()
 set_target_properties(

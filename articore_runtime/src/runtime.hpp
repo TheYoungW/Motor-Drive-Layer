@@ -40,7 +40,9 @@ class SafetyRuntime {
                 void* controller_group,
                 void* left_controller,
                 void* right_controller,
-                std::vector<ArticoreMotorDescriptor> motors);
+                std::vector<ArticoreMotorDescriptor> motors,
+                ArticoreControllerCallFn controller_enable_all = nullptr,
+                ArticoreControllerCallFn motor_enable = nullptr);
   ~SafetyRuntime();
 
   SafetyRuntime(const SafetyRuntime&) = delete;
@@ -50,6 +52,7 @@ class SafetyRuntime {
   void configure_joints(const ArticoreJointControlConfig* configs,
                         uint32_t count);
   void enable(ArticoreControlMode mode);
+  ArticoreEnableReport last_enable_report() const;
   void submit_pos_vel(const ArticorePosVelCommand* commands, uint32_t count);
   void submit_mit(const ArticoreMitCommand* commands, uint32_t count);
   void submit_gripper_mit(const ArticoreMitCommand* commands, uint32_t count);
@@ -118,6 +121,11 @@ class SafetyRuntime {
     std::string last_error;
   };
 
+  struct MissingMotor {
+    uint8_t side = 0;
+    uint32_t id = 0;
+  };
+
   struct JointControlConfig {
     float lower_position = 0.0f;
     float upper_position = 0.0f;
@@ -158,7 +166,20 @@ class SafetyRuntime {
 
   void worker_loop();
   bool run_arm_control_cycle(Clock::time_point now, std::string& error);
-  void initialize_arm_mailbox_from_feedback(ArticoreControlMode mode);
+  void initialize_arm_mailbox_from_feedback(ArticoreControlMode mode,
+                                            bool require_enabled);
+  bool request_feedback_parallel(uint32_t timeout_ms,
+                                 std::vector<MissingMotor>& missing_motors,
+                                 std::string& error);
+  bool confirm_enabled_feedback(Clock::time_point deadline,
+                                std::vector<MissingMotor>& missing_motors,
+                                std::string& error);
+  void update_enable_report(bool success,
+                            bool disable_confirmed,
+                            const std::vector<MissingMotor>& missing_motors,
+                            const std::string& error);
+  void initialize_enabled_state(ArticoreControlMode mode);
+  bool send_initial_hold(ArticoreControlMode mode, std::string& error);
   void cancel_active_trajectory_locked(ArticoreTrajectoryStatus status,
                                        const std::string& error);
   void finish_trajectory_locked(uint64_t id,
@@ -185,7 +206,7 @@ class SafetyRuntime {
   bool refresh_feedback_health(bool recovery_check, bool allow_held_grippers,
                                std::string& error);
   bool refresh_transport_health(std::string& error);
-  void seed_gripper_targets_from_feedback();
+  void seed_gripper_targets_from_feedback(bool activate);
   std::string motor_error(const std::string& fallback) const;
   void set_side_error_locked(uint8_t side, const std::string& error,
                              bool send_failure);
@@ -199,6 +220,8 @@ class SafetyRuntime {
   ArticoreMotorApi api_{};
   void* controller_group_ = nullptr;
   void* controllers_[2]{};
+  ArticoreControllerCallFn controller_enable_all_ = nullptr;
+  ArticoreControllerCallFn motor_enable_ = nullptr;
   bool active_sides_[2]{};
   std::vector<MotorRecord> motors_;
   std::map<std::string, ArticorePresenceState> presence_;
@@ -212,6 +235,7 @@ class SafetyRuntime {
   std::thread worker_;
   bool stopping_ = false;
   bool hardware_transition_ = false;
+  bool enable_transaction_ = false;
   ArticoreSafetyState state_ = ARTICORE_DISCONNECTED;
   ArticoreControlMode mode_ = ARTICORE_MODE_PV;
   bool fault_latched_ = false;
@@ -239,6 +263,7 @@ class SafetyRuntime {
   std::vector<ArticorePosVelCommand> safe_pv_;
   std::vector<ArticoreMitCommand> safe_mit_;
   std::vector<ArticoreMitCommand> safe_grippers_;
+  ArticoreEnableReport last_enable_report_{};
 };
 
 }  // namespace articore

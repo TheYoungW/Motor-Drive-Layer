@@ -14,8 +14,9 @@ int main() {
                             ARTICORE_CAP_CURRENT_POSITION_HOLD |
                             ARTICORE_CAP_MOTOR_PRESENCE |
                             ARTICORE_CAP_REALTIME_JOINT_MAILBOX |
-                            ARTICORE_CAP_JOINT_TRAJECTORY;
-  if (version != 0x00010003U || (capabilities & required) != required) {
+                            ARTICORE_CAP_JOINT_TRAJECTORY |
+                            ARTICORE_CAP_ATOMIC_ENABLE;
+  if (version != 0x00010004U || (capabilities & required) != required) {
     std::cerr << "Articore runtime ABI metadata is incomplete\n";
     return 1;
   }

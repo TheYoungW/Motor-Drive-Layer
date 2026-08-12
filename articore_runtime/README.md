@@ -13,7 +13,19 @@ watchdog. The worker independently performs command timeout handling,
 feedback and transport-health checks, safe-hold transmission, fault latching, linked disable, and
 disable confirmation while Python is blocked or has stopped running.
 
-Runtime ABI 1.3 adds time-parameterized joint trajectories. The runtime stores exactly one active
+Runtime ABI 1.4 makes enable a native all-or-nothing transaction. It refreshes both channels in
+parallel while motors are disabled, captures current positions, enables CH0 and CH1 concurrently,
+sends the first arm and gripper hold frames before waiting for confirmation, and continues the
+hold from the persistent worker. Both channels are refreshed in parallel until every motor reports
+fresh `ENABLED` feedback within `enable_grace_ms`. Any failure latches `FAULT`, attempts every
+motor disable, confirms physical disable, and remains available through a structured per-channel,
+per-motor enable report. `disable()` is valid in `FAULT` and never clears the latch; `recover()`
+only clears it after disabled feedback and transport health have been confirmed. SDKs must call
+the runtime enable entry point directly instead of enabling individual arms first. If a complete
+fresh confirmation shows one motor is still `DISABLED`, the runtime retries only that motor once;
+there is no unbounded enable retry loop.
+
+Runtime ABI 1.3 added time-parameterized joint trajectories. The runtime stores exactly one active
 trajectory as start/goal/time/profile state and computes the current position and velocity at each
 control tick; it does not allocate a point FIFO. `MIN_JERK` uses the normalized quintic profile and
 accounts for its 1.875 peak-velocity factor when choosing duration; `LINEAR` is the only other
@@ -37,8 +49,8 @@ gripper control loop is involved in the native dual-arm path.
 
 In `FAULT`, arms are always linked-disabled while the product setting chooses whether grippers
 keep the last safe target or are disabled. A failed gripper hold falls back to individual motor
-disable attempts. Recovery first disables every held gripper and confirms fresh disabled feedback
-before returning to `READY`. If no complete arm safety target exists, command failure enters
+disable attempts. An explicit `disable()` disables every held gripper without clearing the fault;
+recovery confirms fresh disabled feedback before returning to `READY`. If no complete arm safety target exists, command failure enters
 `FAULT` instead of sending an empty arm hold.
 
 `runtime_abi.h` is the stable boundary used by `arx_d_can.sdk.native_safety`. The optional generic
@@ -47,7 +59,7 @@ with the motor function-table ABI and falls back to motor feedback health when t
 present. ABI version and capability functions make mismatches fail during runtime creation rather
 than during motion.
 
-The controller feedback callback in runtime ABI 1.3 matches
+The controller feedback callback introduced in runtime ABI 1.3 matches
 `motor_controller_request_feedback_all_ex()`: it returns a stable motor error code and fills the
 expected/received/missing counts plus missing motor IDs. Disable confirmation and safety diagnostics
 consume those fields directly; diagnostic error text is retained for logs but is never parsed to

@@ -30,6 +30,7 @@ enum ArticoreRuntimeCapability {
   ARTICORE_CAP_MOTOR_PRESENCE = 1ULL << 7,
   ARTICORE_CAP_REALTIME_JOINT_MAILBOX = 1ULL << 8,
   ARTICORE_CAP_JOINT_TRAJECTORY = 1ULL << 9,
+  ARTICORE_CAP_ATOMIC_ENABLE = 1ULL << 10,
 };
 
 enum ArticorePresenceState {
@@ -160,6 +161,32 @@ typedef struct ArticoreFeedbackReport {
   uint32_t received_count;
   uint32_t missing_count;
 } ArticoreFeedbackReport;
+
+typedef struct ArticoreEnableMotorResult {
+  uint8_t side;
+  uint8_t can_id;
+  uint8_t status_code;
+  uint8_t has_feedback;
+  uint8_t feedback_fresh;
+  uint8_t enabled;
+  char name[64];
+} ArticoreEnableMotorResult;
+
+typedef struct ArticoreEnableReport {
+  // Caller initializes this to sizeof(ArticoreEnableReport).
+  uint32_t struct_size;
+  int32_t success;
+  int32_t disable_confirmed;
+  uint32_t expected_count;
+  uint32_t enabled_count;
+  uint32_t missing_count;
+  uint32_t failure_count;
+  uint8_t missing_motor_sides[32];
+  uint32_t missing_motor_ids[32];
+  uint32_t motor_count;
+  ArticoreEnableMotorResult motors[32];
+  char error[512];
+} ArticoreEnableReport;
 
 typedef struct ArticoreDriverTransportHealth {
   int32_t connected;
@@ -309,8 +336,17 @@ ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
 ARTICORE_RUNTIME_API void articore_runtime_free(ArticoreRuntime* runtime);
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_connect(ArticoreRuntime* runtime);
+// With ARTICORE_CAP_ATOMIC_ENABLE this owns the complete native transaction:
+// fresh disabled-state position capture, parallel controller enable, immediate
+// current-position hold, parallel enabled-feedback confirmation, and linked
+// disable rollback on every failure. SDKs must not enable motors beforehand.
 ARTICORE_RUNTIME_API int32_t articore_runtime_enable(
     ArticoreRuntime* runtime, int32_t mode);
+// Returns the stable result of the most recent native enable transaction.
+// This remains available after enable fails and rolls every motor back to the
+// disabled state.
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_last_enable_report(
+    ArticoreRuntime* runtime, ArticoreEnableReport* report);
 // Configures every active arm joint before connect. Trajectories require this
 // configuration so position, velocity and torque limits are explicit.
 ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joints(
@@ -355,6 +391,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_wait_trajectory(
     ArticoreTrajectoryInfo* info);
 ARTICORE_RUNTIME_API int32_t articore_runtime_report_feedback_failure(
     ArticoreRuntime* runtime, uint8_t side, const char* reason);
+// Valid in every connected state, including latched FAULT. A successful call
+// confirms physical disable but intentionally does not clear a FAULT latch.
 ARTICORE_RUNTIME_API int32_t articore_runtime_disable(ArticoreRuntime* runtime);
 ARTICORE_RUNTIME_API int32_t articore_runtime_estop(
     ArticoreRuntime* runtime, const char* reason);

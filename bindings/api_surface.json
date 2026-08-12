@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",
@@ -169,7 +169,8 @@
     "articore_runtime": {
       "abi_metadata": [
         "articore_runtime_abi_version",
-        "articore_runtime_capabilities"
+        "articore_runtime_capabilities",
+        "articore_runtime_get_last_enable_report"
       ],
       "status": "aligned"
     }

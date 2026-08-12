@@ -39,6 +39,8 @@ struct FakeDriver {
   uint32_t pv_sends = 0;
   uint32_t mit_sends = 0;
   uint32_t disable_calls[2]{};
+  uint32_t enable_calls[2]{};
+  uint32_t motor_enable_calls = 0;
   uint32_t feedback_requests = 0;
   uint32_t feedback_stats_calls = 0;
   int32_t feedback_code = 0;
@@ -47,6 +49,8 @@ struct FakeDriver {
   std::vector<uint32_t> feedback_missing_ids;
   bool fail_group = false;
   bool fail_left_disable = false;
+  bool fail_enable[2]{};
+  bool skip_left_enable_once = false;
   bool transport_connected[2]{true, true};
   bool transport_healthy[2]{true, true};
   std::string error = "injected failure";
@@ -83,6 +87,30 @@ int32_t disable_all(void* controller) {
   ++g_driver->disable_calls[side];
   for (auto& entry : g_driver->motors) entry.second.status = 0;
   return side == 0 && g_driver->fail_left_disable ? -1 : 0;
+}
+
+int32_t enable_all(void* controller) {
+  std::lock_guard<std::mutex> lock(g_driver->mutex);
+  const uint8_t side = controller == g_left_controller ? 0 : 1;
+  ++g_driver->enable_calls[side];
+  if (g_driver->fail_enable[side]) return -1;
+  for (auto& entry : g_driver->motors) {
+    const bool is_left = entry.first == reinterpret_cast<void*>(0x201);
+    if ((side == 0) != is_left) continue;
+    if (side == 0 && g_driver->skip_left_enable_once) continue;
+    entry.second.status = 1;
+  }
+  if (side == 0) g_driver->skip_left_enable_once = false;
+  return 0;
+}
+
+int32_t enable_motor(void* handle) {
+  std::lock_guard<std::mutex> lock(g_driver->mutex);
+  const auto found = g_driver->motors.find(handle);
+  if (found == g_driver->motors.end()) return -1;
+  ++g_driver->motor_enable_calls;
+  found->second.status = 1;
+  return 0;
 }
 
 int32_t disable_motor(void* handle) {
@@ -551,10 +579,14 @@ void test_fault_policy_can_hold_gripper_until_recovery() {
                 driver.motors[motors[2].motor].status == 1,
             "fault hold disables both arms but preserves the gripper");
   }
+  runtime.disable();
+  require(runtime.health().state == ARTICORE_FAULT &&
+              runtime.health().disable_confirmed == 1,
+          "disable in FAULT physically disables the held gripper");
   runtime.recover();
   require(runtime.health().state == ARTICORE_READY &&
               runtime.health().disable_confirmed == 1,
-          "recover first disables the held gripper and returns only to READY");
+          "recover clears the latch only after physical disable is confirmed");
 }
 
 void test_feedback_policy_and_linked_disable() {
@@ -639,8 +671,8 @@ void test_disable_uses_structured_feedback_report() {
           "disable consumes stable feedback code, counts, and missing IDs");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
-    require(driver.feedback_requests == 2,
-            "structured feedback confirmation runs exactly once per active side");
+    require(driver.feedback_requests >= 2 && driver.feedback_requests % 2 == 0,
+            "structured feedback confirmation retries both active sides together");
   }
 }
 
@@ -711,6 +743,97 @@ void test_enable_grace_and_fault_latch() {
   }
   require(rejected && runtime.health().state == ARTICORE_FAULT,
           "ordinary command cannot clear latched FAULT");
+}
+
+void test_atomic_enable_starts_hold_and_confirms_both_sides() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  auto cfg = config();
+  cfg.enable_grace_ms = 200;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, enable_all, enable_motor);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  const auto health = runtime.health();
+  const auto report = runtime.last_enable_report();
+  require(health.state == ARTICORE_ENABLED && health.disable_confirmed == 0,
+          "atomic enable enters ENABLED after confirmation");
+  require(report.success == 1 && report.expected_count == 3 &&
+              report.enabled_count == 3 && report.failure_count == 0,
+          "atomic enable exposes a successful structured report");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.enable_calls[0] == 1 && driver.enable_calls[1] == 1,
+            "atomic enable invokes both active controllers");
+    require(driver.pv_sends > 0 && driver.mit_sends > 0,
+            "atomic enable sends immediate arm and gripper holds");
+    require(driver.feedback_requests >= 4,
+            "atomic enable refreshes both channels before and after enable");
+  }
+}
+
+void test_atomic_enable_retries_one_disabled_motor_once() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  driver.skip_left_enable_once = true;
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, enable_all, enable_motor);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  const auto report = runtime.last_enable_report();
+  require(report.success == 1 && report.enabled_count == 3,
+          "one missed enable frame is recovered inside the transaction");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.motor_enable_calls == 1,
+            "only the still-disabled motor receives one enable retry");
+  }
+}
+
+void test_atomic_enable_failure_rolls_back_and_fault_disable_is_allowed() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  driver.fail_enable[1] = true;
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, enable_all, enable_motor);
+  runtime.connect();
+  bool rejected = false;
+  try {
+    runtime.enable(ARTICORE_MODE_PV);
+  } catch (const std::runtime_error&) {
+    rejected = true;
+  }
+  auto health = runtime.health();
+  auto report = runtime.last_enable_report();
+  require(rejected && health.state == ARTICORE_FAULT &&
+              health.disable_confirmed == 1,
+          "failed atomic enable faults and confirms rollback disable");
+  require(report.success == 0 && report.disable_confirmed == 1,
+          "failed atomic enable preserves a structured rollback report");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    for (const auto& entry : driver.motors) {
+      require(entry.second.status == 0,
+              "failed atomic enable leaves no motor enabled");
+    }
+  }
+
+  runtime.disable();
+  health = runtime.health();
+  require(health.state == ARTICORE_FAULT && health.disable_confirmed == 1,
+          "disable is idempotent in latched FAULT without clearing it");
+  runtime.recover();
+  require(runtime.health().state == ARTICORE_READY,
+          "recover clears the latch only after confirmed physical disable");
 }
 
 void test_repeated_runtime_lifecycle() {
@@ -991,6 +1114,9 @@ int main() {
     RUN_TEST(test_disable_uses_structured_feedback_report);
     RUN_TEST(test_transport_disconnect_faults_and_links_both_sides);
     RUN_TEST(test_enable_grace_and_fault_latch);
+    RUN_TEST(test_atomic_enable_starts_hold_and_confirms_both_sides);
+    RUN_TEST(test_atomic_enable_retries_one_disabled_motor_once);
+    RUN_TEST(test_atomic_enable_failure_rolls_back_and_fault_disable_is_allowed);
     RUN_TEST(test_repeated_runtime_lifecycle);
     RUN_TEST(test_single_side_runtime_and_gripper);
     RUN_TEST(test_motor_presence_is_fixed_and_fault_aware);

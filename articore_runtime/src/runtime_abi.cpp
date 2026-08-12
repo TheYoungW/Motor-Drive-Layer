@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "articore/runtime_abi.h"
+#include "motor_abi.h"
 #include "runtime.hpp"
 
 struct ArticoreRuntime {
@@ -37,12 +38,21 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
   return *runtime->runtime;
 }
 
+int32_t native_controller_enable_all(void* controller) {
+  return motor_controller_enable_all(
+      static_cast<MotorController*>(controller));
+}
+
+int32_t native_motor_enable(void* motor) {
+  return motor_handle_enable(static_cast<MotorHandle*>(motor));
+}
+
 }  // namespace
 
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (1U << 16) | 3U;
+  return (1U << 16) | 4U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -55,7 +65,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_CURRENT_POSITION_HOLD |
          ARTICORE_CAP_MOTOR_PRESENCE |
          ARTICORE_CAP_REALTIME_JOINT_MAILBOX |
-         ARTICORE_CAP_JOINT_TRAJECTORY;
+         ARTICORE_CAP_JOINT_TRAJECTORY |
+         ARTICORE_CAP_ATOMIC_ENABLE;
 }
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
@@ -74,7 +85,8 @@ ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
     std::vector<ArticoreMotorDescriptor> descriptors(motors, motors + motor_count);
     auto value = std::make_unique<articore::SafetyRuntime>(
         *config, *motor_api, controller_group, left_controller, right_controller,
-        std::move(descriptors));
+        std::move(descriptors), native_controller_enable_all,
+        native_motor_enable);
     g_last_error = "ok";
     return new ArticoreRuntime(std::move(value));
   } catch (const std::exception& error) {
@@ -98,6 +110,17 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_enable(ArticoreRuntime* runtime,
                                                      int32_t mode) {
   return call([&] {
     checked(runtime).enable(static_cast<ArticoreControlMode>(mode));
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_last_enable_report(
+    ArticoreRuntime* runtime, ArticoreEnableReport* report) {
+  return call([&] {
+    if (!report) throw std::invalid_argument("enable report is null");
+    if (report->struct_size < sizeof(ArticoreEnableReport)) {
+      throw std::invalid_argument("enable report struct_size is too small");
+    }
+    *report = checked(runtime).last_enable_report();
   });
 }
 
