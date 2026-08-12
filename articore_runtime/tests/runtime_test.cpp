@@ -277,12 +277,17 @@ void test_pv_watchdog_safe_hold_and_fault() {
             "safe-hold entry reads cache without a blocking feedback request");
     driver.fail_group = true;
   }
-  require(wait_for([&] { return runtime.health().state == ARTICORE_FAULT; }),
-          "safe-hold send failure enters FAULT");
-  const auto health = runtime.health();
-  require(health.disable_confirmed == 1, "FAULT confirms linked disable");
-  require(driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0,
-          "FAULT attempts both controllers");
+  require(wait_for([&] {
+            const auto health = runtime.health();
+            return health.state == ARTICORE_FAULT &&
+                   health.disable_confirmed == 1;
+          }),
+          "FAULT confirms linked disable");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0,
+            "FAULT attempts both controllers");
+  }
   runtime.recover();
   require(runtime.health().state == ARTICORE_READY,
           "recover returns only to READY");
@@ -365,8 +370,11 @@ void test_safe_hold_rejects_stale_current_position() {
   require(std::string(health.fault_reason).find("current-position hold unavailable") !=
               std::string::npos,
           "stale current-position fault explains why safe hold was rejected");
-  require(driver.pv_sends == sends_before_failure,
-          "stale feedback never sends a prior user target as safe hold");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.pv_sends == sends_before_failure,
+            "stale feedback never sends a prior user target as safe hold");
+  }
 }
 
 void test_gripper_hold_retreats_once_on_overload() {
@@ -579,7 +587,10 @@ void test_disable_does_not_stop_after_one_side_fails() {
                                   g_left_controller, g_right_controller, motors);
   runtime.connect();
   runtime.enable(ARTICORE_MODE_PV);
-  driver.fail_left_disable = true;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.fail_left_disable = true;
+  }
   bool failed = false;
   try {
     runtime.disable();
@@ -588,8 +599,11 @@ void test_disable_does_not_stop_after_one_side_fails() {
   }
   require(failed && runtime.health().state == ARTICORE_FAULT,
           "failed disable locks FAULT");
-  require(driver.disable_calls[0] >= 1 && driver.disable_calls[1] >= 1,
-          "right side is still disabled after left side failure");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.disable_calls[0] >= 1 && driver.disable_calls[1] >= 1,
+            "right side is still disabled after left side failure");
+  }
 }
 
 void test_disable_uses_structured_feedback_report() {
@@ -600,10 +614,13 @@ void test_disable_uses_structured_feedback_report() {
                                   g_left_controller, g_right_controller, motors);
   runtime.connect();
   runtime.enable(ARTICORE_MODE_PV);
-  driver.feedback_code = 4;
-  driver.feedback_expected = 2;
-  driver.feedback_received = 1;
-  driver.feedback_missing_ids = {15};
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.feedback_code = 4;
+    driver.feedback_expected = 2;
+    driver.feedback_received = 1;
+    driver.feedback_missing_ids = {15};
+  }
   bool failed = false;
   try {
     runtime.disable();
@@ -616,8 +633,11 @@ void test_disable_uses_structured_feedback_report() {
   }
   require(failed && runtime.health().state == ARTICORE_FAULT,
           "disable consumes stable feedback code, counts, and missing IDs");
-  require(driver.feedback_requests == 2,
-          "structured feedback confirmation runs exactly once per active side");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.feedback_requests == 2,
+            "structured feedback confirmation runs exactly once per active side");
+  }
 }
 
 void test_transport_disconnect_faults_and_links_both_sides() {
@@ -638,14 +658,21 @@ void test_transport_disconnect_faults_and_links_both_sides() {
     driver.transport_connected[1] = false;
     driver.transport_healthy[1] = false;
   }
-  require(wait_for([&] { return runtime.health().state == ARTICORE_FAULT; }),
-          "a disconnected transport enters latched FAULT");
+  require(wait_for([&] {
+            if (runtime.health().state != ARTICORE_FAULT) return false;
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0;
+          }),
+          "a disconnected transport enters FAULT and attempts linked disable");
   const auto health = runtime.health();
   require(health.right_transport.connected == 0 &&
               health.right_transport.healthy == 0,
           "structured health identifies the disconnected side");
-  require(driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0,
-          "transport disconnect still attempts linked disable on both sides");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0,
+            "transport disconnect still attempts linked disable on both sides");
+  }
 }
 
 void test_enable_grace_and_fault_latch() {
@@ -920,10 +947,21 @@ void test_delayed_cycle_skips_missed_frames_and_reenable_seeds_feedback() {
     sends_before_delay = driver.pv_send_times.size();
     driver.next_pv_delay_ms = 10;
   }
-  std::this_thread::sleep_for(30ms);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.pv_send_times.size() >= sends_before_delay + 6;
+          }),
+          "sender resumes after an injected delayed cycle");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
-    require(driver.pv_send_times.size() - sends_before_delay <= 12,
+    std::size_t burst_intervals = 0;
+    for (std::size_t index = sends_before_delay + 1;
+         index < sends_before_delay + 6; ++index) {
+      const auto interval = driver.pv_send_times[index] -
+                            driver.pv_send_times[index - 1];
+      if (interval < 750us) ++burst_intervals;
+    }
+    require(burst_intervals <= 1,
             "a delayed cycle skips missed periods instead of burst replaying them");
   }
 
