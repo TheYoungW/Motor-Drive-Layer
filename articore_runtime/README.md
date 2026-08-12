@@ -4,11 +4,23 @@ This directory contains single- and dual-arm Articore product policy. It is a se
 library in the Motor-Drive-Layer repository and depends on the generic motor C ABI without adding
 Yunyi or Articore concepts to `libmotor_abi`.
 
-The runtime owns one persistent worker thread. A complete PV or MIT command for all active channels
-is validated and sent through `ControllerGroup`; only a successful full-group send refreshes the
-native `steady_clock` watchdog. The worker independently performs command timeout handling,
+The runtime owns one persistent worker thread. Its arm loop uses `steady_clock` absolute deadlines
+at the configured control rate (500 Hz for Articore products), skips missed periods, and never
+replays expired frames. Complete PV or MIT commands overwrite a capacity-one latest-value mailbox;
+the control thread keeps transmitting the latest valid target through `ControllerGroup`. Only the
+first successful full-group transmission of a newly submitted target refreshes the native
+watchdog. The worker independently performs command timeout handling,
 feedback and transport-health checks, safe-hold transmission, fault latching, linked disable, and
 disable confirmation while Python is blocked or has stopped running.
+
+Runtime ABI 1.3 adds time-parameterized joint trajectories. The runtime stores exactly one active
+trajectory as start/goal/time/profile state and computes the current position and velocity at each
+control tick; it does not allocate a point FIFO. `MIN_JERK` uses the normalized quintic profile and
+accounts for its 1.875 peak-velocity factor when choosing duration; `LINEAR` is the only other
+profile. A direct joint command preempts the trajectory synchronously, a new trajectory replaces
+the old one, and terminal status remains queryable as `COMPLETED`, `PREEMPTED`, `FAILED`, or
+`CANCELED`. Enabling always seeds the mailbox from complete fresh motor feedback, while disable,
+fault, recovery, and close clear both the old target and active trajectory.
 
 When an arm enters safe hold, the runtime snapshots every arm motor's current position from the
 non-blocking feedback cache. The snapshot is accepted only when every feedback entry is fresh,
@@ -34,6 +46,12 @@ motor-drive-layer transport-health callback is used when available; the wrapper 
 with the motor function-table ABI and falls back to motor feedback health when that callback is not
 present. ABI version and capability functions make mismatches fail during runtime creation rather
 than during motion.
+
+The controller feedback callback in runtime ABI 1.3 matches
+`motor_controller_request_feedback_all_ex()`: it returns a stable motor error code and fills the
+expected/received/missing counts plus missing motor IDs. Disable confirmation and safety diagnostics
+consume those fields directly; diagnostic error text is retained for logs but is never parsed to
+choose safety behavior.
 
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations

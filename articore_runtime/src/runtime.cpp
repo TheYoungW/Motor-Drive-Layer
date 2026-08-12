@@ -65,7 +65,7 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
     throw std::invalid_argument("Articore runtime requires a controller group");
   }
   if (!api_.group_send_pos_vel || !api_.group_send_mit ||
-      !api_.controller_disable_all || !api_.controller_request_feedback_all ||
+      !api_.controller_disable_all || !api_.controller_request_feedback_all_ex ||
       !api_.motor_get_state || !api_.motor_get_feedback_stats ||
       !api_.last_error_message || !api_.motor_disable) {
     throw std::invalid_argument("Articore runtime motor API is incomplete");
@@ -166,6 +166,317 @@ void SafetyRuntime::connect() {
   }
 }
 
+void SafetyRuntime::configure_joints(
+    const ArticoreJointControlConfig* configs, uint32_t count) {
+  if (!configs || count == 0) {
+    throw std::invalid_argument("joint control configuration is empty");
+  }
+  const auto expected = static_cast<uint32_t>(std::count_if(
+      motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
+        return motor.descriptor.is_gripper == 0;
+      }));
+  if (count != expected) {
+    throw std::invalid_argument(
+        "joint control configuration must cover every active arm motor");
+  }
+  std::unordered_map<void*, JointControlConfig> configured;
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto& value = configs[i];
+    const auto found = std::find_if(
+        motors_.begin(), motors_.end(), [&](const MotorRecord& motor) {
+          return !motor.descriptor.is_gripper &&
+                 motor.descriptor.motor == value.motor;
+        });
+    if (found == motors_.end() ||
+        !finite(value.lower_position) || !finite(value.upper_position) ||
+        value.lower_position > value.upper_position ||
+        !finite(value.velocity_limit) || value.velocity_limit <= 0.0f ||
+        config_.safe_pv_velocity_limit > value.velocity_limit ||
+        !finite(value.torque_limit) || value.torque_limit <= 0.0f ||
+        !finite(value.mit_kp) || value.mit_kp < 0.0f ||
+        !finite(value.mit_kd) || value.mit_kd < 0.0f ||
+        !finite(value.mit_feedforward_torque) ||
+        std::abs(value.mit_feedforward_torque) > value.torque_limit) {
+      throw std::invalid_argument("invalid joint control configuration");
+    }
+    if (!configured.emplace(
+            value.motor,
+            JointControlConfig{value.lower_position, value.upper_position,
+                               value.velocity_limit, value.torque_limit,
+                               value.mit_kp, value.mit_kd,
+                               value.mit_feedforward_torque}).second) {
+      throw std::invalid_argument("duplicate joint control configuration");
+    }
+  }
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (state_ != ARTICORE_DISCONNECTED) {
+    throw std::runtime_error("joint configuration is fixed after connect");
+  }
+  joint_configs_ = std::move(configured);
+}
+
+const SafetyRuntime::JointControlConfig& SafetyRuntime::joint_config(
+    void* motor) const {
+  const auto found = joint_configs_.find(motor);
+  if (found == joint_configs_.end()) {
+    throw std::runtime_error(
+        "joint control configuration is required for trajectories");
+  }
+  return found->second;
+}
+
+void SafetyRuntime::validate_position_velocity_torque(
+    void* motor, float position, float velocity, float torque) const {
+  if (!finite(position) || !finite(velocity) || !finite(torque)) {
+    throw std::invalid_argument("joint command contains non-finite values");
+  }
+  const auto configured = joint_configs_.find(motor);
+  if (configured != joint_configs_.end()) {
+    const auto& limits = configured->second;
+    if (position < limits.lower_position || position > limits.upper_position) {
+      throw std::invalid_argument("joint command exceeds position limits");
+    }
+    if (std::abs(velocity) > limits.velocity_limit) {
+      throw std::invalid_argument("joint command exceeds velocity limit");
+    }
+    if (std::abs(torque) > limits.torque_limit) {
+      throw std::invalid_argument("joint command exceeds torque limit");
+    }
+    return;
+  }
+  const auto descriptor = std::find_if(
+      motors_.begin(), motors_.end(), [&](const MotorRecord& record) {
+        return record.descriptor.motor == motor;
+      });
+  if (descriptor != motors_.end() &&
+      (position < descriptor->descriptor.lower_position ||
+       position > descriptor->descriptor.upper_position)) {
+    throw std::invalid_argument("joint command exceeds position limits");
+  }
+}
+
+void SafetyRuntime::initialize_arm_mailbox_from_feedback(
+    ArticoreControlMode mode) {
+  ArmMailbox initialized;
+  initialized.valid = true;
+  initialized.user_command = false;
+  initialized.generation = arm_mailbox_.generation + 1;
+  initialized.submitted_at = Clock::now();
+  for (const auto& motor : motors_) {
+    if (motor.descriptor.is_gripper) continue;
+    ArticoreFeedbackStats stats{};
+    ArticoreMotorState state{};
+    const std::string name(motor.descriptor.name);
+    if (api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
+        !stats.has_feedback ||
+        stats.age_ns > static_cast<uint64_t>(config_.feedback_max_age_ms) *
+                           1'000'000ULL ||
+        api_.motor_get_state(motor.descriptor.motor, &state) != 0 ||
+        !state.has_value || !finite(state.pos) || !finite(state.vel) ||
+        !finite(state.torq) || state.status_code == 0 ||
+        state.status_code > 1) {
+      throw std::runtime_error(
+          name + ": fresh enabled feedback is required before enable");
+    }
+    validate_position_velocity_torque(
+        motor.descriptor.motor, state.pos, 0.0f, 0.0f);
+    if (mode == ARTICORE_MODE_PV) {
+      initialized.pv.push_back(ArticorePosVelCommand{
+          motor.descriptor.motor, state.pos, config_.safe_pv_velocity_limit});
+    } else {
+      const auto configured = joint_configs_.find(motor.descriptor.motor);
+      const auto kp = configured == joint_configs_.end()
+          ? motor.descriptor.safe_kp : configured->second.mit_kp;
+      const auto kd = configured == joint_configs_.end()
+          ? motor.descriptor.safe_kd : configured->second.mit_kd;
+      const auto tau = configured == joint_configs_.end()
+          ? 0.0f : configured->second.mit_feedforward_torque;
+      initialized.mit.push_back(ArticoreMitCommand{
+          motor.descriptor.motor, state.pos, 0.0f, kp, kd, tau});
+    }
+  }
+  if (initialized.pv.empty() && initialized.mit.empty()) {
+    throw std::runtime_error("runtime requires at least one active arm motor");
+  }
+  arm_mailbox_ = std::move(initialized);
+}
+
+void SafetyRuntime::trim_trajectory_history_locked() {
+  constexpr std::size_t kMaximumTrajectoryHistory = 64;
+  while (trajectory_history_order_.size() > kMaximumTrajectoryHistory) {
+    trajectory_history_.erase(trajectory_history_order_.front());
+    trajectory_history_order_.pop_front();
+  }
+}
+
+void SafetyRuntime::finish_trajectory_locked(
+    uint64_t id, ArticoreTrajectoryStatus status, const std::string& error,
+    Clock::time_point now) {
+  if (!active_trajectory_ || active_trajectory_->id != id) return;
+  active_trajectory_->status = status;
+  active_trajectory_->error = error;
+  active_trajectory_->finished_at = now;
+  trajectory_history_[id] = *active_trajectory_;
+  trajectory_history_order_.push_back(id);
+  active_trajectory_.reset();
+  trim_trajectory_history_locked();
+  trajectory_cv_.notify_all();
+}
+
+void SafetyRuntime::cancel_active_trajectory_locked(
+    ArticoreTrajectoryStatus status, const std::string& error) {
+  if (!active_trajectory_) return;
+  finish_trajectory_locked(active_trajectory_->id, status, error, Clock::now());
+}
+
+uint64_t SafetyRuntime::start_joint_trajectory(
+    const ArticoreJointTrajectoryTarget* targets, uint32_t count,
+    ArticoreTrajectoryProfile profile) {
+  if (!targets || count == 0) {
+    throw std::invalid_argument("joint trajectory is empty");
+  }
+  if (profile != ARTICORE_TRAJECTORY_MIN_JERK &&
+      profile != ARTICORE_TRAJECTORY_LINEAR) {
+    throw std::invalid_argument("unsupported trajectory profile");
+  }
+  const auto expected = static_cast<uint32_t>(std::count_if(
+      motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
+        return motor.descriptor.is_gripper == 0;
+      }));
+  if (count != expected) {
+    throw std::invalid_argument(
+        "trajectory must contain the complete fixed arm layout");
+  }
+
+  std::lock_guard<std::mutex> command_lock(command_mutex_);
+  uint64_t trajectory_id = 0;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    require_state_for_command();
+  }
+
+  TrajectoryRecord trajectory;
+  trajectory.profile = profile;
+  trajectory.start_time = Clock::now();
+  trajectory.joints.reserve(count);
+  double duration_seconds = 0.0;
+  std::set<void*> unique;
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto& target = targets[i];
+    if (!target.motor || !finite(target.target_position) ||
+        !finite(target.velocity_limit) || target.velocity_limit <= 0.0f ||
+        !unique.insert(target.motor).second) {
+      throw std::invalid_argument("trajectory contains invalid targets");
+    }
+    const auto motor = std::find_if(
+        motors_.begin(), motors_.end(), [&](const MotorRecord& record) {
+          return !record.descriptor.is_gripper &&
+                 record.descriptor.motor == target.motor;
+        });
+    if (motor == motors_.end()) {
+      throw std::invalid_argument("trajectory contains an unexpected motor");
+    }
+    const auto& limits = joint_config(target.motor);
+    if (target.velocity_limit > limits.velocity_limit) {
+      throw std::invalid_argument("trajectory velocity exceeds joint limit");
+    }
+    validate_position_velocity_torque(
+        target.motor, target.target_position, target.velocity_limit, 0.0f);
+
+    ArticoreFeedbackStats stats{};
+    ArticoreMotorState state{};
+    if (api_.motor_get_feedback_stats(target.motor, &stats) != 0 ||
+        !stats.has_feedback ||
+        stats.age_ns > static_cast<uint64_t>(config_.feedback_max_age_ms) *
+                           1'000'000ULL ||
+        api_.motor_get_state(target.motor, &state) != 0 || !state.has_value ||
+        !finite(state.pos) || !finite(state.vel) || !finite(state.torq) ||
+        state.status_code != 1) {
+      throw std::runtime_error(
+          std::string(motor->descriptor.name) +
+          ": complete fresh enabled feedback is required for trajectory");
+    }
+    validate_position_velocity_torque(
+        target.motor, state.pos, state.vel, state.torq);
+    const auto distance = std::abs(
+        static_cast<double>(target.target_position) - state.pos);
+    const auto factor = profile == ARTICORE_TRAJECTORY_MIN_JERK ? 1.875 : 1.0;
+    duration_seconds = std::max(
+        duration_seconds, factor * distance / target.velocity_limit);
+    trajectory.joints.push_back(TrajectoryJoint{
+        target.motor, state.pos, target.target_position, target.velocity_limit});
+  }
+
+  const auto minimum_duration =
+      std::chrono::duration<double>(1.0 / config_.control_hz);
+  trajectory.duration = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::max(std::chrono::duration<double>(duration_seconds), minimum_duration));
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    require_state_for_command();
+    cancel_active_trajectory_locked(
+        ARTICORE_TRAJECTORY_PREEMPTED, "preempted by a newer trajectory");
+    trajectory.id = next_trajectory_id_++;
+    if (trajectory.id == 0) trajectory.id = next_trajectory_id_++;
+    trajectory_id = trajectory.id;
+    active_trajectory_ = std::move(trajectory);
+  }
+  wakeup_.notify_all();
+  return trajectory_id;
+}
+
+ArticoreTrajectoryInfo SafetyRuntime::trajectory_info(
+    uint64_t trajectory_id) const {
+  if (trajectory_id == 0) {
+    throw std::invalid_argument("trajectory id must be nonzero");
+  }
+  const auto now = Clock::now();
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  const TrajectoryRecord* record = nullptr;
+  if (active_trajectory_ && active_trajectory_->id == trajectory_id) {
+    record = &*active_trajectory_;
+  } else {
+    const auto found = trajectory_history_.find(trajectory_id);
+    if (found != trajectory_history_.end()) record = &found->second;
+  }
+  if (!record) throw std::invalid_argument("unknown trajectory id");
+  ArticoreTrajectoryInfo info{};
+  info.struct_size = sizeof(info);
+  info.trajectory_id = record->id;
+  info.status = record->status;
+  info.profile = record->profile;
+  info.duration_ns = static_cast<uint64_t>(record->duration.count());
+  const auto end = record->status == ARTICORE_TRAJECTORY_RUNNING
+      ? now : record->finished_at;
+  info.elapsed_ns = age_ns(record->start_time, true, end);
+  if (info.duration_ns > 0) {
+    info.elapsed_ns = std::min(info.elapsed_ns, info.duration_ns);
+  }
+  copy_text(info.error, record->error);
+  return info;
+}
+
+ArticoreTrajectoryInfo SafetyRuntime::wait_trajectory(
+    uint64_t trajectory_id, std::chrono::milliseconds timeout) {
+  if (trajectory_id == 0) {
+    throw std::invalid_argument("trajectory id must be nonzero");
+  }
+  std::unique_lock<std::mutex> lock(state_mutex_);
+  const auto known = [&] {
+    return (active_trajectory_ && active_trajectory_->id == trajectory_id) ||
+           trajectory_history_.find(trajectory_id) != trajectory_history_.end();
+  };
+  if (!known()) throw std::invalid_argument("unknown trajectory id");
+  const auto terminal = [&] {
+    return trajectory_history_.find(trajectory_id) != trajectory_history_.end();
+  };
+  if (!terminal() && !trajectory_cv_.wait_for(lock, timeout, terminal)) {
+    throw std::runtime_error("trajectory wait timed out");
+  }
+  lock.unlock();
+  return trajectory_info(trajectory_id);
+}
+
 void SafetyRuntime::declare_motor_presence(const std::string& role,
                                            ArticorePresenceState state) {
   if (role.empty()) throw std::invalid_argument("motor role is empty");
@@ -236,9 +547,17 @@ void SafetyRuntime::enable(ArticoreControlMode mode) {
     throw std::invalid_argument("control mode must be PV or MIT");
   }
   {
+    std::lock_guard<std::mutex> command_lock(command_mutex_);
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (state_ != ARTICORE_READY || fault_latched_ || hardware_transition_) {
+        throw std::runtime_error("Articore runtime can only enable from READY");
+      }
+    }
+    initialize_arm_mailbox_from_feedback(mode);
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (state_ != ARTICORE_READY || fault_latched_ || hardware_transition_) {
-      throw std::runtime_error("Articore runtime can only enable from READY");
+      throw std::runtime_error("runtime state changed while initializing enable target");
     }
     mode_ = mode;
     state_ = ARTICORE_ENABLED;
@@ -252,6 +571,8 @@ void SafetyRuntime::enable(ArticoreControlMode mode) {
     safe_pv_.clear();
     safe_mit_.clear();
     safe_grippers_.clear();
+    cancel_active_trajectory_locked(ARTICORE_TRAJECTORY_CANCELED,
+                                    "runtime re-enabled");
     for (auto& motor : motors_) {
       motor.retreat_active = false;
       motor.protective_target_active = false;
@@ -271,6 +592,7 @@ void SafetyRuntime::enable(ArticoreControlMode mode) {
     }
     next_feedback_check_ = enabled_at_;
     next_gripper_control_ = enabled_at_;
+    next_control_tick_ = enabled_at_;
   }
   seed_gripper_targets_from_feedback();
   wakeup_.notify_all();
@@ -415,6 +737,9 @@ bool SafetyRuntime::enter_safe_hold_from_feedback(const std::string& reason,
   }
   safe_pv_ = std::move(pv);
   safe_mit_ = std::move(mit);
+  arm_mailbox_ = ArmMailbox{};
+  cancel_active_trajectory_locked(
+      ARTICORE_TRAJECTORY_FAILED, reason);
   last_fresh_feedback_ = now - std::chrono::nanoseconds(maximum_age_ns);
   state_ = ARTICORE_SAFE_HOLD;
   fault_reason_ = reason;
@@ -428,56 +753,32 @@ void SafetyRuntime::submit_pos_vel(const ArticorePosVelCommand* commands,
   if (!commands || count == 0) throw std::invalid_argument("PV command is empty");
   for (uint32_t i = 0; i < count; ++i) {
     if (!commands[i].motor || !finite(commands[i].target_position) ||
-        !finite(commands[i].velocity_limit) || commands[i].velocity_limit < 0.0f) {
+        !finite(commands[i].velocity_limit) || commands[i].velocity_limit <= 0.0f) {
       throw std::invalid_argument("PV command contains invalid values");
     }
+    validate_position_velocity_torque(
+        commands[i].motor, commands[i].target_position,
+        commands[i].velocity_limit, 0.0f);
   }
   validate_motor_set(commands, count, false);
 
-  std::string error;
-  bool send_failed = false;
   {
     std::lock_guard<std::mutex> command_lock(command_mutex_);
-    {
-      std::lock_guard<std::mutex> state_lock(state_mutex_);
-      require_state_for_command();
-      if (mode_ != ARTICORE_MODE_PV) {
-        throw std::runtime_error("cannot submit PV while runtime mode is MIT");
-      }
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    require_state_for_command();
+    if (mode_ != ARTICORE_MODE_PV) {
+      throw std::runtime_error("cannot submit PV while runtime mode is MIT");
     }
-    if (api_.group_send_pos_vel(controller_group_, commands, count) != 0) {
-      error = motor_error("ControllerGroup PV send failed");
-      send_failed = true;
-    } else {
-      std::lock_guard<std::mutex> state_lock(state_mutex_);
-      has_successful_command_ = true;
-      last_successful_command_ = Clock::now();
-      state_ = ARTICORE_RUNNING;
-      consecutive_send_failures_ = 0;
-      for (uint8_t side = 0; side < 2; ++side) {
-        if (!active_sides_[side]) continue;
-        sides_[side].send_failures = 0;
-        sides_[side].healthy = true;
-      }
-    }
-  }
-  if (send_failed) {
-    {
-      std::lock_guard<std::mutex> state_lock(state_mutex_);
-      ++consecutive_send_failures_;
-      for (uint8_t side = 0; side < 2; ++side) {
-        if (active_sides_[side]) set_side_error_locked(side, error, true);
-      }
-    }
-    std::string hold_error;
-    if (!enter_safe_hold_from_feedback("batch send failed: " + error,
-                                       hold_error)) {
-      enter_fault("batch send failed: " + error +
-                  "; current-position hold unavailable: " + hold_error);
-    }
+    cancel_active_trajectory_locked(
+        ARTICORE_TRAJECTORY_PREEMPTED, "preempted by direct PV command");
+    arm_mailbox_.valid = true;
+    arm_mailbox_.user_command = true;
+    ++arm_mailbox_.generation;
+    arm_mailbox_.submitted_at = Clock::now();
+    arm_mailbox_.pv.assign(commands, commands + count);
+    arm_mailbox_.mit.clear();
   }
   wakeup_.notify_all();
-  if (!error.empty()) throw std::runtime_error(error);
 }
 
 void SafetyRuntime::submit_mit(const ArticoreMitCommand* commands, uint32_t count) {
@@ -490,53 +791,29 @@ void SafetyRuntime::submit_mit(const ArticoreMitCommand* commands, uint32_t coun
         command.stiffness < 0.0f || command.damping < 0.0f) {
       throw std::invalid_argument("MIT command contains invalid values");
     }
+    validate_position_velocity_torque(
+        command.motor, command.target_position, command.target_velocity,
+        command.feedforward_torque);
   }
   validate_motor_set(commands, count, false);
 
-  std::string error;
-  bool send_failed = false;
   {
     std::lock_guard<std::mutex> command_lock(command_mutex_);
-    {
-      std::lock_guard<std::mutex> state_lock(state_mutex_);
-      require_state_for_command();
-      if (mode_ != ARTICORE_MODE_MIT) {
-        throw std::runtime_error("cannot submit MIT while runtime mode is PV");
-      }
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    require_state_for_command();
+    if (mode_ != ARTICORE_MODE_MIT) {
+      throw std::runtime_error("cannot submit MIT while runtime mode is PV");
     }
-    if (api_.group_send_mit(controller_group_, commands, count) != 0) {
-      error = motor_error("ControllerGroup MIT send failed");
-      send_failed = true;
-    } else {
-      std::lock_guard<std::mutex> state_lock(state_mutex_);
-      has_successful_command_ = true;
-      last_successful_command_ = Clock::now();
-      state_ = ARTICORE_RUNNING;
-      consecutive_send_failures_ = 0;
-      for (uint8_t side = 0; side < 2; ++side) {
-        if (!active_sides_[side]) continue;
-        sides_[side].send_failures = 0;
-        sides_[side].healthy = true;
-      }
-    }
-  }
-  if (send_failed) {
-    {
-      std::lock_guard<std::mutex> state_lock(state_mutex_);
-      ++consecutive_send_failures_;
-      for (uint8_t side = 0; side < 2; ++side) {
-        if (active_sides_[side]) set_side_error_locked(side, error, true);
-      }
-    }
-    std::string hold_error;
-    if (!enter_safe_hold_from_feedback("batch send failed: " + error,
-                                       hold_error)) {
-      enter_fault("batch send failed: " + error +
-                  "; current-position hold unavailable: " + hold_error);
-    }
+    cancel_active_trajectory_locked(
+        ARTICORE_TRAJECTORY_PREEMPTED, "preempted by direct MIT command");
+    arm_mailbox_.valid = true;
+    arm_mailbox_.user_command = true;
+    ++arm_mailbox_.generation;
+    arm_mailbox_.submitted_at = Clock::now();
+    arm_mailbox_.mit.assign(commands, commands + count);
+    arm_mailbox_.pv.clear();
   }
   wakeup_.notify_all();
-  if (!error.empty()) throw std::runtime_error(error);
 }
 
 void SafetyRuntime::submit_gripper_mit(const ArticoreMitCommand* commands,
@@ -1099,6 +1376,25 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
       if (recovery_check) mark_unconfirmed(name);
       continue;
     }
+    if (!finite(state.pos) || !finite(state.vel) || !finite(state.torq)) {
+      faulted_presence.push_back(motor.descriptor.motor);
+      side_ok[motor.descriptor.side] = false;
+      side_error[motor.descriptor.side] = "motor feedback is not finite";
+      if (recovery_check) mark_unconfirmed(name);
+      continue;
+    }
+    if (!motor.descriptor.is_gripper) {
+      try {
+        validate_position_velocity_torque(
+            motor.descriptor.motor, state.pos, state.vel, state.torq);
+      } catch (const std::exception& limit_error) {
+        faulted_presence.push_back(motor.descriptor.motor);
+        side_ok[motor.descriptor.side] = false;
+        side_error[motor.descriptor.side] = limit_error.what();
+        motor_faults.push_back(name);
+        continue;
+      }
+    }
     if (state.status_code > 1) {
       motor_faults.push_back(name);
       faulted_presence.push_back(motor.descriptor.motor);
@@ -1242,10 +1538,35 @@ bool SafetyRuntime::disable_hardware(bool request_feedback,
     if (request_feedback) {
       for (uint8_t side = 0; side < 2; ++side) {
         if (!active_sides_[side]) continue;
-        if (api_.controller_request_feedback_all(
-                controllers_[side], config_.disable_feedback_timeout_ms) != 0) {
+        const auto motor_count = static_cast<uint32_t>(std::count_if(
+            motors_.begin(), motors_.end(), [&](const MotorRecord& motor) {
+              return motor.descriptor.side == side;
+            }));
+        std::vector<uint32_t> missing_motor_ids(
+            std::max<uint32_t>(motor_count, 1));
+        ArticoreFeedbackReport report{};
+        report.struct_size = sizeof(report);
+        const auto feedback_code = api_.controller_request_feedback_all_ex(
+            controllers_[side], config_.disable_feedback_timeout_ms,
+            &report, missing_motor_ids.data(),
+            static_cast<uint32_t>(missing_motor_ids.size()));
+        if (feedback_code != 0) {
           ok = false;
-          const auto detail = motor_error("disable feedback confirmation failed");
+          std::string detail = "disable feedback confirmation failed: code=" +
+              std::to_string(feedback_code);
+          detail += ", expected=" + std::to_string(report.expected_count) +
+                    ", received=" + std::to_string(report.received_count) +
+                    ", missing=" + std::to_string(report.missing_count);
+          if (report.missing_count > 0) {
+            detail += ", missing motor IDs:";
+            const auto copied = std::min<std::size_t>(
+                report.missing_count, missing_motor_ids.size());
+            for (std::size_t i = 0; i < copied; ++i) {
+              detail += " " + std::to_string(missing_motor_ids[i]);
+            }
+          }
+          const auto native_error = motor_error("");
+          if (!native_error.empty()) detail += "; " + native_error;
           if (!error.empty()) error += "; ";
           error += (side == 0 ? "CH0: " : "CH1: ") + detail;
         }
@@ -1275,6 +1596,9 @@ void SafetyRuntime::enter_fault(const std::string& reason) {
     hardware_transition_ = true;
     disable_confirmed_ = false;
     fault_reason_ = reason;
+    arm_mailbox_ = ArmMailbox{};
+    cancel_active_trajectory_locked(
+        ARTICORE_TRAJECTORY_FAILED, reason);
     next_safe_hold_ = Clock::now();
     for (auto& motor : motors_) {
       if (!motor.descriptor.is_gripper) continue;
@@ -1319,6 +1643,11 @@ void SafetyRuntime::disable() {
     safe_pv_.clear();
     safe_mit_.clear();
     safe_grippers_.clear();
+    arm_mailbox_ = ArmMailbox{};
+    cancel_active_trajectory_locked(
+        confirmed ? ARTICORE_TRAJECTORY_CANCELED
+                  : ARTICORE_TRAJECTORY_FAILED,
+        confirmed ? "runtime disabled" : "disable confirmation failed");
     has_successful_command_ = false;
     hardware_transition_ = false;
     if (confirmed) {
@@ -1368,6 +1697,9 @@ void SafetyRuntime::recover() {
   safe_pv_.clear();
   safe_mit_.clear();
   safe_grippers_.clear();
+  arm_mailbox_ = ArmMailbox{};
+  cancel_active_trajectory_locked(
+      ARTICORE_TRAJECTORY_CANCELED, "runtime recovered");
   has_successful_command_ = false;
   hardware_transition_ = false;
   for (auto& entry : presence_) {
@@ -1442,18 +1774,162 @@ ArticoreSafetyHealth SafetyRuntime::health() const {
   return result;
 }
 
+bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
+                                          std::string& error) {
+  std::lock_guard<std::mutex> command_lock(command_mutex_);
+  ArticoreControlMode mode;
+  ArmMailbox mailbox;
+  std::optional<TrajectoryRecord> trajectory;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    if (hardware_transition_ ||
+        (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING)) {
+      return true;
+    }
+    mode = mode_;
+    mailbox = arm_mailbox_;
+    trajectory = active_trajectory_;
+  }
+
+  std::vector<ArticorePosVelCommand> pv;
+  std::vector<ArticoreMitCommand> mit;
+  bool trajectory_complete = false;
+  uint64_t trajectory_id = 0;
+  if (trajectory) {
+    trajectory_id = trajectory->id;
+    const auto elapsed = std::max(
+        std::chrono::nanoseconds::zero(),
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            now - trajectory->start_time));
+    const auto complete = elapsed >= trajectory->duration;
+    const double u = complete ? 1.0 : std::clamp(
+        static_cast<double>(elapsed.count()) / trajectory->duration.count(),
+        0.0, 1.0);
+    double position_scale = u;
+    double velocity_scale_per_second = complete
+        ? 0.0 : 1.0 / std::chrono::duration<double>(trajectory->duration).count();
+    if (trajectory->profile == ARTICORE_TRAJECTORY_MIN_JERK) {
+      const auto u2 = u * u;
+      const auto u3 = u2 * u;
+      const auto u4 = u3 * u;
+      const auto u5 = u4 * u;
+      position_scale = 10.0 * u3 - 15.0 * u4 + 6.0 * u5;
+      velocity_scale_per_second = complete ? 0.0 :
+          (30.0 * u2 - 60.0 * u3 + 30.0 * u4) /
+              std::chrono::duration<double>(trajectory->duration).count();
+    }
+    for (const auto& joint : trajectory->joints) {
+      const auto delta = static_cast<double>(joint.goal_position) -
+                         joint.start_position;
+      const auto position = complete ? joint.goal_position : static_cast<float>(
+          joint.start_position + position_scale * delta);
+      const auto velocity = complete ? 0.0f : static_cast<float>(
+          velocity_scale_per_second * delta);
+      const auto& config = joint_config(joint.motor);
+      validate_position_velocity_torque(
+          joint.motor, position, velocity, config.mit_feedforward_torque);
+      if (mode == ARTICORE_MODE_PV) {
+        pv.push_back(ArticorePosVelCommand{
+            joint.motor, position, joint.velocity_limit});
+      } else {
+        mit.push_back(ArticoreMitCommand{
+            joint.motor, position, velocity, config.mit_kp, config.mit_kd,
+            config.mit_feedforward_torque});
+      }
+    }
+    trajectory_complete = complete;
+  } else {
+    if (!mailbox.valid) return true;
+    pv = mailbox.pv;
+    mit = mailbox.mit;
+  }
+
+  const int32_t result = mode == ARTICORE_MODE_PV
+      ? api_.group_send_pos_vel(controller_group_, pv.data(),
+                                static_cast<uint32_t>(pv.size()))
+      : api_.group_send_mit(controller_group_, mit.data(),
+                           static_cast<uint32_t>(mit.size()));
+  if (result != 0) {
+    error = motor_error(mode == ARTICORE_MODE_PV
+                            ? "ControllerGroup PV send failed"
+                            : "ControllerGroup MIT send failed");
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    ++consecutive_send_failures_;
+    for (uint8_t side = 0; side < 2; ++side) {
+      if (active_sides_[side]) set_side_error_locked(side, error, true);
+    }
+    if (trajectory_id != 0) {
+      finish_trajectory_locked(
+          trajectory_id, ARTICORE_TRAJECTORY_FAILED, error, now);
+    }
+    return false;
+  }
+
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  consecutive_send_failures_ = 0;
+  for (uint8_t side = 0; side < 2; ++side) {
+    if (!active_sides_[side]) continue;
+    sides_[side].send_failures = 0;
+    sides_[side].healthy = true;
+  }
+  if (trajectory_id != 0) {
+    has_successful_command_ = true;
+    state_ = ARTICORE_RUNNING;
+    last_successful_command_ = now;
+    if (trajectory_complete && active_trajectory_ &&
+        active_trajectory_->id == trajectory_id) {
+      arm_mailbox_.valid = true;
+      arm_mailbox_.user_command = false;
+      ++arm_mailbox_.generation;
+      arm_mailbox_.sent_generation = arm_mailbox_.generation;
+      arm_mailbox_.submitted_at = now;
+      arm_mailbox_.pv = std::move(pv);
+      arm_mailbox_.mit = std::move(mit);
+      finish_trajectory_locked(
+          trajectory_id, ARTICORE_TRAJECTORY_COMPLETED, "", now);
+    }
+  } else if (mailbox.user_command) {
+    has_successful_command_ = true;
+    state_ = ARTICORE_RUNNING;
+    if (mailbox.generation > arm_mailbox_.sent_generation) {
+      arm_mailbox_.sent_generation = mailbox.generation;
+      last_successful_command_ = now;
+    }
+  }
+  return true;
+}
+
 void SafetyRuntime::worker_loop() {
-  const auto poll_period = std::chrono::milliseconds(2);
+  const auto control_period = std::chrono::nanoseconds(
+      1'000'000'000ULL / config_.control_hz);
+  const auto idle_poll_period = std::chrono::milliseconds(2);
   const auto feedback_period = std::chrono::nanoseconds(
       1'000'000'000ULL / config_.feedback_check_hz);
   const auto hold_period = std::chrono::nanoseconds(
       1'000'000'000ULL / config_.safe_hold_hz);
   const auto gripper_period = std::chrono::nanoseconds(
       1'000'000'000ULL / config_.gripper_control_hz);
+  const auto advance_deadline = [](Clock::time_point& deadline,
+                                   std::chrono::nanoseconds period,
+                                   Clock::time_point now) {
+    if (deadline == Clock::time_point{}) deadline = now;
+    if (deadline > now) return;
+    const auto overdue = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        now - deadline);
+    const auto periods = overdue.count() / period.count() + 1;
+    deadline += period * periods;
+  };
   for (;;) {
     {
       std::unique_lock<std::mutex> lock(state_mutex_);
-      wakeup_.wait_for(lock, poll_period, [&] { return stopping_; });
+      const auto now = Clock::now();
+      const auto deadline =
+          !hardware_transition_ &&
+                  (state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING) &&
+                  next_control_tick_ != Clock::time_point{}
+              ? next_control_tick_
+              : now + idle_poll_period;
+      wakeup_.wait_until(lock, deadline, [&] { return stopping_; });
       if (stopping_) return;
       if (hardware_transition_) continue;
     }
@@ -1462,6 +1938,7 @@ void SafetyRuntime::worker_loop() {
     bool grace_fault = false;
     bool command_timeout = false;
     bool run_feedback_check = false;
+    bool run_arm_control = false;
     bool run_hold = false;
     bool run_gripper_control = false;
     bool fault_gripper_hold = false;
@@ -1476,14 +1953,19 @@ void SafetyRuntime::worker_loop() {
                      std::chrono::milliseconds(config_.command_timeout_ms)) {
         command_timeout = true;
       }
+      if ((state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING) &&
+          now >= next_control_tick_) {
+        run_arm_control = true;
+        advance_deadline(next_control_tick_, control_period, now);
+      }
       if ((state_ == ARTICORE_RUNNING || state_ == ARTICORE_SAFE_HOLD) &&
           now >= next_feedback_check_) {
         run_feedback_check = true;
-        next_feedback_check_ = now + feedback_period;
+        advance_deadline(next_feedback_check_, feedback_period, now);
       }
       if (state_ == ARTICORE_SAFE_HOLD && now >= next_safe_hold_) {
         run_hold = true;
-        next_safe_hold_ = now + hold_period;
+        advance_deadline(next_safe_hold_, hold_period, now);
       }
       if ((state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING) &&
           now >= next_gripper_control_ &&
@@ -1493,14 +1975,14 @@ void SafetyRuntime::worker_loop() {
                                motor.has_gripper_target;
                       })) {
         run_gripper_control = true;
-        next_gripper_control_ = now + gripper_period;
+        advance_deadline(next_gripper_control_, gripper_period, now);
       }
       if (state_ == ARTICORE_FAULT &&
           config_.gripper_fault_action == ARTICORE_GRIPPER_FAULT_HOLD &&
           !safe_grippers_.empty() && now >= next_safe_hold_) {
         run_hold = true;
         fault_gripper_hold = true;
-        next_safe_hold_ = now + hold_period;
+        advance_deadline(next_safe_hold_, hold_period, now);
       }
     }
 
@@ -1516,6 +1998,18 @@ void SafetyRuntime::worker_loop() {
                     "unavailable: " + hold_error);
       }
       continue;
+    }
+    if (run_arm_control) {
+      std::string error;
+      if (!run_arm_control_cycle(now, error)) {
+        std::string hold_error;
+        if (!enter_safe_hold_from_feedback(
+                "batch send failed: " + error, hold_error)) {
+          enter_fault("batch send failed: " + error +
+                      "; current-position hold unavailable: " + hold_error);
+        }
+        continue;
+      }
     }
     if (run_feedback_check) {
       std::string error;
@@ -1535,11 +2029,19 @@ void SafetyRuntime::worker_loop() {
         {
           std::lock_guard<std::mutex> lock(state_mutex_);
           ++consecutive_feedback_failures_;
+          const bool trajectory_failed = active_trajectory_.has_value();
+          if (trajectory_failed) {
+            cancel_active_trajectory_locked(
+                ARTICORE_TRAJECTORY_FAILED,
+                "trajectory feedback failure: " + error);
+            arm_mailbox_ = ArmMailbox{};
+          }
           if (state_ == ARTICORE_SAFE_HOLD || severe) {
             fault = true;
           } else if (state_ == ARTICORE_RUNNING &&
-                     consecutive_feedback_failures_ >=
-                         config_.feedback_failure_threshold) {
+                     (trajectory_failed ||
+                      consecutive_feedback_failures_ >=
+                          config_.feedback_failure_threshold)) {
             enter_hold = true;
           }
         }
@@ -1622,6 +2124,9 @@ void SafetyRuntime::close() {
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (stopping_) return;
     stopping_ = true;
+    arm_mailbox_ = ArmMailbox{};
+    cancel_active_trajectory_locked(
+        ARTICORE_TRAJECTORY_CANCELED, "runtime closed");
   }
   wakeup_.notify_all();
   if (worker_.joinable()) worker_.join();

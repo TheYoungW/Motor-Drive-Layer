@@ -295,6 +295,8 @@ def articore_runtime_capabilities() -> dict[str, bool]:
         "transport_health": bool(bits & (1 << 5)),
         "current_position_hold": bool(bits & (1 << 6)),
         "motor_presence": bool(bits & (1 << 7)),
+        "realtime_joint_mailbox": bool(bits & (1 << 8)),
+        "joint_trajectory": bool(bits & (1 << 9)),
     }
 
 

@@ -1,3 +1,4 @@
+#include <chrono>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -41,7 +42,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (1U << 16) | 2U;
+  return (1U << 16) | 3U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -52,7 +53,9 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_DUAL_CHANNEL |
          ARTICORE_CAP_TRANSPORT_HEALTH |
          ARTICORE_CAP_CURRENT_POSITION_HOLD |
-         ARTICORE_CAP_MOTOR_PRESENCE;
+         ARTICORE_CAP_MOTOR_PRESENCE |
+         ARTICORE_CAP_REALTIME_JOINT_MAILBOX |
+         ARTICORE_CAP_JOINT_TRAJECTORY;
 }
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
@@ -98,6 +101,13 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_enable(ArticoreRuntime* runtime,
   });
 }
 
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joints(
+    ArticoreRuntime* runtime,
+    const ArticoreJointControlConfig* configs,
+    uint32_t config_count) {
+  return call([&] { checked(runtime).configure_joints(configs, config_count); });
+}
+
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pos_vel(
     ArticoreRuntime* runtime,
     const ArticorePosVelCommand* commands,
@@ -127,6 +137,51 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_gripper_openings(
     uint32_t target_count) {
   return call([&] {
     checked(runtime).set_gripper_openings(targets, target_count);
+  });
+}
+
+ARTICORE_RUNTIME_API uint64_t articore_runtime_start_joint_trajectory(
+    ArticoreRuntime* runtime,
+    const ArticoreJointTrajectoryTarget* targets,
+    uint32_t target_count,
+    int32_t profile) {
+  try {
+    const auto id = checked(runtime).start_joint_trajectory(
+        targets, target_count, static_cast<ArticoreTrajectoryProfile>(profile));
+    g_last_error = "ok";
+    return id;
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return 0;
+  } catch (...) {
+    g_last_error = "unknown Articore runtime exception";
+    return 0;
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_trajectory(
+    ArticoreRuntime* runtime,
+    uint64_t trajectory_id,
+    ArticoreTrajectoryInfo* info) {
+  if (!info || info->struct_size < sizeof(ArticoreTrajectoryInfo)) {
+    g_last_error = "trajectory info is null or has an incompatible struct_size";
+    return -1;
+  }
+  return call([&] { *info = checked(runtime).trajectory_info(trajectory_id); });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_wait_trajectory(
+    ArticoreRuntime* runtime,
+    uint64_t trajectory_id,
+    uint32_t timeout_ms,
+    ArticoreTrajectoryInfo* info) {
+  if (!info || info->struct_size < sizeof(ArticoreTrajectoryInfo)) {
+    g_last_error = "trajectory info is null or has an incompatible struct_size";
+    return -1;
+  }
+  return call([&] {
+    *info = checked(runtime).wait_trajectory(
+        trajectory_id, std::chrono::milliseconds(timeout_ms));
   });
 }
 

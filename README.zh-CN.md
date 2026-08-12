@@ -195,7 +195,7 @@ states = [motor.get_state() for motor in motors]
 | `add_damiao_motor(motor_id, feedback_id, model)` | 在总线上注册电机并返回 `Motor`。 |
 | `discover_damiao_motors(candidates, timeout_ms=50, retries=1)` | 不使能、不运动地探测 Required/Optional/Disabled 候选电机，并冻结本次连接中实际存在的电机集合。 |
 | `enable_all()` / `disable_all()` | 依次使能或失能所有已注册电机；会发送硬件命令。 |
-| `request_feedback_all(timeout_ms=50)` | 请求并等待所有电机各收到一帧新反馈，共享一个总超时。 |
+| `request_feedback_all(timeout_ms=50)` | 请求并等待所有电机各收到一帧新反馈，共享一个总超时。Python 内部使用结构化 ABI，并通过分类异常携带稳定错误码、反馈统计和缺失电机 ID。 |
 | `poll_feedback_once()` | 非阻塞排空当前已经到达的帧。 |
 | `set_tx_gap_us(gap_us)` | 设置相邻输出帧的最小主机提交间隔。 |
 | `transport_capabilities()` | 查询当前 Transport 实例是否支持 CAN-FD、物理通道数、并行批量、重连、进程会话复用及硬件接收时间戳。 |
@@ -213,6 +213,12 @@ states = [motor.get_state() for motor in motors]
 `motor_controller_request_feedback_all()` 继续保持 0/-1 语义，
 `motor_last_error_message()` 仅用于日志，不再承担错误分类。加载旧版动态库时，应先检查
 `structured_feedback_report` capability 再解析新增符号。
+
+Python 对外仍然只提供 `Controller.request_feedback_all()`，不会暴露 `_ex` 方法。内部根据
+结构化返回值抛出 `FeedbackTimeoutError`、`IncompleteFeedbackError`、
+`FeedbackTransportError` 或 `FeedbackMotorFaultError`；它们继续继承 `CallError`，并提供
+`error_code`、`missing_motor_ids` 和完整 `FeedbackReport`。Articore runtime 的反馈回调也
+使用相同的结构化签名，安全逻辑不再解析 `motor_last_error_message()` 字符串。
 
 DM_Device 后端不需要刷写 SocketCAN 固件。可执行一次
 `motor-drive-layer-install-dm-device --download` 安装对应厂商运行库，也可通过

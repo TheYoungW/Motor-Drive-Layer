@@ -216,7 +216,7 @@ top-level `motor_drive_layer` package.
 | `add_damiao_motor(motor_id, feedback_id, model)` | Register a motor on the bus and return `Motor`. |
 | `discover_damiao_motors(candidates, timeout_ms=50, retries=1)` | Probe Required/Optional/Disabled model candidates without enabling or moving them and freeze the present motor set for this connection. |
 | `enable_all()` / `disable_all()` | Enable or disable every registered motor; these send hardware commands. |
-| `request_feedback_all(timeout_ms=50)` | Request and wait for one fresh frame per motor against one shared timeout. |
+| `request_feedback_all(timeout_ms=50)` | Request and wait for one fresh frame per motor against one shared timeout. Python internally uses the structured ABI and raises typed errors carrying the stable code, counts, and missing motor IDs. |
 | `poll_feedback_once()` | Non-blocking drain of frames that have already arrived. |
 | `set_tx_gap_us(gap_us)` | Configure the minimum host-side interval between outgoing frames. |
 | `transport_capabilities()` | Query the active transport's CAN-FD, channel-count, parallel-batch, reconnect, process-session reuse, and hardware RX timestamp capabilities. |
@@ -235,6 +235,13 @@ motors. The legacy `motor_controller_request_feedback_all()` remains 0/-1 compat
 `motor_last_error_message()` remains diagnostic text rather than a classification API. Check the
 `structured_feedback_report` capability before resolving the additive entry point from an older
 shared library.
+
+Python intentionally exposes only `Controller.request_feedback_all()`, not an `_ex` method. It
+uses the structured entry point internally and maps its result to `FeedbackTimeoutError`,
+`IncompleteFeedbackError`, `FeedbackTransportError`, or `FeedbackMotorFaultError`. These remain
+`CallError` subclasses for compatibility and expose `error_code`, `missing_motor_ids`, and the full
+`FeedbackReport`. The Articore runtime callback uses the same structured signature, so safety
+decisions never depend on parsing `motor_last_error_message()`.
 
 The DM_Device backend does not require flashing SocketCAN firmware. Install the matching vendor
 runtime once with `motor-drive-layer-install-dm-device --download`, or set

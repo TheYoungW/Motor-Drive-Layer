@@ -15,11 +15,22 @@ from .core import (
     PreparedPosVelBatch,
 )
 from .dm_device_runtime import ensure_dm_device_runtime
-from .errors import AbiLoadError, CallError, MotorBridgeError
+from .errors import (
+    AbiLoadError,
+    CallError,
+    FeedbackMotorFaultError,
+    FeedbackRequestError,
+    FeedbackTimeoutError,
+    FeedbackTransportError,
+    IncompleteFeedbackError,
+    MotorBridgeError,
+)
 from .models import (
     FeedbackStats,
+    FeedbackReport,
     MitCommand,
     Mode,
+    MotorErrorCode,
     MotorCandidate,
     MotorDiscoveryResult,
     MotorState,
@@ -96,6 +107,8 @@ __all__ = [
     "MotorDiscoveryResult",
     "MotorState",
     "FeedbackStats",
+    "FeedbackReport",
+    "MotorErrorCode",
     "MitCommand",
     "PosVelCommand",
     "TransportCapabilities",
@@ -123,4 +136,9 @@ __all__ = [
     "MotorBridgeError",
     "AbiLoadError",
     "CallError",
+    "FeedbackRequestError",
+    "FeedbackTimeoutError",
+    "IncompleteFeedbackError",
+    "FeedbackTransportError",
+    "FeedbackMotorFaultError",
 ]

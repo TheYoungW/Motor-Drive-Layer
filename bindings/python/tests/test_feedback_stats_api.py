@@ -6,15 +6,23 @@ import pytest
 
 import motor_drive_layer.core as core_module
 from motor_drive_layer.abi import (
+    CFeedbackReport,
     CFeedbackStats,
     CState,
     CTransportCapabilities,
     CTransportHealth,
 )
 from motor_drive_layer.core import Controller, Motor
-from motor_drive_layer.errors import CallError
+from motor_drive_layer.errors import (
+    CallError,
+    FeedbackMotorFaultError,
+    FeedbackTimeoutError,
+    FeedbackTransportError,
+    IncompleteFeedbackError,
+)
 from motor_drive_layer.models import (
     FeedbackStats,
+    MotorErrorCode,
     MotorState,
     TransportCapabilities,
     TransportHealth,
@@ -27,6 +35,10 @@ class FakeLib:
         self.batch_feedback_calls: list[tuple[int, int]] = []
         self.fresh_state_calls: list[tuple[int, int]] = []
         self.freed_motors: list[int] = []
+        self.feedback_code = 0
+        self.feedback_expected = 8
+        self.feedback_received = 8
+        self.feedback_missing_ids: tuple[int, ...] = ()
 
     def motor_handle_free(self, ptr: int) -> None:
         self.freed_motors.append(ptr)
@@ -35,9 +47,24 @@ class FakeLib:
         self.tx_gap_calls.append((ptr, gap_us))
         return 0
 
-    def motor_controller_request_feedback_all(self, ptr: int, timeout_ms: int) -> int:
+    def motor_controller_request_feedback_all_ex(
+        self, ptr: int, timeout_ms: int, out_report, missing_ids, capacity: int
+    ) -> int:
         self.batch_feedback_calls.append((ptr, timeout_ms))
-        return 0
+        report = ctypes.cast(out_report, ctypes.POINTER(CFeedbackReport)).contents
+        report.timeout_ms = timeout_ms
+        report.expected_count = self.feedback_expected
+        report.received_count = self.feedback_received
+        report.missing_count = len(self.feedback_missing_ids)
+        for index, motor_id in enumerate(self.feedback_missing_ids[:capacity]):
+            missing_ids[index] = motor_id
+        return self.feedback_code
+
+    def motor_controller_request_feedback_all(self, ptr: int, timeout_ms: int) -> int:
+        raise AssertionError("Python Controller must not call the legacy feedback ABI")
+
+    def motor_last_error_message(self) -> bytes:
+        return b"fresh feedback timed out; missing motor IDs: 15"
 
     def motor_controller_get_transport_capabilities(self, ptr: int, out_capabilities) -> int:
         capabilities = ctypes.cast(
@@ -93,12 +120,14 @@ class FakeAbi:
         self.lib = FakeLib()
         self.has_transport_capabilities = True
         self.has_transport_health = True
+        self.has_structured_feedback_report = True
 
 
 def test_controller_forwards_configured_tx_gap() -> None:
     controller = Controller.__new__(Controller)
     controller._abi = FakeAbi()
     controller._ptr = 123
+    controller._feedback_motor_count = 8
 
     controller.set_tx_gap_us(120)
 
@@ -113,6 +142,59 @@ def test_controller_requests_fresh_feedback_with_one_deadline() -> None:
     controller.request_feedback_all(75)
 
     assert controller._abi.lib.batch_feedback_calls == [(123, 75)]
+
+
+def test_controller_raises_structured_incomplete_feedback(monkeypatch) -> None:
+    fake_abi = FakeAbi()
+    fake_abi.lib.feedback_code = 4
+    fake_abi.lib.feedback_received = 7
+    fake_abi.lib.feedback_missing_ids = (15,)
+    monkeypatch.setattr(core_module, "get_abi", lambda: fake_abi)
+    controller = Controller.__new__(Controller)
+    controller._abi = fake_abi
+    controller._ptr = 123
+    controller._feedback_motor_count = 8
+
+    with pytest.raises(IncompleteFeedbackError) as captured:
+        controller.request_feedback_all(50)
+
+    error = captured.value
+    assert error.error_code is MotorErrorCode.FEEDBACK_INCOMPLETE
+    assert error.missing_motor_ids == (15,)
+    assert error.timeout_ms == 50
+    assert error.expected_count == 8
+    assert error.received_count == 7
+    assert error.report.missing_count == 1
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_type"),
+    (
+        (2, FeedbackTransportError),
+        (3, FeedbackTimeoutError),
+        (5, FeedbackMotorFaultError),
+    ),
+)
+def test_controller_maps_stable_feedback_error_codes(
+    monkeypatch, code: int, expected_type: type[CallError]
+) -> None:
+    fake_abi = FakeAbi()
+    fake_abi.lib.feedback_code = code
+    fake_abi.lib.feedback_received = 0
+    fake_abi.lib.feedback_missing_ids = tuple(range(1, 9))
+    monkeypatch.setattr(core_module, "get_abi", lambda: fake_abi)
+    controller = Controller.__new__(Controller)
+    controller._abi = fake_abi
+    controller._ptr = 123
+    controller._feedback_motor_count = 8
+
+    with pytest.raises(expected_type) as captured:
+        controller.request_feedback_all(50)
+
+    assert int(captured.value.error_code) == code
+    assert captured.value.report.expected_count == 8
+    assert captured.value.report.received_count == 0
+    assert captured.value.report.missing_motor_ids == tuple(range(1, 9))
 
 
 def test_controller_exposes_per_transport_capabilities() -> None:

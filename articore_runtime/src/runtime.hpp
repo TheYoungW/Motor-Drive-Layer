@@ -7,8 +7,10 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "articore/runtime_abi.h"
@@ -29,12 +31,21 @@ class SafetyRuntime {
   SafetyRuntime& operator=(const SafetyRuntime&) = delete;
 
   void connect();
+  void configure_joints(const ArticoreJointControlConfig* configs,
+                        uint32_t count);
   void enable(ArticoreControlMode mode);
   void submit_pos_vel(const ArticorePosVelCommand* commands, uint32_t count);
   void submit_mit(const ArticoreMitCommand* commands, uint32_t count);
   void submit_gripper_mit(const ArticoreMitCommand* commands, uint32_t count);
   void set_gripper_openings(const ArticoreGripperTarget* targets,
                             uint32_t count);
+  uint64_t start_joint_trajectory(
+      const ArticoreJointTrajectoryTarget* targets,
+      uint32_t count,
+      ArticoreTrajectoryProfile profile);
+  ArticoreTrajectoryInfo trajectory_info(uint64_t trajectory_id) const;
+  ArticoreTrajectoryInfo wait_trajectory(uint64_t trajectory_id,
+                                         std::chrono::milliseconds timeout);
   void report_feedback_failure(uint8_t side, const std::string& reason);
   void disable();
   void estop(const std::string& reason);
@@ -91,7 +102,57 @@ class SafetyRuntime {
     std::string last_error;
   };
 
+  struct JointControlConfig {
+    float lower_position = 0.0f;
+    float upper_position = 0.0f;
+    float velocity_limit = 0.0f;
+    float torque_limit = 0.0f;
+    float mit_kp = 0.0f;
+    float mit_kd = 0.0f;
+    float mit_feedforward_torque = 0.0f;
+  };
+
+  struct ArmMailbox {
+    bool valid = false;
+    bool user_command = false;
+    uint64_t generation = 0;
+    uint64_t sent_generation = 0;
+    Clock::time_point submitted_at{};
+    std::vector<ArticorePosVelCommand> pv;
+    std::vector<ArticoreMitCommand> mit;
+  };
+
+  struct TrajectoryJoint {
+    void* motor = nullptr;
+    float start_position = 0.0f;
+    float goal_position = 0.0f;
+    float velocity_limit = 0.0f;
+  };
+
+  struct TrajectoryRecord {
+    uint64_t id = 0;
+    ArticoreTrajectoryStatus status = ARTICORE_TRAJECTORY_RUNNING;
+    ArticoreTrajectoryProfile profile = ARTICORE_TRAJECTORY_MIN_JERK;
+    Clock::time_point start_time{};
+    std::chrono::nanoseconds duration{0};
+    Clock::time_point finished_at{};
+    std::vector<TrajectoryJoint> joints;
+    std::string error;
+  };
+
   void worker_loop();
+  bool run_arm_control_cycle(Clock::time_point now, std::string& error);
+  void initialize_arm_mailbox_from_feedback(ArticoreControlMode mode);
+  void cancel_active_trajectory_locked(ArticoreTrajectoryStatus status,
+                                       const std::string& error);
+  void finish_trajectory_locked(uint64_t id,
+                                ArticoreTrajectoryStatus status,
+                                const std::string& error,
+                                Clock::time_point now);
+  void trim_trajectory_history_locked();
+  const JointControlConfig& joint_config(void* motor) const;
+  void validate_position_velocity_torque(void* motor, float position,
+                                         float velocity, float torque) const;
   void require_state_for_command() const;
   void validate_motor_set(const ArticorePosVelCommand* commands,
                           uint32_t count, bool grippers_only) const;
@@ -126,10 +187,12 @@ class SafetyRuntime {
   std::vector<MotorRecord> motors_;
   std::map<std::string, ArticorePresenceState> presence_;
   std::map<void*, std::string> motor_roles_;
+  std::unordered_map<void*, JointControlConfig> joint_configs_;
 
   mutable std::mutex state_mutex_;
   mutable std::mutex command_mutex_;
   std::condition_variable wakeup_;
+  std::condition_variable trajectory_cv_;
   std::thread worker_;
   bool stopping_ = false;
   bool hardware_transition_ = false;
@@ -147,6 +210,12 @@ class SafetyRuntime {
   uint32_t consecutive_send_failures_ = 0;
   uint32_t consecutive_feedback_failures_ = 0;
   uint32_t consecutive_hold_failures_ = 0;
+  ArmMailbox arm_mailbox_;
+  std::optional<TrajectoryRecord> active_trajectory_;
+  std::map<uint64_t, TrajectoryRecord> trajectory_history_;
+  std::deque<uint64_t> trajectory_history_order_;
+  uint64_t next_trajectory_id_ = 1;
+  Clock::time_point next_control_tick_{};
   SideHealth sides_[2];
   std::string fault_reason_;
   std::vector<std::string> motor_faults_;

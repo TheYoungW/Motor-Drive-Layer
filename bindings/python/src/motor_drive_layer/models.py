@@ -40,6 +40,25 @@ class PresenceState(IntEnum):
     FAULTED = 3
 
 
+class MotorErrorCode(IntEnum):
+    OK = 0
+    INVALID_ARGUMENT = 1
+    TRANSPORT = 2
+    FEEDBACK_TIMEOUT = 3
+    FEEDBACK_INCOMPLETE = 4
+    MOTOR_FAULT = 5
+
+
+@dataclass(frozen=True)
+class FeedbackReport:
+    error_code: MotorErrorCode
+    timeout_ms: int
+    expected_count: int
+    received_count: int
+    missing_count: int
+    missing_motor_ids: tuple[int, ...]
+
+
 @dataclass(frozen=True)
 class MotorCandidate:
     role: str

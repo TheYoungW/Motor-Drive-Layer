@@ -34,10 +34,18 @@ struct FakeDriver {
   std::vector<ArticorePosVelCommand> last_pv;
   std::vector<ArticoreMitCommand> last_mit;
   std::vector<ArticoreMitCommand> last_arm_mit;
+  std::vector<std::vector<ArticorePosVelCommand>> pv_history;
+  std::vector<std::vector<ArticoreMitCommand>> arm_mit_history;
+  std::vector<std::chrono::steady_clock::time_point> pv_send_times;
   uint32_t pv_sends = 0;
   uint32_t mit_sends = 0;
   uint32_t disable_calls[2]{};
   uint32_t feedback_requests = 0;
+  int32_t feedback_code = 0;
+  uint32_t feedback_expected = 2;
+  uint32_t feedback_received = 2;
+  std::vector<uint32_t> feedback_missing_ids;
+  uint32_t next_pv_delay_ms = 0;
   bool fail_group = false;
   bool fail_left_disable = false;
   bool transport_connected[2]{true, true};
@@ -52,7 +60,14 @@ void* g_right_controller = reinterpret_cast<void*>(0x102);
 int32_t send_pv(void*, const ArticorePosVelCommand* commands, uint32_t count) {
   std::lock_guard<std::mutex> lock(g_driver->mutex);
   if (g_driver->fail_group) return -1;
+  if (g_driver->next_pv_delay_ms > 0) {
+    const auto delay = g_driver->next_pv_delay_ms;
+    g_driver->next_pv_delay_ms = 0;
+    std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+  }
   g_driver->last_pv.assign(commands, commands + count);
+  g_driver->pv_history.emplace_back(commands, commands + count);
+  g_driver->pv_send_times.push_back(std::chrono::steady_clock::now());
   ++g_driver->pv_sends;
   return 0;
 }
@@ -61,7 +76,10 @@ int32_t send_mit(void*, const ArticoreMitCommand* commands, uint32_t count) {
   std::lock_guard<std::mutex> lock(g_driver->mutex);
   if (g_driver->fail_group) return -1;
   g_driver->last_mit.assign(commands, commands + count);
-  if (count == 2) g_driver->last_arm_mit.assign(commands, commands + count);
+  if (count == 2) {
+    g_driver->last_arm_mit.assign(commands, commands + count);
+    g_driver->arm_mit_history.emplace_back(commands, commands + count);
+  }
   ++g_driver->mit_sends;
   return 0;
 }
@@ -84,10 +102,25 @@ int32_t disable_motor(void* handle) {
   return side == 0 && g_driver->fail_left_disable ? -1 : 0;
 }
 
-int32_t request_feedback(void*, uint32_t) {
+int32_t request_feedback(void*, uint32_t timeout_ms,
+                         ArticoreFeedbackReport* report,
+                         uint32_t* missing_ids, uint32_t missing_capacity) {
   std::lock_guard<std::mutex> lock(g_driver->mutex);
   ++g_driver->feedback_requests;
-  return 0;
+  if (report) {
+    report->struct_size = sizeof(*report);
+    report->timeout_ms = timeout_ms;
+    report->expected_count = g_driver->feedback_expected;
+    report->received_count = g_driver->feedback_received;
+    report->missing_count = static_cast<uint32_t>(
+        g_driver->feedback_missing_ids.size());
+    const auto copied = std::min<std::size_t>(
+        g_driver->feedback_missing_ids.size(), missing_capacity);
+    for (std::size_t i = 0; i < copied; ++i) {
+      missing_ids[i] = g_driver->feedback_missing_ids[i];
+    }
+  }
+  return g_driver->feedback_code;
 }
 
 int32_t get_state(void* handle, ArticoreMotorState* state) {
@@ -180,6 +213,17 @@ std::vector<ArticoreMotorDescriptor> descriptors(FakeDriver& driver) {
   return values;
 }
 
+std::vector<ArticoreJointControlConfig> joint_configs(
+    const std::vector<ArticoreMotorDescriptor>& motors) {
+  std::vector<ArticoreJointControlConfig> values;
+  for (const auto& motor : motors) {
+    if (motor.is_gripper) continue;
+    values.push_back(ArticoreJointControlConfig{
+        motor.motor, -2.0f, 2.0f, 5.0f, 10.0f, 20.0f, 3.0f, 0.0f});
+  }
+  return values;
+}
+
 template <typename Predicate>
 bool wait_for(Predicate predicate, std::chrono::milliseconds timeout = 300ms) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -206,7 +250,8 @@ void test_pv_watchdog_safe_hold_and_fault() {
       {motors[1].motor, -0.5f, 2.0f},
   };
   runtime.submit_pos_vel(commands, 2);
-  require(runtime.health().state == ARTICORE_RUNNING, "first command enters RUNNING");
+  require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
+          "first command enters RUNNING on the next control cycle");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     driver.motors[motors[0].motor].position = 0.2f;
@@ -216,7 +261,9 @@ void test_pv_watchdog_safe_hold_and_fault() {
           "command timeout enters SAFE_HOLD");
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
-            return driver.pv_sends >= 2;
+            return driver.last_pv.size() == 2 &&
+                   std::abs(driver.last_pv[0].target_position - 0.2f) < 1e-6f &&
+                   std::abs(driver.last_pv[1].target_position - 0.8f) < 1e-6f;
           }),
           "safe hold sends stored PV target");
   {
@@ -254,6 +301,8 @@ void test_mit_hold_removes_motion_and_feedforward() {
       {motors[1].motor, -0.4f, -2.0f, 20.0f, 3.0f, -4.0f},
   };
   runtime.submit_mit(commands, 2);
+  require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
+          "MIT command enters RUNNING on the next control cycle");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     driver.motors[motors[0].motor].position = -0.1f;
@@ -263,7 +312,9 @@ void test_mit_hold_removes_motion_and_feedforward() {
           "MIT watchdog enters SAFE_HOLD");
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
-            return driver.mit_sends >= 2;
+            return driver.last_arm_mit.size() == 2 &&
+                   std::abs(driver.last_arm_mit[0].target_position + 0.1f) < 1e-6f &&
+                   std::abs(driver.last_arm_mit[1].target_position - 0.7f) < 1e-6f;
           }),
           "MIT safe hold is transmitted");
   std::lock_guard<std::mutex> lock(driver.mutex);
@@ -285,6 +336,7 @@ void test_safe_hold_rejects_stale_current_position() {
   auto motors = descriptors(driver);
   auto cfg = config();
   cfg.command_timeout_ms = 500;
+  cfg.feedback_check_hz = 1;
   articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);
   runtime.connect();
@@ -294,25 +346,27 @@ void test_safe_hold_rejects_stale_current_position() {
       {motors[1].motor, -0.5f, 2.0f},
   };
   runtime.submit_pos_vel(commands, 2);
+  require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
+          "first PV target is transmitted before failure injection");
+  std::this_thread::sleep_for(10ms);
+  uint32_t sends_before_failure = 0;
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
+    sends_before_failure = driver.pv_sends;
     driver.motors[motors[0].motor].age_ns = 300'000'000ULL;
     driver.fail_group = true;
   }
-  bool send_failed = false;
-  try {
-    runtime.submit_pos_vel(commands, 2);
-  } catch (const std::runtime_error&) {
-    send_failed = true;
-  }
+  runtime.submit_pos_vel(commands, 2);
+  require(wait_for([&] { return runtime.health().state == ARTICORE_FAULT; }),
+          "asynchronous send failure reaches FAULT");
   const auto health = runtime.health();
-  require(send_failed && health.state == ARTICORE_FAULT,
+  require(health.state == ARTICORE_FAULT,
           "stale current-position feedback faults instead of holding an old target");
   require(std::string(health.fault_reason).find("current-position hold unavailable") !=
               std::string::npos,
           "stale current-position fault explains why safe hold was rejected");
-  require(driver.pv_sends == 1,
-          "stale feedback never sends the previous user target as safe hold");
+  require(driver.pv_sends == sends_before_failure,
+          "stale feedback never sends a prior user target as safe hold");
 }
 
 void test_gripper_hold_retreats_once_on_overload() {
@@ -538,6 +592,34 @@ void test_disable_does_not_stop_after_one_side_fails() {
           "right side is still disabled after left side failure");
 }
 
+void test_disable_uses_structured_feedback_report() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  articore::SafetyRuntime runtime(config(), api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  driver.feedback_code = 4;
+  driver.feedback_expected = 2;
+  driver.feedback_received = 1;
+  driver.feedback_missing_ids = {15};
+  bool failed = false;
+  try {
+    runtime.disable();
+  } catch (const std::runtime_error& error) {
+    const std::string message(error.what());
+    failed = message.find("code=4") != std::string::npos &&
+             message.find("expected=2") != std::string::npos &&
+             message.find("received=1") != std::string::npos &&
+             message.find("missing motor IDs: 15") != std::string::npos;
+  }
+  require(failed && runtime.health().state == ARTICORE_FAULT,
+          "disable consumes stable feedback code, counts, and missing IDs");
+  require(driver.feedback_requests == 2,
+          "structured feedback confirmation runs exactly once per active side");
+}
+
 void test_transport_disconnect_faults_and_links_both_sides() {
   FakeDriver driver;
   g_driver = &driver;
@@ -699,28 +781,198 @@ void test_motor_presence_is_fixed_and_fault_aware() {
           "a present motor that loses feedback becomes Faulted, not NotInstalled");
 }
 
+void test_latest_value_mailbox_drops_superseded_targets() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.control_hz = 20;
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return !driver.pv_history.empty();
+          }),
+          "enable sends a feedback-seeded target");
+
+  ArticorePosVelCommand a[] = {
+      {motors[0].motor, 0.1f, 1.0f}, {motors[1].motor, 0.9f, 1.0f}};
+  ArticorePosVelCommand b[] = {
+      {motors[0].motor, 0.2f, 1.0f}, {motors[1].motor, 0.8f, 1.0f}};
+  ArticorePosVelCommand c[] = {
+      {motors[0].motor, 0.3f, 1.0f}, {motors[1].motor, 0.7f, 1.0f}};
+  std::size_t baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    baseline = driver.pv_history.size();
+  }
+  runtime.submit_pos_vel(a, 2);
+  runtime.submit_pos_vel(b, 2);
+  runtime.submit_pos_vel(c, 2);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.pv_history.size() > baseline;
+          }, 200ms),
+          "mailbox target is sent on the next control tick");
+  std::lock_guard<std::mutex> lock(driver.mutex);
+  const auto& first = driver.pv_history[baseline];
+  require(first.size() == 2 &&
+              std::abs(first[0].target_position - 0.3f) < 1e-6f &&
+              std::abs(first[1].target_position - 0.7f) < 1e-6f,
+          "A and B are overwritten; the next tick sends only C");
+}
+
+void test_min_jerk_trajectory_and_direct_preemption() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+
+  ArticoreJointTrajectoryTarget target[] = {
+      {motors[0].motor, 0.1f, 5.0f}, {motors[1].motor, 0.9f, 5.0f}};
+  const auto trajectory_id = runtime.start_joint_trajectory(
+      target, 2, ARTICORE_TRAJECTORY_MIN_JERK);
+  const auto completed = runtime.wait_trajectory(trajectory_id, 500ms);
+  require(completed.status == ARTICORE_TRAJECTORY_COMPLETED &&
+              completed.duration_ns >= 37'000'000ULL,
+          "minimum-jerk trajectory completes with velocity-derived duration");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(!driver.arm_mit_history.empty(), "trajectory emits MIT frames");
+    for (const auto& frame : driver.arm_mit_history) {
+      for (const auto& command : frame) {
+        require(std::abs(command.target_velocity) <= 5.0001f,
+                "minimum-jerk interpolation respects velocity limits");
+      }
+    }
+    const auto& endpoint = driver.arm_mit_history.back();
+    require(std::abs(endpoint[0].target_position - 0.1f) < 1e-6f &&
+                std::abs(endpoint[1].target_position - 0.9f) < 1e-6f &&
+                endpoint[0].target_velocity == 0.0f &&
+                endpoint[1].target_velocity == 0.0f,
+            "minimum-jerk endpoint is exact and has zero velocity");
+  }
+
+  ArticoreJointTrajectoryTarget long_target[] = {
+      {motors[0].motor, 1.0f, 1.0f}, {motors[1].motor, 0.0f, 1.0f}};
+  const auto preempted_id = runtime.start_joint_trajectory(
+      long_target, 2, ARTICORE_TRAJECTORY_LINEAR);
+  std::this_thread::sleep_for(8ms);
+  ArticoreMitCommand direct[] = {
+      {motors[0].motor, -0.25f, 0.0f, 20.0f, 3.0f, 0.0f},
+      {motors[1].motor, 0.25f, 0.0f, 20.0f, 3.0f, 0.0f},
+  };
+  runtime.submit_mit(direct, 2);
+  require(runtime.trajectory_info(preempted_id).status ==
+              ARTICORE_TRAJECTORY_PREEMPTED,
+          "direct command synchronously preempts the active trajectory");
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_arm_mit.size() == 2 &&
+                   std::abs(driver.last_arm_mit[0].target_position + 0.25f) < 1e-6f &&
+                   std::abs(driver.last_arm_mit[1].target_position - 0.25f) < 1e-6f;
+          }),
+          "direct target is active within one control cycle");
+  std::this_thread::sleep_for(8ms);
+  std::lock_guard<std::mutex> lock(driver.mutex);
+  require(std::abs(driver.last_arm_mit[0].target_position + 0.25f) < 1e-6f &&
+              std::abs(driver.last_arm_mit[1].target_position - 0.25f) < 1e-6f,
+          "no preempted trajectory frame reappears after direct command returns");
+}
+
+void test_delayed_cycle_skips_missed_frames_and_reenable_seeds_feedback() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  ArticorePosVelCommand command[] = {
+      {motors[0].motor, 0.4f, 1.0f}, {motors[1].motor, 0.6f, 1.0f}};
+  runtime.submit_pos_vel(command, 2);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.pv_send_times.size() >= 3;
+          }),
+          "500 Hz sender is active");
+  std::size_t sends_before_delay = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    sends_before_delay = driver.pv_send_times.size();
+    driver.next_pv_delay_ms = 10;
+  }
+  std::this_thread::sleep_for(30ms);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.pv_send_times.size() - sends_before_delay <= 12,
+            "a delayed cycle skips missed periods instead of burst replaying them");
+  }
+
+  runtime.disable();
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].status = 1;
+    driver.motors[motors[1].motor].status = 1;
+    driver.motors[motors[2].motor].status = 1;
+    driver.motors[motors[0].motor].position = -0.6f;
+    driver.motors[motors[1].motor].position = 0.35f;
+  }
+  runtime.enable(ARTICORE_MODE_PV);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_pv.size() == 2 &&
+                   std::abs(driver.last_pv[0].target_position + 0.6f) < 1e-6f &&
+                   std::abs(driver.last_pv[1].target_position - 0.35f) < 1e-6f;
+          }),
+          "re-enable seeds the target from current feedback, not an old command");
+}
+
 }  // namespace
 
 int main() {
+  const char* current_test = "startup";
   try {
-    test_pv_watchdog_safe_hold_and_fault();
-    test_mit_hold_removes_motion_and_feedforward();
-    test_safe_hold_rejects_stale_current_position();
-    test_gripper_hold_retreats_once_on_overload();
-    test_gripper_stall_switches_to_contact_hold_target();
-    test_gripper_torque_spike_does_not_trigger_contact();
-    test_fault_policy_can_hold_gripper_until_recovery();
-    test_feedback_policy_and_linked_disable();
-    test_disable_does_not_stop_after_one_side_fails();
-    test_transport_disconnect_faults_and_links_both_sides();
-    test_enable_grace_and_fault_latch();
-    test_repeated_runtime_lifecycle();
-    test_single_side_runtime_and_gripper();
-    test_motor_presence_is_fixed_and_fault_aware();
+#define RUN_TEST(test) \
+    current_test = #test; \
+    test()
+    RUN_TEST(test_pv_watchdog_safe_hold_and_fault);
+    RUN_TEST(test_mit_hold_removes_motion_and_feedforward);
+    RUN_TEST(test_safe_hold_rejects_stale_current_position);
+    RUN_TEST(test_gripper_hold_retreats_once_on_overload);
+    RUN_TEST(test_gripper_stall_switches_to_contact_hold_target);
+    RUN_TEST(test_gripper_torque_spike_does_not_trigger_contact);
+    RUN_TEST(test_fault_policy_can_hold_gripper_until_recovery);
+    RUN_TEST(test_feedback_policy_and_linked_disable);
+    RUN_TEST(test_disable_does_not_stop_after_one_side_fails);
+    RUN_TEST(test_disable_uses_structured_feedback_report);
+    RUN_TEST(test_transport_disconnect_faults_and_links_both_sides);
+    RUN_TEST(test_enable_grace_and_fault_latch);
+    RUN_TEST(test_repeated_runtime_lifecycle);
+    RUN_TEST(test_single_side_runtime_and_gripper);
+    RUN_TEST(test_motor_presence_is_fixed_and_fault_aware);
+    RUN_TEST(test_latest_value_mailbox_drops_superseded_targets);
+    RUN_TEST(test_min_jerk_trajectory_and_direct_preemption);
+    RUN_TEST(test_delayed_cycle_skips_missed_frames_and_reenable_seeds_feedback);
+#undef RUN_TEST
     std::cout << "Articore runtime tests passed\n";
     return 0;
   } catch (const std::exception& error) {
-    std::cerr << "Articore runtime test failed: " << error.what() << '\n';
+    std::cerr << "Articore runtime test failed in " << current_test << ": "
+              << error.what() << '\n';
     return 1;
   }
 }

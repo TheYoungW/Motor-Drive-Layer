@@ -28,6 +28,8 @@ enum ArticoreRuntimeCapability {
   ARTICORE_CAP_TRANSPORT_HEALTH = 1ULL << 5,
   ARTICORE_CAP_CURRENT_POSITION_HOLD = 1ULL << 6,
   ARTICORE_CAP_MOTOR_PRESENCE = 1ULL << 7,
+  ARTICORE_CAP_REALTIME_JOINT_MAILBOX = 1ULL << 8,
+  ARTICORE_CAP_JOINT_TRAJECTORY = 1ULL << 9,
 };
 
 enum ArticorePresenceState {
@@ -55,6 +57,19 @@ enum ArticoreSafetyState {
 enum ArticoreControlMode {
   ARTICORE_MODE_PV = 1,
   ARTICORE_MODE_MIT = 2,
+};
+
+enum ArticoreTrajectoryProfile {
+  ARTICORE_TRAJECTORY_MIN_JERK = 1,
+  ARTICORE_TRAJECTORY_LINEAR = 2,
+};
+
+enum ArticoreTrajectoryStatus {
+  ARTICORE_TRAJECTORY_RUNNING = 1,
+  ARTICORE_TRAJECTORY_COMPLETED = 2,
+  ARTICORE_TRAJECTORY_PREEMPTED = 3,
+  ARTICORE_TRAJECTORY_FAILED = 4,
+  ARTICORE_TRAJECTORY_CANCELED = 5,
 };
 
 enum ArticoreGripperControlState {
@@ -92,6 +107,33 @@ typedef struct ArticoreGripperTarget {
   float opening;
 } ArticoreGripperTarget;
 
+typedef struct ArticoreJointControlConfig {
+  void* motor;
+  float lower_position;
+  float upper_position;
+  float velocity_limit;
+  float torque_limit;
+  float mit_kp;
+  float mit_kd;
+  float mit_feedforward_torque;
+} ArticoreJointControlConfig;
+
+typedef struct ArticoreJointTrajectoryTarget {
+  void* motor;
+  float target_position;
+  float velocity_limit;
+} ArticoreJointTrajectoryTarget;
+
+typedef struct ArticoreTrajectoryInfo {
+  uint32_t struct_size;
+  uint64_t trajectory_id;
+  int32_t status;
+  int32_t profile;
+  uint64_t duration_ns;
+  uint64_t elapsed_ns;
+  char error[256];
+} ArticoreTrajectoryInfo;
+
 typedef struct ArticoreMotorState {
   int32_t has_value;
   uint8_t can_id;
@@ -110,6 +152,15 @@ typedef struct ArticoreFeedbackStats {
   uint64_t age_ns;
 } ArticoreFeedbackStats;
 
+typedef struct ArticoreFeedbackReport {
+  // Caller initializes this to sizeof(ArticoreFeedbackReport).
+  uint32_t struct_size;
+  uint32_t timeout_ms;
+  uint32_t expected_count;
+  uint32_t received_count;
+  uint32_t missing_count;
+} ArticoreFeedbackReport;
+
 typedef struct ArticoreDriverTransportHealth {
   int32_t connected;
   int32_t healthy;
@@ -127,7 +178,10 @@ typedef int32_t (*ArticoreGroupSendPosVelFn)(
 typedef int32_t (*ArticoreGroupSendMitFn)(
     void*, const ArticoreMitCommand*, uint32_t);
 typedef int32_t (*ArticoreControllerCallFn)(void*);
-typedef int32_t (*ArticoreControllerFeedbackFn)(void*, uint32_t);
+// Returns the stable MotorErrorCode value used by libmotor_abi's structured
+// feedback entry point. The runtime never parses an error string for policy.
+typedef int32_t (*ArticoreControllerFeedbackFn)(
+    void*, uint32_t, ArticoreFeedbackReport*, uint32_t*, uint32_t);
 typedef int32_t (*ArticoreMotorGetStateFn)(void*, ArticoreMotorState*);
 typedef int32_t (*ArticoreMotorGetFeedbackStatsFn)(void*, ArticoreFeedbackStats*);
 typedef int32_t (*ArticoreControllerTransportHealthFn)(
@@ -138,7 +192,7 @@ typedef struct ArticoreMotorApi {
   ArticoreGroupSendPosVelFn group_send_pos_vel;
   ArticoreGroupSendMitFn group_send_mit;
   ArticoreControllerCallFn controller_disable_all;
-  ArticoreControllerFeedbackFn controller_request_feedback_all;
+  ArticoreControllerFeedbackFn controller_request_feedback_all_ex;
   ArticoreMotorGetStateFn motor_get_state;
   ArticoreMotorGetFeedbackStatsFn motor_get_feedback_stats;
   ArticoreLastErrorFn last_error_message;
@@ -257,6 +311,15 @@ ARTICORE_RUNTIME_API void articore_runtime_free(ArticoreRuntime* runtime);
 ARTICORE_RUNTIME_API int32_t articore_runtime_connect(ArticoreRuntime* runtime);
 ARTICORE_RUNTIME_API int32_t articore_runtime_enable(
     ArticoreRuntime* runtime, int32_t mode);
+// Configures every active arm joint before connect. Trajectories require this
+// configuration so position, velocity and torque limits are explicit.
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joints(
+    ArticoreRuntime* runtime,
+    const ArticoreJointControlConfig* configs,
+    uint32_t config_count);
+// Direct arm commands are validated and atomically overwrite a capacity-one
+// mailbox. Success means accepted; the persistent control thread transmits the
+// latest accepted value on the next control tick.
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pos_vel(
     ArticoreRuntime* runtime,
     const ArticorePosVelCommand* commands,
@@ -273,6 +336,23 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_gripper_openings(
     ArticoreRuntime* runtime,
     const ArticoreGripperTarget* targets,
     uint32_t target_count);
+// Starts one time-parameterized trajectory. A new trajectory preempts the
+// previous trajectory; a direct submit_pos_vel/submit_mit command also
+// preempts it. Returns 0 on failure and sets articore_runtime_last_error().
+ARTICORE_RUNTIME_API uint64_t articore_runtime_start_joint_trajectory(
+    ArticoreRuntime* runtime,
+    const ArticoreJointTrajectoryTarget* targets,
+    uint32_t target_count,
+    int32_t profile);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_trajectory(
+    ArticoreRuntime* runtime,
+    uint64_t trajectory_id,
+    ArticoreTrajectoryInfo* info);
+ARTICORE_RUNTIME_API int32_t articore_runtime_wait_trajectory(
+    ArticoreRuntime* runtime,
+    uint64_t trajectory_id,
+    uint32_t timeout_ms,
+    ArticoreTrajectoryInfo* info);
 ARTICORE_RUNTIME_API int32_t articore_runtime_report_feedback_failure(
     ArticoreRuntime* runtime, uint8_t side, const char* reason);
 ARTICORE_RUNTIME_API int32_t articore_runtime_disable(ArticoreRuntime* runtime);

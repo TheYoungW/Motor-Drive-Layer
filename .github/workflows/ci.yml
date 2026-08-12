@@ -67,9 +67,11 @@ jobs:
           assert motor_drive_layer.abi_capabilities()["features"]["register_metadata"] is True
           runtime_path = motor_drive_layer.articore_runtime_library_path()
           assert runtime_path.endswith("libarticore_runtime.so")
-          assert motor_drive_layer.articore_runtime_abi_version() == "1.2"
+          assert motor_drive_layer.articore_runtime_abi_version() == "1.3"
           assert motor_drive_layer.articore_runtime_capabilities()["safe_hold"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["current_position_hold"] is True
+          assert motor_drive_layer.articore_runtime_capabilities()["realtime_joint_mailbox"] is True
+          assert motor_drive_layer.articore_runtime_capabilities()["joint_trajectory"] is True
           PY
 
       - name: Check shell helper syntax

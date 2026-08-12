@@ -9,6 +9,7 @@ from threading import Lock
 from .abi import (
     CDiscoveryCandidate,
     CDiscoveryResult,
+    CFeedbackReport,
     CFeedbackStats,
     CMitBatchCommand,
     CPosVelBatchCommand,
@@ -18,11 +19,20 @@ from .abi import (
     get_abi,
 )
 from .dm_device_runtime import ensure_dm_device_runtime
-from .errors import CallError
+from .errors import (
+    CallError,
+    FeedbackMotorFaultError,
+    FeedbackRequestError,
+    FeedbackTimeoutError,
+    FeedbackTransportError,
+    IncompleteFeedbackError,
+)
 from .models import (
     FeedbackStats,
+    FeedbackReport,
     MitCommand,
     Mode,
+    MotorErrorCode,
     MotorCandidate,
     MotorDiscoveryResult,
     MotorState,
@@ -71,6 +81,7 @@ class Controller:
 
     def __init__(self, channel: str = "can0") -> None:
         self._abi = get_abi()
+        self._feedback_motor_count = 0
         self._ptr = self._abi.lib.motor_controller_new_socketcan(channel.encode())
         if not self._ptr:
             raise CallError(f"new_socketcan failed: {_err_text()}")
@@ -79,6 +90,7 @@ class Controller:
     def from_socketcanfd(cls, channel: str = "can0") -> "Controller":
         self = cls.__new__(cls)
         self._abi = get_abi()
+        self._feedback_motor_count = 0
         self._ptr = self._abi.lib.motor_controller_new_socketcanfd(channel.encode())
         if not self._ptr:
             raise CallError(f"new_socketcanfd failed: {_err_text()}")
@@ -88,6 +100,7 @@ class Controller:
     def from_dm_serial(cls, serial_port: str = "/dev/ttyACM0", baud: int = 1_000_000) -> "Controller":
         self = cls.__new__(cls)
         self._abi = get_abi()
+        self._feedback_motor_count = 0
         self._ptr = self._abi.lib.motor_controller_new_dm_serial(serial_port.encode(), int(baud))
         if not self._ptr:
             raise CallError(f"new_dm_serial failed: {_err_text()}")
@@ -131,6 +144,7 @@ class Controller:
         except RuntimeError as exc:
             raise CallError(f"DM_Device runtime setup failed: {exc}") from exc
         self._abi = get_abi()
+        self._feedback_motor_count = 0
         if self._abi.has_dm_device_ex:
             self._ptr = self._abi.lib.motor_controller_new_dm_device_ex(
                 dm_device_type.encode(),
@@ -185,13 +199,49 @@ class Controller:
         )
 
     def request_feedback_all(self, timeout_ms: int = 50) -> None:
-        """Request one fresh feedback frame from every motor or raise on timeout."""
-        _ok(
-            self._abi.lib.motor_controller_request_feedback_all(
-                self._require_open(), _timeout_u32(timeout_ms)
-            ),
-            "request_feedback_all",
+        """Request fresh feedback or raise an error with a structured report."""
+        if not self._abi.has_structured_feedback_report:
+            raise CallError(
+                "the loaded motor_abi does not support structured feedback reports; "
+                "upgrade motor-drive-layer"
+            )
+        timeout_value = _timeout_u32(timeout_ms)
+        capacity = max(int(getattr(self, "_feedback_motor_count", 0)), 1)
+        missing_ids = (c_uint32 * capacity)()
+        native = CFeedbackReport()
+        native.struct_size = ctypes.sizeof(CFeedbackReport)
+        code_value = int(
+            self._abi.lib.motor_controller_request_feedback_all_ex(
+                self._require_open(),
+                timeout_value,
+                ctypes.byref(native),
+                missing_ids,
+                capacity,
+            )
         )
+        if code_value == 0:
+            return
+        try:
+            error_code = MotorErrorCode(code_value)
+        except ValueError:
+            error_code = MotorErrorCode.TRANSPORT
+        copied_count = min(int(native.missing_count), capacity)
+        report = FeedbackReport(
+            error_code=error_code,
+            timeout_ms=int(native.timeout_ms),
+            expected_count=int(native.expected_count),
+            received_count=int(native.received_count),
+            missing_count=int(native.missing_count),
+            missing_motor_ids=tuple(int(missing_ids[i]) for i in range(copied_count)),
+        )
+        message = f"request_feedback_all failed [{error_code.name}]: {_err_text()}"
+        error_type = {
+            MotorErrorCode.FEEDBACK_TIMEOUT: FeedbackTimeoutError,
+            MotorErrorCode.FEEDBACK_INCOMPLETE: IncompleteFeedbackError,
+            MotorErrorCode.TRANSPORT: FeedbackTransportError,
+            MotorErrorCode.MOTOR_FAULT: FeedbackMotorFaultError,
+        }.get(error_code, FeedbackRequestError)
+        raise error_type(message, report)
 
     def set_tx_gap_us(self, gap_us: int) -> None:
         value = int(gap_us)
@@ -263,6 +313,9 @@ class Controller:
         )
         if not m:
             raise CallError(f"add_damiao_motor failed: {_err_text()}")
+        self._feedback_motor_count = int(
+            getattr(self, "_feedback_motor_count", 0)
+        ) + 1
         return Motor(m, self)
 
     def discover_damiao_motors(
@@ -343,6 +396,11 @@ class Controller:
                     reason=reason.decode(errors="replace") if reason else None,
                 )
             )
+        self._feedback_motor_count = int(
+            getattr(self, "_feedback_motor_count", 0)
+        ) + sum(
+            result.state == PresenceState.PRESENT for result in discovered
+        )
         return tuple(discovered)
 
     def __enter__(self) -> "Controller":

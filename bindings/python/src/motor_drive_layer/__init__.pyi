@@ -38,12 +38,19 @@ from .dm_device_runtime import ensure_dm_device_runtime as ensure_dm_device_runt
 from .errors import (
     AbiLoadError as AbiLoadError,
     CallError as CallError,
+    FeedbackMotorFaultError as FeedbackMotorFaultError,
+    FeedbackRequestError as FeedbackRequestError,
+    FeedbackTimeoutError as FeedbackTimeoutError,
+    FeedbackTransportError as FeedbackTransportError,
+    IncompleteFeedbackError as IncompleteFeedbackError,
     MotorBridgeError as MotorBridgeError,
 )
 from .models import (
     FeedbackStats as FeedbackStats,
+    FeedbackReport as FeedbackReport,
     MitCommand as MitCommand,
     Mode as Mode,
+    MotorErrorCode as MotorErrorCode,
     MotorCandidate as MotorCandidate,
     MotorDiscoveryResult as MotorDiscoveryResult,
     MotorState as MotorState,

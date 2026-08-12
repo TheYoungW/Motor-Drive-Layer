@@ -7,7 +7,8 @@ SocketCAN, SocketCAN-FD, Damiao serial bridge, and optional DM_Device transports
 `libmotor_abi` is the generic motor layer; `libarticore_runtime` is the separately versioned
 product safety runtime consumed by Articore SDKs.
 Use `articore_runtime_abi_version()` and `articore_runtime_capabilities()` to inspect that product
-runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 1.2 exposes
+runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 1.3 exposes the
+native latest-value joint mailbox and single active trajectory engine in addition to
 `current_position_hold`: arm safe hold snapshots fresh cached positions and rejects stale or
 faulted feedback instead of replaying the previous user target.
 Published wheels cover Linux x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x64. The serial
@@ -27,7 +28,12 @@ calling the vendor destructor during static teardown can race libusb thread clea
 Use `Motor.request_fresh_state(timeout_ms=50)` when the caller must wait for a newly requested
 feedback frame. For multiple motors, `Controller.request_feedback_all(timeout_ms=50)` sends every
 request with the configured TX pacing and waits against one shared deadline; a timeout reports the
-missing motor IDs. The lower-level `request_feedback()`, `get_state()`, and
+missing motor IDs. The public method internally uses the structured native entry point and raises
+typed `FeedbackTimeoutError`, `IncompleteFeedbackError`, `FeedbackTransportError`, or
+`FeedbackMotorFaultError` exceptions. Each remains a `CallError` subclass and carries a stable
+`error_code` plus a `FeedbackReport` containing timeout, expected/received/missing counts, and
+missing motor IDs; no caller needs to use an `_ex` Python method. The lower-level
+`request_feedback()`, `get_state()`, and
 `poll_feedback_once()` methods remain non-blocking asynchronous/cache operations.
 
 For synchronized multi-channel control, `ControllerGroup([ch0, ch1])` creates one persistent
