@@ -1017,6 +1017,13 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
   std::vector<ArticoreMitCommand> commands;
   commands.reserve(motors_.size());
   std::lock_guard<std::mutex> command_lock(command_mutex_);
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    if (hardware_transition_ ||
+        (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING)) {
+      return true;
+    }
+  }
   const auto now = Clock::now();
   for (auto& motor : motors_) {
     if (!motor.descriptor.is_gripper || !motor.has_gripper_target) continue;
@@ -1210,6 +1217,10 @@ bool SafetyRuntime::send_safe_hold_once(std::string& error) {
   int32_t rc = 0;
   {
     std::lock_guard<std::mutex> command_lock(command_mutex_);
+    {
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
+      if (hardware_transition_ || state_ != ARTICORE_SAFE_HOLD) return true;
+    }
     if (mode == ARTICORE_MODE_PV) {
       if (pv.empty()) {
         error = "no PV safe-hold target";
@@ -2014,10 +2025,19 @@ void SafetyRuntime::worker_loop() {
     if (run_feedback_check) {
       std::string error;
       bool healthy = false;
+      bool still_active = false;
       {
         std::lock_guard<std::mutex> command_lock(command_mutex_);
-        healthy = refresh_feedback_health(false, false, error);
+        {
+          std::lock_guard<std::mutex> state_lock(state_mutex_);
+          still_active = !hardware_transition_ &&
+              (state_ == ARTICORE_RUNNING || state_ == ARTICORE_SAFE_HOLD);
+        }
+        if (still_active) {
+          healthy = refresh_feedback_health(false, false, error);
+        }
       }
+      if (!still_active) continue;
       if (!healthy) {
         const bool severe =
             error.find("maximum age") != std::string::npos ||

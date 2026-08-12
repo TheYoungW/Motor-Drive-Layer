@@ -928,7 +928,12 @@ void test_delayed_cycle_skips_missed_frames_and_reenable_seeds_feedback() {
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
+  // Scale the scheduler test to a 20 ms period so host timer jitter cannot be
+  // mistaken for burst replay. The injected 100 ms stall still represents
+  // five missed control periods, matching a 10 ms stall at 500 Hz.
+  cfg.control_hz = 50;
   cfg.command_timeout_ms = 500;
+  cfg.enable_grace_ms = 1000;
   articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);
   runtime.connect();
@@ -940,12 +945,12 @@ void test_delayed_cycle_skips_missed_frames_and_reenable_seeds_feedback() {
             std::lock_guard<std::mutex> lock(driver.mutex);
             return driver.pv_send_times.size() >= 3;
           }),
-          "500 Hz sender is active");
+          "periodic sender is active");
   std::size_t sends_before_delay = 0;
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     sends_before_delay = driver.pv_send_times.size();
-    driver.next_pv_delay_ms = 10;
+    driver.next_pv_delay_ms = 100;
   }
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
@@ -959,7 +964,7 @@ void test_delayed_cycle_skips_missed_frames_and_reenable_seeds_feedback() {
          index < sends_before_delay + 6; ++index) {
       const auto interval = driver.pv_send_times[index] -
                             driver.pv_send_times[index - 1];
-      if (interval < 750us) ++burst_intervals;
+      if (interval < 5ms) ++burst_intervals;
     }
     require(burst_intervals <= 1,
             "a delayed cycle skips missed periods instead of burst replaying them");
