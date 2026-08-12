@@ -1920,16 +1920,6 @@ void SafetyRuntime::worker_loop() {
       1'000'000'000ULL / config_.safe_hold_hz);
   const auto gripper_period = std::chrono::nanoseconds(
       1'000'000'000ULL / config_.gripper_control_hz);
-  const auto advance_deadline = [](Clock::time_point& deadline,
-                                   std::chrono::nanoseconds period,
-                                   Clock::time_point now) {
-    if (deadline == Clock::time_point{}) deadline = now;
-    if (deadline > now) return;
-    const auto overdue = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        now - deadline);
-    const auto periods = overdue.count() / period.count() + 1;
-    deadline += period * periods;
-  };
   for (;;) {
     {
       std::unique_lock<std::mutex> lock(state_mutex_);
@@ -1967,16 +1957,18 @@ void SafetyRuntime::worker_loop() {
       if ((state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING) &&
           now >= next_control_tick_) {
         run_arm_control = true;
-        advance_deadline(next_control_tick_, control_period, now);
+        detail::advance_periodic_deadline(
+            next_control_tick_, control_period, now);
       }
       if ((state_ == ARTICORE_RUNNING || state_ == ARTICORE_SAFE_HOLD) &&
           now >= next_feedback_check_) {
         run_feedback_check = true;
-        advance_deadline(next_feedback_check_, feedback_period, now);
+        detail::advance_periodic_deadline(
+            next_feedback_check_, feedback_period, now);
       }
       if (state_ == ARTICORE_SAFE_HOLD && now >= next_safe_hold_) {
         run_hold = true;
-        advance_deadline(next_safe_hold_, hold_period, now);
+        detail::advance_periodic_deadline(next_safe_hold_, hold_period, now);
       }
       if ((state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING) &&
           now >= next_gripper_control_ &&
@@ -1986,14 +1978,15 @@ void SafetyRuntime::worker_loop() {
                                motor.has_gripper_target;
                       })) {
         run_gripper_control = true;
-        advance_deadline(next_gripper_control_, gripper_period, now);
+        detail::advance_periodic_deadline(
+            next_gripper_control_, gripper_period, now);
       }
       if (state_ == ARTICORE_FAULT &&
           config_.gripper_fault_action == ARTICORE_GRIPPER_FAULT_HOLD &&
           !safe_grippers_.empty() && now >= next_safe_hold_) {
         run_hold = true;
         fault_gripper_hold = true;
-        advance_deadline(next_safe_hold_, hold_period, now);
+        detail::advance_periodic_deadline(next_safe_hold_, hold_period, now);
       }
     }
 

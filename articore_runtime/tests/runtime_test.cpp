@@ -36,7 +36,6 @@ struct FakeDriver {
   std::vector<ArticoreMitCommand> last_arm_mit;
   std::vector<std::vector<ArticorePosVelCommand>> pv_history;
   std::vector<std::vector<ArticoreMitCommand>> arm_mit_history;
-  std::vector<std::chrono::steady_clock::time_point> pv_send_times;
   uint32_t pv_sends = 0;
   uint32_t mit_sends = 0;
   uint32_t disable_calls[2]{};
@@ -46,7 +45,6 @@ struct FakeDriver {
   uint32_t feedback_expected = 2;
   uint32_t feedback_received = 2;
   std::vector<uint32_t> feedback_missing_ids;
-  uint32_t next_pv_delay_ms = 0;
   bool fail_group = false;
   bool fail_left_disable = false;
   bool transport_connected[2]{true, true};
@@ -61,14 +59,8 @@ void* g_right_controller = reinterpret_cast<void*>(0x102);
 int32_t send_pv(void*, const ArticorePosVelCommand* commands, uint32_t count) {
   std::lock_guard<std::mutex> lock(g_driver->mutex);
   if (g_driver->fail_group) return -1;
-  if (g_driver->next_pv_delay_ms > 0) {
-    const auto delay = g_driver->next_pv_delay_ms;
-    g_driver->next_pv_delay_ms = 0;
-    std::this_thread::sleep_for(std::chrono::milliseconds(delay));
-  }
   g_driver->last_pv.assign(commands, commands + count);
   g_driver->pv_history.emplace_back(commands, commands + count);
-  g_driver->pv_send_times.push_back(std::chrono::steady_clock::now());
   ++g_driver->pv_sends;
   return 0;
 }
@@ -935,17 +927,21 @@ void test_min_jerk_trajectory_and_direct_preemption() {
           "no preempted trajectory frame reappears after direct command returns");
 }
 
-void test_delayed_cycle_skips_missed_frames_and_reenable_seeds_feedback() {
+void test_deadline_skips_missed_periods_and_reenable_seeds_feedback() {
+  const auto base = std::chrono::steady_clock::time_point{1s};
+  auto deadline = base;
+  articore::detail::advance_periodic_deadline(deadline, 2ms, base + 10ms);
+  require(deadline == base + 12ms,
+          "a delayed cycle advances directly beyond all missed periods");
+  articore::detail::advance_periodic_deadline(deadline, 2ms, base + 11ms);
+  require(deadline == base + 12ms,
+          "a future absolute deadline is not accumulated or moved early");
+
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
-  // Scale the scheduler test to a 20 ms period so host timer jitter cannot be
-  // mistaken for burst replay. The injected 100 ms stall still represents
-  // five missed control periods, matching a 10 ms stall at 500 Hz.
-  cfg.control_hz = 50;
-  cfg.command_timeout_ms = 2000;
-  cfg.enable_grace_ms = 1000;
+  cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);
   runtime.connect();
@@ -953,34 +949,8 @@ void test_delayed_cycle_skips_missed_frames_and_reenable_seeds_feedback() {
   ArticorePosVelCommand command[] = {
       {motors[0].motor, 0.4f, 1.0f}, {motors[1].motor, 0.6f, 1.0f}};
   runtime.submit_pos_vel(command, 2);
-  require(wait_for([&] {
-            std::lock_guard<std::mutex> lock(driver.mutex);
-            return driver.pv_send_times.size() >= 3;
-          }),
-          "periodic sender is active");
-  std::size_t sends_before_delay = 0;
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    sends_before_delay = driver.pv_send_times.size();
-    driver.next_pv_delay_ms = 100;
-  }
-  require(wait_for([&] {
-            std::lock_guard<std::mutex> lock(driver.mutex);
-            return driver.pv_send_times.size() >= sends_before_delay + 6;
-          }, 1500ms),
-          "sender resumes after an injected delayed cycle");
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    std::size_t burst_intervals = 0;
-    for (std::size_t index = sends_before_delay + 1;
-         index < sends_before_delay + 6; ++index) {
-      const auto interval = driver.pv_send_times[index] -
-                            driver.pv_send_times[index - 1];
-      if (interval < 5ms) ++burst_intervals;
-    }
-    require(burst_intervals <= 1,
-            "a delayed cycle skips missed periods instead of burst replaying them");
-  }
+  require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
+          "periodic sender accepts the direct target");
 
   runtime.disable();
   {
@@ -1026,7 +996,7 @@ int main() {
     RUN_TEST(test_motor_presence_is_fixed_and_fault_aware);
     RUN_TEST(test_latest_value_mailbox_drops_superseded_targets);
     RUN_TEST(test_min_jerk_trajectory_and_direct_preemption);
-    RUN_TEST(test_delayed_cycle_skips_missed_frames_and_reenable_seeds_feedback);
+    RUN_TEST(test_deadline_skips_missed_periods_and_reenable_seeds_feedback);
 #undef RUN_TEST
     std::cout << "Articore runtime tests passed\n";
     return 0;

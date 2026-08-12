@@ -17,6 +17,22 @@
 
 namespace articore {
 
+namespace detail {
+
+inline void advance_periodic_deadline(
+    std::chrono::steady_clock::time_point& deadline,
+    std::chrono::nanoseconds period,
+    std::chrono::steady_clock::time_point now) {
+  if (deadline == std::chrono::steady_clock::time_point{}) deadline = now;
+  if (deadline > now) return;
+  const auto overdue = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      now - deadline);
+  const auto periods = overdue.count() / period.count() + 1;
+  deadline += period * periods;
+}
+
+}  // namespace detail
+
 class SafetyRuntime {
  public:
   SafetyRuntime(ArticoreRuntimeConfig config,
