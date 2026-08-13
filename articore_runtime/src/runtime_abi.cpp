@@ -42,7 +42,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (1U << 16) | 11U;
+  return (1U << 16) | 13U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -66,7 +66,9 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD |
          ARTICORE_CAP_LAYERED_JOINT_LIMITS |
          ARTICORE_CAP_GRIPPER_COMMAND_PROFILES |
-         ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS;
+         ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS |
+         ARTICORE_CAP_JOINT_MIT_POSITION |
+         ARTICORE_CAP_JOINT_PV_POSITION;
 }
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
@@ -198,6 +200,28 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_ex(
   return call([&] {
     checked(runtime).submit_mit_ex(
         commands, command_count, static_cast<ArticoreCommandLifetime>(lifetime));
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
+    ArticoreRuntime* runtime,
+    const ArticoreJointMitTarget* targets,
+    uint32_t target_count,
+    float max_reference_velocity) {
+  return call([&] {
+    checked(runtime).set_joint_mit(
+        targets, target_count, max_reference_velocity);
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
+    ArticoreRuntime* runtime,
+    const ArticoreJointPvTarget* targets,
+    uint32_t target_count,
+    float max_reference_velocity) {
+  return call([&] {
+    checked(runtime).set_joint_pv(
+        targets, target_count, max_reference_velocity);
   });
 }
 

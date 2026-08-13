@@ -11,6 +11,7 @@ The public runtime remains one `libarticore_runtime` library and one
 - `runtime_commands.cpp`: command validation, latest-value mailbox, and the arm send cycle.
 - `runtime_enable.cpp`: atomic enable, explicit disable, estop, and recovery transactions.
 - `runtime_gripper.cpp`: gripper command mapping, contact/stall detection, hold, and overload retreat.
+- `runtime_joint_position.cpp`: ordinary PV/MIT position targets and constant-speed reference advancement.
 - `runtime_safety.cpp`: feedback/transport supervision, protective hold, fault policy, and health snapshots.
 - `runtime_trajectory.cpp`: single-slot trajectory lifecycle and time-parameterized profiles.
 - `runtime_worker.cpp`: persistent absolute-deadline scheduler and safety event dispatch.
@@ -81,6 +82,37 @@ move may take longer than the watchdog timeout while the native control thread k
 its latest setpoint. Real-time servo loops use `STREAMING`, so a stalled caller still enters
 `SAFE_HOLD`. Persistent MIT commands require zero target velocity and zero feedforward torque;
 time-parameterized MIT motion should use the native trajectory API.
+
+Runtime ABI 1.12 adds `articore_runtime_set_joint_mit()` for ordinary one-shot MIT position
+setting. One call supplies the complete active arm layout, final joint positions, and one shared
+reference velocity in rad/s. On the first command after enable, reconnect, or recovery, the Runtime
+requires complete fresh enabled feedback and initializes every `current_target` from measured
+position. At each native control tick it advances each reference by at most
+`max_reference_velocity / control_hz`, transmits `dq=0` and `tau=0`, and uses the product-configured
+MIT Kp/Kd. Different travel distances may finish at different times; this interface deliberately
+does not create a trajectory or synchronized-arrival task.
+
+The ordinary MIT target is a capacity-one latest-value mailbox. A new complete dual-arm command
+atomically discards the previous `final_target` and shared velocity while preserving the currently
+transmitted `current_target`; the next tick therefore reverses or changes speed without a position
+jump. The final target remains active and is retransmitted until another explicit control
+transaction, disable, close, or estop replaces it. This persistent behavior does not require a
+Python 500 Hz refresh loop. The original `articore_runtime_submit_mit_ex()` remains a raw advanced
+control path: q, dq, Kp, Kd, and feedforward torque are sent exactly as provided and receive no
+ordinary-position ramping.
+
+Runtime ABI 1.13 adds the symmetric `articore_runtime_set_joint_pv()` ordinary position path. It
+uses the same complete-arm latest-value mailbox, fresh-feedback initialization, shared rad/s speed,
+and `max_reference_velocity / control_hz` position step. Generated PV frames use the current native
+reference as position and the same shared speed as their protocol velocity limit. A new PV target
+atomically replaces only the final positions and shared speed; the currently transmitted reference
+remains continuous. The raw `articore_runtime_submit_pos_vel_ex()` entry point remains unchanged for
+internal advanced controllers.
+
+Product SDKs should expose only one ordinary position method for the selected mode—`set_joint_mit`
+or `set_joint_pv`—with final positions and one velocity argument. Raw PV/MIT structures, gains,
+feedforward terms, and streaming lifetimes remain internal SDK/runtime integration capabilities and
+should not appear in ordinary user examples.
 
 Runtime ABI 1.6 makes normal torque-off a checked transaction instead of relying on the motor
 communication watchdog. `disable()` first rejects new commands and waits for any in-flight

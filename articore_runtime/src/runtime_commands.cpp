@@ -149,7 +149,7 @@ const SafetyRuntime::JointControlConfig& SafetyRuntime::joint_config(
   const auto found = joint_configs_.find(motor);
   if (found == joint_configs_.end()) {
     throw std::runtime_error(
-        "joint control configuration is required for trajectories");
+        "joint control configuration is required for native joint control");
   }
   return found->second;
 }
@@ -431,6 +431,9 @@ void SafetyRuntime::submit_pos_vel_ex(const ArticorePosVelCommand* commands,
     arm_mailbox_.lifetime = lifetime;
     ++arm_mailbox_.generation;
     arm_mailbox_.submitted_at = Clock::now();
+    arm_mailbox_.joint_position = false;
+    arm_mailbox_.max_reference_velocity = 0.0f;
+    arm_mailbox_.final_positions.clear();
     arm_mailbox_.pv.assign(commands, commands + count);
     arm_mailbox_.mit.clear();
   }
@@ -491,6 +494,9 @@ void SafetyRuntime::submit_mit_ex(const ArticoreMitCommand* commands,
     arm_mailbox_.lifetime = lifetime;
     ++arm_mailbox_.generation;
     arm_mailbox_.submitted_at = Clock::now();
+    arm_mailbox_.joint_position = false;
+    arm_mailbox_.max_reference_velocity = 0.0f;
+    arm_mailbox_.final_positions.clear();
     arm_mailbox_.mit.assign(commands, commands + count);
     arm_mailbox_.pv.clear();
   }
@@ -554,6 +560,38 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     if (!arm_mailbox_.valid) return true;
     mailbox_user_command = arm_mailbox_.user_command;
     mailbox_generation = arm_mailbox_.generation;
+    if (arm_mailbox_.joint_position) {
+      const auto command_size = mode == ARTICORE_MODE_PV
+          ? arm_mailbox_.pv.size() : arm_mailbox_.mit.size();
+      if (command_size != arm_mailbox_.final_positions.size() ||
+          !finite(arm_mailbox_.max_reference_velocity) ||
+          arm_mailbox_.max_reference_velocity <= 0.0f) {
+        throw std::runtime_error(
+            "ordinary joint position state is internally inconsistent");
+      }
+      const float max_delta = arm_mailbox_.max_reference_velocity /
+                              static_cast<float>(config_.control_hz);
+      if (mode == ARTICORE_MODE_PV) {
+        for (std::size_t i = 0; i < arm_mailbox_.pv.size(); ++i) {
+          auto& command = arm_mailbox_.pv[i];
+          const float error_to_target =
+              arm_mailbox_.final_positions[i] - command.target_position;
+          command.target_position += std::clamp(
+              error_to_target, -max_delta, max_delta);
+          command.velocity_limit = arm_mailbox_.max_reference_velocity;
+        }
+      } else {
+        for (std::size_t i = 0; i < arm_mailbox_.mit.size(); ++i) {
+          auto& command = arm_mailbox_.mit[i];
+          const float error_to_target =
+              arm_mailbox_.final_positions[i] - command.target_position;
+          command.target_position += std::clamp(
+              error_to_target, -max_delta, max_delta);
+          command.target_velocity = 0.0f;
+          command.feedforward_torque = 0.0f;
+        }
+      }
+    }
     if (mode == ARTICORE_MODE_PV) {
       pv_data = arm_mailbox_.pv.data();
       command_count = static_cast<uint32_t>(arm_mailbox_.pv.size());

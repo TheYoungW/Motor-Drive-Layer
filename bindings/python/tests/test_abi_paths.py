@@ -28,6 +28,8 @@ def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
 
     assert hasattr(library, "articore_runtime_submit_pos_vel_ex")
     assert hasattr(library, "articore_runtime_submit_mit_ex")
+    assert hasattr(library, "articore_runtime_set_joint_mit")
+    assert hasattr(library, "articore_runtime_set_joint_pv")
     assert hasattr(library, "articore_runtime_start_joint_trajectory_ex")
     assert hasattr(library, "articore_runtime_cancel_trajectory")
     assert hasattr(library, "articore_runtime_configure_trajectory_execution")
@@ -35,9 +37,9 @@ def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
     assert hasattr(library, "articore_runtime_start_joint_trajectory_report")
     assert hasattr(library, "articore_runtime_configure_gripper_force_profiles")
     assert hasattr(library, "articore_runtime_set_gripper_commands")
-    assert library.articore_runtime_abi_version() == 0x0001000B
-    assert library.articore_runtime_capabilities() & 0x1FFFFF == 0x1FFFFF
-    assert abi.articore_runtime_abi_version() == "1.11"
+    assert library.articore_runtime_abi_version() == 0x0001000D
+    assert library.articore_runtime_capabilities() & 0x7FFFFF == 0x7FFFFF
+    assert abi.articore_runtime_abi_version() == "1.13"
     assert abi.articore_runtime_capabilities()["gripper_protection"] is True
     assert abi.articore_runtime_capabilities()["current_position_hold"] is True
     assert abi.articore_runtime_capabilities()["realtime_joint_mailbox"] is True
@@ -53,6 +55,8 @@ def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
     assert abi.articore_runtime_capabilities()["layered_joint_limits"] is True
     assert abi.articore_runtime_capabilities()["gripper_command_profiles"] is True
     assert abi.articore_runtime_capabilities()["gripper_force_10_levels"] is True
+    assert abi.articore_runtime_capabilities()["joint_mit_position"] is True
+    assert abi.articore_runtime_capabilities()["joint_pv_position"] is True
 
 
 def test_motor_abi_exposes_structured_feedback_error_codes() -> None:

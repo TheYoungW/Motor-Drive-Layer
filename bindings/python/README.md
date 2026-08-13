@@ -7,7 +7,10 @@ SocketCAN, SocketCAN-FD, Damiao serial bridge, and optional DM_Device transports
 `libmotor_abi` is the generic motor layer; `libarticore_runtime` is the separately versioned
 product safety runtime consumed by Articore SDKs.
 Use `articore_runtime_abi_version()` and `articore_runtime_capabilities()` to inspect that product
-runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 1.11 expands
+runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 1.13 adds the
+matching native `joint_pv_position` capability. Runtime ABI 1.12 adds the
+native `joint_mit_position` capability for one-shot, complete-arm MIT position targets with
+one shared rad/s reference speed while preserving raw MIT submission semantics. Runtime ABI 1.11 expands
 the calibrated gripper force selector to levels 1 through 10; level 5 is the compatibility
 default. Runtime ABI 1.10 adds atomic per-command gripper opening/speed/force profiles and
 symmetric bidirectional ramps.

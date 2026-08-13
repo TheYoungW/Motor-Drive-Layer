@@ -65,6 +65,12 @@ class SafetyRuntime {
   void submit_mit_ex(const ArticoreMitCommand* commands,
                      uint32_t count,
                      ArticoreCommandLifetime lifetime);
+  void set_joint_mit(const ArticoreJointMitTarget* targets,
+                     uint32_t count,
+                     float max_reference_velocity);
+  void set_joint_pv(const ArticoreJointPvTarget* targets,
+                    uint32_t count,
+                    float max_reference_velocity);
   void submit_gripper_mit(const ArticoreMitCommand* commands, uint32_t count);
   void set_gripper_openings(const ArticoreGripperTarget* targets,
                             uint32_t count);
@@ -202,8 +208,14 @@ class SafetyRuntime {
     uint64_t generation = 0;
     uint64_t sent_generation = 0;
     Clock::time_point submitted_at{};
+    // Ordinary PV/MIT position setting owns current q in the active mode's
+    // command vector and matching user endpoints in final_positions. It is
+    // deliberately separate from raw control and the trajectory state machine.
+    bool joint_position = false;
+    float max_reference_velocity = 0.0f;
     std::vector<ArticorePosVelCommand> pv;
     std::vector<ArticoreMitCommand> mit;
+    std::vector<float> final_positions;
   };
 
   struct TrajectoryJoint {
@@ -306,6 +318,10 @@ class SafetyRuntime {
                           uint32_t count, bool grippers_only) const;
   void validate_motor_set(const ArticoreMitCommand* commands,
                           uint32_t count, bool grippers_only) const;
+  void validate_motor_set(const ArticoreJointMitTarget* targets,
+                          uint32_t count) const;
+  void validate_motor_set(const ArticoreJointPvTarget* targets,
+                          uint32_t count) const;
   bool enter_safe_hold_from_feedback(const std::string& reason,
                                      std::string& error);
   void enter_fault(const std::string& reason, bool torque_off = false);

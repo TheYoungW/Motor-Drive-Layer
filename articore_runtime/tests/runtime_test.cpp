@@ -2970,6 +2970,442 @@ void test_persistent_mit_rejects_unbounded_motion_terms() {
           "persistent MIT rejects nonzero feedforward torque");
 }
 
+void test_ordinary_mit_position_uses_constant_reference_speed() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 30;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].age_ns = 300'000'000ULL;
+  }
+  ArticoreJointMitTarget targets[] = {
+      {sizeof(ArticoreJointMitTarget), motors[0].motor, 1.0f},
+      {sizeof(ArticoreJointMitTarget), motors[1].motor, 2.0f},
+  };
+  bool stale_rejected = false;
+  try {
+    runtime.set_joint_mit(targets, 2, 1.0f);
+  } catch (const std::runtime_error&) {
+    stale_rejected = true;
+  }
+  require(stale_rejected,
+          "ordinary MIT position requires complete fresh feedback initially");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].age_ns = 0;
+    driver.arm_mit_history.clear();
+  }
+
+  runtime.set_joint_mit(targets, 2, 1.0f);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.arm_mit_history.size() >= 105;
+          }, 500ms),
+          "ordinary MIT position emits control-rate references");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto first_moving = std::find_if(
+        driver.arm_mit_history.begin(), driver.arm_mit_history.end(),
+        [](const std::vector<ArticoreMitCommand>& frame) {
+          return frame[0].target_position > 0.0f;
+        });
+    require(first_moving != driver.arm_mit_history.end(),
+            "ordinary MIT position starts moving from fresh feedback");
+    require(first_moving->at(0).target_position <= 0.00201f &&
+                first_moving->at(1).target_position <= 1.00201f,
+            "first 500 Hz reference advances by at most velocity/control_hz");
+    require(first_moving->at(0).target_velocity == 0.0f &&
+                first_moving->at(0).stiffness == 20.0f &&
+                first_moving->at(0).damping == 3.0f &&
+                first_moving->at(0).feedforward_torque == 0.0f,
+            "ordinary MIT position uses product gains with zero dq and tau");
+    const auto available = static_cast<std::size_t>(
+        driver.arm_mit_history.end() - first_moving);
+    require(available >= 100,
+            "ordinary MIT position produced one hundred moving references");
+    require(std::abs(first_moving[99][0].target_position - 0.2f) < 0.003f,
+            "one hundred 500 Hz cycles at 1 rad/s advance about 0.2 rad");
+  }
+  require(runtime.health().state == ARTICORE_RUNNING,
+          "one-shot ordinary MIT position is persistent beyond the watchdog");
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return !driver.arm_mit_history.empty() &&
+                std::abs(driver.arm_mit_history.back()[0].target_position -
+                         1.0f) < 1e-5f;
+          }, 1500ms),
+          "ordinary MIT position reaches a 1 rad target at 1 rad/s");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto first_moving = std::find_if(
+        driver.arm_mit_history.begin(), driver.arm_mit_history.end(),
+        [](const std::vector<ArticoreMitCommand>& frame) {
+          return frame[0].target_position > 0.0f;
+        });
+    const auto first_reached = std::find_if(
+        first_moving, driver.arm_mit_history.end(),
+        [](const std::vector<ArticoreMitCommand>& frame) {
+          return std::abs(frame[0].target_position - 1.0f) < 1e-5f;
+        });
+    require(first_reached != driver.arm_mit_history.end(),
+            "ordinary MIT position records the exact final target");
+    const auto moving_cycles = first_reached - first_moving + 1;
+    require(moving_cycles >= 499 && moving_cycles <= 501,
+            "1 rad at 1 rad/s takes approximately 500 native 500 Hz cycles");
+  }
+}
+
+void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 30;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  ArticoreJointPvTarget forward[] = {
+      {sizeof(ArticoreJointPvTarget), motors[0].motor, 1.0f},
+      {sizeof(ArticoreJointPvTarget), motors[1].motor, 2.0f},
+  };
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].age_ns = 300'000'000ULL;
+  }
+  bool stale_rejected = false;
+  try {
+    runtime.set_joint_pv(forward, 2, 1.0f);
+  } catch (const std::runtime_error&) {
+    stale_rejected = true;
+  }
+  require(stale_rejected,
+          "ordinary PV position requires complete fresh feedback initially");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].age_ns = 0;
+    driver.pv_history.clear();
+  }
+
+  runtime.set_joint_pv(forward, 2, 1.0f);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.pv_history.size() >= 105;
+          }, 500ms),
+          "ordinary PV position emits control-rate references");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto first_moving = std::find_if(
+        driver.pv_history.begin(), driver.pv_history.end(),
+        [](const std::vector<ArticorePosVelCommand>& frame) {
+          return frame[0].target_position > 0.0f;
+        });
+    require(first_moving != driver.pv_history.end() &&
+                first_moving->at(0).target_position <= 0.00201f &&
+                first_moving->at(1).target_position <= 1.00201f &&
+                first_moving->at(0).velocity_limit == 1.0f,
+            "ordinary PV starts from feedback with one shared reference speed");
+    const auto available = static_cast<std::size_t>(
+        driver.pv_history.end() - first_moving);
+    require(available >= 100 &&
+                std::abs(first_moving[99][0].target_position - 0.2f) < 0.003f,
+            "ordinary PV advances about 0.2 rad in one hundred 500 Hz cycles");
+  }
+  require(runtime.health().state == ARTICORE_RUNNING,
+          "one-shot ordinary PV remains active beyond the watchdog");
+
+  ArticoreJointPvTarget reverse[] = {
+      {sizeof(ArticoreJointPvTarget), motors[0].motor, -1.0f},
+      {sizeof(ArticoreJointPvTarget), motors[1].motor, 0.0f},
+  };
+  runtime.set_joint_pv(reverse, 2, 1.0f);
+  float before_reverse = 0.0f;
+  std::size_t reverse_baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    before_reverse = driver.pv_history.back()[0].target_position;
+    reverse_baseline = driver.pv_history.size();
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.pv_history.size() > reverse_baseline;
+          }, 50ms),
+          "ordinary PV reversal takes effect on the next native cycle");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(std::abs((before_reverse -
+                      driver.pv_history[reverse_baseline][0].target_position) -
+                     0.002f) < 0.0002f,
+            "ordinary PV discards the old endpoint and preserves current q");
+  }
+
+  runtime.set_joint_pv(reverse, 2, 2.0f);
+  float before_speed = 0.0f;
+  std::size_t speed_baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    before_speed = driver.pv_history.back()[0].target_position;
+    speed_baseline = driver.pv_history.size();
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.pv_history.size() > speed_baseline;
+          }, 50ms),
+          "ordinary PV speed update is visible on the next native cycle");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto& sent = driver.pv_history[speed_baseline];
+    require(std::abs((before_speed - sent[0].target_position) - 0.004f) <
+                    0.0002f &&
+                sent[0].velocity_limit == 2.0f &&
+                sent[1].velocity_limit == 2.0f,
+            "ordinary PV atomically applies one 2 rad/s speed to both arms");
+  }
+
+  ArticorePosVelCommand raw[] = {
+      {motors[0].motor, 0.75f, 0.7f},
+      {motors[1].motor, 1.25f, 0.8f},
+  };
+  runtime.submit_pos_vel_ex(raw, 2, ARTICORE_COMMAND_STREAMING);
+  std::size_t raw_baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    raw_baseline = driver.pv_history.size();
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.pv_history.size() > raw_baseline;
+          }, 50ms),
+          "raw PV replaces ordinary PV on the next native cycle");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto& sent = driver.pv_history[raw_baseline];
+    require(sent[0].target_position == raw[0].target_position &&
+                sent[0].velocity_limit == raw[0].velocity_limit &&
+                sent[1].target_position == raw[1].target_position &&
+                sent[1].velocity_limit == raw[1].velocity_limit,
+            "raw PV q and velocity limit remain direct and un-ramped");
+  }
+}
+
+void test_ordinary_mit_position_reversal_and_speed_update_are_continuous() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 30;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+
+  ArticoreJointMitTarget forward[] = {
+      {sizeof(ArticoreJointMitTarget), motors[0].motor, 1.0f},
+      {sizeof(ArticoreJointMitTarget), motors[1].motor, 2.0f},
+  };
+  runtime.set_joint_mit(forward, 2, 1.0f);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.arm_mit_history.size() >= 100;
+          }, 500ms),
+          "forward ordinary MIT references reach the reversal point");
+
+  ArticoreJointMitTarget reverse[] = {
+      {sizeof(ArticoreJointMitTarget), motors[0].motor, -1.0f},
+      {sizeof(ArticoreJointMitTarget), motors[1].motor, 0.0f},
+  };
+  float before_reverse = 0.0f;
+  std::size_t reverse_baseline = 0;
+  runtime.set_joint_mit(reverse, 2, 1.0f);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    before_reverse = driver.arm_mit_history.back()[0].target_position;
+    reverse_baseline = driver.arm_mit_history.size();
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.arm_mit_history.size() > reverse_baseline;
+          }, 50ms),
+          "reversed ordinary MIT target is sent on the next control cycle");
+  float after_reverse = 0.0f;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    after_reverse = driver.arm_mit_history[reverse_baseline][0].target_position;
+  }
+  require(std::abs((before_reverse - after_reverse) - 0.002f) < 0.0002f,
+          "target reversal continues from current reference at 1 rad/s");
+
+  std::size_t speed_baseline = 0;
+  float before_speed_change = 0.0f;
+  runtime.set_joint_mit(reverse, 2, 2.0f);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    before_speed_change = driver.arm_mit_history.back()[0].target_position;
+    speed_baseline = driver.arm_mit_history.size();
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.arm_mit_history.size() > speed_baseline;
+          }, 50ms),
+          "ordinary MIT speed update takes effect on the next cycle");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto& next = driver.arm_mit_history[speed_baseline];
+    require(std::abs((before_speed_change - next[0].target_position) -
+                     0.004f) < 0.0002f &&
+                std::abs((driver.arm_mit_history[speed_baseline - 1][1]
+                              .target_position -
+                          next[1].target_position) - 0.004f) < 0.0002f,
+            "shared 2 rad/s update is atomic for both arm sides");
+  }
+
+  bool excessive_speed_rejected = false;
+  try {
+    runtime.set_joint_mit(reverse, 2, 6.0f);
+  } catch (const std::invalid_argument&) {
+    excessive_speed_rejected = true;
+  }
+  require(excessive_speed_rejected,
+          "one unsafe shared velocity rejects the complete arm batch");
+}
+
+void test_raw_mit_remains_direct_after_ordinary_position_control() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 200;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+
+  ArticoreJointMitTarget ordinary[] = {
+      {sizeof(ArticoreJointMitTarget), motors[0].motor, 1.0f},
+      {sizeof(ArticoreJointMitTarget), motors[1].motor, 2.0f},
+  };
+  runtime.set_joint_mit(ordinary, 2, 1.0f);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return !driver.arm_mit_history.empty();
+          }, 50ms),
+          "ordinary MIT position starts before raw MIT replacement");
+
+  ArticoreMitCommand raw[] = {
+      {motors[0].motor, 0.75f, 0.3f, 11.0f, 1.0f, 0.2f},
+      {motors[1].motor, 1.25f, -0.4f, 12.0f, 1.5f, -0.3f},
+  };
+  runtime.submit_mit_ex(raw, 2, ARTICORE_COMMAND_STREAMING);
+  std::size_t baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    baseline = driver.arm_mit_history.size();
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.arm_mit_history.size() > baseline;
+          }, 50ms),
+          "raw MIT replaces ordinary position control on the next cycle");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto& sent = driver.arm_mit_history[baseline];
+    require(sent[0].target_position == raw[0].target_position &&
+                sent[0].target_velocity == raw[0].target_velocity &&
+                sent[0].stiffness == raw[0].stiffness &&
+                sent[0].damping == raw[0].damping &&
+                sent[0].feedforward_torque == raw[0].feedforward_torque &&
+                sent[1].target_position == raw[1].target_position &&
+                sent[1].target_velocity == raw[1].target_velocity,
+            "raw MIT q/dq/kp/kd/tau remains byte-for-field direct");
+  }
+}
+
+void test_ordinary_mit_position_reinitializes_after_reenable() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100),
+      g_left_controller, g_right_controller, motors, enable_all, enable_motor);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+
+  ArticoreJointMitTarget old_session[] = {
+      {sizeof(ArticoreJointMitTarget), motors[0].motor, 1.0f},
+      {sizeof(ArticoreJointMitTarget), motors[1].motor, 2.0f},
+  };
+  runtime.set_joint_mit(old_session, 2, 1.0f);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return !driver.arm_mit_history.empty() &&
+                driver.arm_mit_history.back()[0].target_position > 0.0f;
+          }, 50ms),
+          "old ordinary MIT session advances before disable");
+  runtime.disable();
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].position = 0.4f;
+    driver.motors[motors[1].motor].position = -0.4f;
+    driver.arm_mit_history.clear();
+  }
+  runtime.enable(ARTICORE_MODE_MIT);
+
+  ArticoreJointMitTarget new_session[] = {
+      {sizeof(ArticoreJointMitTarget), motors[0].motor, 1.0f},
+      {sizeof(ArticoreJointMitTarget), motors[1].motor, 0.0f},
+  };
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.arm_mit_history.clear();
+  }
+  runtime.set_joint_mit(new_session, 2, 1.0f);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return std::any_of(
+                driver.arm_mit_history.begin(), driver.arm_mit_history.end(),
+                [](const std::vector<ArticoreMitCommand>& frame) {
+                  return frame[0].target_position > 0.4f;
+                });
+          }, 50ms),
+          "new ordinary MIT session starts from new feedback position");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto first = std::find_if(
+        driver.arm_mit_history.begin(), driver.arm_mit_history.end(),
+        [](const std::vector<ArticoreMitCommand>& frame) {
+          return frame[0].target_position > 0.4f;
+        });
+    require(first != driver.arm_mit_history.end() &&
+                std::abs(first->at(0).target_position - 0.402f) < 0.0002f &&
+                std::abs(first->at(1).target_position - (-0.398f)) < 0.0002f,
+            "reenable discards the old reference and reinitializes both arms "
+            "from complete fresh feedback");
+  }
+}
+
 void test_deadline_skips_missed_periods_and_reenable_seeds_feedback() {
   const auto base = std::chrono::steady_clock::time_point{1s};
   auto deadline = base;
@@ -3076,6 +3512,11 @@ int main() {
     RUN_TEST(test_pv_trajectory_endpoint_hold_bypasses_user_watchdog);
     RUN_TEST(test_persistent_setpoints_outlive_watchdog_but_streaming_still_times_out);
     RUN_TEST(test_persistent_mit_rejects_unbounded_motion_terms);
+    RUN_TEST(test_ordinary_mit_position_uses_constant_reference_speed);
+    RUN_TEST(test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct);
+    RUN_TEST(test_ordinary_mit_position_reversal_and_speed_update_are_continuous);
+    RUN_TEST(test_raw_mit_remains_direct_after_ordinary_position_control);
+    RUN_TEST(test_ordinary_mit_position_reinitializes_after_reenable);
     RUN_TEST(test_deadline_skips_missed_periods_and_reenable_seeds_feedback);
 #undef RUN_TEST
     std::cout << "Articore runtime tests passed\n";

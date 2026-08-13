@@ -60,6 +60,13 @@ enum ArticoreRuntimeCapability {
   // calibrated levels. Level 1 is lightest, level 10 strongest, and level 5
   // is the default used by the legacy opening-only API.
   ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS = 1ULL << 20,
+  // ABI 1.12 adds a one-shot ordinary MIT position command. The Runtime
+  // advances the complete arm reference at one shared rad/s limit while the
+  // raw MIT submission APIs retain their direct q/dq/kp/kd/tau semantics.
+  ARTICORE_CAP_JOINT_MIT_POSITION = 1ULL << 21,
+  // ABI 1.13 adds the symmetric ordinary PV position command while retaining
+  // raw submit_pos_vel[_ex]() as an internal direct-control capability.
+  ARTICORE_CAP_JOINT_PV_POSITION = 1ULL << 22,
 };
 
 enum ArticorePresenceState {
@@ -173,6 +180,20 @@ typedef struct ArticoreMitCommand {
   float damping;
   float feedforward_torque;
 } ArticoreMitCommand;
+
+typedef struct ArticoreJointMitTarget {
+  // Caller initializes this to sizeof(ArticoreJointMitTarget).
+  uint32_t struct_size;
+  void* motor;
+  float target_position;
+} ArticoreJointMitTarget;
+
+typedef struct ArticoreJointPvTarget {
+  // Caller initializes this to sizeof(ArticoreJointPvTarget).
+  uint32_t struct_size;
+  void* motor;
+  float target_position;
+} ArticoreJointPvTarget;
 
 typedef struct ArticoreGripperTarget {
   void* motor;
@@ -578,6 +599,27 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_ex(
     const ArticoreMitCommand* commands,
     uint32_t command_count,
     int32_t lifetime);
+// ABI 1.13 ordinary PV position setting. Semantics match set_joint_mit(): one
+// complete arm batch, one shared rad/s reference speed, capacity-one latest
+// value replacement, and feedback initialization only for the first ordinary
+// PV command after enable/reconnect/recover. The generated PV position advances
+// by at most max_reference_velocity/control_hz per native cycle.
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
+    ArticoreRuntime* runtime,
+    const ArticoreJointPvTarget* targets,
+    uint32_t target_count,
+    float max_reference_velocity);
+// ABI 1.12 ordinary MIT position setting. The target array must contain every
+// active arm joint in one atomic batch. max_reference_velocity is one shared
+// positive rad/s limit used only to advance q; transmitted dq and tau are zero
+// and kp/kd come from the configured product joint parameters. The Runtime
+// keeps transmitting the final position until an explicit control transaction
+// replaces it. Raw submit_mit[_ex]() remains unmodified and un-ramped.
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
+    ArticoreRuntime* runtime,
+    const ArticoreJointMitTarget* targets,
+    uint32_t target_count,
+    float max_reference_velocity);
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_gripper_mit(
     ArticoreRuntime* runtime,
     const ArticoreMitCommand* commands,

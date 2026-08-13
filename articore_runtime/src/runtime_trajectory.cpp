@@ -654,6 +654,9 @@ ArticoreTrajectoryStartReport SafetyRuntime::start_joint_trajectory_report(
               std::to_string(trajectory.id),
           start_time);
     }
+    arm_mailbox_.joint_position = false;
+    arm_mailbox_.max_reference_velocity = 0.0f;
+    arm_mailbox_.final_positions.clear();
     active_trajectory_ = std::move(trajectory);
   }
   report.outcome = replaced ? ARTICORE_TRAJECTORY_START_REPLACED
