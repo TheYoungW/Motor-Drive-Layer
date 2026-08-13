@@ -13,6 +13,14 @@ int main() {
   const auto cancel_trajectory = &articore_runtime_cancel_trajectory;
   const auto configure_trajectory_execution =
       &articore_runtime_configure_trajectory_execution;
+  const auto configure_joint_safety_limits =
+      &articore_runtime_configure_joint_safety_limits;
+  const auto start_trajectory_report =
+      &articore_runtime_start_joint_trajectory_report;
+  const auto configure_gripper_force_profiles =
+      &articore_runtime_configure_gripper_force_profiles;
+  const auto set_gripper_commands =
+      &articore_runtime_set_gripper_commands;
   const auto disable_report = &articore_runtime_get_last_disable_report;
   const auto version = articore_runtime_abi_version();
   const auto capabilities = articore_runtime_capabilities();
@@ -31,10 +39,15 @@ int main() {
                             ARTICORE_CAP_PROTECTIVE_FAULT_HOLD |
                             ARTICORE_CAP_DETERMINISTIC_DISABLE |
                             ARTICORE_CAP_TRAJECTORY_MANAGEMENT |
-                            ARTICORE_CAP_TRAJECTORY_SETTLING;
+                            ARTICORE_CAP_TRAJECTORY_SETTLING |
+                            ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD |
+                            ARTICORE_CAP_LAYERED_JOINT_LIMITS |
+                            ARTICORE_CAP_GRIPPER_COMMAND_PROFILES;
   if (!create_ex || !enable_report || !submit_pos_vel_ex || !submit_mit_ex ||
       !start_trajectory_ex || !cancel_trajectory || !disable_report ||
-      !configure_trajectory_execution || version != 0x00010008U ||
+      !configure_trajectory_execution || !configure_joint_safety_limits ||
+      !start_trajectory_report || !configure_gripper_force_profiles ||
+      !set_gripper_commands || version != 0x0001000AU ||
       (capabilities & required) != required) {
     std::cerr << "Articore runtime ABI metadata is incomplete\n";
     return 1;

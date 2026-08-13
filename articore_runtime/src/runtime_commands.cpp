@@ -51,6 +51,8 @@ void SafetyRuntime::configure_joints(
     if (!configured.emplace(
             value.motor,
             JointControlConfig{value.lower_position, value.upper_position,
+                               value.lower_position, value.upper_position,
+                               0.0f, 0.0f,
                                value.velocity_limit, value.torque_limit,
                                value.mit_kp, value.mit_kd,
                                value.mit_feedforward_torque}).second) {
@@ -62,6 +64,54 @@ void SafetyRuntime::configure_joints(
     throw std::runtime_error("joint configuration is fixed after connect");
   }
   joint_configs_ = std::move(configured);
+}
+
+void SafetyRuntime::configure_joint_safety_limits(
+    const ArticoreJointSafetyLimits* limits, uint32_t count) {
+  if (!limits || count == 0) {
+    throw std::invalid_argument("joint safety limits are empty");
+  }
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (state_ != ARTICORE_DISCONNECTED) {
+    throw std::runtime_error("joint safety limits are fixed after connect");
+  }
+  if (joint_configs_.empty() || count != joint_configs_.size()) {
+    throw std::invalid_argument(
+        "joint safety limits must cover every configured arm motor");
+  }
+  std::set<void*> unique;
+  auto updated = joint_configs_;
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto& value = limits[i];
+    const auto configured = updated.find(value.motor);
+    if (value.struct_size < sizeof(ArticoreJointSafetyLimits) ||
+        configured == updated.end() || !unique.insert(value.motor).second ||
+        !finite(value.hard_lower_position) ||
+        !finite(value.hard_upper_position) ||
+        !finite(value.soft_lower_position) ||
+        !finite(value.soft_upper_position) ||
+        !finite(value.soft_limit_braking_zone) ||
+        !finite(value.braking_acceleration) ||
+        value.hard_lower_position >= value.hard_upper_position ||
+        value.soft_lower_position < value.hard_lower_position ||
+        value.soft_upper_position > value.hard_upper_position ||
+        value.soft_lower_position >= value.soft_upper_position ||
+        value.soft_limit_braking_zone <= 0.0f ||
+        value.soft_limit_braking_zone >
+            value.soft_upper_position - value.soft_lower_position ||
+        value.braking_acceleration <= 0.0f) {
+      throw std::invalid_argument("invalid layered joint safety limits");
+    }
+    auto& output = configured->second;
+    output.hard_lower_position = value.hard_lower_position;
+    output.hard_upper_position = value.hard_upper_position;
+    output.soft_lower_position = value.soft_lower_position;
+    output.soft_upper_position = value.soft_upper_position;
+    output.soft_limit_braking_zone = value.soft_limit_braking_zone;
+    output.braking_acceleration = value.braking_acceleration;
+    output.layered_limits_configured = true;
+  }
+  joint_configs_ = std::move(updated);
 }
 
 void SafetyRuntime::configure_trajectory_execution(
@@ -112,7 +162,12 @@ void SafetyRuntime::validate_position_velocity_torque(
   const auto configured = joint_configs_.find(motor);
   if (configured != joint_configs_.end()) {
     const auto& limits = configured->second;
-    if (position < limits.lower_position || position > limits.upper_position) {
+    if (position < limits.hard_lower_position ||
+        position > limits.hard_upper_position) {
+      throw std::invalid_argument("joint command exceeds hard position limits");
+    }
+    if (position < limits.soft_lower_position ||
+        position > limits.soft_upper_position) {
       throw std::invalid_argument("joint command exceeds position limits");
     }
     if (std::abs(velocity) > limits.velocity_limit) {
@@ -470,9 +525,15 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     for (const auto& joint : trajectory->joints) {
       const auto sample = sample_trajectory_joint(*trajectory, joint, now);
       const auto& config = joint_config(joint.motor);
-      validate_position_velocity_torque(
-          joint.motor, sample.position, sample.velocity,
-          config.mit_feedforward_torque);
+      if (!finite(sample.position) || !finite(sample.velocity) ||
+          !finite(sample.acceleration) ||
+          sample.position < config.hard_lower_position ||
+          sample.position > config.hard_upper_position ||
+          std::abs(sample.velocity) > config.velocity_limit ||
+          std::abs(config.mit_feedforward_torque) > config.torque_limit) {
+        throw std::runtime_error(
+            "planned trajectory sample violates configured hard limits");
+      }
       if (mode == ARTICORE_MODE_PV) {
         pv.push_back(ArticorePosVelCommand{
             joint.motor, sample.position, joint.velocity_limit});

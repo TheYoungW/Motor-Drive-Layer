@@ -121,6 +121,46 @@ CAN ID, measured errors, and thresholds. These trajectory execution tolerances a
 URDF command limits and can be configured before connect with
 `articore_runtime_configure_trajectory_execution()`.
 
+Runtime ABI 1.9 adds `ARTICORE_TRAJECTORY_SMOOTH_REPLACE_OR_HOLD` and the structured
+`articore_runtime_start_joint_trajectory_report()` entry point. A feasible minimum-jerk
+replacement preserves the old reference position, velocity, and acceleration. If replacement
+cannot satisfy a position, velocity, or boundary constraint, the Runtime holds the control-path
+lock, cancels the old trajectory, captures complete fresh enabled feedback for every arm joint,
+synchronously transmits a full dual-arm current-position hold, and installs that hold as the
+persistent mailbox value. The call returns
+`ARTICORE_TRAJECTORY_START_REPLACEMENT_REJECTED_HELD`; this is a successful safety outcome, not a
+global Runtime fault. MIT fallback holds use zero velocity and feedforward torque with product
+safety Kp/Kd. DM POS_VEL has no signed target-velocity field, so PV uses a stationary position
+reference with the configured low safe velocity limit. Missing/stale feedback, a hard-limit
+feedback violation, or failure to transmit the fallback hold returns `FAULTED` and latches FAULT.
+
+The additive `articore_runtime_configure_joint_safety_limits()` call keeps the original joint
+configuration ABI stable while separating mechanical hard limits from normal-operation soft
+limits. Feedback may be outside a soft limit while still inside the hard limits: stationary hold
+and trajectories directed back into the safe region remain legal, but outward motion does not.
+Within each soft-limit braking zone, outward trajectory speed is constrained both by the zone and
+by `v <= sqrt(2 * braking_acceleration * distance_to_soft_limit)`. Only fresh feedback beyond a
+configured hard limit is treated as a hard-limit safety fault; ordinary feedback values are not
+compared with command velocity or torque limits.
+
+Runtime ABI 1.10 adds `articore_runtime_set_gripper_commands()`. Each complete active-gripper
+transaction contains only `opening`, normalized `speed`, and a stable LOW/NORMAL/HIGH
+`force_level`; all fields become visible to the persistent worker under one command lock. Speed
+uses the same product-independent scale as opening: 1000 means the maximum gripper speed calibrated
+in the product motor descriptor. Both opening and closing advance from the previous native command
+position through the same bounded ramp, so neither direction jumps directly to its endpoint.
+
+Product bindings configure all three force levels before connect with
+`articore_runtime_configure_gripper_force_profiles()`. A profile maps the public level to contact
+and overload torque thresholds plus moving and holding MIT gains. The contact motion window,
+stall displacement, minimum target error, contact/overload persistence, hold offset, retreat
+distance, and retreat retry interval remain fixed in the product motor descriptor and cannot be
+overridden by a per-motion command. Changing speed or force level during motion is atomic; a
+force change resets only threshold-dependent contact evidence while motion continues. Existing
+contact detection, low-gain holding, overload retreat, feedback supervision, and whole-Runtime
+safety-state integration remain active. The legacy opening-only call is preserved and now uses the
+same bidirectional ramp with maximum speed and the NORMAL force profile.
+
 When an arm enters safe hold, the runtime snapshots every arm motor's current position from the
 non-blocking feedback cache. PV safe hold uses the captured positions with a dedicated low velocity limit.
 MIT safe hold uses the captured positions, zeros velocity and feedforward torque, and substitutes

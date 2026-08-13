@@ -47,6 +47,15 @@ enum ArticoreRuntimeCapability {
   // ABI 1.8 separates reference generation from measured convergence and
   // monitors sustained per-joint following error during trajectory execution.
   ARTICORE_CAP_TRAJECTORY_SETTLING = 1ULL << 16,
+  // ABI 1.9 adds an atomic replacement policy that installs and transmits a
+  // fresh current-position hold when smooth replacement is not safe.
+  ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD = 1ULL << 17,
+  // Mechanical hard limits and normal-operation soft limits are configured
+  // independently, including per-joint dynamic braking constraints.
+  ARTICORE_CAP_LAYERED_JOINT_LIMITS = 1ULL << 18,
+  // ABI 1.10 adds atomic per-command gripper speed/force selection and
+  // product-owned force calibration profiles.
+  ARTICORE_CAP_GRIPPER_COMMAND_PROFILES = 1ULL << 19,
 };
 
 enum ArticorePresenceState {
@@ -100,6 +109,15 @@ enum ArticoreTrajectoryStatus {
 enum ArticoreTrajectoryReplacePolicy {
   ARTICORE_TRAJECTORY_REJECT_IF_BUSY = 0,
   ARTICORE_TRAJECTORY_SMOOTH_REPLACE = 1,
+  ARTICORE_TRAJECTORY_SMOOTH_REPLACE_OR_HOLD = 2,
+};
+
+enum ArticoreTrajectoryStartOutcome {
+  ARTICORE_TRAJECTORY_START_STARTED = 1,
+  ARTICORE_TRAJECTORY_START_REPLACED = 2,
+  ARTICORE_TRAJECTORY_START_REPLACEMENT_REJECTED_HELD = 3,
+  ARTICORE_TRAJECTORY_START_REJECTED = 4,
+  ARTICORE_TRAJECTORY_START_FAULTED = 5,
 };
 
 enum ArticoreGripperControlState {
@@ -115,6 +133,12 @@ enum ArticoreGripperControlState {
 enum ArticoreGripperFaultAction {
   ARTICORE_GRIPPER_FAULT_HOLD = 1,
   ARTICORE_GRIPPER_FAULT_DISABLE = 2,
+};
+
+enum ArticoreGripperForceLevel {
+  ARTICORE_GRIPPER_FORCE_LOW = 1,
+  ARTICORE_GRIPPER_FORCE_NORMAL = 2,
+  ARTICORE_GRIPPER_FORCE_HIGH = 3,
 };
 
 typedef struct ArticorePosVelCommand {
@@ -137,6 +161,31 @@ typedef struct ArticoreGripperTarget {
   float opening;
 } ArticoreGripperTarget;
 
+typedef struct ArticoreGripperCommand {
+  // Caller initializes this to sizeof(ArticoreGripperCommand).
+  uint32_t struct_size;
+  void* motor;
+  // Product-independent opening scale: 0=closed, 1000=open.
+  float opening;
+  // Product-independent speed scale: (0, 1000], where 1000 is the calibrated
+  // maximum speed in the motor descriptor.
+  float speed;
+  int32_t force_level;
+} ArticoreGripperCommand;
+
+typedef struct ArticoreGripperForceProfile {
+  // Caller initializes this to sizeof(ArticoreGripperForceProfile).
+  uint32_t struct_size;
+  void* motor;
+  int32_t force_level;
+  float contact_torque;
+  float overload_torque;
+  float moving_kp;
+  float moving_kd;
+  float hold_kp;
+  float hold_kd;
+} ArticoreGripperForceProfile;
+
 typedef struct ArticoreJointControlConfig {
   void* motor;
   float lower_position;
@@ -147,6 +196,19 @@ typedef struct ArticoreJointControlConfig {
   float mit_kd;
   float mit_feedforward_torque;
 } ArticoreJointControlConfig;
+
+typedef struct ArticoreJointSafetyLimits {
+  // Caller initializes this to sizeof(ArticoreJointSafetyLimits).
+  uint32_t struct_size;
+  void* motor;
+  float hard_lower_position;
+  float hard_upper_position;
+  float soft_lower_position;
+  float soft_upper_position;
+  float soft_limit_braking_zone;
+  // Positive magnitude used by d_stop = velocity^2 / (2 * acceleration).
+  float braking_acceleration;
+} ArticoreJointSafetyLimits;
 
 typedef struct ArticoreJointTrajectoryTarget {
   void* motor;
@@ -174,6 +236,28 @@ typedef struct ArticoreTrajectoryInfo {
   uint64_t elapsed_ns;
   char error[256];
 } ArticoreTrajectoryInfo;
+
+typedef struct ArticoreTrajectoryStartReport {
+  // Caller initializes this to sizeof(ArticoreTrajectoryStartReport).
+  uint32_t struct_size;
+  int32_t outcome;
+  uint64_t old_trajectory_id;
+  uint64_t new_trajectory_id;
+  int32_t hold_installed;
+  uint8_t limiting_channel;
+  uint8_t limiting_can_id;
+  uint8_t feedback_fresh;
+  uint8_t reserved;
+  char limiting_joint[64];
+  char reason[256];
+  float position;
+  float velocity;
+  float acceleration;
+  float soft_lower;
+  float soft_upper;
+  float hard_lower;
+  float hard_upper;
+} ArticoreTrajectoryStartReport;
 
 typedef struct ArticoreMotorState {
   int32_t has_value;
@@ -437,6 +521,13 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joints(
     ArticoreRuntime* runtime,
     const ArticoreJointControlConfig* configs,
     uint32_t config_count);
+// ABI 1.9 layered joint limits. This additive configuration keeps the legacy
+// ArticoreJointControlConfig layout stable. It must cover every active arm
+// joint and be called after configure_joints(), before connect().
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joint_safety_limits(
+    ArticoreRuntime* runtime,
+    const ArticoreJointSafetyLimits* limits,
+    uint32_t limit_count);
 // Optional ABI 1.8 trajectory execution policy. It must be configured before
 // connect. If omitted, conservative native defaults are used. The following
 // error limit is checked independently for every arm joint.
@@ -477,6 +568,22 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_gripper_openings(
     ArticoreRuntime* runtime,
     const ArticoreGripperTarget* targets,
     uint32_t target_count);
+// ABI 1.10 product force calibration. A complete LOW/NORMAL/HIGH profile set
+// for every active gripper is fixed before connect. Contact/stall windows,
+// retreat distance, persistence times, and retry timing remain private product
+// safety parameters in ArticoreMotorDescriptor and cannot be changed by a
+// per-motion command.
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_gripper_force_profiles(
+    ArticoreRuntime* runtime,
+    const ArticoreGripperForceProfile* profiles,
+    uint32_t profile_count);
+// Atomically replaces the complete active gripper command set. Opening and
+// closing both use a bounded Runtime-generated position ramp. Changing speed
+// or force level takes effect together on the next native control cycle.
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_gripper_commands(
+    ArticoreRuntime* runtime,
+    const ArticoreGripperCommand* commands,
+    uint32_t command_count);
 // Starts one time-parameterized trajectory. Exactly one trajectory may be
 // active: another trajectory or a direct submit_pos_vel/submit_mit command is
 // rejected until it completes. Disable, estop, close, and safety faults may
@@ -497,6 +604,17 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_start_joint_trajectory_ex(
     uint32_t target_count,
     int32_t profile,
     int32_t replace_policy);
+// ABI 1.9 structured trajectory start/replacement. A return value of zero
+// means the report is valid, including the non-exceptional
+// REPLACEMENT_REJECTED_HELD outcome. Negative return values are reserved for
+// invalid ABI arguments or an unexpected Runtime exception.
+ARTICORE_RUNTIME_API int32_t articore_runtime_start_joint_trajectory_report(
+    ArticoreRuntime* runtime,
+    const ArticoreJointTrajectoryTarget* targets,
+    uint32_t target_count,
+    int32_t profile,
+    int32_t replace_policy,
+    ArticoreTrajectoryStartReport* report);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_trajectory(
     ArticoreRuntime* runtime,
     uint64_t trajectory_id,

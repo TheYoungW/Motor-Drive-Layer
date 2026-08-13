@@ -42,7 +42,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (1U << 16) | 8U;
+  return (1U << 16) | 10U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -62,7 +62,10 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_PROTECTIVE_FAULT_HOLD |
          ARTICORE_CAP_DETERMINISTIC_DISABLE |
          ARTICORE_CAP_TRAJECTORY_MANAGEMENT |
-         ARTICORE_CAP_TRAJECTORY_SETTLING;
+         ARTICORE_CAP_TRAJECTORY_SETTLING |
+         ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD |
+         ARTICORE_CAP_LAYERED_JOINT_LIMITS |
+         ARTICORE_CAP_GRIPPER_COMMAND_PROFILES;
 }
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
@@ -141,6 +144,15 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joints(
   return call([&] { checked(runtime).configure_joints(configs, config_count); });
 }
 
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joint_safety_limits(
+    ArticoreRuntime* runtime,
+    const ArticoreJointSafetyLimits* limits,
+    uint32_t limit_count) {
+  return call([&] {
+    checked(runtime).configure_joint_safety_limits(limits, limit_count);
+  });
+}
+
 ARTICORE_RUNTIME_API int32_t articore_runtime_configure_trajectory_execution(
     ArticoreRuntime* runtime,
     const ArticoreTrajectoryExecutionConfig* config) {
@@ -206,6 +218,24 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_gripper_openings(
   });
 }
 
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_gripper_force_profiles(
+    ArticoreRuntime* runtime,
+    const ArticoreGripperForceProfile* profiles,
+    uint32_t profile_count) {
+  return call([&] {
+    checked(runtime).configure_gripper_force_profiles(profiles, profile_count);
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_gripper_commands(
+    ArticoreRuntime* runtime,
+    const ArticoreGripperCommand* commands,
+    uint32_t command_count) {
+  return call([&] {
+    checked(runtime).set_gripper_commands(commands, command_count);
+  });
+}
+
 ARTICORE_RUNTIME_API uint64_t articore_runtime_start_joint_trajectory(
     ArticoreRuntime* runtime,
     const ArticoreJointTrajectoryTarget* targets,
@@ -244,6 +274,26 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_start_joint_trajectory_ex(
     g_last_error = "unknown Articore runtime exception";
     return 0;
   }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_start_joint_trajectory_report(
+    ArticoreRuntime* runtime,
+    const ArticoreJointTrajectoryTarget* targets,
+    uint32_t target_count,
+    int32_t profile,
+    int32_t replace_policy,
+    ArticoreTrajectoryStartReport* report) {
+  if (!report || report->struct_size < sizeof(ArticoreTrajectoryStartReport)) {
+    g_last_error =
+        "trajectory start report is null or has an incompatible struct_size";
+    return -1;
+  }
+  return call([&] {
+    *report = checked(runtime).start_joint_trajectory_report(
+        targets, target_count,
+        static_cast<ArticoreTrajectoryProfile>(profile),
+        static_cast<ArticoreTrajectoryReplacePolicy>(replace_policy));
+  });
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_trajectory(

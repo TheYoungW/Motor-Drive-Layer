@@ -97,15 +97,52 @@ SafetyRuntime::TrajectorySample SafetyRuntime::sample_trajectory_joint(
   };
 }
 
+float SafetyRuntime::allowed_outward_velocity(
+    const JointControlConfig& limits, float position,
+    bool toward_upper) const {
+  const float distance = toward_upper
+      ? limits.soft_upper_position - position
+      : position - limits.soft_lower_position;
+  if (distance <= 0.0f) return 0.0f;
+  float allowed = limits.velocity_limit;
+  if (limits.soft_limit_braking_zone > 0.0f &&
+      distance < limits.soft_limit_braking_zone) {
+    allowed = std::min(
+        allowed,
+        limits.velocity_limit *
+            std::sqrt(distance / limits.soft_limit_braking_zone));
+  }
+  if (limits.braking_acceleration > 0.0f) {
+    allowed = std::min(
+        allowed, std::sqrt(2.0f * limits.braking_acceleration * distance));
+  }
+  return allowed;
+}
+
 bool SafetyRuntime::trajectory_within_limits(
-    const TrajectoryRecord& trajectory) const {
+    const TrajectoryRecord& trajectory, LimitViolation* violation) const {
   constexpr uint32_t kSamples = 1024;
   constexpr double kVelocityTolerance = 1e-5;
+  const auto reject = [&](const TrajectoryJoint& joint,
+                          const TrajectorySample& sample,
+                          const char* reason) {
+    if (violation) {
+      violation->motor = joint.motor;
+      violation->reason = reason;
+      violation->position = sample.position;
+      violation->velocity = sample.velocity;
+      violation->acceleration = sample.acceleration;
+    }
+    return false;
+  };
   for (const auto& joint : trajectory.joints) {
     const auto& limits = joint_config(joint.motor);
     if (std::abs(joint.start_velocity) >
         joint.velocity_limit + kVelocityTolerance) {
-      return false;
+      return reject(joint,
+                    {joint.start_position, joint.start_velocity,
+                     joint.start_acceleration},
+                    "initial velocity exceeds requested trajectory limit");
     }
     for (uint32_t index = 0; index <= kSamples; ++index) {
       const auto offset = std::chrono::duration_cast<Clock::duration>(
@@ -113,11 +150,42 @@ bool SafetyRuntime::trajectory_within_limits(
       const auto sample = sample_trajectory_joint(
           trajectory, joint, trajectory.start_time + offset);
       if (!finite(sample.position) || !finite(sample.velocity) ||
-          sample.position < limits.lower_position ||
-          sample.position > limits.upper_position ||
-          std::abs(sample.velocity) >
-              joint.velocity_limit + kVelocityTolerance) {
-        return false;
+          !finite(sample.acceleration)) {
+        return reject(joint, sample, "trajectory sample is not finite");
+      }
+      if (sample.position < limits.hard_lower_position ||
+          sample.position > limits.hard_upper_position) {
+        return reject(joint, sample, "trajectory crosses a hard position limit");
+      }
+      if (std::abs(sample.velocity) >
+          joint.velocity_limit + kVelocityTolerance) {
+        return reject(joint, sample, "trajectory exceeds requested velocity limit");
+      }
+      if (sample.position > limits.soft_upper_position &&
+          sample.velocity > kVelocityTolerance) {
+        return reject(joint, sample,
+                      "trajectory continues outward above the upper soft limit");
+      }
+      if (sample.position < limits.soft_lower_position &&
+          sample.velocity < -kVelocityTolerance) {
+        return reject(joint, sample,
+                      "trajectory continues outward below the lower soft limit");
+      }
+      if (sample.position <= limits.soft_upper_position &&
+          sample.velocity > kVelocityTolerance &&
+          sample.velocity >
+              allowed_outward_velocity(limits, sample.position, true) +
+                  kVelocityTolerance) {
+        return reject(joint, sample,
+                      "trajectory exceeds upper soft-limit braking velocity");
+      }
+      if (sample.position >= limits.soft_lower_position &&
+          sample.velocity < -kVelocityTolerance &&
+          -sample.velocity >
+              allowed_outward_velocity(limits, sample.position, false) +
+                  kVelocityTolerance) {
+        return reject(joint, sample,
+                      "trajectory exceeds lower soft-limit braking velocity");
       }
     }
   }
@@ -252,49 +320,90 @@ uint64_t SafetyRuntime::start_joint_trajectory_ex(
     const ArticoreJointTrajectoryTarget* targets, uint32_t count,
     ArticoreTrajectoryProfile profile,
     ArticoreTrajectoryReplacePolicy replace_policy) {
-  if (!targets || count == 0) {
-    throw std::invalid_argument("joint trajectory is empty");
+  if (replace_policy == ARTICORE_TRAJECTORY_SMOOTH_REPLACE_OR_HOLD) {
+    throw std::invalid_argument(
+        "SMOOTH_REPLACE_OR_HOLD requires the structured report API");
   }
+  const auto report = start_joint_trajectory_report(
+      targets, count, profile, replace_policy);
+  if (report.outcome == ARTICORE_TRAJECTORY_START_STARTED ||
+      report.outcome == ARTICORE_TRAJECTORY_START_REPLACED) {
+    return report.new_trajectory_id;
+  }
+  const std::string reason = report.reason[0]
+      ? std::string(report.reason) : std::string("trajectory start rejected");
+  if (report.outcome == ARTICORE_TRAJECTORY_START_REJECTED) {
+    if (reason.find("already active") != std::string::npos ||
+        reason.find("runtime is not accepting") != std::string::npos ||
+        reason.find("runtime state changed") != std::string::npos) {
+      throw std::runtime_error(reason);
+    }
+    throw std::invalid_argument(reason);
+  }
+  throw std::runtime_error(reason);
+}
+
+ArticoreTrajectoryStartReport SafetyRuntime::start_joint_trajectory_report(
+    const ArticoreJointTrajectoryTarget* targets, uint32_t count,
+    ArticoreTrajectoryProfile profile,
+    ArticoreTrajectoryReplacePolicy replace_policy) {
+  ArticoreTrajectoryStartReport report{};
+  report.struct_size = sizeof(report);
+  report.outcome = ARTICORE_TRAJECTORY_START_REJECTED;
+  const auto reject = [&](const std::string& reason) {
+    copy_text(report.reason, reason);
+    return report;
+  };
+  if (!targets || count == 0) return reject("joint trajectory is empty");
   if (profile != ARTICORE_TRAJECTORY_MIN_JERK &&
       profile != ARTICORE_TRAJECTORY_LINEAR) {
-    throw std::invalid_argument("unsupported trajectory profile");
+    return reject("unsupported trajectory profile");
   }
   if (replace_policy != ARTICORE_TRAJECTORY_REJECT_IF_BUSY &&
-      replace_policy != ARTICORE_TRAJECTORY_SMOOTH_REPLACE) {
-    throw std::invalid_argument("unsupported trajectory replace policy");
+      replace_policy != ARTICORE_TRAJECTORY_SMOOTH_REPLACE &&
+      replace_policy != ARTICORE_TRAJECTORY_SMOOTH_REPLACE_OR_HOLD) {
+    return reject("unsupported trajectory replace policy");
   }
   const auto expected = static_cast<uint32_t>(std::count_if(
       motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
         return motor.descriptor.is_gripper == 0;
       }));
   if (count != expected) {
-    throw std::invalid_argument(
-        "trajectory must contain the complete fixed arm layout");
+    return reject("trajectory must contain the complete fixed arm layout");
   }
 
-  {
-    std::lock_guard<std::mutex> state_lock(state_mutex_);
-    require_state_for_command();
-  }
   std::lock_guard<std::mutex> command_lock(command_mutex_);
-  uint64_t trajectory_id = 0;
-  ArticoreControlMode trajectory_mode = ARTICORE_MODE_PV;
   const auto start_time = Clock::now();
+  ArticoreControlMode trajectory_mode = ARTICORE_MODE_PV;
   std::optional<TrajectoryRecord> replaced;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
-    require_state_for_command();
+    if (fault_latched_ || hardware_transition_ || enable_transaction_ ||
+        (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING)) {
+      report.outcome = fault_latched_ ? ARTICORE_TRAJECTORY_START_FAULTED
+                                     : ARTICORE_TRAJECTORY_START_REJECTED;
+      return reject("Articore runtime is not accepting motion commands");
+    }
     if (active_trajectory_ &&
         replace_policy == ARTICORE_TRAJECTORY_REJECT_IF_BUSY) {
-      throw std::runtime_error(
-          "joint trajectory is already active; wait for it to complete");
+      report.old_trajectory_id = active_trajectory_->id;
+      return reject("joint trajectory is already active; wait for it to complete");
     }
-    if (active_trajectory_) replaced = *active_trajectory_;
+    if (active_trajectory_) {
+      replaced = *active_trajectory_;
+      report.old_trajectory_id = replaced->id;
+    }
     trajectory_mode = mode_;
   }
+
+  LimitViolation violation;
+  bool planning_rejected = false;
+  bool feedback_failure = false;
+  void* feedback_failure_motor = nullptr;
+  std::string failure_reason;
   if (replaced && profile != ARTICORE_TRAJECTORY_MIN_JERK) {
-    throw std::invalid_argument(
-        "smooth trajectory replacement requires MIN_JERK profile");
+    planning_rejected = true;
+    failure_reason = "smooth trajectory replacement requires MIN_JERK profile";
   }
 
   TrajectoryRecord trajectory;
@@ -303,12 +412,12 @@ uint64_t SafetyRuntime::start_joint_trajectory_ex(
   trajectory.joints.reserve(count);
   double duration_seconds = 0.0;
   std::set<void*> unique;
-  for (uint32_t i = 0; i < count; ++i) {
+  for (uint32_t i = 0; i < count && !feedback_failure; ++i) {
     const auto& target = targets[i];
     if (!target.motor || !finite(target.target_position) ||
         !finite(target.velocity_limit) || target.velocity_limit <= 0.0f ||
         !unique.insert(target.motor).second) {
-      throw std::invalid_argument("trajectory contains invalid targets");
+      return reject("trajectory contains invalid or duplicate targets");
     }
     const auto motor = std::find_if(
         motors_.begin(), motors_.end(), [&](const MotorRecord& record) {
@@ -316,14 +425,31 @@ uint64_t SafetyRuntime::start_joint_trajectory_ex(
                  record.descriptor.motor == target.motor;
         });
     if (motor == motors_.end()) {
-      throw std::invalid_argument("trajectory contains an unexpected motor");
+      return reject("trajectory contains an unexpected motor");
     }
     const auto& limits = joint_config(target.motor);
-    if (target.velocity_limit > limits.velocity_limit) {
-      throw std::invalid_argument("trajectory velocity exceeds joint limit");
+    if (!planning_rejected && target.velocity_limit > limits.velocity_limit) {
+      planning_rejected = true;
+      violation = {target.motor, "trajectory velocity exceeds joint limit",
+                   target.target_position, target.velocity_limit, 0.0f};
+      failure_reason = violation.reason;
     }
-    validate_position_velocity_torque(
-        target.motor, target.target_position, target.velocity_limit, 0.0f);
+    if (!planning_rejected &&
+        (target.target_position < limits.hard_lower_position ||
+         target.target_position > limits.hard_upper_position)) {
+      planning_rejected = true;
+      violation = {target.motor, "trajectory target exceeds a hard position limit",
+                   target.target_position, 0.0f, 0.0f};
+      failure_reason = violation.reason;
+    }
+    if (!planning_rejected &&
+        (target.target_position < limits.soft_lower_position ||
+         target.target_position > limits.soft_upper_position)) {
+      planning_rejected = true;
+      violation = {target.motor, "trajectory target exceeds a soft position limit",
+                   target.target_position, 0.0f, 0.0f};
+      failure_reason = violation.reason;
+    }
 
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
@@ -334,10 +460,21 @@ uint64_t SafetyRuntime::start_joint_trajectory_ex(
         api_.motor_get_state(target.motor, &state) != 0 || !state.has_value ||
         !finite(state.pos) || !finite(state.vel) || !finite(state.torq) ||
         state.status_code != 1) {
-      throw std::runtime_error(
-          std::string(motor->descriptor.name) +
-          ": complete fresh enabled feedback is required for trajectory");
+      feedback_failure = true;
+      feedback_failure_motor = target.motor;
+      failure_reason = std::string(motor->descriptor.name) +
+          ": complete fresh enabled feedback is required for trajectory";
+      break;
     }
+    if (state.pos < limits.hard_lower_position ||
+        state.pos > limits.hard_upper_position) {
+      feedback_failure = true;
+      feedback_failure_motor = target.motor;
+      failure_reason = std::string(motor->descriptor.name) +
+          ": feedback position crossed a hard position limit";
+      break;
+    }
+
     float start_position = state.pos;
     float start_velocity = 0.0f;
     float start_acceleration = 0.0f;
@@ -348,8 +485,10 @@ uint64_t SafetyRuntime::start_joint_trajectory_ex(
             return value.motor == target.motor;
           });
       if (previous == replaced->joints.end()) {
-        throw std::runtime_error(
-            "active trajectory does not match the fixed arm layout");
+        feedback_failure = true;
+        feedback_failure_motor = target.motor;
+        failure_reason = "active trajectory does not match the fixed arm layout";
+        break;
       }
       const auto sample = sample_trajectory_joint(
           *replaced, *previous, start_time);
@@ -384,61 +523,144 @@ uint64_t SafetyRuntime::start_joint_trajectory_ex(
         duration_seconds, factor * distance / target.velocity_limit);
     trajectory.joints.push_back(TrajectoryJoint{
         target.motor, start_position, start_velocity, start_acceleration,
-        target.target_position,
-        target.velocity_limit});
+        target.target_position, target.velocity_limit});
   }
 
-  const auto minimum_duration =
-      std::chrono::duration<double>(1.0 / config_.control_hz);
-  trajectory.duration = std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::max(std::chrono::duration<double>(duration_seconds), minimum_duration));
-  if (replaced) {
-    // Boundary velocity/acceleration can create an interior overshoot. Search
-    // for a duration whose complete polynomial respects every new velocity
-    // and position limit. This runs only at task submission, never in the
-    // 500 Hz control hot path.
+  if (!feedback_failure && trajectory.joints.size() == count &&
+      !planning_rejected) {
+    const auto minimum_duration =
+        std::chrono::duration<double>(1.0 / config_.control_hz);
+    trajectory.duration = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::max(std::chrono::duration<double>(duration_seconds),
+                 minimum_duration));
     const auto initial_duration = trajectory.duration;
     const auto maximum_duration = std::min(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::seconds(120)),
-        initial_duration * 32);
-    bool valid = trajectory_within_limits(trajectory);
+        std::max(initial_duration * 32,
+                 std::chrono::duration_cast<std::chrono::nanoseconds>(
+                     std::chrono::seconds(2))));
+    bool valid = trajectory_within_limits(trajectory, &violation);
     while (!valid && trajectory.duration < maximum_duration) {
       trajectory.duration = std::chrono::duration_cast<std::chrono::nanoseconds>(
           trajectory.duration * 1.05);
-      valid = trajectory_within_limits(trajectory);
+      valid = trajectory_within_limits(trajectory, &violation);
     }
     if (!valid) {
-      throw std::invalid_argument(
-          "smooth replacement cannot satisfy position and velocity limits");
+      planning_rejected = true;
+      failure_reason = violation.reason;
     }
   }
+
+  const bool replace_or_hold = replaced &&
+      replace_policy == ARTICORE_TRAJECTORY_SMOOTH_REPLACE_OR_HOLD;
+  if (feedback_failure || planning_rejected) {
+    if (violation.motor) {
+      populate_trajectory_start_report_limit(report, violation);
+    } else if (feedback_failure_motor) {
+      populate_trajectory_start_report_motor(
+          report, feedback_failure_motor, false);
+    }
+    copy_text(report.reason, failure_reason);
+    if (!replace_or_hold) return report;
+
+    ArmMailbox hold;
+    uint64_t maximum_age_ns = 0;
+    std::string hold_error;
+    void* limiting_motor = nullptr;
+    const bool built = build_fresh_current_position_hold_locked(
+        trajectory_mode, start_time, hold, maximum_age_ns,
+        hold_error, limiting_motor);
+    const bool sent = built &&
+        transmit_hold_locked(hold, trajectory_mode, hold_error);
+    if (!built || !sent) {
+      report.outcome = ARTICORE_TRAJECTORY_START_FAULTED;
+      report.hold_installed = 0;
+      if (limiting_motor) {
+        populate_trajectory_start_report_motor(report, limiting_motor, false);
+      }
+      const std::string fault = "replacement fallback failed: " + hold_error;
+      copy_text(report.reason, fault);
+      {
+        std::lock_guard<std::mutex> state_lock(state_mutex_);
+        if (active_trajectory_ && active_trajectory_->id == replaced->id) {
+          finish_trajectory_locked(
+              replaced->id, ARTICORE_TRAJECTORY_FAILED, fault, start_time);
+        }
+        if (built) {
+          safe_pv_ = hold.pv;
+          safe_mit_ = hold.mit;
+        }
+        arm_mailbox_ = ArmMailbox{};
+        state_ = ARTICORE_FAULT;
+        fault_latched_ = true;
+        fault_reason_ = fault;
+        fault_hold_active_ = built;
+        next_safe_hold_ = start_time;
+      }
+      wakeup_.notify_all();
+      return report;
+    }
+    {
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
+      if (!active_trajectory_ || active_trajectory_->id != replaced->id ||
+          mode_ != trajectory_mode || fault_latched_ || hardware_transition_) {
+        report.outcome = ARTICORE_TRAJECTORY_START_FAULTED;
+        copy_text(report.reason,
+                  "runtime state changed during replacement hold transaction");
+        return report;
+      }
+      finish_trajectory_locked(
+          replaced->id, ARTICORE_TRAJECTORY_CANCELED,
+          "replacement rejected; current-position hold installed: " +
+              failure_reason,
+          start_time);
+      hold.sent_generation = hold.generation;
+      arm_mailbox_ = std::move(hold);
+      state_ = ARTICORE_RUNNING;
+      fault_reason_.clear();
+      last_fresh_feedback_ =
+          start_time - std::chrono::nanoseconds(maximum_age_ns);
+      next_control_tick_ = start_time;
+      consecutive_send_failures_ = 0;
+    }
+    report.outcome =
+        ARTICORE_TRAJECTORY_START_REPLACEMENT_REJECTED_HELD;
+    report.hold_installed = 1;
+    report.feedback_fresh = 1;
+    copy_text(report.reason, failure_reason);
+    wakeup_.notify_all();
+    return report;
+  }
+
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
-    require_state_for_command();
-    if (replace_policy == ARTICORE_TRAJECTORY_REJECT_IF_BUSY &&
-        active_trajectory_) {
-      throw std::runtime_error(
-          "joint trajectory is already active; wait for it to complete");
+    if (fault_latched_ || hardware_transition_ ||
+        (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING)) {
+      report.outcome = ARTICORE_TRAJECTORY_START_REJECTED;
+      return reject("runtime state changed while trajectory was prepared");
     }
     if (replaced &&
         (!active_trajectory_ || active_trajectory_->id != replaced->id)) {
-      throw std::runtime_error(
-          "active trajectory changed while replacement was prepared");
+      return reject("active trajectory changed while replacement was prepared");
     }
     trajectory.id = next_trajectory_id_++;
     if (trajectory.id == 0) trajectory.id = next_trajectory_id_++;
-    trajectory_id = trajectory.id;
+    report.new_trajectory_id = trajectory.id;
     if (replaced) {
       finish_trajectory_locked(
           replaced->id, ARTICORE_TRAJECTORY_PREEMPTED,
-          "smoothly replaced by trajectory " + std::to_string(trajectory_id),
+          "smoothly replaced by trajectory " +
+              std::to_string(trajectory.id),
           start_time);
     }
     active_trajectory_ = std::move(trajectory);
   }
+  report.outcome = replaced ? ARTICORE_TRAJECTORY_START_REPLACED
+                            : ARTICORE_TRAJECTORY_START_STARTED;
+  report.feedback_fresh = 1;
   wakeup_.notify_all();
-  return trajectory_id;
+  return report;
 }
 
 void SafetyRuntime::install_cancellation_hold_locked(Clock::time_point now) {
@@ -498,6 +720,128 @@ void SafetyRuntime::install_cancellation_hold_locked(Clock::time_point now) {
     }
   }
   arm_mailbox_ = std::move(hold);
+}
+
+bool SafetyRuntime::build_fresh_current_position_hold_locked(
+    ArticoreControlMode mode, Clock::time_point now, ArmMailbox& hold,
+    uint64_t& maximum_age_ns, std::string& error, void*& limiting_motor) {
+  hold = ArmMailbox{};
+  hold.valid = true;
+  hold.user_command = false;
+  hold.trajectory_endpoint_hold = true;
+  hold.lifetime = ARTICORE_COMMAND_HOLD_UNTIL_REPLACED;
+  hold.generation = arm_mailbox_.generation + 1;
+  hold.submitted_at = now;
+  maximum_age_ns = 0;
+  limiting_motor = nullptr;
+  const auto max_age =
+      static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL;
+  for (const auto& motor : motors_) {
+    if (motor.descriptor.is_gripper) continue;
+    limiting_motor = motor.descriptor.motor;
+    ArticoreFeedbackStats stats{};
+    ArticoreMotorState state{};
+    if (api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
+        !stats.has_feedback || stats.age_ns > max_age ||
+        api_.motor_get_state(motor.descriptor.motor, &state) != 0 ||
+        !state.has_value || state.status_code != 1 || !finite(state.pos) ||
+        !finite(state.vel) || !finite(state.torq)) {
+      error = std::string(motor.descriptor.name) +
+          ": complete fresh enabled feedback is required for replacement hold";
+      return false;
+    }
+    const auto& limits = joint_config(motor.descriptor.motor);
+    if (state.pos < limits.hard_lower_position ||
+        state.pos > limits.hard_upper_position) {
+      std::ostringstream detail;
+      detail << motor.descriptor.name
+             << ": feedback position crossed a hard limit; position="
+             << state.pos << " hard_lower=" << limits.hard_lower_position
+             << " hard_upper=" << limits.hard_upper_position;
+      error = detail.str();
+      return false;
+    }
+    maximum_age_ns = std::max(maximum_age_ns, stats.age_ns);
+    if (mode == ARTICORE_MODE_PV) {
+      // DM POS_VEL exposes a positive velocity limit rather than a signed
+      // target velocity. Holding therefore uses the dedicated low limit while
+      // the reference position itself is stationary.
+      hold.pv.push_back({motor.descriptor.motor, state.pos,
+                         config_.safe_pv_velocity_limit});
+    } else {
+      hold.mit.push_back({motor.descriptor.motor, state.pos, 0.0f,
+                          motor.descriptor.safe_kp,
+                          motor.descriptor.safe_kd, 0.0f});
+    }
+  }
+  limiting_motor = nullptr;
+  if (hold.pv.empty() && hold.mit.empty()) {
+    error = "replacement hold requires at least one active arm motor";
+    return false;
+  }
+  return true;
+}
+
+bool SafetyRuntime::transmit_hold_locked(
+    const ArmMailbox& hold, ArticoreControlMode mode, std::string& error) {
+  const int32_t result = mode == ARTICORE_MODE_PV
+      ? api_.group_send_pos_vel(
+            controller_group_, hold.pv.data(),
+            static_cast<uint32_t>(hold.pv.size()))
+      : api_.group_send_mit(
+            controller_group_, hold.mit.data(),
+            static_cast<uint32_t>(hold.mit.size()));
+  if (result != 0) {
+    error = motor_error(mode == ARTICORE_MODE_PV
+                            ? "replacement PV hold send failed"
+                            : "replacement MIT hold send failed");
+    return false;
+  }
+  if (mode == ARTICORE_MODE_PV) {
+    last_sent_pv_ = hold.pv;
+    last_sent_mit_.clear();
+  } else {
+    last_sent_mit_ = hold.mit;
+    last_sent_pv_.clear();
+  }
+  return true;
+}
+
+void SafetyRuntime::populate_trajectory_start_report_motor(
+    ArticoreTrajectoryStartReport& report, void* motor,
+    bool feedback_fresh) const {
+  if (!motor) return;
+  const auto found = std::find_if(
+      motors_.begin(), motors_.end(), [&](const MotorRecord& value) {
+        return value.descriptor.motor == motor;
+      });
+  if (found == motors_.end()) return;
+  report.limiting_channel = found->descriptor.side;
+  copy_text(report.limiting_joint, std::string(found->descriptor.name));
+  report.feedback_fresh = feedback_fresh ? 1 : 0;
+  ArticoreMotorState state{};
+  if (api_.motor_get_state(motor, &state) == 0 && state.has_value) {
+    report.limiting_can_id = state.can_id;
+    if (finite(state.pos)) report.position = state.pos;
+    if (finite(state.vel)) report.velocity = state.vel;
+  }
+  const auto configured = joint_configs_.find(motor);
+  if (configured != joint_configs_.end()) {
+    report.soft_lower = configured->second.soft_lower_position;
+    report.soft_upper = configured->second.soft_upper_position;
+    report.hard_lower = configured->second.hard_lower_position;
+    report.hard_upper = configured->second.hard_upper_position;
+  }
+}
+
+void SafetyRuntime::populate_trajectory_start_report_limit(
+    ArticoreTrajectoryStartReport& report,
+    const LimitViolation& violation) const {
+  populate_trajectory_start_report_motor(report, violation.motor, true);
+  report.position = violation.position;
+  report.velocity = violation.velocity;
+  report.acceleration = violation.acceleration;
+  copy_text(report.reason, violation.reason);
 }
 
 void SafetyRuntime::cancel_trajectory(uint64_t trajectory_id) {

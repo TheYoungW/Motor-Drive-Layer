@@ -96,6 +96,13 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
         throw std::invalid_argument("invalid active gripper descriptor");
       }
       record.gripper_state = ARTICORE_GRIPPER_DISABLED;
+      record.requested_speed = 1000.0f;
+      record.command_speed = motor.close_speed;
+      record.force_profiles.emplace(
+          ARTICORE_GRIPPER_FORCE_NORMAL,
+          MotorRecord::GripperForceProfile{
+              motor.contact_torque, motor.overload_torque,
+              motor.normal_kp, motor.normal_kd, motor.safe_kp, motor.safe_kd});
     }
     motors_.push_back(std::move(record));
   }

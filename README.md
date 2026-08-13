@@ -16,6 +16,13 @@ Motor-Drive-Layer is the native C++ control foundation shared by Python, C++ and
 - A separate Articore runtime ABI with a persistent safety and gripper worker.
 - Explicit streaming and hold-until-replaced command lifetimes, so a slow physical move is not
   mistaken for a stalled real-time command producer.
+- Atomic trajectory `SMOOTH_REPLACE_OR_HOLD`: an unsafe replacement cancels the old task and
+  synchronously installs a fresh full-arm current-position hold without entering global FAULT.
+- Independent mechanical hard limits, product soft limits, and per-joint dynamic braking zones in
+  the native Runtime, with structured replacement/start outcomes for SDKs.
+- Atomic per-call gripper commands carry only opening, normalized speed, and a calibrated force
+  level. The Runtime ramps both opening and closing directions and keeps stall/retreat timing as
+  private product safety configuration.
 - A single non-preemptive native trajectory slot: ordinary concurrent motion requests are rejected
   instead of queued, while disable, estop, close, and safety faults retain immediate authority.
 - Protective fault hold: one missed feedback sample keeps the current arm and gripper outputs;

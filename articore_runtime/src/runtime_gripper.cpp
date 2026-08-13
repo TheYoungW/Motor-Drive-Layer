@@ -35,6 +35,78 @@ float SafetyRuntime::position_to_opening(const MotorRecord& motor,
       1000.0f * (position - motor.descriptor.closed_position) / range);
 }
 
+const SafetyRuntime::MotorRecord::GripperForceProfile&
+SafetyRuntime::active_gripper_profile(const MotorRecord& motor) {
+  const auto profile = motor.force_profiles.find(motor.force_level);
+  if (profile == motor.force_profiles.end()) {
+    throw std::runtime_error(
+        std::string(motor.descriptor.name) +
+        ": active gripper force profile is unavailable");
+  }
+  return profile->second;
+}
+
+void SafetyRuntime::configure_gripper_force_profiles(
+    const ArticoreGripperForceProfile* profiles, uint32_t count) {
+  if (!profiles || count == 0) {
+    throw std::invalid_argument("gripper force profiles are empty");
+  }
+  std::lock_guard<std::mutex> command_lock(command_mutex_);
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  if (state_ != ARTICORE_DISCONNECTED) {
+    throw std::runtime_error("gripper force profiles are fixed after connect");
+  }
+  const auto gripper_count = static_cast<uint32_t>(std::count_if(
+      motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
+        return motor.descriptor.is_gripper != 0;
+      }));
+  if (gripper_count == 0 || count != gripper_count * 3U) {
+    throw std::invalid_argument(
+        "force profiles must contain LOW/NORMAL/HIGH for every active gripper");
+  }
+
+  std::unordered_map<void*, std::unordered_map<int32_t,
+      MotorRecord::GripperForceProfile>> configured;
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto& value = profiles[i];
+    const auto motor = std::find_if(
+        motors_.begin(), motors_.end(), [&](const MotorRecord& candidate) {
+          return candidate.descriptor.is_gripper &&
+                 candidate.descriptor.motor == value.motor;
+        });
+    const bool force_valid =
+        value.force_level >= ARTICORE_GRIPPER_FORCE_LOW &&
+        value.force_level <= ARTICORE_GRIPPER_FORCE_HIGH;
+    if (value.struct_size < sizeof(ArticoreGripperForceProfile) ||
+        motor == motors_.end() || !force_valid ||
+        !finite(value.contact_torque) || value.contact_torque < 0.0f ||
+        !finite(value.overload_torque) ||
+        value.overload_torque <= value.contact_torque ||
+        !finite(value.moving_kp) || value.moving_kp <= 0.0f ||
+        !finite(value.moving_kd) || value.moving_kd < 0.0f ||
+        !finite(value.hold_kp) || value.hold_kp <= 0.0f ||
+        !finite(value.hold_kd) || value.hold_kd < 0.0f) {
+      throw std::invalid_argument("invalid gripper force profile");
+    }
+    const MotorRecord::GripperForceProfile profile{
+        value.contact_torque, value.overload_torque,
+        value.moving_kp, value.moving_kd, value.hold_kp, value.hold_kd};
+    if (!configured[value.motor].emplace(value.force_level, profile).second) {
+      throw std::invalid_argument("duplicate gripper force profile");
+    }
+  }
+  for (auto& motor : motors_) {
+    if (!motor.descriptor.is_gripper) continue;
+    const auto values = configured.find(motor.descriptor.motor);
+    if (values == configured.end() || values->second.size() != 3U) {
+      throw std::invalid_argument(
+          "force profiles must cover every level for every active gripper");
+    }
+    motor.force_profiles = values->second;
+    motor.force_level = ARTICORE_GRIPPER_FORCE_NORMAL;
+  }
+}
+
 void SafetyRuntime::submit_gripper_mit(const ArticoreMitCommand* commands,
                                        uint32_t count) {
   if (!commands || count == 0) throw std::invalid_argument("gripper command is empty");
@@ -72,8 +144,9 @@ void SafetyRuntime::submit_gripper_mit(const ArticoreMitCommand* commands,
         const auto descriptor = std::find_if(
             motors_.begin(), motors_.end(),
             [&](const MotorRecord& motor) { return motor.descriptor.motor == safe.motor; });
-        safe.stiffness = descriptor->descriptor.safe_kp;
-        safe.damping = descriptor->descriptor.safe_kd;
+        const auto& profile = active_gripper_profile(*descriptor);
+        safe.stiffness = profile.hold_kp;
+        safe.damping = profile.hold_kd;
         descriptor->retreat_active = false;
         descriptor->protective_target_active = false;
         descriptor->contact_started_at = {};
@@ -128,6 +201,66 @@ void SafetyRuntime::set_gripper_openings(const ArticoreGripperTarget* targets,
     }
   }
 
+  std::vector<ArticoreGripperCommand> commands;
+  commands.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    commands.push_back(ArticoreGripperCommand{
+        sizeof(ArticoreGripperCommand), targets[i].motor,
+        clamp_opening(targets[i].opening), 1000.0f,
+        ARTICORE_GRIPPER_FORCE_NORMAL});
+  }
+  set_gripper_commands(commands.data(), static_cast<uint32_t>(commands.size()));
+}
+
+void SafetyRuntime::set_gripper_commands(
+    const ArticoreGripperCommand* commands, uint32_t count) {
+  if (!commands || count == 0) {
+    throw std::invalid_argument("gripper command is empty");
+  }
+  const auto expected = static_cast<uint32_t>(std::count_if(
+      motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
+        return motor.descriptor.is_gripper != 0;
+      }));
+  if (count != expected) {
+    throw std::invalid_argument(
+        "gripper command must contain every active product gripper");
+  }
+
+  struct Validated {
+    MotorRecord* motor;
+    float opening;
+    float position;
+    float normalized_speed;
+    float speed;
+    int32_t force_level;
+  };
+  std::vector<Validated> validated;
+  validated.reserve(count);
+  std::set<void*> unique;
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto& command = commands[i];
+    const auto motor = std::find_if(
+        motors_.begin(), motors_.end(), [&](MotorRecord& candidate) {
+          return candidate.descriptor.is_gripper &&
+                 candidate.descriptor.motor == command.motor;
+        });
+    if (command.struct_size < sizeof(ArticoreGripperCommand) ||
+        motor == motors_.end() || !unique.insert(command.motor).second ||
+        !finite(command.opening) || command.opening < 0.0f ||
+        command.opening > 1000.0f || !finite(command.speed) ||
+        command.speed <= 0.0f || command.speed > 1000.0f ||
+        motor->force_profiles.find(command.force_level) ==
+            motor->force_profiles.end()) {
+      throw std::invalid_argument(
+          "invalid gripper opening, speed, force level, or motor");
+    }
+    const float motor_speed =
+        motor->descriptor.close_speed * command.speed / 1000.0f;
+    validated.push_back(Validated{
+        &*motor, command.opening, opening_to_position(*motor, command.opening),
+        command.speed, motor_speed, command.force_level});
+  }
+
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     require_state_for_command();
@@ -135,37 +268,40 @@ void SafetyRuntime::set_gripper_openings(const ArticoreGripperTarget* targets,
   std::lock_guard<std::mutex> command_lock(command_mutex_);
   std::lock_guard<std::mutex> state_lock(state_mutex_);
   require_state_for_command();
-  for (uint32_t i = 0; i < count; ++i) {
-    const auto found = std::find_if(
-        motors_.begin(), motors_.end(), [&](const MotorRecord& motor) {
-          return motor.descriptor.is_gripper &&
-                 motor.descriptor.motor == targets[i].motor;
-        });
-    if (found == motors_.end()) {
-      throw std::invalid_argument("gripper target contains an unexpected motor");
+  for (const auto& value : validated) {
+    auto& motor = *value.motor;
+    const bool target_changed = !motor.has_gripper_target ||
+        std::abs(value.position - motor.requested_position) > 1e-6f;
+    const bool force_changed =
+        motor.force_level != value.force_level;
+    motor.requested_opening = value.opening;
+    motor.requested_position = value.position;
+    motor.requested_speed = value.normalized_speed;
+    motor.command_speed = value.speed;
+    motor.force_level = static_cast<ArticoreGripperForceLevel>(
+        value.force_level);
+    motor.has_gripper_target = true;
+    motor.gripper_fault_reason.clear();
+    if (target_changed) {
+      motor.gripper_state = ARTICORE_GRIPPER_MOVING;
+      motor.contact_detected = false;
+      motor.stalled = false;
+      motor.overload = false;
+      motor.protective_target_active = false;
+      motor.retreat_active = false;
+      motor.contact_started_at = {};
+      motor.overload_started_at = {};
+      motor.motion_samples.clear();
+    } else if (force_changed &&
+               motor.gripper_state == ARTICORE_GRIPPER_MOVING) {
+      // Evidence gathered under one calibrated threshold cannot be reused
+      // after switching profiles, but the active motion itself continues.
+      motor.contact_started_at = {};
+      motor.overload_started_at = {};
+      motor.motion_samples.clear();
     }
-    const auto opening = clamp_opening(targets[i].opening);
-    const auto position = opening_to_position(*found, opening);
-    const bool opens = found->has_gripper_target &&
-        (position - found->requested_position) *
-            found->descriptor.closing_direction < 0.0f;
-    found->requested_opening = opening;
-    found->requested_position = position;
-    found->has_gripper_target = true;
-    found->gripper_state = ARTICORE_GRIPPER_MOVING;
-    found->gripper_fault_reason.clear();
-    if (opens) {
-      found->command_position = position;
-    }
-    found->contact_detected = false;
-    found->stalled = false;
-    found->overload = false;
-    found->protective_target_active = false;
-    found->retreat_active = false;
-    found->contact_started_at = {};
-    found->overload_started_at = {};
-    found->motion_samples.clear();
   }
+  ++gripper_command_generation_;
   next_gripper_control_ = Clock::now();
   wakeup_.notify_all();
 }
@@ -184,9 +320,10 @@ void SafetyRuntime::seed_gripper_targets_from_feedback(bool activate) {
       motor.requested_opening = position_to_opening(motor, state.pos);
       motor.last_torque = state.torq;
       motor.has_gripper_target = activate;
-      seeded.push_back(ArticoreMitCommand{motor.descriptor.motor, state.pos, 0.0f,
-                                          motor.descriptor.safe_kp,
-                                          motor.descriptor.safe_kd, 0.0f});
+      const auto& profile = active_gripper_profile(motor);
+      seeded.push_back(ArticoreMitCommand{
+          motor.descriptor.motor, state.pos, 0.0f,
+          profile.hold_kp, profile.hold_kd, 0.0f});
     }
   }
   std::lock_guard<std::mutex> lock(state_mutex_);
@@ -249,6 +386,7 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
     }
 
     const auto& descriptor = motor.descriptor;
+    const auto& force = active_gripper_profile(motor);
     motor.last_position = state.pos;
     motor.has_position = true;
     motor.last_torque = state.torq;
@@ -267,7 +405,7 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
     }
 
     const auto update_overload = [&]() {
-      motor.overload = torque >= descriptor.overload_torque;
+      motor.overload = torque >= force.overload_torque;
       if (!motor.overload) {
         motor.overload_started_at = {};
         return false;
@@ -313,21 +451,19 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
       const bool closing =
           (motor.requested_position - state.pos) *
               descriptor.closing_direction > 1e-6f;
-      if (closing) {
-        const auto step = descriptor.close_speed * dt.count();
-        const auto delta = motor.requested_position - motor.command_position;
-        motor.command_position += std::copysign(
-            std::min(std::abs(delta), step), delta);
-      } else {
-        motor.command_position = motor.requested_position;
+      const auto step = motor.command_speed * dt.count();
+      const auto delta = motor.requested_position - motor.command_position;
+      motor.command_position += std::copysign(
+          std::min(std::abs(delta), step), delta);
+      if (!closing) {
         motor.contact_started_at = {};
         motor.overload_started_at = {};
         motor.motion_samples.clear();
       }
 
-      motor.overload = torque >= descriptor.overload_torque;
+      motor.overload = torque >= force.overload_torque;
       bool contact = false;
-      if (torque >= descriptor.contact_torque &&
+      if (closing && torque >= force.contact_torque &&
           motor.motion_samples.size() >= 2 &&
           motor.motion_samples.back().first - motor.motion_samples.front().first >=
               motion_window &&
@@ -376,8 +512,8 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
         motor.gripper_state == ARTICORE_GRIPPER_OVERLOAD_RETREAT;
     commands.push_back(ArticoreMitCommand{
         descriptor.motor, motor.command_position, 0.0f,
-        low_gain ? descriptor.safe_kp : descriptor.normal_kp,
-        low_gain ? descriptor.safe_kd : descriptor.normal_kd, 0.0f});
+        low_gain ? force.hold_kp : force.moving_kp,
+        low_gain ? force.hold_kd : force.moving_kd, 0.0f});
   }
   if (commands.empty()) return true;
   if (api_.group_send_mit(controller_group_, commands.data(),
@@ -388,6 +524,14 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     safe_grippers_ = commands;
+    if (gripper_command_generation_ > gripper_sent_generation_) {
+      gripper_sent_generation_ = gripper_command_generation_;
+      if (!has_successful_command_) {
+        last_successful_command_ = now;
+      }
+      has_successful_command_ = true;
+      if (state_ == ARTICORE_ENABLED) state_ = ARTICORE_RUNNING;
+    }
   }
   return true;
 }
@@ -443,8 +587,9 @@ bool SafetyRuntime::send_gripper_hold_once(std::string& error) {
     }
 
     const auto& descriptor = found->descriptor;
+    const auto& force = active_gripper_profile(*found);
     const auto torque = std::abs(state.torq);
-    found->overload = torque >= descriptor.overload_torque;
+    found->overload = torque >= force.overload_torque;
     if (found->overload) {
       if (found->overload_started_at == Clock::time_point{}) {
         found->overload_started_at = now;
@@ -477,8 +622,8 @@ bool SafetyRuntime::send_gripper_hold_once(std::string& error) {
       command.target_position = found->protective_target;
     }
     command.target_velocity = 0.0f;
-    command.stiffness = descriptor.safe_kp;
-    command.damping = descriptor.safe_kd;
+    command.stiffness = force.hold_kp;
+    command.damping = force.hold_kd;
     command.feedforward_torque = 0.0f;
     sendable.push_back(command);
   }

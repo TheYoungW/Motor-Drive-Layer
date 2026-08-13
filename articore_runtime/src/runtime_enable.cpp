@@ -250,6 +250,8 @@ void SafetyRuntime::initialize_enabled_state(ArticoreControlMode mode) {
   state_ = ARTICORE_ENABLED;
   disable_confirmed_ = false;
   has_successful_command_ = false;
+  gripper_command_generation_ = 0;
+  gripper_sent_generation_ = 0;
   enabled_at_ = Clock::now();
   last_successful_command_ = {};
   consecutive_send_failures_ = 0;
@@ -276,6 +278,11 @@ void SafetyRuntime::initialize_enabled_state(ArticoreControlMode mode) {
     motor.overload = false;
     motor.gripper_fault_reason.clear();
     motor.last_gripper_update = {};
+    if (motor.descriptor.is_gripper) {
+      motor.requested_speed = 1000.0f;
+      motor.command_speed = motor.descriptor.close_speed;
+      motor.force_level = ARTICORE_GRIPPER_FORCE_NORMAL;
+    }
   }
   next_feedback_check_ = enabled_at_;
   next_gripper_control_ = enabled_at_;
@@ -751,6 +758,8 @@ void SafetyRuntime::disable() {
                   : ARTICORE_TRAJECTORY_FAILED,
         confirmed ? "runtime disabled" : "disable confirmation failed");
     has_successful_command_ = false;
+    gripper_command_generation_ = 0;
+    gripper_sent_generation_ = 0;
     hardware_transition_ = false;
     if (confirmed) {
       if (preserve_fault) {
@@ -830,6 +839,8 @@ void SafetyRuntime::recover() {
   cancel_active_trajectory_locked(
       ARTICORE_TRAJECTORY_CANCELED, "runtime recovered");
   has_successful_command_ = false;
+  gripper_command_generation_ = 0;
+  gripper_sent_generation_ = 0;
   hardware_transition_ = false;
   for (auto& entry : presence_) {
     if (entry.second == ARTICORE_FAULTED) entry.second = ARTICORE_PRESENT;

@@ -51,6 +51,8 @@ class SafetyRuntime {
   void connect();
   void configure_joints(const ArticoreJointControlConfig* configs,
                         uint32_t count);
+  void configure_joint_safety_limits(
+      const ArticoreJointSafetyLimits* limits, uint32_t count);
   void configure_trajectory_execution(
       const ArticoreTrajectoryExecutionConfig& config);
   void enable(ArticoreControlMode mode);
@@ -66,11 +68,20 @@ class SafetyRuntime {
   void submit_gripper_mit(const ArticoreMitCommand* commands, uint32_t count);
   void set_gripper_openings(const ArticoreGripperTarget* targets,
                             uint32_t count);
+  void configure_gripper_force_profiles(
+      const ArticoreGripperForceProfile* profiles, uint32_t count);
+  void set_gripper_commands(const ArticoreGripperCommand* commands,
+                            uint32_t count);
   uint64_t start_joint_trajectory(
       const ArticoreJointTrajectoryTarget* targets,
       uint32_t count,
       ArticoreTrajectoryProfile profile);
   uint64_t start_joint_trajectory_ex(
+      const ArticoreJointTrajectoryTarget* targets,
+      uint32_t count,
+      ArticoreTrajectoryProfile profile,
+      ArticoreTrajectoryReplacePolicy replace_policy);
+  ArticoreTrajectoryStartReport start_joint_trajectory_report(
       const ArticoreJointTrajectoryTarget* targets,
       uint32_t count,
       ArticoreTrajectoryProfile profile,
@@ -95,6 +106,15 @@ class SafetyRuntime {
   using Clock = std::chrono::steady_clock;
 
   struct MotorRecord {
+    struct GripperForceProfile {
+      float contact_torque = 0.0f;
+      float overload_torque = 0.0f;
+      float moving_kp = 0.0f;
+      float moving_kd = 0.0f;
+      float hold_kp = 0.0f;
+      float hold_kd = 0.0f;
+    };
+
     ArticoreMotorDescriptor descriptor{};
     float last_position = 0.0f;
     bool has_position = false;
@@ -109,6 +129,10 @@ class SafetyRuntime {
     ArticoreGripperControlState gripper_state = ARTICORE_GRIPPER_DISABLED;
     float requested_opening = 0.0f;
     float requested_position = 0.0f;
+    float requested_speed = 1000.0f;
+    float command_speed = 0.0f;
+    ArticoreGripperForceLevel force_level = ARTICORE_GRIPPER_FORCE_NORMAL;
+    std::unordered_map<int32_t, GripperForceProfile> force_profiles;
     float command_position = 0.0f;
     bool has_gripper_target = false;
     bool contact_detected = false;
@@ -143,13 +167,18 @@ class SafetyRuntime {
   };
 
   struct JointControlConfig {
-    float lower_position = 0.0f;
-    float upper_position = 0.0f;
+    float hard_lower_position = 0.0f;
+    float hard_upper_position = 0.0f;
+    float soft_lower_position = 0.0f;
+    float soft_upper_position = 0.0f;
+    float soft_limit_braking_zone = 0.0f;
+    float braking_acceleration = 0.0f;
     float velocity_limit = 0.0f;
     float torque_limit = 0.0f;
     float mit_kp = 0.0f;
     float mit_kd = 0.0f;
     float mit_feedforward_torque = 0.0f;
+    bool layered_limits_configured = false;
   };
 
   struct TrajectoryExecutionPolicy {
@@ -184,6 +213,14 @@ class SafetyRuntime {
   };
 
   struct TrajectorySample {
+    float position = 0.0f;
+    float velocity = 0.0f;
+    float acceleration = 0.0f;
+  };
+
+  struct LimitViolation {
+    void* motor = nullptr;
+    std::string reason;
     float position = 0.0f;
     float velocity = 0.0f;
     float acceleration = 0.0f;
@@ -236,12 +273,27 @@ class SafetyRuntime {
       const TrajectoryRecord& trajectory,
       const TrajectoryJoint& joint,
       Clock::time_point now) const;
-  bool trajectory_within_limits(const TrajectoryRecord& trajectory) const;
+  bool trajectory_within_limits(const TrajectoryRecord& trajectory,
+                                LimitViolation* violation = nullptr) const;
   TrajectoryProgress update_trajectory_progress_locked(
       TrajectoryRecord& trajectory,
       Clock::time_point now,
       std::string& error);
   void install_cancellation_hold_locked(Clock::time_point now);
+  bool build_fresh_current_position_hold_locked(
+      ArticoreControlMode mode, Clock::time_point now,
+      ArmMailbox& hold, uint64_t& maximum_age_ns,
+      std::string& error, void*& limiting_motor);
+  bool transmit_hold_locked(const ArmMailbox& hold, ArticoreControlMode mode,
+                            std::string& error);
+  void populate_trajectory_start_report_limit(
+      ArticoreTrajectoryStartReport& report,
+      const LimitViolation& violation) const;
+  void populate_trajectory_start_report_motor(
+      ArticoreTrajectoryStartReport& report, void* motor,
+      bool feedback_fresh) const;
+  float allowed_outward_velocity(const JointControlConfig& limits,
+                                 float position, bool toward_upper) const;
   const JointControlConfig& joint_config(void* motor) const;
   void validate_position_velocity_torque(void* motor, float position,
                                          float velocity, float torque) const;
@@ -256,6 +308,8 @@ class SafetyRuntime {
   bool send_safe_hold_once(std::string& error);
   bool run_gripper_control_once(std::string& error);
   bool send_gripper_hold_once(std::string& error);
+  static const MotorRecord::GripperForceProfile& active_gripper_profile(
+      const MotorRecord& motor);
   bool prepare_protective_hold(std::string& error);
   bool disable_hardware(bool request_feedback, bool preserve_grippers,
                         std::string& error);
@@ -314,6 +368,12 @@ class SafetyRuntime {
   Clock::time_point next_feedback_check_{};
   Clock::time_point next_safe_hold_{};
   Clock::time_point next_gripper_control_{};
+  // Per-call gripper commands are persistent setpoints. Their generation is
+  // acknowledged only after the complete native gripper batch is sent. This
+  // lets a gripper-only command satisfy enable_grace without letting the
+  // continuously retransmitted hold mask an arm STREAMING watchdog timeout.
+  uint64_t gripper_command_generation_ = 0;
+  uint64_t gripper_sent_generation_ = 0;
   uint32_t consecutive_send_failures_ = 0;
   uint32_t consecutive_feedback_failures_ = 0;
   uint32_t consecutive_hold_failures_ = 0;
