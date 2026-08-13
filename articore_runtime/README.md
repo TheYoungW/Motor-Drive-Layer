@@ -109,6 +109,18 @@ feedback is preferred, with the last successfully sent target as a bounded fallb
 sent on the normal control loop and does not trigger the user-command watchdog. There is still no
 FIFO, no background task accumulation, and no partial per-arm cancellation.
 
+Runtime ABI 1.8 separates trajectory reference generation from measured completion. During
+`PROFILE`, each control tick compares every joint's actual position with its current reference;
+following error must remain above the configured limit for the configured persistence time before
+the trajectory fails, so one noisy sample is not treated as a fault. When profile time expires,
+the Runtime enters `SETTLING` and keeps sending the exact final reference with zero target velocity.
+It reports `COMPLETED` only after every joint's measured position and velocity remain within their
+dedicated trajectory tolerances for the complete stable-time window. Leaving tolerance resets that
+window. Failure to converge before the settling timeout returns `FAILED` with channel, motor name,
+CAN ID, measured errors, and thresholds. These trajectory execution tolerances are independent of
+URDF command limits and can be configured before connect with
+`articore_runtime_configure_trajectory_execution()`.
+
 When an arm enters safe hold, the runtime snapshots every arm motor's current position from the
 non-blocking feedback cache. PV safe hold uses the captured positions with a dedicated low velocity limit.
 MIT safe hold uses the captured positions, zeros velocity and feedforward torque, and substitutes

@@ -51,6 +51,8 @@ class SafetyRuntime {
   void connect();
   void configure_joints(const ArticoreJointControlConfig* configs,
                         uint32_t count);
+  void configure_trajectory_execution(
+      const ArticoreTrajectoryExecutionConfig& config);
   void enable(ArticoreControlMode mode);
   ArticoreEnableReport last_enable_report() const;
   void submit_pos_vel(const ArticorePosVelCommand* commands, uint32_t count);
@@ -150,6 +152,15 @@ class SafetyRuntime {
     float mit_feedforward_torque = 0.0f;
   };
 
+  struct TrajectoryExecutionPolicy {
+    float position_tolerance = 0.02f;
+    float velocity_tolerance = 0.05f;
+    float following_error_limit = 0.5f;
+    std::chrono::milliseconds settling_stable{100};
+    std::chrono::milliseconds settling_timeout{3000};
+    std::chrono::milliseconds following_error_timeout{100};
+  };
+
   struct ArmMailbox {
     bool valid = false;
     bool user_command = false;
@@ -169,6 +180,7 @@ class SafetyRuntime {
     float start_acceleration = 0.0f;
     float goal_position = 0.0f;
     float velocity_limit = 0.0f;
+    Clock::time_point following_error_started_at{};
   };
 
   struct TrajectorySample {
@@ -177,12 +189,21 @@ class SafetyRuntime {
     float acceleration = 0.0f;
   };
 
+  enum class TrajectoryProgress {
+    Running,
+    Completed,
+    Failed,
+  };
+
   struct TrajectoryRecord {
     uint64_t id = 0;
     ArticoreTrajectoryStatus status = ARTICORE_TRAJECTORY_RUNNING;
     ArticoreTrajectoryProfile profile = ARTICORE_TRAJECTORY_MIN_JERK;
     Clock::time_point start_time{};
     std::chrono::nanoseconds duration{0};
+    bool settling = false;
+    Clock::time_point settling_started_at{};
+    Clock::time_point settling_stable_started_at{};
     Clock::time_point finished_at{};
     std::vector<TrajectoryJoint> joints;
     std::string error;
@@ -216,6 +237,10 @@ class SafetyRuntime {
       const TrajectoryJoint& joint,
       Clock::time_point now) const;
   bool trajectory_within_limits(const TrajectoryRecord& trajectory) const;
+  TrajectoryProgress update_trajectory_progress_locked(
+      TrajectoryRecord& trajectory,
+      Clock::time_point now,
+      std::string& error);
   void install_cancellation_hold_locked(Clock::time_point now);
   const JointControlConfig& joint_config(void* motor) const;
   void validate_position_velocity_torque(void* motor, float position,
@@ -267,6 +292,7 @@ class SafetyRuntime {
   std::map<std::string, ArticorePresenceState> presence_;
   std::map<void*, std::string> motor_roles_;
   std::unordered_map<void*, JointControlConfig> joint_configs_;
+  TrajectoryExecutionPolicy trajectory_execution_;
 
   mutable std::mutex state_mutex_;
   mutable std::mutex command_mutex_;

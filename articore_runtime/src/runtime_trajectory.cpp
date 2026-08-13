@@ -124,6 +124,123 @@ bool SafetyRuntime::trajectory_within_limits(
   return true;
 }
 
+SafetyRuntime::TrajectoryProgress
+SafetyRuntime::update_trajectory_progress_locked(
+    TrajectoryRecord& trajectory, Clock::time_point now, std::string& error) {
+  const auto profile_end = trajectory.start_time + trajectory.duration;
+  if (!trajectory.settling && now >= profile_end) {
+    trajectory.settling = true;
+    trajectory.settling_started_at = profile_end;
+    trajectory.settling_stable_started_at = {};
+  }
+
+  bool all_settled = trajectory.settling;
+  float worst_position_error = -1.0f;
+  float worst_velocity_error = -1.0f;
+  const MotorRecord* worst_motor = nullptr;
+  ArticoreMotorState worst_state{};
+  for (auto& joint : trajectory.joints) {
+    const auto motor = std::find_if(
+        motors_.begin(), motors_.end(), [&](const MotorRecord& candidate) {
+          return candidate.descriptor.motor == joint.motor;
+        });
+    if (motor == motors_.end()) {
+      error = "trajectory references an unknown motor";
+      return TrajectoryProgress::Failed;
+    }
+    ArticoreFeedbackStats stats{};
+    ArticoreMotorState state{};
+    const bool fresh =
+        api_.motor_get_feedback_stats(joint.motor, &stats) == 0 &&
+        stats.has_feedback &&
+        stats.age_ns <=
+            static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL &&
+        api_.motor_get_state(joint.motor, &state) == 0 && state.has_value &&
+        state.status_code == 1 && finite(state.pos) && finite(state.vel);
+    if (!fresh) {
+      joint.following_error_started_at = {};
+      all_settled = false;
+      continue;
+    }
+
+    const auto reference = sample_trajectory_joint(trajectory, joint, now);
+    const float following_error = std::abs(reference.position - state.pos);
+    if (following_error > trajectory_execution_.following_error_limit) {
+      if (joint.following_error_started_at == Clock::time_point{}) {
+        joint.following_error_started_at = now;
+      } else if (now - joint.following_error_started_at >=
+                 trajectory_execution_.following_error_timeout) {
+        std::ostringstream message;
+        message << "trajectory following error: channel=CH"
+                << static_cast<unsigned>(motor->descriptor.side)
+                << " motor=" << motor->descriptor.name
+                << " can_id=" << static_cast<unsigned>(state.can_id)
+                << " reference=" << reference.position
+                << " actual=" << state.pos
+                << " error=" << following_error
+                << " limit=" << trajectory_execution_.following_error_limit;
+        error = message.str();
+        return TrajectoryProgress::Failed;
+      }
+    } else {
+      joint.following_error_started_at = {};
+    }
+
+    if (!trajectory.settling) continue;
+    const float position_error = std::abs(joint.goal_position - state.pos);
+    const float velocity_error = std::abs(state.vel);
+    if (position_error > trajectory_execution_.position_tolerance ||
+        velocity_error > trajectory_execution_.velocity_tolerance) {
+      all_settled = false;
+    }
+    if (position_error > worst_position_error ||
+        (position_error == worst_position_error &&
+         velocity_error > worst_velocity_error)) {
+      worst_position_error = position_error;
+      worst_velocity_error = velocity_error;
+      worst_motor = &*motor;
+      worst_state = state;
+    }
+  }
+
+  if (!trajectory.settling) return TrajectoryProgress::Running;
+  if (all_settled) {
+    if (trajectory.settling_stable_started_at == Clock::time_point{}) {
+      trajectory.settling_stable_started_at = now;
+    }
+    if (now - trajectory.settling_stable_started_at >=
+        trajectory_execution_.settling_stable) {
+      return TrajectoryProgress::Completed;
+    }
+  } else {
+    trajectory.settling_stable_started_at = {};
+  }
+
+  if (now - trajectory.settling_started_at >=
+      trajectory_execution_.settling_timeout) {
+    std::ostringstream message;
+    message << "trajectory settling timeout after "
+            << trajectory_execution_.settling_timeout.count() << " ms";
+    if (worst_motor) {
+      message << ": channel=CH"
+              << static_cast<unsigned>(worst_motor->descriptor.side)
+              << " motor=" << worst_motor->descriptor.name
+              << " can_id=" << static_cast<unsigned>(worst_state.can_id)
+              << " position_error=" << worst_position_error
+              << " position_tolerance="
+              << trajectory_execution_.position_tolerance
+              << " velocity_error=" << worst_velocity_error
+              << " velocity_tolerance="
+              << trajectory_execution_.velocity_tolerance;
+    } else {
+      message << ": no complete fresh enabled joint feedback";
+    }
+    error = message.str();
+    return TrajectoryProgress::Failed;
+  }
+  return TrajectoryProgress::Running;
+}
+
 uint64_t SafetyRuntime::start_joint_trajectory(
     const ArticoreJointTrajectoryTarget* targets, uint32_t count,
     ArticoreTrajectoryProfile profile) {

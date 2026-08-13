@@ -44,6 +44,9 @@ enum ArticoreRuntimeCapability {
   // ABI 1.7 adds explicit cancellation and opt-in velocity-continuous
   // replacement while preserving the legacy reject-if-busy entry point.
   ARTICORE_CAP_TRAJECTORY_MANAGEMENT = 1ULL << 15,
+  // ABI 1.8 separates reference generation from measured convergence and
+  // monitors sustained per-joint following error during trajectory execution.
+  ARTICORE_CAP_TRAJECTORY_SETTLING = 1ULL << 16,
 };
 
 enum ArticorePresenceState {
@@ -150,6 +153,17 @@ typedef struct ArticoreJointTrajectoryTarget {
   float target_position;
   float velocity_limit;
 } ArticoreJointTrajectoryTarget;
+
+typedef struct ArticoreTrajectoryExecutionConfig {
+  // Caller initializes this to sizeof(ArticoreTrajectoryExecutionConfig).
+  uint32_t struct_size;
+  float position_tolerance;
+  float velocity_tolerance;
+  float following_error_limit;
+  uint32_t settling_stable_ms;
+  uint32_t settling_timeout_ms;
+  uint32_t following_error_timeout_ms;
+} ArticoreTrajectoryExecutionConfig;
 
 typedef struct ArticoreTrajectoryInfo {
   uint32_t struct_size;
@@ -423,6 +437,12 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joints(
     ArticoreRuntime* runtime,
     const ArticoreJointControlConfig* configs,
     uint32_t config_count);
+// Optional ABI 1.8 trajectory execution policy. It must be configured before
+// connect. If omitted, conservative native defaults are used. The following
+// error limit is checked independently for every arm joint.
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_trajectory_execution(
+    ArticoreRuntime* runtime,
+    const ArticoreTrajectoryExecutionConfig* config);
 // Direct arm commands are validated and atomically overwrite a capacity-one
 // mailbox. Success means accepted; the persistent control thread transmits the
 // latest accepted value on the next control tick. These ABI 1.0 entry points

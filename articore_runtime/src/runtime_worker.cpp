@@ -117,8 +117,8 @@ void SafetyRuntime::worker_loop() {
       if (!run_arm_control_cycle(now, error)) {
         std::string hold_error;
         if (!enter_safe_hold_from_feedback(
-                "batch send failed: " + error, hold_error)) {
-          enter_fault("batch send failed: " + error +
+                "arm control cycle failed: " + error, hold_error)) {
+          enter_fault("arm control cycle failed: " + error +
                       "; current-position hold unavailable: " + hold_error);
         }
         continue;

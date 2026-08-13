@@ -7,7 +7,8 @@ SocketCAN, SocketCAN-FD, Damiao serial bridge, and optional DM_Device transports
 `libmotor_abi` is the generic motor layer; `libarticore_runtime` is the separately versioned
 product safety runtime consumed by Articore SDKs.
 Use `articore_runtime_abi_version()` and `articore_runtime_capabilities()` to inspect that product
-runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 1.7 adds opt-in
+runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 1.8 adds measured
+trajectory settling and sustained per-joint following-error supervision. Runtime ABI 1.7 adds opt-in
 velocity-continuous trajectory replacement and explicit atomic cancellation/current-position hold,
 while the legacy start entry point remains reject-if-busy. Runtime ABI 1.6 adds checked,
 deterministic disable/close with a ControllerGroup and USB/CAN feedback barrier, parallel CH0/CH1

@@ -64,6 +64,36 @@ void SafetyRuntime::configure_joints(
   joint_configs_ = std::move(configured);
 }
 
+void SafetyRuntime::configure_trajectory_execution(
+    const ArticoreTrajectoryExecutionConfig& config) {
+  if (!finite(config.position_tolerance) ||
+      config.position_tolerance <= 0.0f ||
+      !finite(config.velocity_tolerance) ||
+      config.velocity_tolerance <= 0.0f ||
+      !finite(config.following_error_limit) ||
+      config.following_error_limit <= config.position_tolerance ||
+      config.settling_stable_ms == 0 || config.settling_timeout_ms == 0 ||
+      config.settling_timeout_ms < config.settling_stable_ms ||
+      config.following_error_timeout_ms == 0) {
+    throw std::invalid_argument(
+        "invalid trajectory execution configuration");
+  }
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (state_ != ARTICORE_DISCONNECTED) {
+    throw std::runtime_error(
+        "trajectory execution configuration is fixed after connect");
+  }
+  trajectory_execution_.position_tolerance = config.position_tolerance;
+  trajectory_execution_.velocity_tolerance = config.velocity_tolerance;
+  trajectory_execution_.following_error_limit = config.following_error_limit;
+  trajectory_execution_.settling_stable =
+      std::chrono::milliseconds(config.settling_stable_ms);
+  trajectory_execution_.settling_timeout =
+      std::chrono::milliseconds(config.settling_timeout_ms);
+  trajectory_execution_.following_error_timeout =
+      std::chrono::milliseconds(config.following_error_timeout_ms);
+}
+
 const SafetyRuntime::JointControlConfig& SafetyRuntime::joint_config(
     void* motor) const {
   const auto found = joint_configs_.find(motor);
@@ -434,15 +464,9 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
   uint32_t command_count = 0;
   bool mailbox_user_command = false;
   uint64_t mailbox_generation = 0;
-  bool trajectory_complete = false;
   uint64_t trajectory_id = 0;
   if (trajectory) {
     trajectory_id = trajectory->id;
-    const auto elapsed = std::max(
-        std::chrono::nanoseconds::zero(),
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            now - trajectory->start_time));
-    const auto complete = elapsed >= trajectory->duration;
     for (const auto& joint : trajectory->joints) {
       const auto sample = sample_trajectory_joint(*trajectory, joint, now);
       const auto& config = joint_config(joint.motor);
@@ -458,7 +482,6 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
             config.mit_kd, config.mit_feedforward_torque});
       }
     }
-    trajectory_complete = complete;
     if (mode == ARTICORE_MODE_PV) {
       pv_data = pv.data();
       command_count = static_cast<uint32_t>(pv.size());
@@ -516,8 +539,16 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     has_successful_command_ = true;
     state_ = ARTICORE_RUNNING;
     last_successful_command_ = now;
-    if (trajectory_complete && active_trajectory_ &&
-        active_trajectory_->id == trajectory_id) {
+    if (active_trajectory_ && active_trajectory_->id == trajectory_id) {
+      const auto progress = update_trajectory_progress_locked(
+          *active_trajectory_, now, error);
+      if (progress == TrajectoryProgress::Failed) {
+        finish_trajectory_locked(
+            trajectory_id, ARTICORE_TRAJECTORY_FAILED, error, now);
+        arm_mailbox_ = ArmMailbox{};
+        return false;
+      }
+      if (progress != TrajectoryProgress::Completed) return true;
       arm_mailbox_.valid = true;
       arm_mailbox_.user_command = false;
       arm_mailbox_.trajectory_endpoint_hold = true;

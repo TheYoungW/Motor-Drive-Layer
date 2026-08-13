@@ -70,6 +70,7 @@ struct FakeDriver {
   uint32_t motor_enable_delay_ms = 0;
   bool transport_connected[2]{true, true};
   bool transport_healthy[2]{true, true};
+  bool emulate_arm_feedback = false;
   std::string error = "injected failure";
 };
 
@@ -94,6 +95,13 @@ int32_t send_pv(void*, const ArticorePosVelCommand* commands, uint32_t count) {
     }
     g_driver->last_pv.assign(commands, commands + count);
     g_driver->pv_history.emplace_back(commands, commands + count);
+    if (g_driver->emulate_arm_feedback && count == 2) {
+      for (uint32_t index = 0; index < count; ++index) {
+        auto& motor = g_driver->motors[commands[index].motor];
+        motor.position = commands[index].target_position;
+        motor.velocity = 0.0f;
+      }
+    }
     g_driver->events.emplace_back("send-pv");
   }
   ++g_driver->pv_sends;
@@ -123,6 +131,13 @@ int32_t send_mit(void*, const ArticoreMitCommand* commands, uint32_t count) {
   if (count == 2) {
     g_driver->last_arm_mit.assign(commands, commands + count);
     g_driver->arm_mit_history.emplace_back(commands, commands + count);
+    if (g_driver->emulate_arm_feedback) {
+      for (uint32_t index = 0; index < count; ++index) {
+        auto& motor = g_driver->motors[commands[index].motor];
+        motor.position = commands[index].target_position;
+        motor.velocity = commands[index].target_velocity;
+      }
+    }
   }
   ++g_driver->mit_sends;
   return 0;
@@ -327,6 +342,24 @@ std::vector<ArticoreJointControlConfig> joint_configs(
         motor.motor, -2.0f, 2.0f, 5.0f, 10.0f, 20.0f, 3.0f, 0.0f});
   }
   return values;
+}
+
+ArticoreTrajectoryExecutionConfig trajectory_execution_config(
+    float position_tolerance = 0.01f,
+    float velocity_tolerance = 0.02f,
+    float following_error_limit = 0.5f,
+    uint32_t settling_stable_ms = 30,
+    uint32_t settling_timeout_ms = 300,
+    uint32_t following_error_timeout_ms = 30) {
+  return ArticoreTrajectoryExecutionConfig{
+      sizeof(ArticoreTrajectoryExecutionConfig),
+      position_tolerance,
+      velocity_tolerance,
+      following_error_limit,
+      settling_stable_ms,
+      settling_timeout_ms,
+      following_error_timeout_ms,
+  };
 }
 
 template <typename Predicate>
@@ -866,6 +899,7 @@ void test_feedback_measurements_do_not_reuse_command_limits() {
 
 void test_feedback_seed_and_trajectory_start_ignore_command_limits() {
   FakeDriver driver;
+  driver.emulate_arm_feedback = true;
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
@@ -936,6 +970,7 @@ void test_feedback_fault_diagnostics_include_identity_value_and_threshold() {
 
 void test_single_stale_feedback_sample_does_not_cancel_trajectory() {
   FakeDriver driver;
+  driver.emulate_arm_feedback = true;
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
@@ -1705,6 +1740,7 @@ void test_latest_value_mailbox_stays_bounded_under_fast_producer() {
 
 void test_min_jerk_trajectory_rejects_ordinary_preemption() {
   FakeDriver driver;
+  driver.emulate_arm_feedback = true;
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
@@ -1797,8 +1833,130 @@ void test_min_jerk_trajectory_rejects_ordinary_preemption() {
           "trajectory B is accepted only after trajectory A completes");
 }
 
+void test_trajectory_profile_end_waits_for_measured_settling() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  const auto execution = trajectory_execution_config();
+  runtime.configure_trajectory_execution(execution);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+
+  ArticoreJointTrajectoryTarget targets[] = {
+      {motors[0].motor, 0.1f, 5.0f}, {motors[1].motor, 0.9f, 5.0f}};
+  const auto id = runtime.start_joint_trajectory(
+      targets, 2, ARTICORE_TRAJECTORY_MIN_JERK);
+  std::this_thread::sleep_for(80ms);
+  require(runtime.trajectory_info(id).status == ARTICORE_TRAJECTORY_RUNNING,
+          "profile time ending does not report COMPLETED before actual settling");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto& reference = driver.arm_mit_history.back();
+    require(std::abs(reference[0].target_position - 0.1f) < 1e-6f &&
+                std::abs(reference[1].target_position - 0.9f) < 1e-6f &&
+                reference[0].target_velocity == 0.0f &&
+                reference[1].target_velocity == 0.0f,
+            "SETTLING continuously sends the exact final reference");
+    driver.motors[motors[0].motor].position = 0.1f;
+    driver.motors[motors[1].motor].position = 0.9f;
+    driver.motors[motors[0].motor].velocity = 0.01f;
+    driver.motors[motors[1].motor].velocity = -0.01f;
+  }
+  std::this_thread::sleep_for(10ms);
+  require(runtime.trajectory_info(id).status == ARTICORE_TRAJECTORY_RUNNING,
+          "one in-tolerance sample does not satisfy the stable-time requirement");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].position = 0.13f;
+  }
+  std::this_thread::sleep_for(10ms);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].position = 0.1f;
+  }
+  std::this_thread::sleep_for(15ms);
+  require(runtime.trajectory_info(id).status == ARTICORE_TRAJECTORY_RUNNING,
+          "an out-of-tolerance sample resets the continuous stable timer");
+  const auto completed = runtime.wait_trajectory(id, 200ms);
+  require(completed.status == ARTICORE_TRAJECTORY_COMPLETED,
+          "all joints complete only after position and velocity remain stable");
+}
+
+void test_trajectory_settling_timeout_reports_worst_joint() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  const auto execution = trajectory_execution_config(
+      0.01f, 0.02f, 5.0f, 10, 60, 20);
+  runtime.configure_trajectory_execution(execution);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  ArticoreJointTrajectoryTarget targets[] = {
+      {motors[0].motor, 0.1f, 5.0f}, {motors[1].motor, 0.9f, 5.0f}};
+  const auto id = runtime.start_joint_trajectory(
+      targets, 2, ARTICORE_TRAJECTORY_MIN_JERK);
+  const auto failed = runtime.wait_trajectory(id, 300ms);
+  const std::string error(failed.error);
+  require(failed.status == ARTICORE_TRAJECTORY_FAILED &&
+              error.find("settling timeout") != std::string::npos &&
+              error.find("channel=CH") != std::string::npos &&
+              error.find("position_error=") != std::string::npos &&
+              error.find("velocity_tolerance=") != std::string::npos,
+          "settling timeout fails with structured worst-joint diagnostics");
+}
+
+void test_trajectory_sustained_per_joint_following_error_fails_early() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  const auto execution = trajectory_execution_config(
+      0.01f, 0.02f, 0.03f, 10, 500, 20);
+  runtime.configure_trajectory_execution(execution);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+
+  // Only left/joint1 moves. Its fake feedback remains at zero, so the test
+  // proves that following error is tracked per motor rather than as an arm
+  // average that the stationary right joint could dilute.
+  ArticoreJointTrajectoryTarget targets[] = {
+      {motors[0].motor, 1.0f, 5.0f}, {motors[1].motor, 1.0f, 5.0f}};
+  const auto id = runtime.start_joint_trajectory(
+      targets, 2, ARTICORE_TRAJECTORY_LINEAR);
+  const auto failed = runtime.wait_trajectory(id, 300ms);
+  const std::string error(failed.error);
+  require(failed.status == ARTICORE_TRAJECTORY_FAILED &&
+              error.find("trajectory following error") != std::string::npos &&
+              error.find("channel=CH0") != std::string::npos &&
+              error.find("motor=left/joint1") != std::string::npos &&
+              error.find("limit=0.03") != std::string::npos,
+          "sustained following error stops the profile with per-joint identity");
+}
+
 void test_min_jerk_trajectory_supports_smooth_atomic_replacement() {
   FakeDriver driver;
+  driver.emulate_arm_feedback = true;
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
@@ -1999,6 +2157,7 @@ void test_cancel_trajectory_enters_atomic_current_position_hold() {
 
 void test_trajectory_result_history_is_bounded() {
   FakeDriver driver;
+  driver.emulate_arm_feedback = true;
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
@@ -2008,6 +2167,9 @@ void test_trajectory_result_history_is_bounded() {
   const auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(),
                            static_cast<uint32_t>(configured.size()));
+  const auto execution = trajectory_execution_config(
+      0.01f, 0.02f, 0.5f, 1, 100, 20);
+  runtime.configure_trajectory_execution(execution);
   runtime.connect();
   runtime.enable(ARTICORE_MODE_PV);
 
@@ -2037,6 +2199,7 @@ void test_trajectory_result_history_is_bounded() {
 
 void test_mit_trajectory_endpoint_hold_bypasses_user_watchdog() {
   FakeDriver driver;
+  driver.emulate_arm_feedback = true;
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
@@ -2094,6 +2257,7 @@ void test_mit_trajectory_endpoint_hold_bypasses_user_watchdog() {
 
 void test_pv_trajectory_endpoint_hold_bypasses_user_watchdog() {
   FakeDriver driver;
+  driver.emulate_arm_feedback = true;
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
@@ -2351,6 +2515,9 @@ int main() {
     RUN_TEST(test_latest_value_mailbox_drops_superseded_targets);
     RUN_TEST(test_latest_value_mailbox_stays_bounded_under_fast_producer);
     RUN_TEST(test_min_jerk_trajectory_rejects_ordinary_preemption);
+    RUN_TEST(test_trajectory_profile_end_waits_for_measured_settling);
+    RUN_TEST(test_trajectory_settling_timeout_reports_worst_joint);
+    RUN_TEST(test_trajectory_sustained_per_joint_following_error_fails_early);
     RUN_TEST(test_min_jerk_trajectory_supports_smooth_atomic_replacement);
     RUN_TEST(test_rejected_trajectory_replacement_preserves_active_task);
     RUN_TEST(test_cancel_trajectory_enters_atomic_current_position_hold);

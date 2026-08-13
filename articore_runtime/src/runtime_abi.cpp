@@ -42,7 +42,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (1U << 16) | 7U;
+  return (1U << 16) | 8U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -61,7 +61,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY |
          ARTICORE_CAP_PROTECTIVE_FAULT_HOLD |
          ARTICORE_CAP_DETERMINISTIC_DISABLE |
-         ARTICORE_CAP_TRAJECTORY_MANAGEMENT;
+         ARTICORE_CAP_TRAJECTORY_MANAGEMENT |
+         ARTICORE_CAP_TRAJECTORY_SETTLING;
 }
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
@@ -138,6 +139,17 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joints(
     const ArticoreJointControlConfig* configs,
     uint32_t config_count) {
   return call([&] { checked(runtime).configure_joints(configs, config_count); });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_trajectory_execution(
+    ArticoreRuntime* runtime,
+    const ArticoreTrajectoryExecutionConfig* config) {
+  if (!config || config->struct_size < sizeof(*config)) {
+    g_last_error =
+        "trajectory execution config is null or has an incompatible struct_size";
+    return -1;
+  }
+  return call([&] { checked(runtime).configure_trajectory_execution(*config); });
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pos_vel(
