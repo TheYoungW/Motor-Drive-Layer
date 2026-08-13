@@ -80,7 +80,8 @@ void SafetyRuntime::worker_loop() {
         run_hold = true;
         detail::advance_periodic_deadline(next_safe_hold_, hold_period, now);
       }
-      if ((state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING) &&
+      if (!enable_transaction_ &&
+          (state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING) &&
           now >= next_gripper_control_ &&
           std::any_of(motors_.begin(), motors_.end(),
                       [](const MotorRecord& motor) {

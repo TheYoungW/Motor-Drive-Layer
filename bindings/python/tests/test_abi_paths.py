@@ -28,9 +28,9 @@ def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
 
     assert hasattr(library, "articore_runtime_submit_pos_vel_ex")
     assert hasattr(library, "articore_runtime_submit_mit_ex")
-    assert library.articore_runtime_abi_version() == 0x00010005
-    assert library.articore_runtime_capabilities() & 0x3FFF == 0x3FFF
-    assert abi.articore_runtime_abi_version() == "1.5"
+    assert library.articore_runtime_abi_version() == 0x00010006
+    assert library.articore_runtime_capabilities() & 0x7FFF == 0x7FFF
+    assert abi.articore_runtime_abi_version() == "1.6"
     assert abi.articore_runtime_capabilities()["gripper_protection"] is True
     assert abi.articore_runtime_capabilities()["current_position_hold"] is True
     assert abi.articore_runtime_capabilities()["realtime_joint_mailbox"] is True
@@ -39,6 +39,7 @@ def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
     assert abi.articore_runtime_capabilities()["command_lifetime"] is True
     assert abi.articore_runtime_capabilities()["nonpreemptive_trajectory"] is True
     assert abi.articore_runtime_capabilities()["protective_fault_hold"] is True
+    assert abi.articore_runtime_capabilities()["deterministic_disable"] is True
 
 
 def test_motor_abi_exposes_structured_feedback_error_codes() -> None:

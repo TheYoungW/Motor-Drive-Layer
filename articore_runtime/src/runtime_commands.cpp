@@ -326,6 +326,10 @@ void SafetyRuntime::submit_pos_vel_ex(const ArticorePosVelCommand* commands,
   validate_motor_set(commands, count, false);
 
   {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    require_state_for_command();
+  }
+  {
     std::lock_guard<std::mutex> command_lock(command_mutex_);
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     require_state_for_command();
@@ -381,6 +385,10 @@ void SafetyRuntime::submit_mit_ex(const ArticoreMitCommand* commands,
   }
   validate_motor_set(commands, count, false);
 
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    require_state_for_command();
+  }
   {
     std::lock_guard<std::mutex> command_lock(command_mutex_);
     std::lock_guard<std::mutex> state_lock(state_mutex_);

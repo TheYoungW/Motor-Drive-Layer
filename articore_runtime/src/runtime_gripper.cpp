@@ -48,6 +48,10 @@ void SafetyRuntime::submit_gripper_mit(const ArticoreMitCommand* commands,
     }
   }
   validate_motor_set(commands, count, true);
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    require_state_for_command();
+  }
   std::string error;
   bool send_failed = false;
   {
@@ -124,6 +128,10 @@ void SafetyRuntime::set_gripper_openings(const ArticoreGripperTarget* targets,
     }
   }
 
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    require_state_for_command();
+  }
   std::lock_guard<std::mutex> command_lock(command_mutex_);
   std::lock_guard<std::mutex> state_lock(state_mutex_);
   require_state_for_command();

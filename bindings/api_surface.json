@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",
@@ -172,6 +172,7 @@
         "articore_runtime_capabilities",
         "articore_runtime_create_ex",
         "articore_runtime_get_last_enable_report",
+        "articore_runtime_get_last_disable_report",
         "articore_runtime_submit_pos_vel_ex",
         "articore_runtime_submit_mit_ex"
       ],

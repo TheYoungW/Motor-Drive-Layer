@@ -80,6 +80,20 @@ its latest setpoint. Real-time servo loops use `STREAMING`, so a stalled caller 
 `SAFE_HOLD`. Persistent MIT commands require zero target velocity and zero feedforward torque;
 time-parameterized MIT motion should use the native trajectory API.
 
+Runtime ABI 1.6 makes normal torque-off a checked transaction instead of relying on the motor
+communication watchdog. `disable()` first rejects new commands and waits for any in-flight
+ControllerGroup batch. It then submits an empty group barrier followed by parallel fresh-feedback
+markers on CH0/CH1; receipt proves that previously accepted Runtime motion frames have passed the
+USB/CAN queue boundary. Both channels are disabled in parallel and confirmed with fresh feedback.
+If confirmation is incomplete, only the unconfirmed motors receive one directed disable retry,
+followed by one final parallel confirmation. There is no unbounded retry loop.
+`close()` and the native destructor reuse the same transaction. A checked close does not enter
+`DISCONNECTED` when physical disable cannot be confirmed, so the caller must not release its
+Controller or Transport handles. `articore_runtime_get_last_disable_report()` exposes stable
+per-channel/per-motor status, missing IDs, barrier status, and whether the one-shot retry ran.
+Legacy `articore_runtime_free()` remains a void best-effort destructor for ABI compatibility;
+bindings must call checked `articore_runtime_close()` first.
+
 When an arm enters safe hold, the runtime snapshots every arm motor's current position from the
 non-blocking feedback cache. PV safe hold uses the captured positions with a dedicated low velocity limit.
 MIT safe hold uses the captured positions, zeros velocity and feedforward torque, and substitutes

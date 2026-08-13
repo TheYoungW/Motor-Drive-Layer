@@ -2,11 +2,13 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <iostream>
 #include <map>
 #include <limits>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -32,6 +34,7 @@ struct FakeMotor {
 
 struct FakeDriver {
   std::mutex mutex;
+  std::condition_variable send_cv;
   std::map<void*, FakeMotor> motors;
   std::vector<ArticorePosVelCommand> last_pv;
   std::vector<ArticoreMitCommand> last_mit;
@@ -51,12 +54,20 @@ struct FakeDriver {
   uint32_t feedback_received = 2;
   std::vector<uint32_t> feedback_missing_ids;
   uint32_t feedback_timeouts_remaining = 0;
+  std::set<uint32_t> feedback_timeout_calls;
+  std::map<uint32_t, void*> feedback_enable_on_call;
   bool feedback_timeout_consumes_deadline = false;
+  bool block_nonempty_send = false;
+  bool send_entered = false;
+  bool release_send = false;
+  std::vector<std::string> events;
   bool fail_group = false;
   bool fail_send_side[2]{};
   bool fail_left_disable = false;
   bool fail_enable[2]{};
   bool skip_left_enable_once = false;
+  bool skip_gripper_enable_once = false;
+  uint32_t motor_enable_delay_ms = 0;
   bool transport_connected[2]{true, true};
   bool transport_healthy[2]{true, true};
   std::string error = "injected failure";
@@ -67,27 +78,48 @@ void* g_left_controller = reinterpret_cast<void*>(0x101);
 void* g_right_controller = reinterpret_cast<void*>(0x102);
 
 int32_t send_pv(void*, const ArticorePosVelCommand* commands, uint32_t count) {
-  std::lock_guard<std::mutex> lock(g_driver->mutex);
+  std::unique_lock<std::mutex> lock(g_driver->mutex);
   if (g_driver->fail_group) return -1;
   if (count > 0) {
     const bool left = commands[0].motor == reinterpret_cast<void*>(0x201);
     if (g_driver->fail_send_side[left ? 0 : 1]) return -1;
   }
-  g_driver->last_pv.assign(commands, commands + count);
-  g_driver->pv_history.emplace_back(commands, commands + count);
+  if (count == 0) {
+    g_driver->events.emplace_back("barrier-pv");
+  } else {
+    if (g_driver->block_nonempty_send) {
+      g_driver->send_entered = true;
+      g_driver->send_cv.notify_all();
+      g_driver->send_cv.wait(lock, [] { return g_driver->release_send; });
+    }
+    g_driver->last_pv.assign(commands, commands + count);
+    g_driver->pv_history.emplace_back(commands, commands + count);
+    g_driver->events.emplace_back("send-pv");
+  }
   ++g_driver->pv_sends;
   return 0;
 }
 
 int32_t send_mit(void*, const ArticoreMitCommand* commands, uint32_t count) {
-  std::lock_guard<std::mutex> lock(g_driver->mutex);
+  std::unique_lock<std::mutex> lock(g_driver->mutex);
   if (g_driver->fail_group) return -1;
   if (count > 0) {
     const bool left = commands[0].motor == reinterpret_cast<void*>(0x201);
     if (g_driver->fail_send_side[left ? 0 : 1]) return -1;
   }
+  if (count == 0) {
+    g_driver->events.emplace_back("barrier-mit");
+    ++g_driver->mit_sends;
+    return 0;
+  }
+  if (g_driver->block_nonempty_send) {
+    g_driver->send_entered = true;
+    g_driver->send_cv.notify_all();
+    g_driver->send_cv.wait(lock, [] { return g_driver->release_send; });
+  }
   g_driver->last_mit.assign(commands, commands + count);
   g_driver->mit_history.emplace_back(commands, commands + count);
+  g_driver->events.emplace_back("send-mit");
   if (count == 2) {
     g_driver->last_arm_mit.assign(commands, commands + count);
     g_driver->arm_mit_history.emplace_back(commands, commands + count);
@@ -113,18 +145,28 @@ int32_t enable_all(void* controller) {
     const bool is_left = entry.first == reinterpret_cast<void*>(0x201);
     if ((side == 0) != is_left) continue;
     if (side == 0 && g_driver->skip_left_enable_once) continue;
+    if (side == 1 && entry.first == reinterpret_cast<void*>(0x203) &&
+        g_driver->skip_gripper_enable_once) {
+      continue;
+    }
     entry.second.status = 1;
   }
   if (side == 0) g_driver->skip_left_enable_once = false;
+  if (side == 1) g_driver->skip_gripper_enable_once = false;
   return 0;
 }
 
 int32_t enable_motor(void* handle) {
+  uint32_t delay_ms = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_driver->mutex);
+    if (g_driver->motors.find(handle) == g_driver->motors.end()) return -1;
+    ++g_driver->motor_enable_calls;
+    delay_ms = g_driver->motor_enable_delay_ms;
+  }
+  if (delay_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
   std::lock_guard<std::mutex> lock(g_driver->mutex);
-  const auto found = g_driver->motors.find(handle);
-  if (found == g_driver->motors.end()) return -1;
-  ++g_driver->motor_enable_calls;
-  found->second.status = 1;
+  g_driver->motors[handle].status = 1;
   return 0;
 }
 
@@ -134,8 +176,12 @@ int32_t disable_motor(void* handle) {
   if (found == g_driver->motors.end()) return -1;
   const uint8_t side = handle == reinterpret_cast<void*>(0x201) ? 0 : 1;
   ++g_driver->disable_calls[side];
+  g_driver->events.emplace_back(
+      std::string("disable-") + std::to_string(side) + "-" +
+      std::to_string(reinterpret_cast<std::uintptr_t>(handle) - 0x200U));
+  if (side == 0 && g_driver->fail_left_disable) return -1;
   found->second.status = 0;
-  return side == 0 && g_driver->fail_left_disable ? -1 : 0;
+  return 0;
 }
 
 int32_t request_feedback(void*, uint32_t timeout_ms,
@@ -143,8 +189,17 @@ int32_t request_feedback(void*, uint32_t timeout_ms,
                          uint32_t* missing_ids, uint32_t missing_capacity) {
   std::unique_lock<std::mutex> lock(g_driver->mutex);
   ++g_driver->feedback_requests;
-  const bool injected_timeout = g_driver->feedback_timeouts_remaining > 0;
-  if (injected_timeout) --g_driver->feedback_timeouts_remaining;
+  g_driver->events.emplace_back("feedback");
+  const auto enable_on_call =
+      g_driver->feedback_enable_on_call.find(g_driver->feedback_requests);
+  if (enable_on_call != g_driver->feedback_enable_on_call.end()) {
+    g_driver->motors[enable_on_call->second].status = 1;
+  }
+  const bool injected_timeout = g_driver->feedback_timeouts_remaining > 0 ||
+      g_driver->feedback_timeout_calls.count(g_driver->feedback_requests) != 0;
+  if (g_driver->feedback_timeouts_remaining > 0) {
+    --g_driver->feedback_timeouts_remaining;
+  }
   if (report) {
     report->struct_size = sizeof(*report);
     report->timeout_ms = timeout_ms;
@@ -1008,6 +1063,152 @@ void test_disable_retries_one_full_feedback_deadline() {
   }
 }
 
+void test_disable_barrier_and_targeted_motor_retry() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  articore::SafetyRuntime runtime(config(), api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    // Calls 1/2 establish the two-channel queue marker. During the initial
+    // post-disable confirmation, make only the right gripper appear enabled.
+    driver.feedback_enable_on_call[3] = motors[2].motor;
+  }
+  runtime.disable();
+  const auto report = runtime.last_disable_report();
+  require(report.success == 1 && report.barrier_confirmed == 1 &&
+              report.retry_count == 1 && report.missing_count == 0 &&
+              report.disabled_count == 3,
+          "deterministic disable reports barrier, directed retry, and confirmation");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.disable_calls[0] == 1 && driver.disable_calls[1] == 3,
+            "only the one unconfirmed right gripper is disabled a second time");
+    const auto barrier = std::find(driver.events.begin(), driver.events.end(),
+                                   "barrier-pv");
+    const auto first_disable = std::find_if(
+        driver.events.begin(), driver.events.end(), [](const std::string& event) {
+          return event.rfind("disable-", 0) == 0;
+        });
+    require(barrier != driver.events.end() && first_disable != driver.events.end() &&
+                barrier < first_disable,
+            "controller-group drain barrier precedes every disable frame");
+    require(std::none_of(first_disable, driver.events.end(),
+                         [](const std::string& event) {
+                           return event == "send-pv" || event == "send-mit";
+                         }),
+            "no old Runtime motion frame is emitted after disable begins");
+  }
+}
+
+void test_disable_waits_for_inflight_batch_and_rejects_new_commands() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  articore::SafetyRuntime runtime(config(), api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  ArticorePosVelCommand commands[] = {
+      {motors[0].motor, 0.1f, 1.0f}, {motors[1].motor, 0.2f, 1.0f}};
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.block_nonempty_send = true;
+  }
+  runtime.submit_pos_vel_ex(
+      commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
+  {
+    std::unique_lock<std::mutex> lock(driver.mutex);
+    require(driver.send_cv.wait_for(lock, 200ms,
+                                    [&] { return driver.send_entered; }),
+            "test control batch entered the fake transport");
+  }
+  std::string disable_error;
+  std::thread closer([&] {
+    try {
+      runtime.disable();
+    } catch (const std::exception& error) {
+      disable_error = error.what();
+    }
+  });
+  std::this_thread::sleep_for(5ms);
+  bool rejected = false;
+  try {
+    runtime.submit_pos_vel_ex(
+        commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
+  } catch (const std::runtime_error&) {
+    rejected = true;
+  }
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.disable_calls[0] == 0 && driver.disable_calls[1] == 0,
+            "disable frames wait until the in-flight control batch completes");
+    driver.release_send = true;
+    driver.send_cv.notify_all();
+  }
+  closer.join();
+  require(rejected && disable_error.empty() &&
+              runtime.health().disable_confirmed == 1,
+          "transition rejects new commands and completes after the batch barrier");
+}
+
+void test_close_reuses_checked_disable_transaction() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  articore::SafetyRuntime runtime(config(), api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+  runtime.close();
+  const auto health = runtime.health();
+  const auto report = runtime.last_disable_report();
+  require(health.state == ARTICORE_DISCONNECTED &&
+              health.disable_confirmed == 1 && report.success == 1 &&
+              report.expected_count == 3 && report.disabled_count == 3,
+          "close confirms physical disable before disconnecting the Runtime");
+}
+
+void test_close_refuses_to_disconnect_after_unconfirmed_disable() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  articore::SafetyRuntime runtime(config(), api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.feedback_code = 3;
+    driver.feedback_expected = 2;
+    driver.feedback_received = 0;
+    driver.feedback_missing_ids = {1, 2, 3};
+  }
+  bool failed = false;
+  try {
+    runtime.close();
+  } catch (const std::runtime_error&) {
+    failed = true;
+  }
+  const auto report = runtime.last_disable_report();
+  require(failed && runtime.health().state == ARTICORE_FAULT &&
+              runtime.health().disable_confirmed == 0 && report.success == 0 &&
+              report.missing_count > 0,
+          "close reports structured missing motors and keeps transports usable");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.feedback_code = 0;
+    driver.feedback_received = 2;
+    driver.feedback_missing_ids.clear();
+  }
+  runtime.close();
+  require(runtime.health().state == ARTICORE_DISCONNECTED,
+          "a later confirmed close can finish the retained Runtime");
+}
+
 void test_transport_disconnect_holds_the_connected_side() {
   FakeDriver driver;
   g_driver = &driver;
@@ -1182,6 +1383,33 @@ void test_atomic_enable_retries_one_disabled_motor_once() {
     std::lock_guard<std::mutex> lock(driver.mutex);
     require(driver.motor_enable_calls == 1,
             "only the still-disabled motor receives one enable retry");
+  }
+}
+
+void test_gripper_control_waits_for_atomic_enable_confirmation() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  driver.skip_gripper_enable_once = true;
+  driver.motor_enable_delay_ms = 15;
+  auto cfg = config();
+  cfg.enable_grace_ms = 100;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, enable_all, enable_motor);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+  const auto health = runtime.health();
+  require(health.state == ARTICORE_ENABLED && health.fault_reason[0] == '\0' &&
+              runtime.last_enable_report().success == 1,
+          "normal gripper control cannot observe transient DISABLED feedback "
+          "inside the atomic enable transaction");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.motor_enable_calls == 1 &&
+                driver.motors[motors[2].motor].status == 1,
+            "the delayed gripper is retried once and confirmed before control starts");
   }
 }
 
@@ -1905,11 +2133,16 @@ int main() {
     RUN_TEST(test_disable_does_not_stop_after_one_side_fails);
     RUN_TEST(test_disable_uses_structured_feedback_report);
     RUN_TEST(test_disable_retries_one_full_feedback_deadline);
+    RUN_TEST(test_disable_barrier_and_targeted_motor_retry);
+    RUN_TEST(test_disable_waits_for_inflight_batch_and_rejects_new_commands);
+    RUN_TEST(test_close_reuses_checked_disable_transaction);
+    RUN_TEST(test_close_refuses_to_disconnect_after_unconfirmed_disable);
     RUN_TEST(test_transport_disconnect_holds_the_connected_side);
     RUN_TEST(test_fault_hold_failure_isolated_per_channel);
     RUN_TEST(test_enable_grace_and_fault_latch);
     RUN_TEST(test_atomic_enable_starts_hold_and_confirms_both_sides);
     RUN_TEST(test_atomic_enable_retries_one_disabled_motor_once);
+    RUN_TEST(test_gripper_control_waits_for_atomic_enable_confirmation);
     RUN_TEST(test_atomic_enable_failure_rolls_back_and_fault_disable_is_allowed);
     RUN_TEST(test_repeated_runtime_lifecycle);
     RUN_TEST(test_single_side_runtime_and_gripper);

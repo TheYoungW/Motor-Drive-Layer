@@ -37,6 +37,10 @@ enum ArticoreRuntimeCapability {
   // protective holds to motors/channels that remain controllable. Only an
   // explicit disable or product estop policy requests torque-off.
   ARTICORE_CAP_PROTECTIVE_FAULT_HOLD = 1ULL << 13,
+  // disable() and close() share a bounded transaction that drains prior
+  // control traffic, disables active channels in parallel, confirms fresh
+  // disabled feedback, and retries only unconfirmed motors once.
+  ARTICORE_CAP_DETERMINISTIC_DISABLE = 1ULL << 14,
 };
 
 enum ArticorePresenceState {
@@ -201,6 +205,35 @@ typedef struct ArticoreEnableReport {
   ArticoreEnableMotorResult motors[32];
   char error[512];
 } ArticoreEnableReport;
+
+typedef struct ArticoreDisableMotorResult {
+  uint8_t side;
+  uint8_t can_id;
+  uint8_t status_code;
+  uint8_t has_feedback;
+  uint8_t feedback_fresh;
+  uint8_t disabled;
+  uint8_t disable_sent;
+  uint8_t retry_sent;
+  char name[64];
+} ArticoreDisableMotorResult;
+
+typedef struct ArticoreDisableReport {
+  // Caller initializes this to sizeof(ArticoreDisableReport).
+  uint32_t struct_size;
+  int32_t success;
+  int32_t barrier_confirmed;
+  uint32_t expected_count;
+  uint32_t disabled_count;
+  uint32_t missing_count;
+  uint32_t failure_count;
+  uint32_t retry_count;
+  uint8_t missing_motor_sides[32];
+  uint32_t missing_motor_ids[32];
+  uint32_t motor_count;
+  ArticoreDisableMotorResult motors[32];
+  char error[512];
+} ArticoreDisableReport;
 
 typedef struct ArticoreDriverTransportHealth {
   int32_t connected;
@@ -440,6 +473,11 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_report_feedback_failure(
 // Valid in every connected state, including latched FAULT. A successful call
 // confirms physical disable but intentionally does not clear a FAULT latch.
 ARTICORE_RUNTIME_API int32_t articore_runtime_disable(ArticoreRuntime* runtime);
+// Returns the structured result of the most recent deterministic disable or
+// close transaction, including channel/motor identity for every motor whose
+// fresh disabled state could not be confirmed.
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_last_disable_report(
+    ArticoreRuntime* runtime, ArticoreDisableReport* report);
 // Latches FAULT and torque-disables all arm joints. Grippers follow the
 // configured product estop action (hold or disable).
 ARTICORE_RUNTIME_API int32_t articore_runtime_estop(

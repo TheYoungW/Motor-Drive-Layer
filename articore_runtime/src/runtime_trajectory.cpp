@@ -62,6 +62,10 @@ uint64_t SafetyRuntime::start_joint_trajectory(
         "trajectory must contain the complete fixed arm layout");
   }
 
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    require_state_for_command();
+  }
   std::lock_guard<std::mutex> command_lock(command_mutex_);
   uint64_t trajectory_id = 0;
   ArticoreControlMode trajectory_mode = ARTICORE_MODE_PV;

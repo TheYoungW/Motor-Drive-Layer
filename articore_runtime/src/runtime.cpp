@@ -114,14 +114,23 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
   safe_mit_.reserve(arm_count);
   safe_grippers_.reserve(gripper_count);
   last_enable_report_.struct_size = sizeof(last_enable_report_);
+  last_disable_report_.struct_size = sizeof(last_disable_report_);
   worker_ = std::thread([this] { worker_loop(); });
 }
 
 SafetyRuntime::~SafetyRuntime() {
-  close();
+  try {
+    close();
+  } catch (...) {
+    // Destructors cannot propagate a failed physical-disable confirmation.
+    // The checked C ABI close entry point reports it; legacy free remains
+    // best-effort but still has to stop and join the native worker safely.
+    stop_worker();
+  }
 }
 
 void SafetyRuntime::connect() {
+  std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
   std::lock_guard<std::mutex> lock(state_mutex_);
   if (state_ != ARTICORE_DISCONNECTED) return;
   state_ = ARTICORE_READY;
@@ -202,7 +211,7 @@ void SafetyRuntime::mark_motor_faulted(void* motor) {
   if (role != motor_roles_.end()) presence_[role->second] = ARTICORE_FAULTED;
 }
 
-void SafetyRuntime::close() {
+void SafetyRuntime::stop_worker() {
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (stopping_) return;
@@ -220,6 +229,24 @@ void SafetyRuntime::close() {
     side.connected = false;
     side.healthy = false;
   }
+}
+
+void SafetyRuntime::close() {
+  std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+  bool needs_disable = false;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (stopping_) return;
+    if (state_ == ARTICORE_DISCONNECTED) {
+      needs_disable = false;
+    } else {
+      needs_disable = !disable_confirmed_ || state_ == ARTICORE_ENABLED ||
+                      state_ == ARTICORE_RUNNING ||
+                      state_ == ARTICORE_SAFE_HOLD;
+    }
+  }
+  if (needs_disable) disable();
+  stop_worker();
 }
 
 }  // namespace articore

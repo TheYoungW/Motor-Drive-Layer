@@ -42,7 +42,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (1U << 16) | 5U;
+  return (1U << 16) | 6U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -59,7 +59,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_ATOMIC_ENABLE |
          ARTICORE_CAP_COMMAND_LIFETIME |
          ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY |
-         ARTICORE_CAP_PROTECTIVE_FAULT_HOLD;
+         ARTICORE_CAP_PROTECTIVE_FAULT_HOLD |
+         ARTICORE_CAP_DETERMINISTIC_DISABLE;
 }
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
@@ -258,6 +259,17 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_estop(ArticoreRuntime* runtime,
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_recover(ArticoreRuntime* runtime) {
   return call([&] { checked(runtime).recover(); });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_last_disable_report(
+    ArticoreRuntime* runtime, ArticoreDisableReport* report) {
+  return call([&] {
+    if (!report) throw std::invalid_argument("disable report is null");
+    if (report->struct_size < sizeof(ArticoreDisableReport)) {
+      throw std::invalid_argument("disable report struct_size is too small");
+    }
+    *report = checked(runtime).last_disable_report();
+  });
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_health(

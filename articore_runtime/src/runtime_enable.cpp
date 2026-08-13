@@ -33,13 +33,19 @@ bool SafetyRuntime::request_feedback_parallel(
             return motor.descriptor.side == side;
           }));
       auto& result = results[side];
-      result.missing.resize(std::max<uint32_t>(motor_count, 1));
+      result.missing.assign(std::max<uint32_t>(motor_count, 1),
+                            std::numeric_limits<uint32_t>::max());
       result.report.struct_size = sizeof(result.report);
       result.code = api_.controller_request_feedback_all_ex(
           controllers_[side], timeout_ms, &result.report,
           result.missing.data(), static_cast<uint32_t>(result.missing.size()));
-      result.missing.resize(std::min<std::size_t>(
-          result.report.missing_count, result.missing.size()));
+      const auto reported = std::min<std::size_t>(
+          result.report.missing_count, result.missing.size());
+      result.missing.resize(reported);
+      result.missing.erase(
+          std::remove(result.missing.begin(), result.missing.end(),
+                      std::numeric_limits<uint32_t>::max()),
+          result.missing.end());
       if (result.code != 0) {
         const char* detail = api_.last_error_message();
         if (detail && detail[0]) result.error = detail;
@@ -58,6 +64,20 @@ bool SafetyRuntime::request_feedback_parallel(
     }
     if (result.code == 0) continue;
     ok = false;
+    // A transport may report a side-wide timeout without filling the optional
+    // ID array. Preserve deterministic per-motor diagnostics in that case.
+    if (result.missing.empty()) {
+      for (const auto& motor : motors_) {
+        if (motor.descriptor.side != side) continue;
+        ArticoreMotorState state{};
+        const uint32_t id =
+            api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+                    state.has_value
+                ? state.can_id
+                : 0;
+        missing_motors.push_back(MissingMotor{side, id});
+      }
+    }
     if (!error.empty()) error += "; ";
     error += std::string(side == 0 ? "CH0" : "CH1") +
              " feedback code=" + std::to_string(result.code) +
@@ -291,6 +311,7 @@ bool SafetyRuntime::send_initial_hold(ArticoreControlMode mode,
 }
 
 void SafetyRuntime::enable(ArticoreControlMode mode) {
+  std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
   if (mode != ARTICORE_MODE_PV && mode != ARTICORE_MODE_MIT) {
     throw std::invalid_argument("control mode must be PV or MIT");
   }
@@ -425,6 +446,11 @@ bool SafetyRuntime::disable_hardware(bool request_feedback,
                                      bool preserve_grippers,
                                      std::string& error) {
   bool ok = true;
+  bool barrier_confirmed = false;
+  std::vector<void*> initially_sent;
+  std::vector<void*> retried;
+  std::vector<MissingMotor> unconfirmed;
+  bool retry_attempted = false;
   if (preserve_grippers) {
     std::string hold_error;
     if (!send_gripper_hold_once(hold_error)) {
@@ -436,67 +462,267 @@ bool SafetyRuntime::disable_hardware(bool request_feedback,
 
   {
     std::lock_guard<std::mutex> command_lock(command_mutex_);
+    std::string barrier_error;
+    barrier_confirmed = establish_disable_barrier(barrier_error);
+    if (!barrier_confirmed) {
+      ok = false;
+      error = "disable queue barrier failed: " + barrier_error;
+    }
+
+    auto send_disable_parallel = [&](const std::vector<MotorRecord*>& targets,
+                                     std::vector<void*>& sent) {
+      struct SideResult {
+        std::vector<void*> sent;
+        std::vector<std::string> errors;
+      } side_results[2];
+      std::vector<std::thread> workers;
+      for (uint8_t side = 0; side < 2; ++side) {
+        workers.emplace_back([&, side] {
+          for (auto* motor : targets) {
+            if (motor->descriptor.side != side) continue;
+            if (api_.motor_disable(motor->descriptor.motor) == 0) {
+              side_results[side].sent.push_back(motor->descriptor.motor);
+              continue;
+            }
+            const auto detail = motor_error("motor disable failed");
+            side_results[side].errors.push_back(
+                std::string(side == 0 ? "CH0/" : "CH1/") +
+                motor->descriptor.name + ": " + detail);
+          }
+        });
+      }
+      for (auto& worker : workers) worker.join();
+      for (uint8_t side = 0; side < 2; ++side) {
+        sent.insert(sent.end(), side_results[side].sent.begin(),
+                    side_results[side].sent.end());
+        for (const auto& detail : side_results[side].errors) {
+          if (!error.empty()) error += "; ";
+          error += detail;
+          std::lock_guard<std::mutex> state_lock(state_mutex_);
+          set_side_error_locked(side, detail, true);
+        }
+      }
+    };
+
+    std::vector<MotorRecord*> targets;
     for (auto& motor : motors_) {
       if (preserve_grippers && motor.descriptor.is_gripper) continue;
-      if (api_.motor_disable(motor.descriptor.motor) != 0) {
-        ok = false;
-        const auto detail = motor_error("motor disable failed");
-        if (!error.empty()) error += "; ";
-        error += std::string(motor.descriptor.name) + ": " + detail;
-        std::lock_guard<std::mutex> state_lock(state_mutex_);
-        set_side_error_locked(motor.descriptor.side, detail, true);
-      } else if (motor.descriptor.is_gripper) {
-        motor.gripper_state = ARTICORE_GRIPPER_DISABLED;
-      }
+      targets.push_back(&motor);
     }
+    send_disable_parallel(targets, initially_sent);
+
     if (request_feedback) {
-      bool confirmed = false;
-      std::string confirmation_error;
-      // At a full 500 Hz, eight-motor load the USB/CAN bridge can still have
-      // already-accepted traffic draining when the worker is quiesced. The
-      // first post-disable feedback burst can therefore time out completely
-      // even though every disable frame was sent and a subsequent fresh burst
-      // succeeds. Keep confirmation bounded, but permit exactly one fresh
-      // outer retry instead of forcing the caller to invoke disable() twice.
-      for (uint32_t attempt = 0; attempt < 2 && !confirmed; ++attempt) {
+      auto collect_unconfirmed = [&](bool complete,
+                                     const std::vector<MissingMotor>& missing) {
+        std::vector<MotorRecord*> result;
+        const auto max_age =
+            static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL;
+        for (auto* motor : targets) {
+          ArticoreFeedbackStats stats{};
+          ArticoreMotorState state{};
+          const bool has_stats =
+              api_.motor_get_feedback_stats(motor->descriptor.motor, &stats) == 0 &&
+              stats.has_feedback;
+          const bool has_state =
+              api_.motor_get_state(motor->descriptor.motor, &state) == 0 &&
+              state.has_value;
+          const bool specifically_missing = has_state && std::any_of(
+              missing.begin(), missing.end(), [&](const MissingMotor& item) {
+                return item.side == motor->descriptor.side &&
+                       item.id == state.can_id;
+              });
+          if (!complete && missing.empty()) {
+            result.push_back(motor);
+          } else if (specifically_missing || !has_stats || stats.age_ns > max_age ||
+                     !has_state || state.status_code != 0) {
+            result.push_back(motor);
+          }
+        }
+        return result;
+      };
+
+      auto confirm_until_deadline = [&](std::string& latest_error) {
+        std::vector<MotorRecord*> result = targets;
         const auto deadline = Clock::now() +
             std::chrono::milliseconds(config_.disable_feedback_timeout_ms);
         do {
           const auto remaining =
               std::chrono::duration_cast<std::chrono::milliseconds>(
                   deadline - Clock::now());
-          const auto timeout_ms = static_cast<uint32_t>(std::max<int64_t>(
-              1, remaining.count()));
-          std::vector<MissingMotor> missing_motors;
+          const auto timeout_ms = static_cast<uint32_t>(
+              std::max<int64_t>(1, remaining.count()));
+          std::vector<MissingMotor> missing;
           std::string request_error;
           const bool complete = request_feedback_parallel(
-              timeout_ms, missing_motors, request_error);
-          std::string feedback_error;
-          const bool disabled = complete &&
-              refresh_feedback_health(true, preserve_grippers, feedback_error);
-          if (disabled) {
-            confirmed = true;
-            break;
-          }
-          confirmation_error = !request_error.empty()
-              ? "disable feedback confirmation failed: " + request_error
-              : feedback_error;
+              timeout_ms, missing, request_error);
+          result = collect_unconfirmed(complete, missing);
+          if (result.empty()) return result;
+          if (!request_error.empty()) latest_error = request_error;
           std::this_thread::sleep_for(std::chrono::milliseconds(1));
         } while (Clock::now() < deadline);
+        return result;
+      };
+
+      std::string first_error;
+      auto retry_targets = confirm_until_deadline(first_error);
+      if (!retry_targets.empty()) {
+        retry_attempted = true;
+        // Exactly one directed retry: only motors whose fresh disabled state
+        // was not confirmed are addressed again.
+        send_disable_parallel(retry_targets, retried);
+        std::string retry_error;
+        unconfirmed.clear();
+        const auto final_targets = confirm_until_deadline(retry_error);
+        for (auto* motor : final_targets) {
+          ArticoreMotorState state{};
+          const uint32_t id =
+              api_.motor_get_state(motor->descriptor.motor, &state) == 0 &&
+                      state.has_value
+                  ? state.can_id
+                  : 0;
+          unconfirmed.push_back({motor->descriptor.side, id});
+        }
+        if (!retry_error.empty() && !unconfirmed.empty()) first_error = retry_error;
+      } else {
+        unconfirmed.clear();
       }
-      if (!confirmed) {
-        ok = false;
+
+      if (!unconfirmed.empty()) {
         if (!error.empty()) error += "; ";
-        error += confirmation_error.empty()
-            ? "disable feedback confirmation timed out"
-            : confirmation_error;
+        error += "disable feedback confirmation failed";
+        if (!first_error.empty()) error += ": " + first_error;
+        error += "; unconfirmed motors:";
+        for (const auto& item : unconfirmed) {
+          error += std::string(" CH") + std::to_string(item.side) + "/ID" +
+                   std::to_string(item.id);
+        }
+      }
+    }
+    if (request_feedback) {
+      ok = barrier_confirmed && unconfirmed.empty();
+    } else {
+      ok = barrier_confirmed && initially_sent.size() == targets.size();
+    }
+    for (auto* motor : targets) {
+      if (!motor->descriptor.is_gripper) continue;
+      ArticoreMotorState state{};
+      if (api_.motor_get_state(motor->descriptor.motor, &state) == 0 &&
+          state.has_value && state.status_code == 0) {
+        motor->gripper_state = ARTICORE_GRIPPER_DISABLED;
       }
     }
   }
+  update_disable_report(ok, barrier_confirmed, unconfirmed, initially_sent,
+                        retried, retry_attempted, preserve_grippers, error);
   return ok;
 }
 
+bool SafetyRuntime::establish_disable_barrier(std::string& error) {
+  // Empty group dispatch acquires the shared ControllerGroup/controller locks
+  // and waits for every persistent group worker. A subsequent fresh feedback
+  // burst is an end-to-end marker: all previously accepted control frames are
+  // ahead of it in the USB/CAN FIFO, so disable frames submitted afterwards
+  // cannot be followed by an old Runtime motion frame.
+  const int32_t dispatch = mode_ == ARTICORE_MODE_MIT
+      ? api_.group_send_mit(controller_group_, nullptr, 0)
+      : api_.group_send_pos_vel(controller_group_, nullptr, 0);
+  if (dispatch != 0) {
+    error = motor_error("controller group drain failed");
+    return false;
+  }
+  std::string latest_error;
+  for (uint32_t attempt = 0; attempt < 2; ++attempt) {
+    std::vector<MissingMotor> missing;
+    std::string request_error;
+    if (request_feedback_parallel(config_.disable_feedback_timeout_ms,
+                                  missing, request_error)) {
+      return true;
+    }
+    latest_error = request_error;
+  }
+  error = latest_error.empty() ? "feedback marker timed out" : latest_error;
+  return false;
+}
+
+void SafetyRuntime::update_disable_report(
+    bool success, bool barrier_confirmed,
+    const std::vector<MissingMotor>& missing_motors,
+    const std::vector<void*>& initially_sent,
+    const std::vector<void*>& retried,
+    bool retry_attempted,
+    bool preserve_grippers,
+    const std::string& error) {
+  ArticoreDisableReport report{};
+  report.struct_size = sizeof(report);
+  report.success = success ? 1 : 0;
+  report.barrier_confirmed = barrier_confirmed ? 1 : 0;
+  report.expected_count = static_cast<uint32_t>(std::count_if(
+      motors_.begin(), motors_.end(), [&](const MotorRecord& motor) {
+        return !(preserve_grippers && motor.descriptor.is_gripper);
+      }));
+  report.retry_count = retry_attempted ? 1 : 0;
+  report.missing_count = static_cast<uint32_t>(
+      std::min<std::size_t>(missing_motors.size(), 32));
+  for (uint32_t i = 0; i < report.missing_count; ++i) {
+    report.missing_motor_sides[i] = missing_motors[i].side;
+    report.missing_motor_ids[i] = missing_motors[i].id;
+  }
+  report.motor_count = static_cast<uint32_t>(
+      std::min<std::size_t>(motors_.size(), 32));
+  const auto max_age =
+      static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL;
+  for (uint32_t i = 0; i < report.motor_count; ++i) {
+    const auto& motor = motors_[i];
+    auto& output = report.motors[i];
+    output.side = motor.descriptor.side;
+    copy_text(output.name, std::string(motor.descriptor.name));
+    output.disable_sent = std::find(initially_sent.begin(), initially_sent.end(),
+                                    motor.descriptor.motor) != initially_sent.end();
+    output.retry_sent = std::find(retried.begin(), retried.end(),
+                                  motor.descriptor.motor) != retried.end();
+    ArticoreFeedbackStats stats{};
+    ArticoreMotorState state{};
+    const bool has_stats =
+        api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
+        stats.has_feedback;
+    const bool has_state =
+        api_.motor_get_state(motor.descriptor.motor, &state) == 0 && state.has_value;
+    output.has_feedback = has_stats && has_state ? 1 : 0;
+    output.feedback_fresh = output.has_feedback && stats.age_ns <= max_age;
+    if (has_state) {
+      output.can_id = state.can_id;
+      output.status_code = state.status_code;
+    }
+    const bool excluded = preserve_grippers && motor.descriptor.is_gripper;
+    const bool explicitly_missing = std::any_of(
+        missing_motors.begin(), missing_motors.end(), [&](const MissingMotor& item) {
+          return item.side == output.side && item.id == output.can_id;
+        });
+    output.disabled = !excluded && output.has_feedback && output.feedback_fresh &&
+                      !explicitly_missing && output.status_code == 0;
+    if (output.disabled) ++report.disabled_count;
+    if (!excluded && !output.disabled) {
+      ++report.failure_count;
+    }
+  }
+  copy_text(report.error, error);
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  last_disable_report_ = report;
+  unconfirmed_disable_.clear();
+  for (const auto& item : missing_motors) {
+    unconfirmed_disable_.push_back(
+        std::string("CH") + std::to_string(item.side) + "/ID" +
+        std::to_string(item.id));
+  }
+}
+
+ArticoreDisableReport SafetyRuntime::last_disable_report() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return last_disable_report_;
+}
+
 void SafetyRuntime::disable() {
+  std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
   bool preserve_fault = false;
   std::string preserved_reason;
   {
@@ -547,10 +773,12 @@ void SafetyRuntime::disable() {
 }
 
 void SafetyRuntime::estop(const std::string& reason) {
+  std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
   enter_fault(reason.empty() ? "emergency stop" : reason, true);
 }
 
 void SafetyRuntime::recover() {
+  std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (state_ != ARTICORE_FAULT || !fault_latched_) {

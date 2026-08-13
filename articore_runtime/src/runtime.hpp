@@ -73,6 +73,7 @@ class SafetyRuntime {
                                          std::chrono::milliseconds timeout);
   void report_feedback_failure(uint8_t side, const std::string& reason);
   void disable();
+  ArticoreDisableReport last_disable_report() const;
   void estop(const std::string& reason);
   void recover();
   ArticoreSafetyHealth health() const;
@@ -213,6 +214,15 @@ class SafetyRuntime {
   bool prepare_protective_hold(std::string& error);
   bool disable_hardware(bool request_feedback, bool preserve_grippers,
                         std::string& error);
+  bool establish_disable_barrier(std::string& error);
+  void update_disable_report(bool success, bool barrier_confirmed,
+                             const std::vector<MissingMotor>& missing_motors,
+                             const std::vector<void*>& initially_sent,
+                             const std::vector<void*>& retried,
+                             bool retry_attempted,
+                             bool preserve_grippers,
+                             const std::string& error);
+  void stop_worker();
   bool refresh_feedback_health(bool recovery_check, bool allow_held_grippers,
                                std::string& error);
   bool refresh_transport_health(std::string& error);
@@ -240,6 +250,7 @@ class SafetyRuntime {
 
   mutable std::mutex state_mutex_;
   mutable std::mutex command_mutex_;
+  mutable std::recursive_mutex lifecycle_mutex_;
   std::condition_variable wakeup_;
   std::condition_variable trajectory_cv_;
   std::thread worker_;
@@ -277,6 +288,7 @@ class SafetyRuntime {
   std::vector<ArticoreMitCommand> last_sent_mit_;
   bool fault_hold_active_ = false;
   ArticoreEnableReport last_enable_report_{};
+  ArticoreDisableReport last_disable_report_{};
 };
 
 }  // namespace articore

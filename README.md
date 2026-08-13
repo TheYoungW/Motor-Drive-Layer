@@ -21,6 +21,8 @@ Motor-Drive-Layer is the native C++ control foundation shared by Python, C++ and
 - Protective fault hold: one missed feedback sample keeps the current arm and gripper outputs;
   persistent loss stops trajectories while healthy motors/channels keep holding instead of being
   automatically torque-disabled.
+- Deterministic Runtime disable/close: prior control traffic is drained, active channels are
+  disabled and confirmed in parallel, and only unconfirmed motors receive one directed retry.
 
 ## Architecture
 
