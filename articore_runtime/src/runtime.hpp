@@ -68,9 +68,15 @@ class SafetyRuntime {
       const ArticoreJointTrajectoryTarget* targets,
       uint32_t count,
       ArticoreTrajectoryProfile profile);
+  uint64_t start_joint_trajectory_ex(
+      const ArticoreJointTrajectoryTarget* targets,
+      uint32_t count,
+      ArticoreTrajectoryProfile profile,
+      ArticoreTrajectoryReplacePolicy replace_policy);
   ArticoreTrajectoryInfo trajectory_info(uint64_t trajectory_id) const;
   ArticoreTrajectoryInfo wait_trajectory(uint64_t trajectory_id,
                                          std::chrono::milliseconds timeout);
+  void cancel_trajectory(uint64_t trajectory_id);
   void report_feedback_failure(uint8_t side, const std::string& reason);
   void disable();
   ArticoreDisableReport last_disable_report() const;
@@ -159,8 +165,16 @@ class SafetyRuntime {
   struct TrajectoryJoint {
     void* motor = nullptr;
     float start_position = 0.0f;
+    float start_velocity = 0.0f;
+    float start_acceleration = 0.0f;
     float goal_position = 0.0f;
     float velocity_limit = 0.0f;
+  };
+
+  struct TrajectorySample {
+    float position = 0.0f;
+    float velocity = 0.0f;
+    float acceleration = 0.0f;
   };
 
   struct TrajectoryRecord {
@@ -197,6 +211,12 @@ class SafetyRuntime {
                                 const std::string& error,
                                 Clock::time_point now);
   void trim_trajectory_history_locked();
+  TrajectorySample sample_trajectory_joint(
+      const TrajectoryRecord& trajectory,
+      const TrajectoryJoint& joint,
+      Clock::time_point now) const;
+  bool trajectory_within_limits(const TrajectoryRecord& trajectory) const;
+  void install_cancellation_hold_locked(Clock::time_point now);
   const JointControlConfig& joint_config(void* motor) const;
   void validate_position_velocity_torque(void* motor, float position,
                                          float velocity, float torque) const;

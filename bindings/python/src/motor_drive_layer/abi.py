@@ -302,6 +302,7 @@ def articore_runtime_capabilities() -> dict[str, bool]:
         "nonpreemptive_trajectory": bool(bits & (1 << 12)),
         "protective_fault_hold": bool(bits & (1 << 13)),
         "deterministic_disable": bool(bits & (1 << 14)),
+        "trajectory_management": bool(bits & (1 << 15)),
     }
 
 

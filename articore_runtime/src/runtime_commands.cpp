@@ -443,39 +443,19 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             now - trajectory->start_time));
     const auto complete = elapsed >= trajectory->duration;
-    const double u = complete ? 1.0 : std::clamp(
-        static_cast<double>(elapsed.count()) / trajectory->duration.count(),
-        0.0, 1.0);
-    double position_scale = u;
-    double velocity_scale_per_second = complete
-        ? 0.0 : 1.0 / std::chrono::duration<double>(trajectory->duration).count();
-    if (trajectory->profile == ARTICORE_TRAJECTORY_MIN_JERK) {
-      const auto u2 = u * u;
-      const auto u3 = u2 * u;
-      const auto u4 = u3 * u;
-      const auto u5 = u4 * u;
-      position_scale = 10.0 * u3 - 15.0 * u4 + 6.0 * u5;
-      velocity_scale_per_second = complete ? 0.0 :
-          (30.0 * u2 - 60.0 * u3 + 30.0 * u4) /
-              std::chrono::duration<double>(trajectory->duration).count();
-    }
     for (const auto& joint : trajectory->joints) {
-      const auto delta = static_cast<double>(joint.goal_position) -
-                         joint.start_position;
-      const auto position = complete ? joint.goal_position : static_cast<float>(
-          joint.start_position + position_scale * delta);
-      const auto velocity = complete ? 0.0f : static_cast<float>(
-          velocity_scale_per_second * delta);
+      const auto sample = sample_trajectory_joint(*trajectory, joint, now);
       const auto& config = joint_config(joint.motor);
       validate_position_velocity_torque(
-          joint.motor, position, velocity, config.mit_feedforward_torque);
+          joint.motor, sample.position, sample.velocity,
+          config.mit_feedforward_torque);
       if (mode == ARTICORE_MODE_PV) {
         pv.push_back(ArticorePosVelCommand{
-            joint.motor, position, joint.velocity_limit});
+            joint.motor, sample.position, joint.velocity_limit});
       } else {
         mit.push_back(ArticoreMitCommand{
-            joint.motor, position, velocity, config.mit_kp, config.mit_kd,
-            config.mit_feedforward_torque});
+            joint.motor, sample.position, sample.velocity, config.mit_kp,
+            config.mit_kd, config.mit_feedforward_torque});
       }
     }
     trajectory_complete = complete;

@@ -8,6 +8,9 @@ int main() {
   const auto enable_report = &articore_runtime_get_last_enable_report;
   const auto submit_pos_vel_ex = &articore_runtime_submit_pos_vel_ex;
   const auto submit_mit_ex = &articore_runtime_submit_mit_ex;
+  const auto start_trajectory_ex =
+      &articore_runtime_start_joint_trajectory_ex;
+  const auto cancel_trajectory = &articore_runtime_cancel_trajectory;
   const auto disable_report = &articore_runtime_get_last_disable_report;
   const auto version = articore_runtime_abi_version();
   const auto capabilities = articore_runtime_capabilities();
@@ -24,9 +27,11 @@ int main() {
                             ARTICORE_CAP_COMMAND_LIFETIME |
                             ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY |
                             ARTICORE_CAP_PROTECTIVE_FAULT_HOLD |
-                            ARTICORE_CAP_DETERMINISTIC_DISABLE;
+                            ARTICORE_CAP_DETERMINISTIC_DISABLE |
+                            ARTICORE_CAP_TRAJECTORY_MANAGEMENT;
   if (!create_ex || !enable_report || !submit_pos_vel_ex || !submit_mit_ex ||
-      !disable_report || version != 0x00010006U ||
+      !start_trajectory_ex || !cancel_trajectory || !disable_report ||
+      version != 0x00010007U ||
       (capabilities & required) != required) {
     std::cerr << "Articore runtime ABI metadata is incomplete\n";
     return 1;

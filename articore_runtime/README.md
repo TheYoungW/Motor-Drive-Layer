@@ -61,12 +61,14 @@ trajectory as start/goal/time/profile state and computes the current position an
 control tick; it does not allocate a point FIFO. `MIN_JERK` uses the normalized quintic profile and
 accounts for its 1.875 peak-velocity factor when choosing duration; `LINEAR` is the only other
 profile. Exactly one trajectory may be active. Another trajectory or a direct joint command is
-rejected with a busy error until it completes; there is no trajectory waiting queue and ordinary
-commands cannot preempt it. Disable, emergency stop, close, communication failure, and other safety
-faults may still cancel or fail it. Terminal status remains queryable as `COMPLETED`, `PREEMPTED`,
-`FAILED`, or `CANCELED`, and the result history is bounded to 64 entries. Enabling always seeds the
-mailbox from complete fresh motor feedback, while disable, fault, recovery, and close clear both
-the old target and active trajectory.
+rejected by the legacy start entry point until it completes; there is no trajectory waiting queue
+and ordinary direct commands cannot preempt it. Runtime ABI 1.7 adds an explicit opt-in smooth
+replacement entry point and explicit cancellation without changing that legacy behavior. Disable,
+emergency stop, close, communication failure, and other safety faults may still cancel or fail it.
+Terminal status remains queryable as `COMPLETED`, `PREEMPTED`, `FAILED`, or `CANCELED`, and the
+result history is bounded to 64 entries. Enabling always seeds the mailbox from complete fresh
+motor feedback, while disable, fault, recovery, and close clear both the old target and active
+trajectory.
 After a trajectory reaches `COMPLETED`, its exact endpoint remains an explicit internal trajectory
 hold and is transmitted at the normal control rate. The user-command watchdog does not time out
 this native hold.
@@ -93,6 +95,19 @@ Controller or Transport handles. `articore_runtime_get_last_disable_report()` ex
 per-channel/per-motor status, missing IDs, barrier status, and whether the one-shot retry ran.
 Legacy `articore_runtime_free()` remains a void best-effort destructor for ABI compatibility;
 bindings must call checked `articore_runtime_close()` first.
+
+Runtime ABI 1.7 adds non-blocking trajectory management while retaining a single fixed-size task
+slot. `articore_runtime_start_joint_trajectory_ex(..., SMOOTH_REPLACE)` atomically samples the
+active minimum-jerk trajectory at one `steady_clock` instant and builds the replacement from that
+position and velocity; no old trajectory frame can be sent after the replacement call returns.
+The replaced ID becomes `PREEMPTED`. Invalid replacements leave the active task untouched, and
+`LINEAR` replacement is rejected because it cannot preserve boundary velocity. The replacement
+duration is checked against every configured position and velocity limit before installation.
+`articore_runtime_cancel_trajectory(id)` atomically terminates the full dual-arm task as
+`CANCELED` and installs a current-position, zero-velocity, zero-feedforward internal hold; fresh
+feedback is preferred, with the last successfully sent target as a bounded fallback. The hold is
+sent on the normal control loop and does not trigger the user-command watchdog. There is still no
+FIFO, no background task accumulation, and no partial per-arm cancellation.
 
 When an arm enters safe hold, the runtime snapshots every arm motor's current position from the
 non-blocking feedback cache. PV safe hold uses the captured positions with a dedicated low velocity limit.

@@ -42,7 +42,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (1U << 16) | 6U;
+  return (1U << 16) | 7U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -60,7 +60,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_COMMAND_LIFETIME |
          ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY |
          ARTICORE_CAP_PROTECTIVE_FAULT_HOLD |
-         ARTICORE_CAP_DETERMINISTIC_DISABLE;
+         ARTICORE_CAP_DETERMINISTIC_DISABLE |
+         ARTICORE_CAP_TRAJECTORY_MANAGEMENT;
 }
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
@@ -212,6 +213,27 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_start_joint_trajectory(
   }
 }
 
+ARTICORE_RUNTIME_API uint64_t articore_runtime_start_joint_trajectory_ex(
+    ArticoreRuntime* runtime,
+    const ArticoreJointTrajectoryTarget* targets,
+    uint32_t target_count,
+    int32_t profile,
+    int32_t replace_policy) {
+  try {
+    const auto id = checked(runtime).start_joint_trajectory_ex(
+        targets, target_count, static_cast<ArticoreTrajectoryProfile>(profile),
+        static_cast<ArticoreTrajectoryReplacePolicy>(replace_policy));
+    g_last_error = "ok";
+    return id;
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return 0;
+  } catch (...) {
+    g_last_error = "unknown Articore runtime exception";
+    return 0;
+  }
+}
+
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_trajectory(
     ArticoreRuntime* runtime,
     uint64_t trajectory_id,
@@ -236,6 +258,11 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_wait_trajectory(
     *info = checked(runtime).wait_trajectory(
         trajectory_id, std::chrono::milliseconds(timeout_ms));
   });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_trajectory(
+    ArticoreRuntime* runtime, uint64_t trajectory_id) {
+  return call([&] { checked(runtime).cancel_trajectory(trajectory_id); });
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_report_feedback_failure(

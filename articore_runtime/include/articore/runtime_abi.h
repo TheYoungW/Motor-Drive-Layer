@@ -41,6 +41,9 @@ enum ArticoreRuntimeCapability {
   // control traffic, disables active channels in parallel, confirms fresh
   // disabled feedback, and retries only unconfirmed motors once.
   ARTICORE_CAP_DETERMINISTIC_DISABLE = 1ULL << 14,
+  // ABI 1.7 adds explicit cancellation and opt-in velocity-continuous
+  // replacement while preserving the legacy reject-if-busy entry point.
+  ARTICORE_CAP_TRAJECTORY_MANAGEMENT = 1ULL << 15,
 };
 
 enum ArticorePresenceState {
@@ -89,6 +92,11 @@ enum ArticoreTrajectoryStatus {
   ARTICORE_TRAJECTORY_PREEMPTED = 3,
   ARTICORE_TRAJECTORY_FAILED = 4,
   ARTICORE_TRAJECTORY_CANCELED = 5,
+};
+
+enum ArticoreTrajectoryReplacePolicy {
+  ARTICORE_TRAJECTORY_REJECT_IF_BUSY = 0,
+  ARTICORE_TRAJECTORY_SMOOTH_REPLACE = 1,
 };
 
 enum ArticoreGripperControlState {
@@ -459,6 +467,16 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_start_joint_trajectory(
     const ArticoreJointTrajectoryTarget* targets,
     uint32_t target_count,
     int32_t profile);
+// ABI 1.7 opt-in trajectory replacement. SMOOTH_REPLACE atomically marks the
+// old trajectory PREEMPTED and starts the new minimum-jerk polynomial from the
+// old trajectory's position, velocity, and acceleration at one steady-clock
+// instant. The legacy entry point above is equivalent to REJECT_IF_BUSY.
+ARTICORE_RUNTIME_API uint64_t articore_runtime_start_joint_trajectory_ex(
+    ArticoreRuntime* runtime,
+    const ArticoreJointTrajectoryTarget* targets,
+    uint32_t target_count,
+    int32_t profile,
+    int32_t replace_policy);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_trajectory(
     ArticoreRuntime* runtime,
     uint64_t trajectory_id,
@@ -468,6 +486,11 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_wait_trajectory(
     uint64_t trajectory_id,
     uint32_t timeout_ms,
     ArticoreTrajectoryInfo* info);
+// Cancels exactly the active trajectory with this ID. The complete arm layout
+// atomically enters a current-position internal hold; no partial-side cancel
+// is possible. The trajectory becomes CANCELED and remains queryable.
+ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_trajectory(
+    ArticoreRuntime* runtime, uint64_t trajectory_id);
 ARTICORE_RUNTIME_API int32_t articore_runtime_report_feedback_failure(
     ArticoreRuntime* runtime, uint8_t side, const char* reason);
 // Valid in every connected state, including latched FAULT. A successful call
