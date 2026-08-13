@@ -13,7 +13,6 @@ add_library(
   src/runtime_gripper.cpp
   src/runtime_joint_position.cpp
   src/runtime_safety.cpp
-  src/runtime_trajectory.cpp
   src/runtime_worker.cpp
 )
 add_library(articore::runtime_core ALIAS articore_runtime_core)

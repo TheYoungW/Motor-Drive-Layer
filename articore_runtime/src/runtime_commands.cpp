@@ -114,36 +114,6 @@ void SafetyRuntime::configure_joint_safety_limits(
   joint_configs_ = std::move(updated);
 }
 
-void SafetyRuntime::configure_trajectory_execution(
-    const ArticoreTrajectoryExecutionConfig& config) {
-  if (!finite(config.position_tolerance) ||
-      config.position_tolerance <= 0.0f ||
-      !finite(config.velocity_tolerance) ||
-      config.velocity_tolerance <= 0.0f ||
-      !finite(config.following_error_limit) ||
-      config.following_error_limit <= config.position_tolerance ||
-      config.settling_stable_ms == 0 || config.settling_timeout_ms == 0 ||
-      config.settling_timeout_ms < config.settling_stable_ms ||
-      config.following_error_timeout_ms == 0) {
-    throw std::invalid_argument(
-        "invalid trajectory execution configuration");
-  }
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  if (state_ != ARTICORE_DISCONNECTED) {
-    throw std::runtime_error(
-        "trajectory execution configuration is fixed after connect");
-  }
-  trajectory_execution_.position_tolerance = config.position_tolerance;
-  trajectory_execution_.velocity_tolerance = config.velocity_tolerance;
-  trajectory_execution_.following_error_limit = config.following_error_limit;
-  trajectory_execution_.settling_stable =
-      std::chrono::milliseconds(config.settling_stable_ms);
-  trajectory_execution_.settling_timeout =
-      std::chrono::milliseconds(config.settling_timeout_ms);
-  trajectory_execution_.following_error_timeout =
-      std::chrono::milliseconds(config.following_error_timeout_ms);
-}
-
 const SafetyRuntime::JointControlConfig& SafetyRuntime::joint_config(
     void* motor) const {
   const auto found = joint_configs_.find(motor);
@@ -376,8 +346,6 @@ bool SafetyRuntime::enter_safe_hold_from_feedback(const std::string& reason,
   safe_mit_ = std::move(mit);
   fault_hold_active_ = false;
   arm_mailbox_ = ArmMailbox{};
-  cancel_active_trajectory_locked(
-      ARTICORE_TRAJECTORY_FAILED, reason);
   last_fresh_feedback_ = now - std::chrono::nanoseconds(maximum_age_ns);
   state_ = ARTICORE_SAFE_HOLD;
   fault_reason_ = reason;
@@ -421,13 +389,8 @@ void SafetyRuntime::submit_pos_vel_ex(const ArticorePosVelCommand* commands,
     if (mode_ != ARTICORE_MODE_PV) {
       throw std::runtime_error("cannot submit PV while runtime mode is MIT");
     }
-    if (active_trajectory_) {
-      throw std::runtime_error(
-          "joint trajectory is active; direct PV command rejected");
-    }
     arm_mailbox_.valid = true;
     arm_mailbox_.user_command = true;
-    arm_mailbox_.trajectory_endpoint_hold = false;
     arm_mailbox_.lifetime = lifetime;
     ++arm_mailbox_.generation;
     arm_mailbox_.submitted_at = Clock::now();
@@ -484,13 +447,8 @@ void SafetyRuntime::submit_mit_ex(const ArticoreMitCommand* commands,
     if (mode_ != ARTICORE_MODE_MIT) {
       throw std::runtime_error("cannot submit MIT while runtime mode is PV");
     }
-    if (active_trajectory_) {
-      throw std::runtime_error(
-          "joint trajectory is active; direct MIT command rejected");
-    }
     arm_mailbox_.valid = true;
     arm_mailbox_.user_command = true;
-    arm_mailbox_.trajectory_endpoint_hold = false;
     arm_mailbox_.lifetime = lifetime;
     ++arm_mailbox_.generation;
     arm_mailbox_.submitted_at = Clock::now();
@@ -507,7 +465,6 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
                                           std::string& error) {
   std::lock_guard<std::mutex> command_lock(command_mutex_);
   ArticoreControlMode mode;
-  std::optional<TrajectoryRecord> trajectory;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     if (hardware_transition_ ||
@@ -515,91 +472,49 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
       return true;
     }
     mode = mode_;
-    trajectory = active_trajectory_;
   }
 
-  std::vector<ArticorePosVelCommand> pv;
-  std::vector<ArticoreMitCommand> mit;
-  const ArticorePosVelCommand* pv_data = nullptr;
-  const ArticoreMitCommand* mit_data = nullptr;
-  uint32_t command_count = 0;
-  bool mailbox_user_command = false;
-  uint64_t mailbox_generation = 0;
-  uint64_t trajectory_id = 0;
-  if (trajectory) {
-    trajectory_id = trajectory->id;
-    for (const auto& joint : trajectory->joints) {
-      const auto sample = sample_trajectory_joint(*trajectory, joint, now);
-      const auto& config = joint_config(joint.motor);
-      if (!finite(sample.position) || !finite(sample.velocity) ||
-          !finite(sample.acceleration) ||
-          sample.position < config.hard_lower_position ||
-          sample.position > config.hard_upper_position ||
-          std::abs(sample.velocity) > config.velocity_limit ||
-          std::abs(config.mit_feedforward_torque) > config.torque_limit) {
-        throw std::runtime_error(
-            "planned trajectory sample violates configured hard limits");
-      }
-      if (mode == ARTICORE_MODE_PV) {
-        pv.push_back(ArticorePosVelCommand{
-            joint.motor, sample.position, joint.velocity_limit});
-      } else {
-        mit.push_back(ArticoreMitCommand{
-            joint.motor, sample.position, sample.velocity, config.mit_kp,
-            config.mit_kd, config.mit_feedforward_torque});
-      }
+  if (!arm_mailbox_.valid) return true;
+  const bool mailbox_user_command = arm_mailbox_.user_command;
+  const uint64_t mailbox_generation = arm_mailbox_.generation;
+  if (arm_mailbox_.joint_position) {
+    const auto command_size = mode == ARTICORE_MODE_PV
+        ? arm_mailbox_.pv.size() : arm_mailbox_.mit.size();
+    if (command_size != arm_mailbox_.final_positions.size() ||
+        !finite(arm_mailbox_.max_reference_velocity) ||
+        arm_mailbox_.max_reference_velocity <= 0.0f) {
+      throw std::runtime_error(
+          "ordinary joint position state is internally inconsistent");
     }
+    const float max_delta = arm_mailbox_.max_reference_velocity /
+                            static_cast<float>(config_.control_hz);
     if (mode == ARTICORE_MODE_PV) {
-      pv_data = pv.data();
-      command_count = static_cast<uint32_t>(pv.size());
-    } else {
-      mit_data = mit.data();
-      command_count = static_cast<uint32_t>(mit.size());
-    }
-  } else {
-    if (!arm_mailbox_.valid) return true;
-    mailbox_user_command = arm_mailbox_.user_command;
-    mailbox_generation = arm_mailbox_.generation;
-    if (arm_mailbox_.joint_position) {
-      const auto command_size = mode == ARTICORE_MODE_PV
-          ? arm_mailbox_.pv.size() : arm_mailbox_.mit.size();
-      if (command_size != arm_mailbox_.final_positions.size() ||
-          !finite(arm_mailbox_.max_reference_velocity) ||
-          arm_mailbox_.max_reference_velocity <= 0.0f) {
-        throw std::runtime_error(
-            "ordinary joint position state is internally inconsistent");
+      for (std::size_t i = 0; i < arm_mailbox_.pv.size(); ++i) {
+        auto& command = arm_mailbox_.pv[i];
+        const float error_to_target =
+            arm_mailbox_.final_positions[i] - command.target_position;
+        command.target_position += std::clamp(
+            error_to_target, -max_delta, max_delta);
+        command.velocity_limit = arm_mailbox_.max_reference_velocity;
       }
-      const float max_delta = arm_mailbox_.max_reference_velocity /
-                              static_cast<float>(config_.control_hz);
-      if (mode == ARTICORE_MODE_PV) {
-        for (std::size_t i = 0; i < arm_mailbox_.pv.size(); ++i) {
-          auto& command = arm_mailbox_.pv[i];
-          const float error_to_target =
-              arm_mailbox_.final_positions[i] - command.target_position;
-          command.target_position += std::clamp(
-              error_to_target, -max_delta, max_delta);
-          command.velocity_limit = arm_mailbox_.max_reference_velocity;
-        }
-      } else {
-        for (std::size_t i = 0; i < arm_mailbox_.mit.size(); ++i) {
-          auto& command = arm_mailbox_.mit[i];
-          const float error_to_target =
-              arm_mailbox_.final_positions[i] - command.target_position;
-          command.target_position += std::clamp(
-              error_to_target, -max_delta, max_delta);
-          command.target_velocity = 0.0f;
-          command.feedforward_torque = 0.0f;
-        }
-      }
-    }
-    if (mode == ARTICORE_MODE_PV) {
-      pv_data = arm_mailbox_.pv.data();
-      command_count = static_cast<uint32_t>(arm_mailbox_.pv.size());
     } else {
-      mit_data = arm_mailbox_.mit.data();
-      command_count = static_cast<uint32_t>(arm_mailbox_.mit.size());
+      for (std::size_t i = 0; i < arm_mailbox_.mit.size(); ++i) {
+        auto& command = arm_mailbox_.mit[i];
+        const float error_to_target =
+            arm_mailbox_.final_positions[i] - command.target_position;
+        command.target_position += std::clamp(
+            error_to_target, -max_delta, max_delta);
+        command.target_velocity = 0.0f;
+        command.feedforward_torque = 0.0f;
+      }
     }
   }
+
+  const auto* pv_data = arm_mailbox_.pv.data();
+  const auto* mit_data = arm_mailbox_.mit.data();
+  const uint32_t command_count = mode == ARTICORE_MODE_PV
+      ? static_cast<uint32_t>(arm_mailbox_.pv.size())
+      : static_cast<uint32_t>(arm_mailbox_.mit.size());
 
   const int32_t result = mode == ARTICORE_MODE_PV
       ? api_.group_send_pos_vel(controller_group_, pv_data, command_count)
@@ -612,10 +527,6 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     ++consecutive_send_failures_;
     for (uint8_t side = 0; side < 2; ++side) {
       if (active_sides_[side]) set_side_error_locked(side, error, true);
-    }
-    if (trajectory_id != 0) {
-      finish_trajectory_locked(
-          trajectory_id, ARTICORE_TRAJECTORY_FAILED, error, now);
     }
     return false;
   }
@@ -634,33 +545,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     sides_[side].send_failures = 0;
     sides_[side].healthy = true;
   }
-  if (trajectory_id != 0) {
-    has_successful_command_ = true;
-    state_ = ARTICORE_RUNNING;
-    last_successful_command_ = now;
-    if (active_trajectory_ && active_trajectory_->id == trajectory_id) {
-      const auto progress = update_trajectory_progress_locked(
-          *active_trajectory_, now, error);
-      if (progress == TrajectoryProgress::Failed) {
-        finish_trajectory_locked(
-            trajectory_id, ARTICORE_TRAJECTORY_FAILED, error, now);
-        arm_mailbox_ = ArmMailbox{};
-        return false;
-      }
-      if (progress != TrajectoryProgress::Completed) return true;
-      arm_mailbox_.valid = true;
-      arm_mailbox_.user_command = false;
-      arm_mailbox_.trajectory_endpoint_hold = true;
-      arm_mailbox_.lifetime = ARTICORE_COMMAND_HOLD_UNTIL_REPLACED;
-      ++arm_mailbox_.generation;
-      arm_mailbox_.sent_generation = arm_mailbox_.generation;
-      arm_mailbox_.submitted_at = now;
-      arm_mailbox_.pv = std::move(pv);
-      arm_mailbox_.mit = std::move(mit);
-      finish_trajectory_locked(
-          trajectory_id, ARTICORE_TRAJECTORY_COMPLETED, "", now);
-    }
-  } else if (mailbox_user_command) {
+  if (mailbox_user_command) {
     has_successful_command_ = true;
     state_ = ARTICORE_RUNNING;
     if (mailbox_generation > arm_mailbox_.sent_generation) {

@@ -57,7 +57,6 @@ void SafetyRuntime::worker_loop() {
           !has_successful_command_) {
         grace_fault = true;
       } else if (state_ == ARTICORE_RUNNING && has_successful_command_ &&
-                 !active_trajectory_ &&
                  arm_mailbox_.user_command &&
                  arm_mailbox_.lifetime == ARTICORE_COMMAND_STREAMING &&
                  now - last_successful_command_ >=
@@ -154,14 +153,6 @@ void SafetyRuntime::worker_loop() {
           const bool threshold_reached =
               consecutive_feedback_failures_ >=
               config_.feedback_failure_threshold;
-          const bool trajectory_failed =
-              active_trajectory_.has_value() && (severe || threshold_reached);
-          if (trajectory_failed) {
-            cancel_active_trajectory_locked(
-                ARTICORE_TRAJECTORY_FAILED,
-                "trajectory feedback failure: " + error);
-            arm_mailbox_ = ArmMailbox{};
-          }
           if (state_ == ARTICORE_SAFE_HOLD || severe) {
             fault = true;
           } else if (state_ == ARTICORE_RUNNING &&

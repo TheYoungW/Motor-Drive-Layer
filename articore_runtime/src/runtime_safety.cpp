@@ -524,8 +524,6 @@ void SafetyRuntime::enter_fault(const std::string& reason, bool torque_off) {
     fault_reason_ = reason;
     if (!hold_error.empty()) fault_reason_ += "; protective hold: " + hold_error;
     arm_mailbox_ = ArmMailbox{};
-    cancel_active_trajectory_locked(
-        ARTICORE_TRAJECTORY_FAILED, reason);
     next_safe_hold_ = Clock::now();
     fault_hold_active_ = arm_hold_available || !safe_grippers_.empty();
     for (auto& motor : motors_) {

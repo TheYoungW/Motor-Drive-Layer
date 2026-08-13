@@ -7,29 +7,22 @@ SocketCAN, SocketCAN-FD, Damiao serial bridge, and optional DM_Device transports
 `libmotor_abi` is the generic motor layer; `libarticore_runtime` is the separately versioned
 product safety runtime consumed by Articore SDKs.
 Use `articore_runtime_abi_version()` and `articore_runtime_capabilities()` to inspect that product
-runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 1.13 adds the
-matching native `joint_pv_position` capability. Runtime ABI 1.12 adds the
-native `joint_mit_position` capability for one-shot, complete-arm MIT position targets with
-one shared rad/s reference speed while preserving raw MIT submission semantics. Runtime ABI 1.11 expands
+runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 2.0 exposes only
+PV and MIT arm control and removes the former trajectory ABI. The ordinary `joint_pv_position`
+and `joint_mit_position` capabilities accept one-shot, complete-arm position targets with one
+shared rad/s reference speed while preserving raw PV/MIT submission semantics. Runtime ABI 1.11 expands
 the calibrated gripper force selector to levels 1 through 10; level 5 is the compatibility
 default. Runtime ABI 1.10 adds atomic per-command gripper opening/speed/force profiles and
-symmetric bidirectional ramps.
-Runtime ABI 1.9 adds atomic
-smooth-replace-or-current-hold, structured trajectory start reports, layered hard/soft joint
-limits, and dynamic soft-limit braking. Runtime ABI 1.8 adds measured
-trajectory settling and sustained per-joint following-error supervision. Runtime ABI 1.7 adds opt-in
-velocity-continuous trajectory replacement and explicit atomic cancellation/current-position hold,
-while the legacy start entry point remains reject-if-busy. Runtime ABI 1.6 adds checked,
+symmetric bidirectional ramps. Runtime ABI 1.6 adds checked,
 deterministic disable/close with a ControllerGroup and USB/CAN feedback barrier, parallel CH0/CH1
 torque-off, one directed retry for only unconfirmed motors, and a structured disable report.
 Runtime ABI 1.5 adds explicit
 `STREAMING` and `HOLD_UNTIL_REPLACED` direct-command lifetimes so physical motion duration is not
 confused with caller update cadence. Runtime ABI 1.4 adds native
 atomic enable with parallel CH0/CH1 activation, immediate current-position hold, parallel feedback
-confirmation, and all-motor rollback. Runtime ABI 1.3 exposes the
-native latest-value joint mailbox and single active trajectory engine in addition to
-`current_position_hold`. Runtime ABI 1.5 also advertises `protective_fault_hold`: a transient
-feedback miss keeps the current output, while persistent loss stops trajectories and holds every
+confirmation, and all-motor rollback. Runtime ABI 1.3 introduced the native latest-value joint
+mailbox in addition to `current_position_hold`. Runtime ABI 1.5 also advertises
+`protective_fault_hold`: a transient feedback miss keeps the current output, while persistent loss holds every
 still-controllable motor/channel without automatically torque-disabling unrelated hardware.
 SDK bindings use `articore_runtime_create_ex()` and pass the motor enable callbacks explicitly;
 the two packaged native libraries remain independently loadable on Linux, Windows, and macOS.

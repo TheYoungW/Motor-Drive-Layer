@@ -13,11 +13,10 @@ The public runtime remains one `libarticore_runtime` library and one
 - `runtime_gripper.cpp`: gripper command mapping, contact/stall detection, hold, and overload retreat.
 - `runtime_joint_position.cpp`: ordinary PV/MIT position targets and constant-speed reference advancement.
 - `runtime_safety.cpp`: feedback/transport supervision, protective hold, fault policy, and health snapshots.
-- `runtime_trajectory.cpp`: single-slot trajectory lifecycle and time-parameterized profiles.
 - `runtime_worker.cpp`: persistent absolute-deadline scheduler and safety event dispatch.
 
 The split does not create additional shared libraries or independent state machines; it only gives
-the existing state owner smaller compilation units while preserving its ABI and lock ordering.
+the existing state owner smaller compilation units with a single lock order and one state owner.
 
 The runtime owns one persistent worker thread. Its arm loop uses `steady_clock` absolute deadlines
 at the configured control rate (500 Hz for Articore products), skips missed periods, and never
@@ -26,7 +25,7 @@ latest-value mailbox; if A, B, and C arrive before the next tick, only C is sent
 control path reads the mailbox storage directly without copying a command queue or allocating a
 per-tick snapshot, and keeps transmitting the latest valid target through `ControllerGroup`. Streaming
 commands must be refreshed by the caller and are covered by the native watchdog; explicit
-persistent setpoints and completed trajectory endpoints remain active until replaced. The worker
+persistent setpoints remain active until replaced. The worker
 independently performs command timeout handling,
 feedback and transport-health checks, safe-hold transmission, fault latching, protective fault
 hold, and explicit-disable confirmation while Python is blocked or has stopped running.
@@ -48,31 +47,13 @@ separate-library boundary and avoids a direct DLL/dylib dependency between the p
 `libmotor_abi`; the original `articore_runtime_create()` remains available for ABI 1.3 callers.
 
 Feedback health is deliberately separate from command validation. Runtime command limits apply to
-user targets and generated trajectory commands before transmission, but are not applied to measured
+user commands before transmission, but are not applied to measured
 position, velocity, or torque. Feedback monitoring checks finite values, freshness, transport
 health, motor status, and unexpected disable; mechanical feedback protection requires separately
 defined thresholds, tolerance, and persistence rather than reusing URDF command limits.
-Transient missing or stale feedback is counted but does not cancel an active trajectory until the
-configured consecutive-failure threshold is reached. Motor fault status, unexpected disable, and
+Transient missing or stale feedback is counted until the configured consecutive-failure threshold is reached. Motor fault status, unexpected disable, and
 transport disconnect remain immediate hard faults, but a hard fault does not automatically torque
 off unrelated healthy motors.
-
-Runtime ABI 1.3 added time-parameterized joint trajectories. The runtime stores exactly one active
-trajectory as start/goal/time/profile state and computes the current position and velocity at each
-control tick; it does not allocate a point FIFO. `MIN_JERK` uses the normalized quintic profile and
-accounts for its 1.875 peak-velocity factor when choosing duration; `LINEAR` is the only other
-profile. Exactly one trajectory may be active. Another trajectory or a direct joint command is
-rejected by the legacy start entry point until it completes; there is no trajectory waiting queue
-and ordinary direct commands cannot preempt it. Runtime ABI 1.7 adds an explicit opt-in smooth
-replacement entry point and explicit cancellation without changing that legacy behavior. Disable,
-emergency stop, close, communication failure, and other safety faults may still cancel or fail it.
-Terminal status remains queryable as `COMPLETED`, `PREEMPTED`, `FAILED`, or `CANCELED`, and the
-result history is bounded to 64 entries. Enabling always seeds the mailbox from complete fresh
-motor feedback, while disable, fault, recovery, and close clear both the old target and active
-trajectory.
-After a trajectory reaches `COMPLETED`, its exact endpoint remains an explicit internal trajectory
-hold and is transmitted at the normal control rate. The user-command watchdog does not time out
-this native hold.
 
 Runtime ABI 1.5 separates command update lifetime from physical motion duration. The legacy direct
 submission entry points remain `STREAMING`: callers must refresh them before `command_timeout_ms`.
@@ -81,7 +62,7 @@ The new `_ex` entry points accept either `ARTICORE_COMMAND_STREAMING` or
 move may take longer than the watchdog timeout while the native control thread keeps transmitting
 its latest setpoint. Real-time servo loops use `STREAMING`, so a stalled caller still enters
 `SAFE_HOLD`. Persistent MIT commands require zero target velocity and zero feedforward torque;
-time-parameterized MIT motion should use the native trajectory API.
+advanced dynamic MIT control should use the raw streaming interface.
 
 Runtime ABI 1.12 adds `articore_runtime_set_joint_mit()` for ordinary one-shot MIT position
 setting. One call supplies the complete active arm layout, final joint positions, and one shared
@@ -90,7 +71,7 @@ requires complete fresh enabled feedback and initializes every `current_target` 
 position. At each native control tick it advances each reference by at most
 `max_reference_velocity / control_hz`, transmits `dq=0` and `tau=0`, and uses the product-configured
 MIT Kp/Kd. Different travel distances may finish at different times; this interface deliberately
-does not create a trajectory or synchronized-arrival task.
+does not synchronize different joint arrival times.
 
 The ordinary MIT target is a capacity-one latest-value mailbox. A new complete dual-arm command
 atomically discards the previous `final_target` and shared velocity while preserving the currently
@@ -128,50 +109,11 @@ per-channel/per-motor status, missing IDs, barrier status, and whether the one-s
 Legacy `articore_runtime_free()` remains a void best-effort destructor for ABI compatibility;
 bindings must call checked `articore_runtime_close()` first.
 
-Runtime ABI 1.7 adds non-blocking trajectory management while retaining a single fixed-size task
-slot. `articore_runtime_start_joint_trajectory_ex(..., SMOOTH_REPLACE)` atomically samples the
-active minimum-jerk trajectory at one `steady_clock` instant and builds the replacement from that
-position and velocity; no old trajectory frame can be sent after the replacement call returns.
-The replaced ID becomes `PREEMPTED`. Invalid replacements leave the active task untouched, and
-`LINEAR` replacement is rejected because it cannot preserve boundary velocity. The replacement
-duration is checked against every configured position and velocity limit before installation.
-`articore_runtime_cancel_trajectory(id)` atomically terminates the full dual-arm task as
-`CANCELED` and installs a current-position, zero-velocity, zero-feedforward internal hold; fresh
-feedback is preferred, with the last successfully sent target as a bounded fallback. The hold is
-sent on the normal control loop and does not trigger the user-command watchdog. There is still no
-FIFO, no background task accumulation, and no partial per-arm cancellation.
-
-Runtime ABI 1.8 separates trajectory reference generation from measured completion. During
-`PROFILE`, each control tick compares every joint's actual position with its current reference;
-following error must remain above the configured limit for the configured persistence time before
-the trajectory fails, so one noisy sample is not treated as a fault. When profile time expires,
-the Runtime enters `SETTLING` and keeps sending the exact final reference with zero target velocity.
-It reports `COMPLETED` only after every joint's measured position and velocity remain within their
-dedicated trajectory tolerances for the complete stable-time window. Leaving tolerance resets that
-window. Failure to converge before the settling timeout returns `FAILED` with channel, motor name,
-CAN ID, measured errors, and thresholds. These trajectory execution tolerances are independent of
-URDF command limits and can be configured before connect with
-`articore_runtime_configure_trajectory_execution()`.
-
-Runtime ABI 1.9 adds `ARTICORE_TRAJECTORY_SMOOTH_REPLACE_OR_HOLD` and the structured
-`articore_runtime_start_joint_trajectory_report()` entry point. A feasible minimum-jerk
-replacement preserves the old reference position, velocity, and acceleration. If replacement
-cannot satisfy a position, velocity, or boundary constraint, the Runtime holds the control-path
-lock, cancels the old trajectory, captures complete fresh enabled feedback for every arm joint,
-synchronously transmits a full dual-arm current-position hold, and installs that hold as the
-persistent mailbox value. The call returns
-`ARTICORE_TRAJECTORY_START_REPLACEMENT_REJECTED_HELD`; this is a successful safety outcome, not a
-global Runtime fault. MIT fallback holds use zero velocity and feedforward torque with product
-safety Kp/Kd. DM POS_VEL has no signed target-velocity field, so PV uses a stationary position
-reference with the configured low safe velocity limit. Missing/stale feedback, a hard-limit
-feedback violation, or failure to transmit the fallback hold returns `FAULTED` and latches FAULT.
-
 The additive `articore_runtime_configure_joint_safety_limits()` call keeps the original joint
 configuration ABI stable while separating mechanical hard limits from normal-operation soft
 limits. Feedback may be outside a soft limit while still inside the hard limits: stationary hold
-and trajectories directed back into the safe region remain legal, but outward motion does not.
-Within each soft-limit braking zone, outward trajectory speed is constrained both by the zone and
-by `v <= sqrt(2 * braking_acceleration * distance_to_soft_limit)`. Only fresh feedback beyond a
+and ordinary position commands directed back into the safe region remain legal, but outward motion does not.
+Ordinary PV/MIT targets remain bounded by the configured hard and soft position limits. Only fresh feedback beyond a
 configured hard limit is treated as a hard-limit safety fault; ordinary feedback values are not
 compared with command velocity or torque limits.
 
@@ -221,7 +163,7 @@ gripper control.
 Operational faults use protective fault hold rather than linked torque-off. One missing feedback
 sample only increments the failure counters: arms continue their current 500 Hz output and a
 gripper retransmits its last successful safe output. At the configured consecutive-failure
-threshold, active trajectories stop and both arms enter protection. The runtime captures a fresh
+threshold, both arms enter protection. The runtime captures a fresh
 current position where feedback remains usable, falls back to the last successfully transmitted
 position for a motor whose feedback is missing, and excludes a motor that is confirmed disabled or
 faulted. A gripper with missing feedback keeps its last safe low-gain target; a confirmed gripper

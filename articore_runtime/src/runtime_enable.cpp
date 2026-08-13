@@ -260,8 +260,6 @@ void SafetyRuntime::initialize_enabled_state(ArticoreControlMode mode) {
   safe_pv_.clear();
   safe_mit_.clear();
   safe_grippers_.clear();
-  cancel_active_trajectory_locked(ARTICORE_TRAJECTORY_CANCELED,
-                                  "runtime re-enabled");
   for (auto& motor : motors_) {
     motor.retreat_active = false;
     motor.protective_target_active = false;
@@ -428,8 +426,6 @@ void SafetyRuntime::enable(ArticoreControlMode mode) {
       disable_confirmed_ = false;
       fault_reason_ = "runtime enable failed: " + enable_error;
       arm_mailbox_ = ArmMailbox{};
-      cancel_active_trajectory_locked(
-          ARTICORE_TRAJECTORY_FAILED, fault_reason_);
     }
     update_enable_report(false, false, missing_motors, enable_error);
     std::string disable_error;
@@ -753,10 +749,6 @@ void SafetyRuntime::disable() {
     last_sent_mit_.clear();
     fault_hold_active_ = false;
     arm_mailbox_ = ArmMailbox{};
-    cancel_active_trajectory_locked(
-        confirmed ? ARTICORE_TRAJECTORY_CANCELED
-                  : ARTICORE_TRAJECTORY_FAILED,
-        confirmed ? "runtime disabled" : "disable confirmation failed");
     has_successful_command_ = false;
     gripper_command_generation_ = 0;
     gripper_sent_generation_ = 0;
@@ -836,8 +828,6 @@ void SafetyRuntime::recover() {
   last_sent_mit_.clear();
   fault_hold_active_ = false;
   arm_mailbox_ = ArmMailbox{};
-  cancel_active_trajectory_locked(
-      ARTICORE_TRAJECTORY_CANCELED, "runtime recovered");
   has_successful_command_ = false;
   gripper_command_generation_ = 0;
   gripper_sent_generation_ = 0;

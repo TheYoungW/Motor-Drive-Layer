@@ -29,11 +29,9 @@ enum ArticoreRuntimeCapability {
   ARTICORE_CAP_CURRENT_POSITION_HOLD = 1ULL << 6,
   ARTICORE_CAP_MOTOR_PRESENCE = 1ULL << 7,
   ARTICORE_CAP_REALTIME_JOINT_MAILBOX = 1ULL << 8,
-  ARTICORE_CAP_JOINT_TRAJECTORY = 1ULL << 9,
   ARTICORE_CAP_ATOMIC_ENABLE = 1ULL << 10,
   ARTICORE_CAP_COMMAND_LIFETIME = 1ULL << 11,
-  ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY = 1ULL << 12,
-  // Operational faults latch FAULT and stop trajectories, but keep sending
+  // Operational faults latch FAULT, but keep sending
   // protective holds to motors/channels that remain controllable. Only an
   // explicit disable or product estop policy requests torque-off.
   ARTICORE_CAP_PROTECTIVE_FAULT_HOLD = 1ULL << 13,
@@ -41,15 +39,6 @@ enum ArticoreRuntimeCapability {
   // control traffic, disables active channels in parallel, confirms fresh
   // disabled feedback, and retries only unconfirmed motors once.
   ARTICORE_CAP_DETERMINISTIC_DISABLE = 1ULL << 14,
-  // ABI 1.7 adds explicit cancellation and opt-in velocity-continuous
-  // replacement while preserving the legacy reject-if-busy entry point.
-  ARTICORE_CAP_TRAJECTORY_MANAGEMENT = 1ULL << 15,
-  // ABI 1.8 separates reference generation from measured convergence and
-  // monitors sustained per-joint following error during trajectory execution.
-  ARTICORE_CAP_TRAJECTORY_SETTLING = 1ULL << 16,
-  // ABI 1.9 adds an atomic replacement policy that installs and transmits a
-  // fresh current-position hold when smooth replacement is not safe.
-  ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD = 1ULL << 17,
   // Mechanical hard limits and normal-operation soft limits are configured
   // independently, including per-joint dynamic braking constraints.
   ARTICORE_CAP_LAYERED_JOINT_LIMITS = 1ULL << 18,
@@ -97,38 +86,11 @@ enum ArticoreControlMode {
 };
 
 // A persistent setpoint is retransmitted at the control rate until another
-// command, trajectory, disable, or fault replaces it. A streaming command
+// command, disable, or fault replaces it. A streaming command
 // must be refreshed before command_timeout_ms expires.
 enum ArticoreCommandLifetime {
   ARTICORE_COMMAND_STREAMING = 1,
   ARTICORE_COMMAND_HOLD_UNTIL_REPLACED = 2,
-};
-
-enum ArticoreTrajectoryProfile {
-  ARTICORE_TRAJECTORY_MIN_JERK = 1,
-  ARTICORE_TRAJECTORY_LINEAR = 2,
-};
-
-enum ArticoreTrajectoryStatus {
-  ARTICORE_TRAJECTORY_RUNNING = 1,
-  ARTICORE_TRAJECTORY_COMPLETED = 2,
-  ARTICORE_TRAJECTORY_PREEMPTED = 3,
-  ARTICORE_TRAJECTORY_FAILED = 4,
-  ARTICORE_TRAJECTORY_CANCELED = 5,
-};
-
-enum ArticoreTrajectoryReplacePolicy {
-  ARTICORE_TRAJECTORY_REJECT_IF_BUSY = 0,
-  ARTICORE_TRAJECTORY_SMOOTH_REPLACE = 1,
-  ARTICORE_TRAJECTORY_SMOOTH_REPLACE_OR_HOLD = 2,
-};
-
-enum ArticoreTrajectoryStartOutcome {
-  ARTICORE_TRAJECTORY_START_STARTED = 1,
-  ARTICORE_TRAJECTORY_START_REPLACED = 2,
-  ARTICORE_TRAJECTORY_START_REPLACEMENT_REJECTED_HELD = 3,
-  ARTICORE_TRAJECTORY_START_REJECTED = 4,
-  ARTICORE_TRAJECTORY_START_FAULTED = 5,
 };
 
 enum ArticoreGripperControlState {
@@ -248,55 +210,6 @@ typedef struct ArticoreJointSafetyLimits {
   // Positive magnitude used by d_stop = velocity^2 / (2 * acceleration).
   float braking_acceleration;
 } ArticoreJointSafetyLimits;
-
-typedef struct ArticoreJointTrajectoryTarget {
-  void* motor;
-  float target_position;
-  float velocity_limit;
-} ArticoreJointTrajectoryTarget;
-
-typedef struct ArticoreTrajectoryExecutionConfig {
-  // Caller initializes this to sizeof(ArticoreTrajectoryExecutionConfig).
-  uint32_t struct_size;
-  float position_tolerance;
-  float velocity_tolerance;
-  float following_error_limit;
-  uint32_t settling_stable_ms;
-  uint32_t settling_timeout_ms;
-  uint32_t following_error_timeout_ms;
-} ArticoreTrajectoryExecutionConfig;
-
-typedef struct ArticoreTrajectoryInfo {
-  uint32_t struct_size;
-  uint64_t trajectory_id;
-  int32_t status;
-  int32_t profile;
-  uint64_t duration_ns;
-  uint64_t elapsed_ns;
-  char error[256];
-} ArticoreTrajectoryInfo;
-
-typedef struct ArticoreTrajectoryStartReport {
-  // Caller initializes this to sizeof(ArticoreTrajectoryStartReport).
-  uint32_t struct_size;
-  int32_t outcome;
-  uint64_t old_trajectory_id;
-  uint64_t new_trajectory_id;
-  int32_t hold_installed;
-  uint8_t limiting_channel;
-  uint8_t limiting_can_id;
-  uint8_t feedback_fresh;
-  uint8_t reserved;
-  char limiting_joint[64];
-  char reason[256];
-  float position;
-  float velocity;
-  float acceleration;
-  float soft_lower;
-  float soft_upper;
-  float hard_lower;
-  float hard_upper;
-} ArticoreTrajectoryStartReport;
 
 typedef struct ArticoreMotorState {
   int32_t has_value;
@@ -567,12 +480,6 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joint_safety_limits(
     ArticoreRuntime* runtime,
     const ArticoreJointSafetyLimits* limits,
     uint32_t limit_count);
-// Optional ABI 1.8 trajectory execution policy. It must be configured before
-// connect. If omitted, conservative native defaults are used. The following
-// error limit is checked independently for every arm joint.
-ARTICORE_RUNTIME_API int32_t articore_runtime_configure_trajectory_execution(
-    ArticoreRuntime* runtime,
-    const ArticoreTrajectoryExecutionConfig* config);
 // Direct arm commands are validated and atomically overwrite a capacity-one
 // mailbox. Success means accepted; the persistent control thread transmits the
 // latest accepted value on the next control tick. These ABI 1.0 entry points
@@ -644,51 +551,6 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_gripper_commands(
     ArticoreRuntime* runtime,
     const ArticoreGripperCommand* commands,
     uint32_t command_count);
-// Starts one time-parameterized trajectory. Exactly one trajectory may be
-// active: another trajectory or a direct submit_pos_vel/submit_mit command is
-// rejected until it completes. Disable, estop, close, and safety faults may
-// still cancel/fail it. Returns 0 on failure and sets
-// articore_runtime_last_error().
-ARTICORE_RUNTIME_API uint64_t articore_runtime_start_joint_trajectory(
-    ArticoreRuntime* runtime,
-    const ArticoreJointTrajectoryTarget* targets,
-    uint32_t target_count,
-    int32_t profile);
-// ABI 1.7 opt-in trajectory replacement. SMOOTH_REPLACE atomically marks the
-// old trajectory PREEMPTED and starts the new minimum-jerk polynomial from the
-// old trajectory's position, velocity, and acceleration at one steady-clock
-// instant. The legacy entry point above is equivalent to REJECT_IF_BUSY.
-ARTICORE_RUNTIME_API uint64_t articore_runtime_start_joint_trajectory_ex(
-    ArticoreRuntime* runtime,
-    const ArticoreJointTrajectoryTarget* targets,
-    uint32_t target_count,
-    int32_t profile,
-    int32_t replace_policy);
-// ABI 1.9 structured trajectory start/replacement. A return value of zero
-// means the report is valid, including the non-exceptional
-// REPLACEMENT_REJECTED_HELD outcome. Negative return values are reserved for
-// invalid ABI arguments or an unexpected Runtime exception.
-ARTICORE_RUNTIME_API int32_t articore_runtime_start_joint_trajectory_report(
-    ArticoreRuntime* runtime,
-    const ArticoreJointTrajectoryTarget* targets,
-    uint32_t target_count,
-    int32_t profile,
-    int32_t replace_policy,
-    ArticoreTrajectoryStartReport* report);
-ARTICORE_RUNTIME_API int32_t articore_runtime_get_trajectory(
-    ArticoreRuntime* runtime,
-    uint64_t trajectory_id,
-    ArticoreTrajectoryInfo* info);
-ARTICORE_RUNTIME_API int32_t articore_runtime_wait_trajectory(
-    ArticoreRuntime* runtime,
-    uint64_t trajectory_id,
-    uint32_t timeout_ms,
-    ArticoreTrajectoryInfo* info);
-// Cancels exactly the active trajectory with this ID. The complete arm layout
-// atomically enters a current-position internal hold; no partial-side cancel
-// is possible. The trajectory becomes CANCELED and remains queryable.
-ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_trajectory(
-    ArticoreRuntime* runtime, uint64_t trajectory_id);
 ARTICORE_RUNTIME_API int32_t articore_runtime_report_feedback_failure(
     ArticoreRuntime* runtime, uint8_t side, const char* reason);
 // Valid in every connected state, including latched FAULT. A successful call

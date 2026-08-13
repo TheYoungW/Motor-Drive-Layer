@@ -225,8 +225,6 @@ void SafetyRuntime::stop_worker() {
     stopping_ = true;
     arm_mailbox_ = ArmMailbox{};
     fault_hold_active_ = false;
-    cancel_active_trajectory_locked(
-        ARTICORE_TRAJECTORY_CANCELED, "runtime closed");
   }
   wakeup_.notify_all();
   if (worker_.joinable()) worker_.join();

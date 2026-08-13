@@ -400,24 +400,6 @@ std::vector<ArticoreJointSafetyLimits> layered_joint_limits(
   return values;
 }
 
-ArticoreTrajectoryExecutionConfig trajectory_execution_config(
-    float position_tolerance = 0.01f,
-    float velocity_tolerance = 0.02f,
-    float following_error_limit = 0.5f,
-    uint32_t settling_stable_ms = 30,
-    uint32_t settling_timeout_ms = 300,
-    uint32_t following_error_timeout_ms = 30) {
-  return ArticoreTrajectoryExecutionConfig{
-      sizeof(ArticoreTrajectoryExecutionConfig),
-      position_tolerance,
-      velocity_tolerance,
-      following_error_limit,
-      settling_stable_ms,
-      settling_timeout_ms,
-      following_error_timeout_ms,
-  };
-}
-
 template <typename Predicate>
 bool wait_for(Predicate predicate, std::chrono::milliseconds timeout = 300ms) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -1168,7 +1150,7 @@ void test_feedback_measurements_do_not_reuse_command_limits() {
           "the same out-of-limit value is still rejected as a user command");
 }
 
-void test_feedback_seed_and_trajectory_start_ignore_command_limits() {
+void test_feedback_seed_ignores_command_limits() {
   FakeDriver driver;
   driver.emulate_arm_feedback = true;
   g_driver = &driver;
@@ -1190,20 +1172,6 @@ void test_feedback_seed_and_trajectory_start_ignore_command_limits() {
   runtime.enable(ARTICORE_MODE_PV);
   require(runtime.health().state == ARTICORE_ENABLED,
           "feedback-seeded current-position hold does not apply command limits");
-
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    driver.motors[motors[0].motor].position = 0.25f;
-    driver.motors[motors[0].motor].velocity = 5.1f;
-    driver.motors[motors[0].motor].torque = 10.1f;
-  }
-  ArticoreJointTrajectoryTarget targets[] = {
-      {motors[0].motor, 0.3f, 1.0f}, {motors[1].motor, 0.9f, 1.0f}};
-  const auto id = runtime.start_joint_trajectory(
-      targets, 2, ARTICORE_TRAJECTORY_MIN_JERK);
-  const auto completed = runtime.wait_trajectory(id, 500ms);
-  require(completed.status == ARTICORE_TRAJECTORY_COMPLETED,
-          "trajectory accepts finite fresh start feedback outside command velocity and torque limits");
 }
 
 void test_feedback_fault_diagnostics_include_identity_value_and_threshold() {
@@ -1239,7 +1207,7 @@ void test_feedback_fault_diagnostics_include_identity_value_and_threshold() {
           "feedback fault identifies channel, motor, CAN ID, actual value, and threshold");
 }
 
-void test_single_stale_feedback_sample_does_not_cancel_trajectory() {
+void test_single_stale_feedback_sample_keeps_persistent_position_control() {
   FakeDriver driver;
   driver.emulate_arm_feedback = true;
   g_driver = &driver;
@@ -1255,10 +1223,10 @@ void test_single_stale_feedback_sample_does_not_cancel_trajectory() {
                            static_cast<uint32_t>(configured.size()));
   runtime.connect();
   runtime.enable(ARTICORE_MODE_MIT);
-  ArticoreJointTrajectoryTarget targets[] = {
-      {motors[0].motor, 0.05f, 0.5f}, {motors[1].motor, 0.95f, 0.5f}};
-  const auto id = runtime.start_joint_trajectory(
-      targets, 2, ARTICORE_TRAJECTORY_MIN_JERK);
+  ArticoreJointMitTarget targets[] = {
+      {sizeof(ArticoreJointMitTarget), motors[0].motor, 0.05f},
+      {sizeof(ArticoreJointMitTarget), motors[1].motor, 0.95f}};
+  runtime.set_joint_mit(targets, 2, 0.5f);
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     driver.motors[motors[2].motor].age_ns = 201'000'000ULL;
@@ -1267,17 +1235,67 @@ void test_single_stale_feedback_sample_does_not_cancel_trajectory() {
             return runtime.health().consecutive_feedback_failures == 1;
           }, 200ms),
           "one stale feedback-health sample is counted");
-  require(runtime.trajectory_info(id).status == ARTICORE_TRAJECTORY_RUNNING,
-          "one stale sample does not cancel an active trajectory");
+  require(runtime.health().state == ARTICORE_RUNNING,
+          "one stale sample keeps persistent position control running");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     driver.motors[motors[2].motor].age_ns = 0;
   }
-  const auto completed = runtime.wait_trajectory(id, 500ms);
-  require(completed.status == ARTICORE_TRAJECTORY_COMPLETED &&
-              runtime.health().state == ARTICORE_RUNNING &&
-              runtime.health().consecutive_feedback_failures == 0,
-          "fresh feedback clears the transient failure and trajectory completes");
+  require(wait_for([&] {
+            return runtime.health().state == ARTICORE_RUNNING &&
+                   runtime.health().consecutive_feedback_failures == 0;
+          }, 200ms),
+          "fresh feedback clears the transient failure without interrupting control");
+}
+
+void test_ordinary_position_can_recover_inward_from_soft_limit() {
+  FakeDriver driver;
+  driver.emulate_arm_feedback = true;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100),
+      g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  const auto layered = layered_joint_limits(motors);
+  runtime.configure_joint_safety_limits(
+      layered.data(), static_cast<uint32_t>(layered.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].position = 1.6f;
+    driver.motors[motors[0].motor].velocity = 0.0f;
+  }
+
+  ArticoreJointMitTarget inward[] = {
+      {sizeof(ArticoreJointMitTarget), motors[0].motor, 1.0f},
+      {sizeof(ArticoreJointMitTarget), motors[1].motor, 0.0f},
+  };
+  runtime.set_joint_mit(inward, 2, 0.5f);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.motors[motors[0].motor].position < 1.5f;
+          }, 500ms),
+          "ordinary MIT may move inward from outside a soft limit");
+  require(runtime.health().state == ARTICORE_RUNNING,
+          "inward soft-limit recovery does not fault the runtime");
+
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.emulate_arm_feedback = false;
+    driver.motors[motors[0].motor].position = 2.1f;
+  }
+  require(wait_for([&] {
+            const auto health = runtime.health();
+            return health.state == ARTICORE_FAULT &&
+                   health.fault_reason[0] != '\0';
+          }, 300ms),
+          "fresh feedback beyond the hard limit still enters FAULT");
 }
 
 void test_disable_does_not_stop_after_one_side_fails() {
@@ -2015,842 +2033,6 @@ void test_latest_value_mailbox_stays_bounded_under_fast_producer() {
           "fast producer values are coalesced into one slot and no stale target reappears");
 }
 
-void test_min_jerk_trajectory_rejects_ordinary_preemption() {
-  FakeDriver driver;
-  driver.emulate_arm_feedback = true;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 500;
-  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
-                                  g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_MIT);
-
-  ArticoreJointTrajectoryTarget target[] = {
-      {motors[0].motor, 0.1f, 5.0f}, {motors[1].motor, 0.9f, 5.0f}};
-  const auto trajectory_id = runtime.start_joint_trajectory(
-      target, 2, ARTICORE_TRAJECTORY_MIN_JERK);
-  const auto completed = runtime.wait_trajectory(trajectory_id, 500ms);
-  require(completed.status == ARTICORE_TRAJECTORY_COMPLETED &&
-              completed.duration_ns >= 37'000'000ULL,
-          "minimum-jerk trajectory completes with velocity-derived duration");
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    require(!driver.arm_mit_history.empty(), "trajectory emits MIT frames");
-    for (const auto& frame : driver.arm_mit_history) {
-      for (const auto& command : frame) {
-        require(std::abs(command.target_velocity) <= 5.0001f,
-                "minimum-jerk interpolation respects velocity limits");
-      }
-    }
-    const auto& endpoint = driver.arm_mit_history.back();
-    require(std::abs(endpoint[0].target_position - 0.1f) < 1e-6f &&
-                std::abs(endpoint[1].target_position - 0.9f) < 1e-6f &&
-                endpoint[0].target_velocity == 0.0f &&
-                endpoint[1].target_velocity == 0.0f,
-            "minimum-jerk endpoint is exact and has zero velocity");
-  }
-
-  ArticoreJointTrajectoryTarget long_target[] = {
-      {motors[0].motor, 0.3f, 1.0f}, {motors[1].motor, 0.7f, 1.0f}};
-  const auto protected_id = runtime.start_joint_trajectory(
-      long_target, 2, ARTICORE_TRAJECTORY_LINEAR);
-  std::this_thread::sleep_for(8ms);
-
-  ArticoreJointTrajectoryTarget queued_target[] = {
-      {motors[0].motor, 0.4f, 1.0f}, {motors[1].motor, 0.6f, 1.0f}};
-  bool second_trajectory_rejected = false;
-  try {
-    runtime.start_joint_trajectory(
-        queued_target, 2, ARTICORE_TRAJECTORY_MIN_JERK);
-  } catch (const std::runtime_error& error) {
-    second_trajectory_rejected =
-        std::string(error.what()).find("already active") != std::string::npos;
-  }
-  require(second_trajectory_rejected,
-          "a second trajectory is rejected instead of queued or preempting");
-
-  ArticoreMitCommand direct[] = {
-      {motors[0].motor, -0.25f, 0.0f, 20.0f, 3.0f, 0.0f},
-      {motors[1].motor, 0.25f, 0.0f, 20.0f, 3.0f, 0.0f},
-  };
-  bool direct_rejected = false;
-  try {
-    runtime.submit_mit(direct, 2);
-  } catch (const std::runtime_error& error) {
-    direct_rejected =
-        std::string(error.what()).find("trajectory is active") !=
-        std::string::npos;
-  }
-  require(direct_rejected,
-          "a direct command is rejected while the trajectory is active");
-  require(runtime.trajectory_info(protected_id).status ==
-              ARTICORE_TRAJECTORY_RUNNING,
-          "rejected ordinary commands leave the original trajectory running");
-
-  const auto protected_result = runtime.wait_trajectory(protected_id, 1s);
-  require(protected_result.status == ARTICORE_TRAJECTORY_COMPLETED,
-          "the original trajectory reaches its endpoint normally");
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    const auto& endpoint = driver.arm_mit_history.back();
-    require(std::abs(endpoint[0].target_position - 0.3f) < 1e-6f &&
-                std::abs(endpoint[1].target_position - 0.7f) < 1e-6f,
-            "no rejected trajectory or direct-command frame is transmitted");
-  }
-
-  const auto sequential_id = runtime.start_joint_trajectory(
-      queued_target, 2, ARTICORE_TRAJECTORY_MIN_JERK);
-  require(runtime.wait_trajectory(sequential_id, 1s).status ==
-              ARTICORE_TRAJECTORY_COMPLETED,
-          "trajectory B is accepted only after trajectory A completes");
-}
-
-void test_trajectory_profile_end_waits_for_measured_settling() {
-  FakeDriver driver;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 500;
-  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
-                                  g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  // Keep a generous gap between the observation sleeps and the stable window.
-  // Hosted macOS x86 runners can deschedule this test thread for more than the
-  // old 30 ms window, which made a wall-clock assertion spuriously fail even
-  // though the runtime correctly measured continuous settling time.
-  const auto execution = trajectory_execution_config(
-      0.01f, 0.02f, 0.5f, 200, 1000, 30);
-  runtime.configure_trajectory_execution(execution);
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_MIT);
-
-  ArticoreJointTrajectoryTarget targets[] = {
-      {motors[0].motor, 0.1f, 5.0f}, {motors[1].motor, 0.9f, 5.0f}};
-  const auto id = runtime.start_joint_trajectory(
-      targets, 2, ARTICORE_TRAJECTORY_MIN_JERK);
-  std::this_thread::sleep_for(80ms);
-  require(runtime.trajectory_info(id).status == ARTICORE_TRAJECTORY_RUNNING,
-          "profile time ending does not report COMPLETED before actual settling");
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    const auto& reference = driver.arm_mit_history.back();
-    require(std::abs(reference[0].target_position - 0.1f) < 1e-6f &&
-                std::abs(reference[1].target_position - 0.9f) < 1e-6f &&
-                reference[0].target_velocity == 0.0f &&
-                reference[1].target_velocity == 0.0f,
-            "SETTLING continuously sends the exact final reference");
-    driver.motors[motors[0].motor].position = 0.1f;
-    driver.motors[motors[1].motor].position = 0.9f;
-    driver.motors[motors[0].motor].velocity = 0.01f;
-    driver.motors[motors[1].motor].velocity = -0.01f;
-  }
-  std::this_thread::sleep_for(10ms);
-  require(runtime.trajectory_info(id).status == ARTICORE_TRAJECTORY_RUNNING,
-          "one in-tolerance sample does not satisfy the stable-time requirement");
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    driver.motors[motors[0].motor].position = 0.13f;
-  }
-  std::this_thread::sleep_for(10ms);
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    driver.motors[motors[0].motor].position = 0.1f;
-  }
-  std::this_thread::sleep_for(15ms);
-  require(runtime.trajectory_info(id).status == ARTICORE_TRAJECTORY_RUNNING,
-          "an out-of-tolerance sample resets the continuous stable timer");
-  const auto completed = runtime.wait_trajectory(id, 500ms);
-  require(completed.status == ARTICORE_TRAJECTORY_COMPLETED,
-          "all joints complete only after position and velocity remain stable");
-}
-
-void test_trajectory_settling_timeout_reports_worst_joint() {
-  FakeDriver driver;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 500;
-  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
-                                  g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  const auto execution = trajectory_execution_config(
-      0.01f, 0.02f, 5.0f, 10, 60, 20);
-  runtime.configure_trajectory_execution(execution);
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_PV);
-
-  ArticoreJointTrajectoryTarget targets[] = {
-      {motors[0].motor, 0.1f, 5.0f}, {motors[1].motor, 0.9f, 5.0f}};
-  const auto id = runtime.start_joint_trajectory(
-      targets, 2, ARTICORE_TRAJECTORY_MIN_JERK);
-  const auto failed = runtime.wait_trajectory(id, 300ms);
-  const std::string error(failed.error);
-  require(failed.status == ARTICORE_TRAJECTORY_FAILED &&
-              error.find("settling timeout") != std::string::npos &&
-              error.find("channel=CH") != std::string::npos &&
-              error.find("position_error=") != std::string::npos &&
-              error.find("velocity_tolerance=") != std::string::npos,
-          "settling timeout fails with structured worst-joint diagnostics");
-}
-
-void test_trajectory_sustained_per_joint_following_error_fails_early() {
-  FakeDriver driver;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 500;
-  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
-                                  g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  const auto execution = trajectory_execution_config(
-      0.01f, 0.02f, 0.03f, 10, 500, 20);
-  runtime.configure_trajectory_execution(execution);
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_MIT);
-
-  // Only left/joint1 moves. Its fake feedback remains at zero, so the test
-  // proves that following error is tracked per motor rather than as an arm
-  // average that the stationary right joint could dilute.
-  ArticoreJointTrajectoryTarget targets[] = {
-      {motors[0].motor, 1.0f, 5.0f}, {motors[1].motor, 1.0f, 5.0f}};
-  const auto id = runtime.start_joint_trajectory(
-      targets, 2, ARTICORE_TRAJECTORY_LINEAR);
-  const auto failed = runtime.wait_trajectory(id, 300ms);
-  const std::string error(failed.error);
-  require(failed.status == ARTICORE_TRAJECTORY_FAILED &&
-              error.find("trajectory following error") != std::string::npos &&
-              error.find("channel=CH0") != std::string::npos &&
-              error.find("motor=left/joint1") != std::string::npos &&
-              error.find("limit=0.03") != std::string::npos,
-          "sustained following error stops the profile with per-joint identity");
-}
-
-void test_min_jerk_trajectory_supports_smooth_atomic_replacement() {
-  FakeDriver driver;
-  driver.emulate_arm_feedback = true;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 500;
-  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
-                                  g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_MIT);
-
-  ArticoreJointTrajectoryTarget first[] = {
-      {motors[0].motor, 1.5f, 2.0f}, {motors[1].motor, -0.5f, 2.0f}};
-  const auto first_id = runtime.start_joint_trajectory(
-      first, 2, ARTICORE_TRAJECTORY_MIN_JERK);
-  require(wait_for([&] {
-            std::lock_guard<std::mutex> lock(driver.mutex);
-            return !driver.arm_mit_history.empty() &&
-                   std::abs(driver.arm_mit_history.back()[0].target_velocity) >
-                       1.7f;
-          }, 1s),
-          "first trajectory reaches a high-speed interpolation sample");
-
-  std::vector<ArticoreMitCommand> last_old_frame;
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    last_old_frame = driver.arm_mit_history.back();
-  }
-  require(std::abs(last_old_frame[0].target_velocity) > 1.7f,
-          "replacement test samples the old trajectory while moving");
-
-  ArticoreJointTrajectoryTarget second[] = {
-      {motors[0].motor, -0.5f, 2.0f}, {motors[1].motor, 1.5f, 2.0f}};
-  const auto second_id = runtime.start_joint_trajectory_ex(
-      second, 2, ARTICORE_TRAJECTORY_MIN_JERK,
-      ARTICORE_TRAJECTORY_SMOOTH_REPLACE);
-  const auto first_result = runtime.trajectory_info(first_id);
-  require(first_result.status == ARTICORE_TRAJECTORY_PREEMPTED,
-          "smooth replacement marks the old trajectory PREEMPTED");
-  require(runtime.trajectory_info(second_id).status ==
-              ARTICORE_TRAJECTORY_RUNNING,
-          "replacement installs one new active trajectory");
-
-  std::size_t replacement_baseline = 0;
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    replacement_baseline = driver.arm_mit_history.size();
-  }
-  require(wait_for([&] {
-            std::lock_guard<std::mutex> lock(driver.mutex);
-            return driver.arm_mit_history.size() > replacement_baseline;
-          }, 100ms),
-          "replacement is transmitted within one control period");
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    const auto& first_new_frame = driver.arm_mit_history[replacement_baseline];
-    require(first_new_frame.size() == last_old_frame.size(),
-            "replacement preserves the fixed dual-arm motor set");
-    for (std::size_t index = 0; index < first_new_frame.size(); ++index) {
-      require(std::abs(first_new_frame[index].target_position -
-                       last_old_frame[index].target_position) < 0.03f &&
-                  std::abs(first_new_frame[index].target_velocity -
-                           last_old_frame[index].target_velocity) < 0.35f,
-              "smooth replacement has no position or velocity step");
-    }
-  }
-
-  const auto second_result = runtime.wait_trajectory(second_id, 3s);
-  require(second_result.status == ARTICORE_TRAJECTORY_COMPLETED,
-          "replacement trajectory completes normally");
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    const auto& endpoint = driver.arm_mit_history.back();
-    require(std::abs(endpoint[0].target_position + 0.5f) < 1e-6f &&
-                std::abs(endpoint[1].target_position - 1.5f) < 1e-6f &&
-                endpoint[0].target_velocity == 0.0f &&
-                endpoint[1].target_velocity == 0.0f,
-            "replacement endpoint is exact and stationary");
-  }
-}
-
-void test_rejected_trajectory_replacement_preserves_active_task() {
-  FakeDriver driver;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 500;
-  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
-                                  g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_PV);
-  ArticoreJointTrajectoryTarget first[] = {
-      {motors[0].motor, 1.5f, 1.0f}, {motors[1].motor, -0.5f, 1.0f}};
-  const auto first_id = runtime.start_joint_trajectory(
-      first, 2, ARTICORE_TRAJECTORY_MIN_JERK);
-
-  ArticoreJointTrajectoryTarget invalid[] = {
-      {motors[0].motor, 3.0f, 1.0f}, {motors[1].motor, 0.0f, 1.0f}};
-  bool rejected = false;
-  try {
-    (void)runtime.start_joint_trajectory_ex(
-        invalid, 2, ARTICORE_TRAJECTORY_MIN_JERK,
-        ARTICORE_TRAJECTORY_SMOOTH_REPLACE);
-  } catch (const std::invalid_argument&) {
-    rejected = true;
-  }
-  require(rejected &&
-              runtime.trajectory_info(first_id).status ==
-                  ARTICORE_TRAJECTORY_RUNNING,
-          "invalid replacement is rejected atomically without canceling the old task");
-
-  bool linear_rejected = false;
-  try {
-    (void)runtime.start_joint_trajectory_ex(
-        first, 2, ARTICORE_TRAJECTORY_LINEAR,
-        ARTICORE_TRAJECTORY_SMOOTH_REPLACE);
-  } catch (const std::invalid_argument&) {
-    linear_rejected = true;
-  }
-  require(linear_rejected &&
-              runtime.trajectory_info(first_id).status ==
-                  ARTICORE_TRAJECTORY_RUNNING,
-          "LINEAR replacement is rejected because it cannot preserve velocity");
-  runtime.cancel_trajectory(first_id);
-}
-
-void test_smooth_replace_or_hold_is_atomic_and_nonfaulting() {
-  for (const auto mode : {ARTICORE_MODE_PV, ARTICORE_MODE_MIT}) {
-    FakeDriver driver;
-    driver.emulate_arm_feedback = true;
-    g_driver = &driver;
-    auto motors = descriptors(driver);
-    auto cfg = config();
-    cfg.command_timeout_ms = 500;
-    articore::SafetyRuntime runtime(
-        cfg, api(), reinterpret_cast<void*>(0x100),
-        g_left_controller, g_right_controller, motors);
-    const auto configured = joint_configs(motors);
-    runtime.configure_joints(configured.data(),
-                             static_cast<uint32_t>(configured.size()));
-    const auto layered = layered_joint_limits(motors);
-    runtime.configure_joint_safety_limits(
-        layered.data(), static_cast<uint32_t>(layered.size()));
-    runtime.connect();
-    runtime.enable(mode);
-
-    ArticoreJointTrajectoryTarget first[] = {
-        {motors[0].motor, 1.4f, 1.0f},
-        {motors[1].motor, -0.5f, 1.0f}};
-    const auto first_id = runtime.start_joint_trajectory(
-        first, 2, ARTICORE_TRAJECTORY_MIN_JERK);
-    require(wait_for([&] {
-              std::lock_guard<std::mutex> lock(driver.mutex);
-              if (mode == ARTICORE_MODE_PV) {
-                return driver.pv_history.size() > 8;
-              }
-              return driver.arm_mit_history.size() > 8;
-            }),
-            "replacement safety test starts the old trajectory");
-
-    float actual[2]{};
-    std::size_t baseline = 0;
-    {
-      std::lock_guard<std::mutex> lock(driver.mutex);
-      actual[0] = driver.motors[motors[0].motor].position;
-      actual[1] = driver.motors[motors[1].motor].position;
-      baseline = mode == ARTICORE_MODE_PV
-          ? driver.pv_history.size() : driver.arm_mit_history.size();
-    }
-    ArticoreJointTrajectoryTarget unsafe[] = {
-        {motors[0].motor, 1.6f, 1.0f},
-        {motors[1].motor, 0.0f, 1.0f}};
-    const auto report = runtime.start_joint_trajectory_report(
-        unsafe, 2, ARTICORE_TRAJECTORY_MIN_JERK,
-        ARTICORE_TRAJECTORY_SMOOTH_REPLACE_OR_HOLD);
-    require(
-        report.outcome ==
-                ARTICORE_TRAJECTORY_START_REPLACEMENT_REJECTED_HELD &&
-            report.old_trajectory_id == first_id &&
-            report.new_trajectory_id == 0 && report.hold_installed == 1 &&
-            report.feedback_fresh == 1 && report.limiting_channel == 0 &&
-            report.limiting_can_id == 1 &&
-            std::string(report.limiting_joint) == "left/joint1" &&
-            std::string(report.reason).find("soft position limit") !=
-                std::string::npos &&
-            std::abs(report.soft_upper - 1.5f) < 1e-6f &&
-            std::abs(report.hard_upper - 2.0f) < 1e-6f,
-        "unsafe replacement returns a structured held business result");
-    require(runtime.trajectory_info(first_id).status ==
-                ARTICORE_TRAJECTORY_CANCELED &&
-                runtime.health().state == ARTICORE_RUNNING,
-            "replacement rejection cancels the old task without global fault");
-
-    {
-      std::lock_guard<std::mutex> lock(driver.mutex);
-      if (mode == ARTICORE_MODE_PV) {
-        require(driver.pv_history.size() == baseline + 1,
-                "PV replacement hold is synchronously transmitted once");
-        const auto& hold = driver.pv_history.back();
-        require(hold.size() == 2 &&
-                    std::abs(hold[0].target_position - actual[0]) < 1e-6f &&
-                    std::abs(hold[1].target_position - actual[1]) < 1e-6f &&
-                    std::abs(hold[0].velocity_limit -
-                             cfg.safe_pv_velocity_limit) < 1e-6f,
-                "PV fallback holds complete fresh feedback with the safe limit");
-      } else {
-        require(driver.arm_mit_history.size() == baseline + 1,
-                "MIT replacement hold is synchronously transmitted once");
-        const auto& hold = driver.arm_mit_history.back();
-        require(hold.size() == 2 &&
-                    std::abs(hold[0].target_position - actual[0]) < 1e-6f &&
-                    std::abs(hold[1].target_position - actual[1]) < 1e-6f &&
-                    hold[0].target_velocity == 0.0f &&
-                    hold[1].target_velocity == 0.0f &&
-                    hold[0].feedforward_torque == 0.0f &&
-                    hold[1].feedforward_torque == 0.0f &&
-                    hold[0].stiffness == motors[0].safe_kp &&
-                    hold[1].stiffness == motors[1].safe_kp,
-                "MIT fallback uses measured position, zero dynamics, and safe gains");
-      }
-    }
-    std::this_thread::sleep_for(20ms);
-    {
-      std::lock_guard<std::mutex> lock(driver.mutex);
-      if (mode == ARTICORE_MODE_PV) {
-        for (std::size_t i = baseline; i < driver.pv_history.size(); ++i) {
-          require(std::abs(driver.pv_history[i][0].target_position - actual[0]) <
-                      1e-6f,
-                  "no old PV reference is sent after replacement rejection");
-        }
-      } else {
-        for (std::size_t i = baseline; i < driver.arm_mit_history.size(); ++i) {
-          require(std::abs(driver.arm_mit_history[i][0].target_position -
-                           actual[0]) < 1e-6f &&
-                      driver.arm_mit_history[i][0].target_velocity == 0.0f,
-                  "no old MIT reference is sent after replacement rejection");
-        }
-      }
-    }
-
-    ArticoreJointTrajectoryTarget inward[] = {
-        {motors[0].motor, 0.0f, 1.0f},
-        {motors[1].motor, 0.0f, 1.0f}};
-    const auto recovery = runtime.start_joint_trajectory_report(
-        inward, 2, ARTICORE_TRAJECTORY_MIN_JERK,
-        ARTICORE_TRAJECTORY_REJECT_IF_BUSY);
-    require(recovery.outcome == ARTICORE_TRAJECTORY_START_STARTED &&
-                recovery.new_trajectory_id != 0,
-            "a new inward trajectory starts directly from replacement hold");
-    require(runtime.wait_trajectory(recovery.new_trajectory_id, 4s).status ==
-                ARTICORE_TRAJECTORY_COMPLETED,
-            "the inward recovery trajectory completes normally");
-  }
-}
-
-void test_replace_or_hold_faults_when_fresh_hold_is_impossible() {
-  FakeDriver driver;
-  driver.emulate_arm_feedback = true;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 500;
-  articore::SafetyRuntime runtime(
-      cfg, api(), reinterpret_cast<void*>(0x100),
-      g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  const auto layered = layered_joint_limits(motors);
-  runtime.configure_joint_safety_limits(
-      layered.data(), static_cast<uint32_t>(layered.size()));
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_MIT);
-  ArticoreJointTrajectoryTarget first[] = {
-      {motors[0].motor, 1.0f, 1.0f}, {motors[1].motor, 0.0f, 1.0f}};
-  const auto first_id = runtime.start_joint_trajectory(
-      first, 2, ARTICORE_TRAJECTORY_MIN_JERK);
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    driver.motors[motors[1].motor].has_feedback = false;
-  }
-  ArticoreJointTrajectoryTarget unsafe[] = {
-      {motors[0].motor, 1.6f, 1.0f}, {motors[1].motor, 0.0f, 1.0f}};
-  const auto report = runtime.start_joint_trajectory_report(
-      unsafe, 2, ARTICORE_TRAJECTORY_MIN_JERK,
-      ARTICORE_TRAJECTORY_SMOOTH_REPLACE_OR_HOLD);
-  require(report.outcome == ARTICORE_TRAJECTORY_START_FAULTED &&
-              report.hold_installed == 0 &&
-              runtime.health().state == ARTICORE_FAULT &&
-              runtime.trajectory_info(first_id).status ==
-                  ARTICORE_TRAJECTORY_FAILED,
-          "incomplete feedback faults instead of claiming a replacement hold");
-}
-
-void test_feedback_outside_soft_limit_can_move_inward_but_hard_limit_faults() {
-  FakeDriver driver;
-  driver.emulate_arm_feedback = true;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 500;
-  articore::SafetyRuntime runtime(
-      cfg, api(), reinterpret_cast<void*>(0x100),
-      g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  const auto layered = layered_joint_limits(motors);
-  runtime.configure_joint_safety_limits(
-      layered.data(), static_cast<uint32_t>(layered.size()));
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_MIT);
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    driver.motors[motors[0].motor].position = 1.6f;
-    driver.motors[motors[0].motor].velocity = 0.0f;
-  }
-  ArticoreJointTrajectoryTarget inward[] = {
-      {motors[0].motor, 1.0f, 0.5f}, {motors[1].motor, 0.0f, 0.5f}};
-  const auto report = runtime.start_joint_trajectory_report(
-      inward, 2, ARTICORE_TRAJECTORY_MIN_JERK,
-      ARTICORE_TRAJECTORY_REJECT_IF_BUSY);
-  require(report.outcome == ARTICORE_TRAJECTORY_START_STARTED,
-          "feedback outside soft but inside hard limits may move inward");
-  require(runtime.wait_trajectory(report.new_trajectory_id, 4s).status ==
-              ARTICORE_TRAJECTORY_COMPLETED,
-          "outside-soft inward recovery completes without global fault");
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    driver.emulate_arm_feedback = false;
-    driver.motors[motors[0].motor].position = 2.1f;
-  }
-  require(wait_for([&] {
-            const auto health = runtime.health();
-            return health.state == ARTICORE_FAULT &&
-                   health.fault_reason[0] != '\0';
-          }, 300ms),
-          "fresh feedback beyond the hard limit enters FAULT");
-}
-
-void test_trajectory_reference_obeys_dynamic_soft_limit_braking() {
-  FakeDriver driver;
-  driver.emulate_arm_feedback = true;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 500;
-  articore::SafetyRuntime runtime(
-      cfg, api(), reinterpret_cast<void*>(0x100),
-      g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  const auto layered = layered_joint_limits(
-      motors, -2.0f, 2.0f, -1.5f, 1.5f, 0.5f, 1.0f);
-  runtime.configure_joint_safety_limits(
-      layered.data(), static_cast<uint32_t>(layered.size()));
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_MIT);
-  ArticoreJointTrajectoryTarget target[] = {
-      {motors[0].motor, 1.5f, 5.0f}, {motors[1].motor, 0.0f, 5.0f}};
-  const auto report = runtime.start_joint_trajectory_report(
-      target, 2, ARTICORE_TRAJECTORY_MIN_JERK,
-      ARTICORE_TRAJECTORY_REJECT_IF_BUSY);
-  require(report.outcome == ARTICORE_TRAJECTORY_START_STARTED,
-          "dynamic braking produces a feasible slowed trajectory");
-  const auto info = runtime.wait_trajectory(report.new_trajectory_id, 5s);
-  require(info.status == ARTICORE_TRAJECTORY_COMPLETED &&
-              info.duration_ns > 562'500'000ULL,
-          "soft-limit braking extends the unconstrained profile duration");
-  std::lock_guard<std::mutex> lock(driver.mutex);
-  for (const auto& frame : driver.arm_mit_history) {
-    const auto& command = frame[0];
-    if (command.target_velocity <= 1e-5f ||
-        command.target_position > 1.5f) {
-      continue;
-    }
-    const float distance = std::max(0.0f, 1.5f - command.target_position);
-    const float zone_limit = 5.0f * std::sqrt(distance / 0.5f);
-    const float stop_limit = std::sqrt(2.0f * distance);
-    require(command.target_velocity <=
-                std::min(zone_limit, stop_limit) + 0.02f,
-            "every emitted outward reference obeys zone and stopping limits");
-  }
-}
-
-void test_cancel_trajectory_enters_atomic_current_position_hold() {
-  FakeDriver driver;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 50;
-  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
-                                  g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_MIT);
-  std::size_t trajectory_baseline = 0;
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    trajectory_baseline = driver.arm_mit_history.size();
-  }
-  ArticoreJointTrajectoryTarget target[] = {
-      {motors[0].motor, 1.5f, 1.0f}, {motors[1].motor, -0.5f, 1.0f}};
-  const auto id = runtime.start_joint_trajectory(
-      target, 2, ARTICORE_TRAJECTORY_MIN_JERK);
-  require(wait_for([&] {
-            std::lock_guard<std::mutex> lock(driver.mutex);
-            return driver.arm_mit_history.size() >= trajectory_baseline + 6;
-          }),
-          "cancel test starts an active trajectory");
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    driver.motors[motors[0].motor].position = 0.33f;
-    driver.motors[motors[1].motor].position = 0.77f;
-  }
-  runtime.cancel_trajectory(id);
-  require(runtime.trajectory_info(id).status == ARTICORE_TRAJECTORY_CANCELED,
-          "explicit cancellation returns CANCELED status");
-
-  std::size_t cancel_baseline = 0;
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    cancel_baseline = driver.arm_mit_history.size();
-  }
-  require(wait_for([&] {
-            std::lock_guard<std::mutex> lock(driver.mutex);
-            return driver.arm_mit_history.size() >= cancel_baseline + 3;
-          }, 100ms),
-          "cancel hold is sent and remains active");
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    for (std::size_t frame_index = cancel_baseline;
-         frame_index < driver.arm_mit_history.size(); ++frame_index) {
-      const auto& frame = driver.arm_mit_history[frame_index];
-      require(frame.size() == 2 &&
-                  std::abs(frame[0].target_position - 0.33f) < 1e-6f &&
-                  std::abs(frame[1].target_position - 0.77f) < 1e-6f &&
-                  frame[0].target_velocity == 0.0f &&
-                  frame[1].target_velocity == 0.0f &&
-                  frame[0].feedforward_torque == 0.0f &&
-                  frame[1].feedforward_torque == 0.0f &&
-                  frame[0].stiffness == motors[0].safe_kp &&
-                  frame[1].stiffness == motors[1].safe_kp,
-              "no canceled trajectory frame is sent after current-position hold begins");
-    }
-  }
-  std::this_thread::sleep_for(3 * 50ms);
-  require(runtime.health().state == ARTICORE_RUNNING,
-          "cancel hold is an internal target and does not trip the user watchdog");
-}
-
-void test_trajectory_result_history_is_bounded() {
-  FakeDriver driver;
-  driver.emulate_arm_feedback = true;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 500;
-  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
-                                  g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  const auto execution = trajectory_execution_config(
-      0.01f, 0.02f, 0.5f, 1, 100, 20);
-  runtime.configure_trajectory_execution(execution);
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_PV);
-
-  ArticoreJointTrajectoryTarget target[] = {
-      {motors[0].motor, 0.0f, 5.0f}, {motors[1].motor, 1.0f, 5.0f}};
-  uint64_t first_id = 0;
-  uint64_t last_id = 0;
-  for (int index = 0; index < 66; ++index) {
-    last_id = runtime.start_joint_trajectory(
-        target, 2, ARTICORE_TRAJECTORY_LINEAR);
-    if (index == 0) first_id = last_id;
-    require(runtime.wait_trajectory(last_id, 200ms).status ==
-                ARTICORE_TRAJECTORY_COMPLETED,
-            "sequential zero-distance trajectory completes");
-  }
-  bool oldest_evicted = false;
-  try {
-    (void)runtime.trajectory_info(first_id);
-  } catch (const std::invalid_argument&) {
-    oldest_evicted = true;
-  }
-  require(oldest_evicted &&
-              runtime.trajectory_info(last_id).status ==
-                  ARTICORE_TRAJECTORY_COMPLETED,
-          "trajectory result history stays at its fixed 64-entry bound");
-}
-
-void test_mit_trajectory_endpoint_hold_bypasses_user_watchdog() {
-  FakeDriver driver;
-  driver.emulate_arm_feedback = true;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 50;
-  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
-                                  g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_MIT);
-
-  ArticoreJointTrajectoryTarget targets[] = {
-      {motors[0].motor, 0.1f, 5.0f}, {motors[1].motor, 0.9f, 5.0f}};
-  const auto id = runtime.start_joint_trajectory(
-      targets, 2, ARTICORE_TRAJECTORY_MIN_JERK);
-  require(runtime.wait_trajectory(id, 500ms).status ==
-              ARTICORE_TRAJECTORY_COMPLETED,
-          "MIT trajectory completes before endpoint hold validation");
-  std::size_t baseline = 0;
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    baseline = driver.arm_mit_history.size();
-  }
-  std::this_thread::sleep_for(170ms);
-  const auto health = runtime.health();
-  require(health.state == ARTICORE_RUNNING && health.safe_holding == 0 &&
-              health.last_successful_command_age_ns >= 150'000'000ULL,
-          "MIT endpoint hold remains RUNNING beyond three watchdog periods");
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    require(driver.arm_mit_history.size() >= baseline + 5,
-            "MIT endpoint hold continues periodic native output");
-    const auto& endpoint = driver.arm_mit_history.back();
-    require(endpoint.size() == 2 &&
-                std::abs(endpoint[0].target_position - 0.1f) < 1e-6f &&
-                std::abs(endpoint[1].target_position - 0.9f) < 1e-6f &&
-                endpoint[0].target_velocity == 0.0f &&
-                endpoint[1].target_velocity == 0.0f &&
-                endpoint[0].stiffness == 20.0f &&
-                endpoint[1].stiffness == 20.0f &&
-                endpoint[0].damping == 3.0f &&
-                endpoint[1].damping == 3.0f,
-            "MIT endpoint hold preserves exact goal, zero velocity, and configured gains");
-  }
-
-  ArticoreMitCommand direct[] = {
-      {motors[0].motor, 0.2f, 0.0f, 20.0f, 3.0f, 0.0f},
-      {motors[1].motor, 0.8f, 0.0f, 20.0f, 3.0f, 0.0f},
-  };
-  runtime.submit_mit(direct, 2);
-  require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
-          "a direct MIT command restores ordinary user-command watchdog behavior");
-}
-
-void test_pv_trajectory_endpoint_hold_bypasses_user_watchdog() {
-  FakeDriver driver;
-  driver.emulate_arm_feedback = true;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 50;
-  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
-                                  g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_PV);
-
-  ArticoreJointTrajectoryTarget targets[] = {
-      {motors[0].motor, 0.1f, 5.0f}, {motors[1].motor, 0.9f, 5.0f}};
-  const auto id = runtime.start_joint_trajectory(
-      targets, 2, ARTICORE_TRAJECTORY_MIN_JERK);
-  require(runtime.wait_trajectory(id, 500ms).status ==
-              ARTICORE_TRAJECTORY_COMPLETED,
-          "PV trajectory completes before endpoint hold validation");
-  std::size_t baseline = 0;
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    baseline = driver.pv_history.size();
-  }
-  std::this_thread::sleep_for(170ms);
-  const auto health = runtime.health();
-  require(health.state == ARTICORE_RUNNING && health.safe_holding == 0 &&
-              health.last_successful_command_age_ns >= 150'000'000ULL,
-          "PV endpoint hold remains RUNNING beyond three watchdog periods");
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    require(driver.pv_history.size() >= baseline + 5,
-            "PV endpoint hold continues periodic native output");
-    const auto& endpoint = driver.pv_history.back();
-    require(endpoint.size() == 2 &&
-                std::abs(endpoint[0].target_position - 0.1f) < 1e-6f &&
-                std::abs(endpoint[1].target_position - 0.9f) < 1e-6f &&
-                endpoint[0].velocity_limit == 5.0f &&
-                endpoint[1].velocity_limit == 5.0f,
-            "PV endpoint hold preserves exact goal and configured velocity limits");
-  }
-
-  ArticorePosVelCommand direct[] = {
-      {motors[0].motor, 0.2f, 2.0f},
-      {motors[1].motor, 0.8f, 2.0f},
-  };
-  runtime.submit_pos_vel(direct, 2);
-  require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
-          "a direct PV command restores ordinary user-command watchdog behavior");
-}
-
 void test_persistent_setpoints_outlive_watchdog_but_streaming_still_times_out() {
   {
     FakeDriver driver;
@@ -3473,9 +2655,10 @@ int main() {
     RUN_TEST(test_feedback_fault_uses_protective_hold_without_linked_disable);
     RUN_TEST(test_single_gripper_feedback_miss_reuses_current_output);
     RUN_TEST(test_feedback_measurements_do_not_reuse_command_limits);
-    RUN_TEST(test_feedback_seed_and_trajectory_start_ignore_command_limits);
+    RUN_TEST(test_feedback_seed_ignores_command_limits);
     RUN_TEST(test_feedback_fault_diagnostics_include_identity_value_and_threshold);
-    RUN_TEST(test_single_stale_feedback_sample_does_not_cancel_trajectory);
+    RUN_TEST(test_single_stale_feedback_sample_keeps_persistent_position_control);
+    RUN_TEST(test_ordinary_position_can_recover_inward_from_soft_limit);
     RUN_TEST(test_disable_does_not_stop_after_one_side_fails);
     RUN_TEST(test_disable_uses_structured_feedback_report);
     RUN_TEST(test_disable_retries_one_full_feedback_deadline);
@@ -3496,20 +2679,6 @@ int main() {
     RUN_TEST(test_motor_presence_is_fixed_and_fault_aware);
     RUN_TEST(test_latest_value_mailbox_drops_superseded_targets);
     RUN_TEST(test_latest_value_mailbox_stays_bounded_under_fast_producer);
-    RUN_TEST(test_min_jerk_trajectory_rejects_ordinary_preemption);
-    RUN_TEST(test_trajectory_profile_end_waits_for_measured_settling);
-    RUN_TEST(test_trajectory_settling_timeout_reports_worst_joint);
-    RUN_TEST(test_trajectory_sustained_per_joint_following_error_fails_early);
-    RUN_TEST(test_min_jerk_trajectory_supports_smooth_atomic_replacement);
-    RUN_TEST(test_rejected_trajectory_replacement_preserves_active_task);
-    RUN_TEST(test_smooth_replace_or_hold_is_atomic_and_nonfaulting);
-    RUN_TEST(test_replace_or_hold_faults_when_fresh_hold_is_impossible);
-    RUN_TEST(test_feedback_outside_soft_limit_can_move_inward_but_hard_limit_faults);
-    RUN_TEST(test_trajectory_reference_obeys_dynamic_soft_limit_braking);
-    RUN_TEST(test_cancel_trajectory_enters_atomic_current_position_hold);
-    RUN_TEST(test_trajectory_result_history_is_bounded);
-    RUN_TEST(test_mit_trajectory_endpoint_hold_bypasses_user_watchdog);
-    RUN_TEST(test_pv_trajectory_endpoint_hold_bypasses_user_watchdog);
     RUN_TEST(test_persistent_setpoints_outlive_watchdog_but_streaming_still_times_out);
     RUN_TEST(test_persistent_mit_rejects_unbounded_motion_terms);
     RUN_TEST(test_ordinary_mit_position_uses_constant_reference_speed);

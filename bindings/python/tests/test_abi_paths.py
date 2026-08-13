@@ -30,28 +30,20 @@ def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
     assert hasattr(library, "articore_runtime_submit_mit_ex")
     assert hasattr(library, "articore_runtime_set_joint_mit")
     assert hasattr(library, "articore_runtime_set_joint_pv")
-    assert hasattr(library, "articore_runtime_start_joint_trajectory_ex")
-    assert hasattr(library, "articore_runtime_cancel_trajectory")
-    assert hasattr(library, "articore_runtime_configure_trajectory_execution")
     assert hasattr(library, "articore_runtime_configure_joint_safety_limits")
-    assert hasattr(library, "articore_runtime_start_joint_trajectory_report")
     assert hasattr(library, "articore_runtime_configure_gripper_force_profiles")
     assert hasattr(library, "articore_runtime_set_gripper_commands")
-    assert library.articore_runtime_abi_version() == 0x0001000D
-    assert library.articore_runtime_capabilities() & 0x7FFFFF == 0x7FFFFF
-    assert abi.articore_runtime_abi_version() == "1.13"
+    assert not hasattr(library, "articore_runtime_start_joint_trajectory")
+    assert not hasattr(library, "articore_runtime_cancel_trajectory")
+    assert library.articore_runtime_abi_version() == 0x00020000
+    assert abi.articore_runtime_abi_version() == "2.0"
     assert abi.articore_runtime_capabilities()["gripper_protection"] is True
     assert abi.articore_runtime_capabilities()["current_position_hold"] is True
     assert abi.articore_runtime_capabilities()["realtime_joint_mailbox"] is True
-    assert abi.articore_runtime_capabilities()["joint_trajectory"] is True
     assert abi.articore_runtime_capabilities()["atomic_enable"] is True
     assert abi.articore_runtime_capabilities()["command_lifetime"] is True
-    assert abi.articore_runtime_capabilities()["nonpreemptive_trajectory"] is True
     assert abi.articore_runtime_capabilities()["protective_fault_hold"] is True
     assert abi.articore_runtime_capabilities()["deterministic_disable"] is True
-    assert abi.articore_runtime_capabilities()["trajectory_management"] is True
-    assert abi.articore_runtime_capabilities()["trajectory_settling"] is True
-    assert abi.articore_runtime_capabilities()["trajectory_replace_or_hold"] is True
     assert abi.articore_runtime_capabilities()["layered_joint_limits"] is True
     assert abi.articore_runtime_capabilities()["gripper_command_profiles"] is True
     assert abi.articore_runtime_capabilities()["gripper_force_10_levels"] is True
