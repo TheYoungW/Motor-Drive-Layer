@@ -1861,7 +1861,12 @@ void test_trajectory_profile_end_waits_for_measured_settling() {
   const auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(),
                            static_cast<uint32_t>(configured.size()));
-  const auto execution = trajectory_execution_config();
+  // Keep a generous gap between the observation sleeps and the stable window.
+  // Hosted macOS x86 runners can deschedule this test thread for more than the
+  // old 30 ms window, which made a wall-clock assertion spuriously fail even
+  // though the runtime correctly measured continuous settling time.
+  const auto execution = trajectory_execution_config(
+      0.01f, 0.02f, 0.5f, 200, 1000, 30);
   runtime.configure_trajectory_execution(execution);
   runtime.connect();
   runtime.enable(ARTICORE_MODE_MIT);
@@ -1901,7 +1906,7 @@ void test_trajectory_profile_end_waits_for_measured_settling() {
   std::this_thread::sleep_for(15ms);
   require(runtime.trajectory_info(id).status == ARTICORE_TRAJECTORY_RUNNING,
           "an out-of-tolerance sample resets the continuous stable timer");
-  const auto completed = runtime.wait_trajectory(id, 200ms);
+  const auto completed = runtime.wait_trajectory(id, 500ms);
   require(completed.status == ARTICORE_TRAJECTORY_COMPLETED,
           "all joints complete only after position and velocity remain stable");
 }
