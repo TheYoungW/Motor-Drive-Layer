@@ -58,6 +58,7 @@ struct FakeDriver {
   std::map<uint32_t, void*> feedback_enable_on_call;
   bool feedback_timeout_consumes_deadline = false;
   bool block_nonempty_send = false;
+  float block_target_position = std::numeric_limits<float>::quiet_NaN();
   bool send_entered = false;
   bool release_send = false;
   std::vector<std::string> events;
@@ -88,7 +89,10 @@ int32_t send_pv(void*, const ArticorePosVelCommand* commands, uint32_t count) {
   if (count == 0) {
     g_driver->events.emplace_back("barrier-pv");
   } else {
-    if (g_driver->block_nonempty_send) {
+    if (g_driver->block_nonempty_send &&
+        (!std::isfinite(g_driver->block_target_position) ||
+         std::abs(commands[0].target_position -
+                  g_driver->block_target_position) < 1e-6f)) {
       g_driver->send_entered = true;
       g_driver->send_cv.notify_all();
       g_driver->send_cv.wait(lock, [] { return g_driver->release_send; });
@@ -120,7 +124,10 @@ int32_t send_mit(void*, const ArticoreMitCommand* commands, uint32_t count) {
     ++g_driver->mit_sends;
     return 0;
   }
-  if (g_driver->block_nonempty_send) {
+  if (g_driver->block_nonempty_send &&
+      (!std::isfinite(g_driver->block_target_position) ||
+       std::abs(commands[0].target_position -
+                g_driver->block_target_position) < 1e-6f)) {
     g_driver->send_entered = true;
     g_driver->send_cv.notify_all();
     g_driver->send_cv.wait(lock, [] { return g_driver->release_send; });
@@ -776,7 +783,11 @@ void test_single_gripper_feedback_miss_reuses_current_output() {
   cfg.command_timeout_ms = 500;
   cfg.feedback_check_hz = 1;
   cfg.gripper_control_hz = 100;
-  cfg.feedback_failure_threshold = 3;
+  // The assertion restores feedback after observing a retransmitted frame,
+  // not after an exact number of scheduler ticks. Keep the threshold well
+  // above host scheduling jitter so this remains a one-gap behavior test on
+  // fast macOS and slower Linux/Windows runners alike.
+  cfg.feedback_failure_threshold = 100;
   articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);
   runtime.connect();
@@ -1152,6 +1163,7 @@ void test_disable_waits_for_inflight_batch_and_rejects_new_commands() {
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     driver.block_nonempty_send = true;
+    driver.block_target_position = commands[0].target_position;
   }
   runtime.submit_pos_vel_ex(
       commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
@@ -1161,30 +1173,35 @@ void test_disable_waits_for_inflight_batch_and_rejects_new_commands() {
                                     [&] { return driver.send_entered; }),
             "test control batch entered the fake transport");
   }
-  std::string disable_error;
-  std::thread closer([&] {
+  bool rejected = false;
+  std::thread concurrent_submit([&] {
+    std::this_thread::sleep_for(5ms);
     try {
-      runtime.disable();
-    } catch (const std::exception& error) {
-      disable_error = error.what();
+      runtime.submit_pos_vel_ex(
+          commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
+    } catch (const std::runtime_error&) {
+      rejected = true;
     }
   });
-  std::this_thread::sleep_for(5ms);
-  bool rejected = false;
-  try {
-    runtime.submit_pos_vel_ex(
-        commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
-  } catch (const std::runtime_error&) {
-    rejected = true;
-  }
-  {
+  bool disable_waited_for_batch = false;
+  std::thread releaser([&] {
+    std::this_thread::sleep_for(20ms);
     std::lock_guard<std::mutex> lock(driver.mutex);
-    require(driver.disable_calls[0] == 0 && driver.disable_calls[1] == 0,
-            "disable frames wait until the in-flight control batch completes");
+    disable_waited_for_batch =
+        driver.disable_calls[0] == 0 && driver.disable_calls[1] == 0;
     driver.release_send = true;
     driver.send_cv.notify_all();
+  });
+  std::string disable_error;
+  try {
+    runtime.disable();
+  } catch (const std::exception& error) {
+    disable_error = error.what();
   }
-  closer.join();
+  releaser.join();
+  concurrent_submit.join();
+  require(disable_waited_for_batch,
+          "disable frames wait until the in-flight control batch completes");
   require(rejected && disable_error.empty() &&
               runtime.health().disable_confirmed == 1,
           "transition rejects new commands and completes after the batch barrier");
