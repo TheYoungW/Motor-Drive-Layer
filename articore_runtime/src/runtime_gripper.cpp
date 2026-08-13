@@ -60,9 +60,16 @@ void SafetyRuntime::configure_gripper_force_profiles(
       motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
         return motor.descriptor.is_gripper != 0;
       }));
-  if (gripper_count == 0 || count != gripper_count * 3U) {
+  constexpr uint32_t kForceLevelCount = 10U;
+  constexpr uint32_t kLegacyForceLevelCount = 3U;
+  const bool legacy_three_levels =
+      gripper_count != 0 && count == gripper_count * kLegacyForceLevelCount;
+  const bool complete_ten_levels =
+      gripper_count != 0 && count == gripper_count * kForceLevelCount;
+  if (!legacy_three_levels && !complete_ten_levels) {
     throw std::invalid_argument(
-        "force profiles must contain LOW/NORMAL/HIGH for every active gripper");
+        "force profiles must contain levels 1 through 10 for every active "
+        "gripper (legacy three-level profiles are also accepted)");
   }
 
   std::unordered_map<void*, std::unordered_map<int32_t,
@@ -74,9 +81,10 @@ void SafetyRuntime::configure_gripper_force_profiles(
           return candidate.descriptor.is_gripper &&
                  candidate.descriptor.motor == value.motor;
         });
-    const bool force_valid =
-        value.force_level >= ARTICORE_GRIPPER_FORCE_LOW &&
-        value.force_level <= ARTICORE_GRIPPER_FORCE_HIGH;
+    const bool force_valid = legacy_three_levels
+        ? value.force_level >= 1 && value.force_level <= 3
+        : value.force_level >= ARTICORE_GRIPPER_FORCE_MIN &&
+              value.force_level <= ARTICORE_GRIPPER_FORCE_MAX;
     if (value.struct_size < sizeof(ArticoreGripperForceProfile) ||
         motor == motors_.end() || !force_valid ||
         !finite(value.contact_torque) || value.contact_torque < 0.0f ||
@@ -98,12 +106,48 @@ void SafetyRuntime::configure_gripper_force_profiles(
   for (auto& motor : motors_) {
     if (!motor.descriptor.is_gripper) continue;
     const auto values = configured.find(motor.descriptor.motor);
-    if (values == configured.end() || values->second.size() != 3U) {
+    const auto expected = legacy_three_levels
+        ? kLegacyForceLevelCount : kForceLevelCount;
+    if (values == configured.end() || values->second.size() != expected) {
       throw std::invalid_argument(
-          "force profiles must cover every level for every active gripper");
+          "force profiles must cover every required level for every active gripper");
     }
-    motor.force_profiles = values->second;
-    motor.force_level = ARTICORE_GRIPPER_FORCE_NORMAL;
+    if (legacy_three_levels) {
+      const auto low = values->second.find(1);
+      const auto normal = values->second.find(2);
+      const auto high = values->second.find(3);
+      if (low == values->second.end() || normal == values->second.end() ||
+          high == values->second.end()) {
+        throw std::invalid_argument(
+            "legacy force profiles must contain LOW, NORMAL, and HIGH");
+      }
+      std::unordered_map<int32_t, MotorRecord::GripperForceProfile> expanded;
+      const auto blend = [](float from, float to, float ratio) {
+        return from + (to - from) * ratio;
+      };
+      for (int32_t level = ARTICORE_GRIPPER_FORCE_MIN;
+           level <= ARTICORE_GRIPPER_FORCE_MAX; ++level) {
+        const bool lighter = level <= ARTICORE_GRIPPER_FORCE_DEFAULT;
+        const float ratio = lighter
+            ? static_cast<float>(level - ARTICORE_GRIPPER_FORCE_MIN) / 4.0f
+            : static_cast<float>(level - ARTICORE_GRIPPER_FORCE_DEFAULT) / 5.0f;
+        const auto& from = lighter ? low->second : normal->second;
+        const auto& to = lighter ? normal->second : high->second;
+        expanded.emplace(level, MotorRecord::GripperForceProfile{
+            blend(from.contact_torque, to.contact_torque, ratio),
+            blend(from.overload_torque, to.overload_torque, ratio),
+            blend(from.moving_kp, to.moving_kp, ratio),
+            blend(from.moving_kd, to.moving_kd, ratio),
+            blend(from.hold_kp, to.hold_kp, ratio),
+            blend(from.hold_kd, to.hold_kd, ratio)});
+      }
+      motor.force_profiles = std::move(expanded);
+      motor.legacy_force_level_mapping = true;
+    } else {
+      motor.force_profiles = values->second;
+      motor.legacy_force_level_mapping = false;
+    }
+    motor.force_level = ARTICORE_GRIPPER_FORCE_DEFAULT;
   }
 }
 
@@ -207,7 +251,7 @@ void SafetyRuntime::set_gripper_openings(const ArticoreGripperTarget* targets,
     commands.push_back(ArticoreGripperCommand{
         sizeof(ArticoreGripperCommand), targets[i].motor,
         clamp_opening(targets[i].opening), 1000.0f,
-        ARTICORE_GRIPPER_FORCE_NORMAL});
+        ARTICORE_GRIPPER_FORCE_DEFAULT});
   }
   set_gripper_commands(commands.data(), static_cast<uint32_t>(commands.size()));
 }
@@ -244,12 +288,20 @@ void SafetyRuntime::set_gripper_commands(
           return candidate.descriptor.is_gripper &&
                  candidate.descriptor.motor == command.motor;
         });
+    int32_t effective_force_level = command.force_level;
+    if (motor != motors_.end() && motor->legacy_force_level_mapping) {
+      if (command.force_level == 2) {
+        effective_force_level = ARTICORE_GRIPPER_FORCE_DEFAULT;
+      } else if (command.force_level == 3) {
+        effective_force_level = ARTICORE_GRIPPER_FORCE_MAX;
+      }
+    }
     if (command.struct_size < sizeof(ArticoreGripperCommand) ||
         motor == motors_.end() || !unique.insert(command.motor).second ||
         !finite(command.opening) || command.opening < 0.0f ||
         command.opening > 1000.0f || !finite(command.speed) ||
         command.speed <= 0.0f || command.speed > 1000.0f ||
-        motor->force_profiles.find(command.force_level) ==
+        motor->force_profiles.find(effective_force_level) ==
             motor->force_profiles.end()) {
       throw std::invalid_argument(
           "invalid gripper opening, speed, force level, or motor");
@@ -258,7 +310,7 @@ void SafetyRuntime::set_gripper_commands(
         motor->descriptor.close_speed * command.speed / 1000.0f;
     validated.push_back(Validated{
         &*motor, command.opening, opening_to_position(*motor, command.opening),
-        command.speed, motor_speed, command.force_level});
+        command.speed, motor_speed, effective_force_level});
   }
 
   {

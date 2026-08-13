@@ -99,7 +99,7 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
       record.requested_speed = 1000.0f;
       record.command_speed = motor.close_speed;
       record.force_profiles.emplace(
-          ARTICORE_GRIPPER_FORCE_NORMAL,
+          ARTICORE_GRIPPER_FORCE_DEFAULT,
           MotorRecord::GripperForceProfile{
               motor.contact_torque, motor.overload_torque,
               motor.normal_kp, motor.normal_kd, motor.safe_kp, motor.safe_kd});

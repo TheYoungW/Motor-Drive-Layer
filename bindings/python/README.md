@@ -7,8 +7,10 @@ SocketCAN, SocketCAN-FD, Damiao serial bridge, and optional DM_Device transports
 `libmotor_abi` is the generic motor layer; `libarticore_runtime` is the separately versioned
 product safety runtime consumed by Articore SDKs.
 Use `articore_runtime_abi_version()` and `articore_runtime_capabilities()` to inspect that product
-runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 1.10 adds
-atomic per-command gripper opening/speed/force profiles and symmetric bidirectional ramps.
+runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 1.11 expands
+the calibrated gripper force selector to levels 1 through 10; level 5 is the compatibility
+default. Runtime ABI 1.10 adds atomic per-command gripper opening/speed/force profiles and
+symmetric bidirectional ramps.
 Runtime ABI 1.9 adds atomic
 smooth-replace-or-current-hold, structured trajectory start reports, layered hard/soft joint
 limits, and dynamic soft-limit braking. Runtime ABI 1.8 adds measured

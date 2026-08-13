@@ -358,14 +358,30 @@ std::vector<ArticoreGripperForceProfile> gripper_force_profiles(
         return motor.is_gripper != 0;
       });
   require(gripper != motors.end(), "force profile test requires a gripper");
-  return {
-      {sizeof(ArticoreGripperForceProfile), gripper->motor,
-       ARTICORE_GRIPPER_FORCE_LOW, 0.5f, 1.0f, 3.0f, 0.3f, 1.0f, 0.2f},
-      {sizeof(ArticoreGripperForceProfile), gripper->motor,
-       ARTICORE_GRIPPER_FORCE_NORMAL, 0.8f, 1.5f, 4.0f, 0.5f, 2.0f, 0.5f},
-      {sizeof(ArticoreGripperForceProfile), gripper->motor,
-       ARTICORE_GRIPPER_FORCE_HIGH, 1.2f, 2.0f, 6.0f, 0.8f, 3.0f, 0.7f},
-  };
+  std::vector<ArticoreGripperForceProfile> values;
+  values.reserve(10);
+  for (int32_t level = ARTICORE_GRIPPER_FORCE_MIN;
+       level <= ARTICORE_GRIPPER_FORCE_MAX; ++level) {
+    // Keep level 5 identical to the former NORMAL product calibration while
+    // interpolating four lighter and five stronger user-facing levels.
+    const bool lighter = level <= ARTICORE_GRIPPER_FORCE_DEFAULT;
+    const float ratio = lighter
+        ? static_cast<float>(level - ARTICORE_GRIPPER_FORCE_MIN) / 4.0f
+        : static_cast<float>(level - ARTICORE_GRIPPER_FORCE_DEFAULT) / 5.0f;
+    const auto interpolate = [=](float low, float normal, float high) {
+      return lighter ? low + (normal - low) * ratio
+                     : normal + (high - normal) * ratio;
+    };
+    values.push_back(ArticoreGripperForceProfile{
+        sizeof(ArticoreGripperForceProfile), gripper->motor, level,
+        interpolate(0.5f, 0.8f, 1.2f),
+        interpolate(1.0f, 1.5f, 2.0f),
+        interpolate(3.0f, 4.0f, 6.0f),
+        interpolate(0.3f, 0.5f, 0.8f),
+        interpolate(1.0f, 2.0f, 3.0f),
+        interpolate(0.2f, 0.5f, 0.7f)});
+  }
+  return values;
 }
 
 std::vector<ArticoreJointSafetyLimits> layered_joint_limits(
@@ -887,6 +903,42 @@ void test_gripper_force_profiles_are_product_configuration() {
   }
   require(immutable_after_connect,
           "force calibration cannot be changed by a runtime motion client");
+}
+
+void test_legacy_three_level_gripper_profiles_expand_to_ten_levels() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100),
+      g_left_controller, g_right_controller, motors);
+  const auto full = gripper_force_profiles(motors);
+  auto low = full.front();
+  auto normal = full[4];
+  auto high = full.back();
+  low.force_level = 1;
+  normal.force_level = 2;
+  high.force_level = 3;
+  const ArticoreGripperForceProfile legacy[] = {low, normal, high};
+  runtime.configure_gripper_force_profiles(legacy, 3);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+
+  ArticoreGripperCommand command{
+      sizeof(ArticoreGripperCommand), motors[2].motor,
+      1000.0f, 500.0f, 2};
+  runtime.set_gripper_commands(&command, 1);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return !driver.last_mit.empty() &&
+                   driver.last_mit[0].motor == motors[2].motor &&
+                   driver.last_mit[0].stiffness == 4.0f;
+          }),
+          "legacy NORMAL command value 2 retains the level-5 calibration");
+  command.force_level = ARTICORE_GRIPPER_FORCE_LEVEL_7;
+  runtime.set_gripper_commands(&command, 1);
+  require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
+          "legacy three-level profiles expose interpolated force levels 1..10");
 }
 
 void test_estop_obeys_configured_gripper_hold_policy() {
@@ -2979,6 +3031,7 @@ int main() {
     RUN_TEST(test_gripper_command_profiles_and_bidirectional_ramp);
     RUN_TEST(test_gripper_only_command_satisfies_enable_grace_without_masking_arm_watchdog);
     RUN_TEST(test_gripper_force_profiles_are_product_configuration);
+    RUN_TEST(test_legacy_three_level_gripper_profiles_expand_to_ten_levels);
     RUN_TEST(test_estop_obeys_configured_gripper_hold_policy);
     RUN_TEST(test_estop_can_disable_gripper_by_product_policy);
     RUN_TEST(test_feedback_fault_uses_protective_hold_without_linked_disable);

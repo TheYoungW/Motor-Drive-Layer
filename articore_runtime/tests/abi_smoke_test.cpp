@@ -42,12 +42,13 @@ int main() {
                             ARTICORE_CAP_TRAJECTORY_SETTLING |
                             ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD |
                             ARTICORE_CAP_LAYERED_JOINT_LIMITS |
-                            ARTICORE_CAP_GRIPPER_COMMAND_PROFILES;
+                            ARTICORE_CAP_GRIPPER_COMMAND_PROFILES |
+                            ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS;
   if (!create_ex || !enable_report || !submit_pos_vel_ex || !submit_mit_ex ||
       !start_trajectory_ex || !cancel_trajectory || !disable_report ||
       !configure_trajectory_execution || !configure_joint_safety_limits ||
       !start_trajectory_report || !configure_gripper_force_profiles ||
-      !set_gripper_commands || version != 0x0001000AU ||
+      !set_gripper_commands || version != 0x0001000BU ||
       (capabilities & required) != required) {
     std::cerr << "Articore runtime ABI metadata is incomplete\n";
     return 1;

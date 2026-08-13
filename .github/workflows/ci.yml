@@ -77,7 +77,7 @@ jobs:
           assert motor_drive_layer.abi_capabilities()["features"]["register_metadata"] is True
           runtime_path = motor_drive_layer.articore_runtime_library_path()
           assert runtime_path.endswith("libarticore_runtime.so")
-          assert motor_drive_layer.articore_runtime_abi_version() == "1.10"
+          assert motor_drive_layer.articore_runtime_abi_version() == "1.11"
           assert motor_drive_layer.articore_runtime_capabilities()["safe_hold"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["current_position_hold"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["realtime_joint_mailbox"] is True
@@ -92,6 +92,7 @@ jobs:
           assert motor_drive_layer.articore_runtime_capabilities()["trajectory_replace_or_hold"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["layered_joint_limits"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["gripper_command_profiles"] is True
+          assert motor_drive_layer.articore_runtime_capabilities()["gripper_force_10_levels"] is True
           vendor_path = motor_drive_layer.ensure_dm_device_runtime(auto_download=False)
           assert vendor_path.parent.name == "v1.0.0"
           assert vendor_path.is_file()

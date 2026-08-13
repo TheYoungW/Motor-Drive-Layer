@@ -42,7 +42,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (1U << 16) | 10U;
+  return (1U << 16) | 11U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -65,7 +65,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_TRAJECTORY_SETTLING |
          ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD |
          ARTICORE_CAP_LAYERED_JOINT_LIMITS |
-         ARTICORE_CAP_GRIPPER_COMMAND_PROFILES;
+         ARTICORE_CAP_GRIPPER_COMMAND_PROFILES |
+         ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS;
 }
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(

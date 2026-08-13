@@ -131,8 +131,12 @@ class SafetyRuntime {
     float requested_position = 0.0f;
     float requested_speed = 1000.0f;
     float command_speed = 0.0f;
-    ArticoreGripperForceLevel force_level = ARTICORE_GRIPPER_FORCE_NORMAL;
+    ArticoreGripperForceLevel force_level = ARTICORE_GRIPPER_FORCE_DEFAULT;
     std::unordered_map<int32_t, GripperForceProfile> force_profiles;
+    // ABI 1.10 callers encode LOW/NORMAL/HIGH as 1/2/3. When their legacy
+    // three-profile calibration is detected, preserve those command meanings
+    // while still making interpolated levels 4..10 available.
+    bool legacy_force_level_mapping = false;
     float command_position = 0.0f;
     bool has_gripper_target = false;
     bool contact_detected = false;

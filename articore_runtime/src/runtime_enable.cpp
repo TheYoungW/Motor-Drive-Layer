@@ -281,7 +281,7 @@ void SafetyRuntime::initialize_enabled_state(ArticoreControlMode mode) {
     if (motor.descriptor.is_gripper) {
       motor.requested_speed = 1000.0f;
       motor.command_speed = motor.descriptor.close_speed;
-      motor.force_level = ARTICORE_GRIPPER_FORCE_NORMAL;
+      motor.force_level = ARTICORE_GRIPPER_FORCE_DEFAULT;
     }
   }
   next_feedback_check_ = enabled_at_;

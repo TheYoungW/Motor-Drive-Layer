@@ -56,6 +56,10 @@ enum ArticoreRuntimeCapability {
   // ABI 1.10 adds atomic per-command gripper speed/force selection and
   // product-owned force calibration profiles.
   ARTICORE_CAP_GRIPPER_COMMAND_PROFILES = 1ULL << 19,
+  // ABI 1.11 expands the product-independent gripper force selector to ten
+  // calibrated levels. Level 1 is lightest, level 10 strongest, and level 5
+  // is the default used by the legacy opening-only API.
+  ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS = 1ULL << 20,
 };
 
 enum ArticorePresenceState {
@@ -136,9 +140,23 @@ enum ArticoreGripperFaultAction {
 };
 
 enum ArticoreGripperForceLevel {
-  ARTICORE_GRIPPER_FORCE_LOW = 1,
-  ARTICORE_GRIPPER_FORCE_NORMAL = 2,
-  ARTICORE_GRIPPER_FORCE_HIGH = 3,
+  ARTICORE_GRIPPER_FORCE_LEVEL_1 = 1,
+  ARTICORE_GRIPPER_FORCE_LEVEL_2 = 2,
+  ARTICORE_GRIPPER_FORCE_LEVEL_3 = 3,
+  ARTICORE_GRIPPER_FORCE_LEVEL_4 = 4,
+  ARTICORE_GRIPPER_FORCE_LEVEL_5 = 5,
+  ARTICORE_GRIPPER_FORCE_LEVEL_6 = 6,
+  ARTICORE_GRIPPER_FORCE_LEVEL_7 = 7,
+  ARTICORE_GRIPPER_FORCE_LEVEL_8 = 8,
+  ARTICORE_GRIPPER_FORCE_LEVEL_9 = 9,
+  ARTICORE_GRIPPER_FORCE_LEVEL_10 = 10,
+  ARTICORE_GRIPPER_FORCE_MIN = ARTICORE_GRIPPER_FORCE_LEVEL_1,
+  ARTICORE_GRIPPER_FORCE_DEFAULT = ARTICORE_GRIPPER_FORCE_LEVEL_5,
+  ARTICORE_GRIPPER_FORCE_MAX = ARTICORE_GRIPPER_FORCE_LEVEL_10,
+  // Source-level convenience aliases. New bindings should expose 1..10.
+  ARTICORE_GRIPPER_FORCE_LOW = ARTICORE_GRIPPER_FORCE_MIN,
+  ARTICORE_GRIPPER_FORCE_NORMAL = ARTICORE_GRIPPER_FORCE_DEFAULT,
+  ARTICORE_GRIPPER_FORCE_HIGH = ARTICORE_GRIPPER_FORCE_MAX,
 };
 
 typedef struct ArticorePosVelCommand {
@@ -568,8 +586,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_gripper_openings(
     ArticoreRuntime* runtime,
     const ArticoreGripperTarget* targets,
     uint32_t target_count);
-// ABI 1.10 product force calibration. A complete LOW/NORMAL/HIGH profile set
-// for every active gripper is fixed before connect. Contact/stall windows,
+// ABI 1.11 product force calibration. A complete level 1..10 profile set for
+// every active gripper is fixed before connect. Contact/stall windows,
 // retreat distance, persistence times, and retry timing remain private product
 // safety parameters in ArticoreMotorDescriptor and cannot be changed by a
 // per-motion command.
