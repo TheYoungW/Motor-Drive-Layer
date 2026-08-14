@@ -41,7 +41,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 1U;
+  return (2U << 16) | 2U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -63,7 +63,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS |
          ARTICORE_CAP_JOINT_MIT_POSITION |
          ARTICORE_CAP_JOINT_PV_POSITION |
-         ARTICORE_CAP_EFFECTIVE_CONTROL_RATE;
+         ARTICORE_CAP_EFFECTIVE_CONTROL_RATE |
+         ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES;
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_hz(
@@ -105,7 +106,7 @@ ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex(
     std::vector<ArticoreMotorDescriptor> descriptors(motors, motors + motor_count);
     auto value = std::make_unique<articore::SafetyRuntime>(
         *config, *motor_api, controller_group, left_controller, right_controller,
-        std::move(descriptors), controller_enable_all, motor_enable);
+        std::move(descriptors), controller_enable_all, motor_enable, true);
     g_last_error = "ok";
     return new ArticoreRuntime(std::move(value));
   } catch (const std::exception& error) {
@@ -232,6 +233,15 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_gripper_openings(
     uint32_t target_count) {
   return call([&] {
     checked(runtime).set_gripper_openings(targets, target_count);
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_gripper_products(
+    ArticoreRuntime* runtime,
+    const ArticoreGripperProductBinding* bindings,
+    uint32_t binding_count) {
+  return call([&] {
+    checked(runtime).configure_gripper_products(bindings, binding_count);
   });
 }
 

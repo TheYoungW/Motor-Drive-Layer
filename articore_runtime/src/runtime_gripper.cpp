@@ -1,9 +1,11 @@
 #include "runtime.hpp"
 #include "runtime_utils.hpp"
+#include "gripper_product_profiles.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -46,6 +48,121 @@ SafetyRuntime::active_gripper_profile(const MotorRecord& motor) {
   return profile->second;
 }
 
+void SafetyRuntime::configure_gripper_products(
+    const ArticoreGripperProductBinding* bindings, uint32_t count) {
+  const auto gripper_count = static_cast<uint32_t>(std::count_if(
+      motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
+        return motor.descriptor.is_gripper != 0;
+      }));
+  if (gripper_count == 0) {
+    if (count != 0) {
+      throw std::invalid_argument(
+          "gripper product bindings were supplied without active grippers");
+    }
+    return;
+  }
+  if (!bindings || count != gripper_count) {
+    throw std::invalid_argument(
+        "gripper product bindings must cover every active gripper exactly once");
+  }
+
+  struct PendingBinding {
+    MotorRecord* motor;
+    const GripperProductProfile* profile;
+    std::string profile_id;
+  };
+  std::vector<PendingBinding> pending;
+  pending.reserve(count);
+  std::set<void*> unique;
+  int32_t fault_action = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto& binding = bindings[i];
+    const auto end = std::find(
+        std::begin(binding.profile_id), std::end(binding.profile_id), '\0');
+    if (binding.struct_size < sizeof(ArticoreGripperProductBinding) ||
+        !binding.motor || end == std::end(binding.profile_id) ||
+        end == std::begin(binding.profile_id) ||
+        !unique.insert(binding.motor).second) {
+      throw std::invalid_argument("invalid gripper product binding");
+    }
+    const std::string profile_id(binding.profile_id, end);
+    const auto* profile = find_builtin_gripper_product_profile(profile_id.c_str());
+    if (!profile) {
+      throw std::invalid_argument("unknown built-in gripper profile_id: " +
+                                  profile_id);
+    }
+    const auto motor = std::find_if(
+        motors_.begin(), motors_.end(), [&](MotorRecord& candidate) {
+          return candidate.descriptor.is_gripper &&
+                 candidate.descriptor.motor == binding.motor;
+        });
+    if (motor == motors_.end()) {
+      throw std::invalid_argument(
+          "gripper product binding references an unknown gripper motor");
+    }
+    if (fault_action != 0 && fault_action != profile->fault_action) {
+      throw std::invalid_argument(
+          "active gripper product profiles have incompatible fault actions");
+    }
+    fault_action = profile->fault_action;
+    pending.push_back(PendingBinding{&*motor, profile, profile_id});
+  }
+
+  std::lock_guard<std::mutex> command_lock(command_mutex_);
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  if (state_ != ARTICORE_DISCONNECTED) {
+    throw std::runtime_error("gripper product profiles are fixed after connect");
+  }
+  for (const auto& binding : pending) {
+    auto& motor = *binding.motor;
+    const auto& profile = *binding.profile;
+    auto& descriptor = motor.descriptor;
+    descriptor.open_position = profile.open_position;
+    descriptor.closed_position = profile.closed_position;
+    descriptor.close_speed = profile.max_speed;
+    descriptor.motion_window_ms = profile.motion_window_ms;
+    descriptor.stall_movement = profile.stall_movement;
+    descriptor.min_position_error = profile.min_position_error;
+    descriptor.contact_hold_ms = profile.contact_hold_ms;
+    descriptor.overload_hold_ms = profile.overload_hold_ms;
+    descriptor.hold_offset = profile.hold_offset;
+    descriptor.retreat_distance = profile.retreat_distance;
+    descriptor.retreat_retry_ms = profile.retreat_retry_ms;
+    descriptor.max_step_interval_ms = profile.max_step_interval_ms;
+    descriptor.closing_direction =
+        profile.closed_position > profile.open_position ? 1.0f : -1.0f;
+    descriptor.lower_position =
+        std::min(profile.closed_position, profile.open_position);
+    descriptor.upper_position =
+        std::max(profile.closed_position, profile.open_position);
+
+    motor.force_profiles.clear();
+    for (std::size_t level = 0; level < profile.force_levels.size(); ++level) {
+      const auto& calibrated = profile.force_levels[level];
+      motor.force_profiles.emplace(
+          static_cast<int32_t>(level) + ARTICORE_GRIPPER_FORCE_MIN,
+          MotorRecord::GripperForceProfile{
+              calibrated.contact_torque, calibrated.overload_torque,
+              calibrated.moving_kp, calibrated.moving_kd,
+              calibrated.hold_kp, calibrated.hold_kd});
+    }
+    const auto& normal = profile.force_levels[
+        ARTICORE_GRIPPER_FORCE_DEFAULT - ARTICORE_GRIPPER_FORCE_MIN];
+    descriptor.contact_torque = normal.contact_torque;
+    descriptor.overload_torque = normal.overload_torque;
+    descriptor.normal_kp = normal.moving_kp;
+    descriptor.normal_kd = normal.moving_kd;
+    descriptor.safe_kp = normal.hold_kp;
+    descriptor.safe_kd = normal.hold_kd;
+    motor.force_level = ARTICORE_GRIPPER_FORCE_DEFAULT;
+    motor.legacy_force_level_mapping = false;
+    motor.command_speed = profile.max_speed;
+    motor.gripper_product_profile_id = binding.profile_id;
+    motor.gripper_product_profile_bound = true;
+  }
+  config_.gripper_fault_action = fault_action;
+}
+
 void SafetyRuntime::configure_gripper_force_profiles(
     const ArticoreGripperForceProfile* profiles, uint32_t count) {
   if (!profiles || count == 0) {
@@ -55,6 +172,14 @@ void SafetyRuntime::configure_gripper_force_profiles(
   std::lock_guard<std::mutex> state_lock(state_mutex_);
   if (state_ != ARTICORE_DISCONNECTED) {
     throw std::runtime_error("gripper force profiles are fixed after connect");
+  }
+  if (require_gripper_product_profiles_ &&
+      std::any_of(motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
+        return motor.descriptor.is_gripper &&
+               !motor.gripper_product_profile_bound;
+      })) {
+    throw std::runtime_error(
+        "bind built-in gripper products before applying force-profile overrides");
   }
   const auto gripper_count = static_cast<uint32_t>(std::count_if(
       motors_.begin(), motors_.end(), [](const MotorRecord& motor) {

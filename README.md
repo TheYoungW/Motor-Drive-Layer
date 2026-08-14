@@ -23,6 +23,9 @@ Motor-Drive-Layer is the native C++ control foundation shared by Python, C++ and
 - Atomic per-call gripper commands carry only opening, normalized speed, and a calibrated force
   level. The Runtime ramps both opening and closing directions and keeps stall/retreat timing as
   private product safety configuration.
+- Runtime ABI 2.2 provides the built-in `yunyi_gripper_v1` product profile, so SDKs bind a profile
+  ID before connect instead of copying gripper mapping, gains, thresholds, timing, retreat, force
+  tables, and fault policy into Python configuration.
 - A single non-preemptive native trajectory slot: ordinary concurrent motion requests are rejected
   instead of queued, while disable, estop, close, and safety faults retain immediate authority.
 - Protective fault hold: one missed feedback sample keeps the current arm and gripper outputs;

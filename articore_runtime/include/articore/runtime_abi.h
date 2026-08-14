@@ -59,6 +59,9 @@ enum ArticoreRuntimeCapability {
   // ABI 2.1 exposes the effective native control rate. Dual-arm runtimes cap
   // the requested rate at 400 Hz for the verified shared-adapter envelope.
   ARTICORE_CAP_EFFECTIVE_CONTROL_RATE = 1ULL << 23,
+  // ABI 2.2 moves product gripper calibration and safety policy into named,
+  // immutable motor-layer profiles selected before connect.
+  ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES = 1ULL << 24,
 };
 
 enum ArticorePresenceState {
@@ -189,6 +192,15 @@ typedef struct ArticoreGripperForceProfile {
   float hold_kp;
   float hold_kd;
 } ArticoreGripperForceProfile;
+
+typedef struct ArticoreGripperProductBinding {
+  // Caller initializes this to sizeof(ArticoreGripperProductBinding).
+  uint32_t struct_size;
+  void* motor;
+  // NUL-terminated built-in profile identifier. Runtime copies this value;
+  // no caller-owned string lifetime is retained.
+  char profile_id[64];
+} ArticoreGripperProductBinding;
 
 typedef struct ArticoreJointControlConfig {
   void* motor;
@@ -543,11 +555,19 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_gripper_openings(
     ArticoreRuntime* runtime,
     const ArticoreGripperTarget* targets,
     uint32_t target_count);
+// ABI 2.2 product binding. Every active gripper must be covered exactly once
+// before connect. No binding is required when the runtime has no grippers.
+// The built-in yunyi_gripper_v1 profile owns opening conversion, motion ramp,
+// contact/stall/overload protection, retreat behavior, ten force levels, gains,
+// and fault action.
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_gripper_products(
+    ArticoreRuntime* runtime,
+    const ArticoreGripperProductBinding* bindings,
+    uint32_t binding_count);
 // ABI 1.11 product force calibration. A complete level 1..10 profile set for
-// every active gripper is fixed before connect. Contact/stall windows,
-// retreat distance, persistence times, and retry timing remain private product
-// safety parameters in ArticoreMotorDescriptor and cannot be changed by a
-// per-motion command.
+// every active gripper is fixed before connect. This remains available as an
+// advanced/test override after a built-in product profile has been bound; it
+// is not required for normal product integration.
 ARTICORE_RUNTIME_API int32_t articore_runtime_configure_gripper_force_profiles(
     ArticoreRuntime* runtime,
     const ArticoreGripperForceProfile* profiles,

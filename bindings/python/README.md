@@ -10,6 +10,10 @@ Use `articore_runtime_abi_version()` and `articore_runtime_capabilities()` to in
 runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 2.1 adds an
 effective-control-rate capability and native query: dual-arm runtimes cap requests above 400 Hz at
 the verified stable 400 Hz shared-adapter envelope, while single-side runtimes remain configurable.
+Runtime ABI 2.2 adds built-in gripper product profiles. SDKs bind every installed gripper to
+`yunyi_gripper_v1` with `articore_runtime_configure_gripper_products()` before `connect()`; Python
+no longer supplies motor-position mapping, MIT gains, contact/stall/overload timing, retreat values,
+the ten force calibrations, or the gripper fault policy.
 Runtime ABI 2.0 exposes only
 PV and MIT arm control and removes the former trajectory ABI. The ordinary `joint_pv_position`
 and `joint_mit_position` capabilities accept one-shot, complete-arm position targets with one

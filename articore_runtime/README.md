@@ -119,21 +119,27 @@ position, velocity, and torque are not compared with command limits and cannot t
 FAULT. Any future mechanical feedback protection must use separate product thresholds, tolerances,
 and persistence rules instead of reusing command validation.
 
+Runtime ABI 2.2 adds built-in gripper product calibration and advertises
+`builtin_gripper_product_profiles`. Before `connect()`, a production Runtime binds every installed
+gripper with `articore_runtime_configure_gripper_products()`. The built-in
+`yunyi_gripper_v1` profile owns the complete mapping, maximum speed, contact/stall/overload
+thresholds and timing, hold/retreat behavior, moving/holding MIT gains, all ten force levels, and
+the fault action. The Runtime copies `profile_id`; it never depends on caller string lifetime.
+An unknown profile, a partial active-gripper binding, or a post-connect configuration attempt is
+rejected. A Runtime with no active grippers needs no binding.
+
 Runtime ABI 1.10 adds `articore_runtime_set_gripper_commands()`. Each complete active-gripper
 transaction contains only `opening`, normalized `speed`, and a stable `force_level`; all fields
 become visible to the persistent worker under one command lock. Runtime ABI 1.11 defines the public
 force selector as ten calibrated integer levels: 1 is lightest, 10 is strongest, and 5 is the
 compatibility default. Speed
 uses the same product-independent scale as opening: 1000 means the maximum gripper speed calibrated
-in the product motor descriptor. Both opening and closing advance from the previous native command
+by its bound product profile. Both opening and closing advance from the previous native command
 position through the same bounded ramp, so neither direction jumps directly to its endpoint.
 
-Product bindings configure all ten force levels before connect with
-`articore_runtime_configure_gripper_force_profiles()`. A profile maps the public level to contact
-and overload torque thresholds plus moving and holding MIT gains. The contact motion window,
-stall displacement, minimum target error, contact/overload persistence, hold offset, retreat
-distance, and retreat retry interval remain fixed in the product motor descriptor and cannot be
-overridden by a per-motion command. Changing speed or force level during motion is atomic; a
+`articore_runtime_configure_gripper_force_profiles()` remains available as an advanced/test
+override after a built-in product has been bound; ordinary SDK product setup does not need it.
+Changing speed or force level during motion is atomic; a
 force change resets only threshold-dependent contact evidence while motion continues. Existing
 contact detection, low-gain holding, overload retreat, feedback supervision, and whole-Runtime
 safety-state integration remain active. The legacy opening-only call is preserved and now uses the
@@ -144,8 +150,9 @@ light/normal/strong calibration anchors and deterministically interpolates them 
 For a Runtime configured through that fallback, legacy command values `1/2/3` retain their
 light/normal/strong meanings (mapped to new levels `1/5/10`); values `4..10` address the expanded
 levels directly. This removes semantic surprises for an already-built ABI 1.10 SDK.
-New product bindings should submit all ten explicitly; this fallback only prevents an older SDK
-from becoming unable to connect immediately after the motor package is upgraded.
+The old three/ten-level override remains ABI-compatible for advanced tests. Production C ABI
+runtimes now require the built-in product binding instead of requiring SDKs to reproduce the
+calibration table.
 
 When an arm enters safe hold, the runtime snapshots every arm motor's current position from the
 non-blocking feedback cache. PV safe hold uses the captured positions with a dedicated low velocity limit.

@@ -31,13 +31,14 @@ def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
     assert hasattr(library, "articore_runtime_set_joint_mit")
     assert hasattr(library, "articore_runtime_set_joint_pv")
     assert hasattr(library, "articore_runtime_get_control_hz")
+    assert hasattr(library, "articore_runtime_configure_gripper_products")
     assert hasattr(library, "articore_runtime_configure_joint_safety_limits")
     assert hasattr(library, "articore_runtime_configure_gripper_force_profiles")
     assert hasattr(library, "articore_runtime_set_gripper_commands")
     assert not hasattr(library, "articore_runtime_start_joint_trajectory")
     assert not hasattr(library, "articore_runtime_cancel_trajectory")
-    assert library.articore_runtime_abi_version() == 0x00020001
-    assert abi.articore_runtime_abi_version() == "2.1"
+    assert library.articore_runtime_abi_version() == 0x00020002
+    assert abi.articore_runtime_abi_version() == "2.2"
     assert abi.articore_runtime_capabilities()["gripper_protection"] is True
     assert abi.articore_runtime_capabilities()["current_position_hold"] is True
     assert abi.articore_runtime_capabilities()["realtime_joint_mailbox"] is True
@@ -51,6 +52,7 @@ def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
     assert abi.articore_runtime_capabilities()["joint_mit_position"] is True
     assert abi.articore_runtime_capabilities()["joint_pv_position"] is True
     assert abi.articore_runtime_capabilities()["effective_control_rate"] is True
+    assert abi.articore_runtime_capabilities()["builtin_gripper_product_profiles"] is True
 
 
 def test_motor_abi_exposes_structured_feedback_error_codes() -> None:

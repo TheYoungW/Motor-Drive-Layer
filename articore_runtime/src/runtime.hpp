@@ -42,7 +42,8 @@ class SafetyRuntime {
                 void* right_controller,
                 std::vector<ArticoreMotorDescriptor> motors,
                 ArticoreControllerCallFn controller_enable_all = nullptr,
-                ArticoreControllerCallFn motor_enable = nullptr);
+                ArticoreControllerCallFn motor_enable = nullptr,
+                bool require_gripper_product_profiles = false);
   ~SafetyRuntime();
 
   SafetyRuntime(const SafetyRuntime&) = delete;
@@ -74,6 +75,8 @@ class SafetyRuntime {
                             uint32_t count);
   void configure_gripper_force_profiles(
       const ArticoreGripperForceProfile* profiles, uint32_t count);
+  void configure_gripper_products(
+      const ArticoreGripperProductBinding* bindings, uint32_t count);
   void set_gripper_commands(const ArticoreGripperCommand* commands,
                             uint32_t count);
   void report_feedback_failure(uint8_t side, const std::string& reason);
@@ -120,6 +123,8 @@ class SafetyRuntime {
     float command_speed = 0.0f;
     ArticoreGripperForceLevel force_level = ARTICORE_GRIPPER_FORCE_DEFAULT;
     std::unordered_map<int32_t, GripperForceProfile> force_profiles;
+    std::string gripper_product_profile_id;
+    bool gripper_product_profile_bound = false;
     // ABI 1.10 callers encode LOW/NORMAL/HIGH as 1/2/3. When their legacy
     // three-profile calibration is detected, preserve those command meanings
     // while still making interpolated levels 4..10 available.
@@ -255,6 +260,7 @@ class SafetyRuntime {
   void* controllers_[2]{};
   ArticoreControllerCallFn controller_enable_all_ = nullptr;
   ArticoreControllerCallFn motor_enable_ = nullptr;
+  bool require_gripper_product_profiles_ = false;
   bool active_sides_[2]{};
   std::vector<MotorRecord> motors_;
   std::map<std::string, ArticorePresenceState> presence_;

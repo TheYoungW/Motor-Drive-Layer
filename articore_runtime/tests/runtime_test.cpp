@@ -23,6 +23,20 @@ void require(bool condition, const char* message) {
   if (!condition) throw std::runtime_error(message);
 }
 
+template <typename Function>
+void require_throws(const Function& function, const char* expected,
+                    const char* message) {
+  try {
+    function();
+  } catch (const std::exception& error) {
+    if (!expected || std::string(error.what()).find(expected) !=
+                         std::string::npos) {
+      return;
+    }
+  }
+  throw std::runtime_error(message);
+}
+
 struct FakeMotor {
   uint8_t status = 1;
   float position = 0.0f;
@@ -382,6 +396,16 @@ std::vector<ArticoreGripperForceProfile> gripper_force_profiles(
         interpolate(0.2f, 0.5f, 0.7f)});
   }
   return values;
+}
+
+ArticoreGripperProductBinding gripper_product_binding(
+    void* motor, const char* profile_id = "yunyi_gripper_v1") {
+  ArticoreGripperProductBinding binding{};
+  binding.struct_size = sizeof(binding);
+  binding.motor = motor;
+  std::strncpy(binding.profile_id, profile_id,
+               sizeof(binding.profile_id) - 1);
+  return binding;
 }
 
 std::vector<ArticoreJointSafetyLimits> layered_joint_limits(
@@ -885,6 +909,141 @@ void test_gripper_force_profiles_are_product_configuration() {
   }
   require(immutable_after_connect,
           "force calibration cannot be changed by a runtime motion client");
+}
+
+void test_builtin_yunyi_gripper_profile_owns_product_calibration() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.gripper_fault_action = 0;
+  auto& source_gripper = motors[2];
+  source_gripper.safe_kp = 0.0f;
+  source_gripper.safe_kd = 0.0f;
+  source_gripper.overload_torque = 0.0f;
+  source_gripper.retreat_distance = 0.0f;
+  source_gripper.contact_torque = 0.0f;
+  source_gripper.motion_window_ms = 0;
+  source_gripper.stall_movement = 0.0f;
+  source_gripper.min_position_error = 0.0f;
+  source_gripper.contact_hold_ms = 0;
+  source_gripper.overload_hold_ms = 0;
+  source_gripper.hold_offset = 0.0f;
+  source_gripper.retreat_retry_ms = 0;
+  source_gripper.open_position = 0.0f;
+  source_gripper.closed_position = 0.0f;
+  source_gripper.normal_kp = 0.0f;
+  source_gripper.normal_kd = 0.0f;
+  source_gripper.close_speed = 0.0f;
+  source_gripper.max_step_interval_ms = 0;
+  source_gripper.closing_direction = 0.0f;
+  source_gripper.lower_position = 0.0f;
+  source_gripper.upper_position = 0.0f;
+
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, true);
+  require_throws([&] { runtime.connect(); }, "profile is required",
+                 "production runtime rejects an unbound active gripper");
+
+  auto unknown = gripper_product_binding(
+      source_gripper.motor, "unknown_gripper_profile");
+  require_throws(
+      [&] { runtime.configure_gripper_products(&unknown, 1); },
+      "unknown built-in gripper profile_id",
+      "unknown built-in profile is rejected before connect");
+
+  auto binding = gripper_product_binding(source_gripper.motor);
+  runtime.configure_gripper_products(&binding, 1);
+  runtime.connect();
+  require_throws(
+      [&] { runtime.configure_gripper_products(&binding, 1); },
+      "fixed after connect",
+      "product profile cannot change after connect");
+  runtime.enable(ARTICORE_MODE_PV);
+
+  ArticoreGripperCommand command{
+      sizeof(ArticoreGripperCommand), source_gripper.motor,
+      1000.0f, 1.0f, ARTICORE_GRIPPER_FORCE_LEVEL_1};
+  runtime.set_gripper_commands(&command, 1);
+  float slow_position = 0.0f;
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            if (driver.last_mit.size() != 1 ||
+                driver.last_mit[0].motor != source_gripper.motor ||
+                driver.last_mit[0].target_position <= 2.0f) {
+              return false;
+            }
+            slow_position = driver.last_mit[0].target_position;
+            return slow_position <= 2.00025f &&
+                   std::abs(driver.last_mit[0].stiffness - 3.0f) < 1e-6f &&
+                   std::abs(driver.last_mit[0].damping - 0.3f) < 1e-6f;
+          }),
+          "speed=1 maps to 0.005 rad/s and force level 1 calibration");
+
+  command.speed = 1000.0f;
+  command.force_level = ARTICORE_GRIPPER_FORCE_LEVEL_10;
+  runtime.set_gripper_commands(&command, 1);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_mit.size() == 1 &&
+                   driver.last_mit[0].motor == source_gripper.motor &&
+                   driver.last_mit[0].target_position > slow_position + 0.001f &&
+                   driver.last_mit[0].target_position <= 2.64f &&
+                   std::abs(driver.last_mit[0].stiffness - 6.0f) < 1e-6f &&
+                   std::abs(driver.last_mit[0].damping - 0.8f) < 1e-6f;
+          }),
+          "speed=1000 maps to 5 rad/s and force level 10 calibration");
+
+  runtime.estop("profile fault-action check");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.motors[motors[0].motor].status == 0 &&
+                driver.motors[motors[1].motor].status == 0 &&
+                driver.motors[source_gripper.motor].status == 1,
+            "yunyi_gripper_v1 owns the hold-on-fault policy");
+  }
+}
+
+void test_builtin_gripper_binding_is_complete_and_optional() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto left_gripper = motors[2];
+  left_gripper.motor = reinterpret_cast<void*>(0x204);
+  left_gripper.side = 0;
+  std::memset(left_gripper.name, 0, sizeof(left_gripper.name));
+  std::strncpy(left_gripper.name, "left/gripper",
+               sizeof(left_gripper.name) - 1);
+  driver.motors[left_gripper.motor] = FakeMotor{1, 1.0f, 0.0f, 0.0f, 0, true};
+  motors.push_back(left_gripper);
+  auto cfg = config();
+  cfg.gripper_fault_action = 0;
+  articore::SafetyRuntime dual(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, true);
+  ArticoreGripperProductBinding bindings[] = {
+      gripper_product_binding(left_gripper.motor),
+      gripper_product_binding(motors[2].motor),
+  };
+  require_throws(
+      [&] { dual.configure_gripper_products(bindings, 1); },
+      "cover every active gripper",
+      "partial dual-gripper binding is rejected atomically");
+  dual.configure_gripper_products(bindings, 2);
+  dual.connect();
+  require(dual.health().state == ARTICORE_READY,
+          "left and right grippers share one built-in profile");
+
+  auto arm_only = descriptors(driver);
+  arm_only.resize(2);
+  articore::SafetyRuntime no_gripper(
+      cfg, api(), reinterpret_cast<void*>(0x101), g_left_controller,
+      g_right_controller, arm_only, nullptr, nullptr, true);
+  no_gripper.configure_gripper_products(nullptr, 0);
+  no_gripper.connect();
+  require(no_gripper.health().state == ARTICORE_READY,
+          "a runtime without installed grippers needs no product binding");
 }
 
 void test_legacy_three_level_gripper_profiles_expand_to_ten_levels() {
@@ -2669,6 +2828,8 @@ int main() {
     RUN_TEST(test_gripper_command_profiles_and_bidirectional_ramp);
     RUN_TEST(test_gripper_only_command_satisfies_enable_grace_without_masking_arm_watchdog);
     RUN_TEST(test_gripper_force_profiles_are_product_configuration);
+    RUN_TEST(test_builtin_yunyi_gripper_profile_owns_product_calibration);
+    RUN_TEST(test_builtin_gripper_binding_is_complete_and_optional);
     RUN_TEST(test_legacy_three_level_gripper_profiles_expand_to_ten_levels);
     RUN_TEST(test_estop_obeys_configured_gripper_hold_policy);
     RUN_TEST(test_estop_can_disable_gripper_by_product_policy);

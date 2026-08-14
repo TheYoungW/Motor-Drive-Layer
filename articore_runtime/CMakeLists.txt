@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(
   articore_runtime_core STATIC
+  src/gripper_product_profiles.cpp
   src/runtime.cpp
   src/runtime_commands.cpp
   src/runtime_enable.cpp

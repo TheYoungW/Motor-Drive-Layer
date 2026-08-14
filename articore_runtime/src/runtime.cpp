@@ -26,9 +26,11 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
                              void* right_controller,
                              std::vector<ArticoreMotorDescriptor> motors,
                              ArticoreControllerCallFn controller_enable_all,
-                             ArticoreControllerCallFn motor_enable)
+                             ArticoreControllerCallFn motor_enable,
+                             bool require_gripper_product_profiles)
     : config_(config), api_(api), controller_group_(controller_group),
-      controller_enable_all_(controller_enable_all), motor_enable_(motor_enable) {
+      controller_enable_all_(controller_enable_all), motor_enable_(motor_enable),
+      require_gripper_product_profiles_(require_gripper_product_profiles) {
   controllers_[0] = left_controller;
   controllers_[1] = right_controller;
   if (!controller_group_) {
@@ -47,8 +49,6 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
       config_.safe_hold_failure_threshold == 0 ||
       config_.disable_feedback_timeout_ms == 0 ||
       config_.gripper_control_hz == 0 ||
-      (config_.gripper_fault_action != ARTICORE_GRIPPER_FAULT_HOLD &&
-       config_.gripper_fault_action != ARTICORE_GRIPPER_FAULT_DISABLE) ||
       !finite(config_.safe_pv_velocity_limit) ||
       config_.safe_pv_velocity_limit <= 0.0f) {
     throw std::invalid_argument("Articore runtime configuration contains invalid values");
@@ -91,8 +91,17 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
     MotorRecord record;
     record.descriptor = motor;
     if (motor.is_gripper) {
+      // ABI 2.2 production runtimes receive all product-owned values from a
+      // named built-in profile before connect. Direct legacy construction is
+      // retained for internal compatibility tests and advanced embedders.
+      const bool legacy_descriptor = !require_gripper_product_profiles_;
       if (motor.open_position == motor.closed_position ||
           motor.normal_kp <= 0.0f || motor.close_speed <= 0.0f) {
+        if (!legacy_descriptor) {
+          record.gripper_state = ARTICORE_GRIPPER_DISABLED;
+          motors_.push_back(std::move(record));
+          continue;
+        }
         throw std::invalid_argument("invalid active gripper descriptor");
       }
       record.gripper_state = ARTICORE_GRIPPER_DISABLED;
@@ -105,6 +114,15 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
               motor.normal_kp, motor.normal_kd, motor.safe_kp, motor.safe_kd});
     }
     motors_.push_back(std::move(record));
+  }
+  const bool has_gripper = std::any_of(
+      motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
+        return motor.descriptor.is_gripper != 0;
+      });
+  if (has_gripper && !require_gripper_product_profiles_ &&
+      config_.gripper_fault_action != ARTICORE_GRIPPER_FAULT_HOLD &&
+      config_.gripper_fault_action != ARTICORE_GRIPPER_FAULT_DISABLE) {
+    throw std::invalid_argument("invalid legacy gripper fault action");
   }
   if ((!active_sides_[0] && !active_sides_[1]) ||
       (active_sides_[0] && !controllers_[0]) ||
@@ -147,6 +165,16 @@ void SafetyRuntime::connect() {
   std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
   std::lock_guard<std::mutex> lock(state_mutex_);
   if (state_ != ARTICORE_DISCONNECTED) return;
+  if (require_gripper_product_profiles_) {
+    for (const auto& motor : motors_) {
+      if (motor.descriptor.is_gripper &&
+          !motor.gripper_product_profile_bound) {
+        throw std::runtime_error(
+            std::string(motor.descriptor.name) +
+            ": built-in gripper product profile is required before connect");
+      }
+    }
+  }
   state_ = ARTICORE_READY;
   fault_latched_ = false;
   disable_confirmed_ = true;

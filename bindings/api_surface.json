@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",
@@ -178,6 +178,7 @@
         "articore_runtime_submit_mit_ex",
         "articore_runtime_set_joint_mit",
         "articore_runtime_set_joint_pv",
+        "articore_runtime_configure_gripper_products",
         "articore_runtime_configure_gripper_force_profiles",
         "articore_runtime_set_gripper_commands",
         "articore_runtime_configure_joint_safety_limits"

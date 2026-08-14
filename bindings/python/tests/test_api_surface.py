@@ -21,6 +21,7 @@ def test_api_surface_includes_binding_parity_metadata() -> None:
     assert "articore_runtime_set_joint_mit" in surface["bindings"]["articore_runtime"]["abi_metadata"]
     assert "articore_runtime_set_joint_pv" in surface["bindings"]["articore_runtime"]["abi_metadata"]
     assert "articore_runtime_get_control_hz" in surface["bindings"]["articore_runtime"]["abi_metadata"]
+    assert "articore_runtime_configure_gripper_products" in surface["bindings"]["articore_runtime"]["abi_metadata"]
     assert "articore_runtime_configure_joint_safety_limits" in surface["bindings"]["articore_runtime"]["abi_metadata"]
     assert "articore_runtime_configure_gripper_force_profiles" in surface["bindings"]["articore_runtime"]["abi_metadata"]
     assert "articore_runtime_set_gripper_commands" in surface["bindings"]["articore_runtime"]["abi_metadata"]

@@ -306,6 +306,7 @@ def articore_runtime_capabilities() -> dict[str, bool]:
         "joint_mit_position": bool(bits & (1 << 21)),
         "joint_pv_position": bool(bits & (1 << 22)),
         "effective_control_rate": bool(bits & (1 << 23)),
+        "builtin_gripper_product_profiles": bool(bits & (1 << 24)),
     }
 
 
