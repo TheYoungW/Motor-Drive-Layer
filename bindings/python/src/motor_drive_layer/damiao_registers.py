@@ -43,7 +43,7 @@ _DAMIAO_RW_REGISTER_DOCS: tuple[tuple[int, str, str, str], ...] = (
     (32, "V_BW", "Speed loop filter bandwidth", "(0.0, 500.0)"),
     (33, "IQ_c1", "Current loop enhancement coefficient", "[100.0, 10000.0]"),
     (34, "VL_c1", "Speed loop enhancement coefficient", "(0.0, 10000.0]"),
-    (35, "can_br", "CAN baud rate code", "[0, 4]"),
+    (35, "can_br", "CAN/CAN-FD baud rate code", "[0, 9]"),
 )
 
 

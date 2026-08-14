@@ -112,6 +112,13 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
     throw std::invalid_argument(
         "Articore runtime requires a controller for every active side");
   }
+  // A shared DM-USB2FDCAN Dual with eight motors per side is fully stable at
+  // 400 Hz; 425 Hz is only the measured edge and 500 Hz loses feedback from
+  // motors late in each batch. Keep single-side runtimes configurable while
+  // enforcing the verified production envelope for dual-arm products.
+  if (active_sides_[0] && active_sides_[1]) {
+    config_.control_hz = std::min(config_.control_hz, 400U);
+  }
   const auto arm_count = static_cast<std::size_t>(std::count_if(
       motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
         return motor.descriptor.is_gripper == 0;

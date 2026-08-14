@@ -19,9 +19,9 @@ The split does not create additional shared libraries or independent state machi
 the existing state owner smaller compilation units with a single lock order and one state owner.
 
 The runtime owns one persistent worker thread. Its arm loop uses `steady_clock` absolute deadlines
-at the configured control rate (500 Hz for Articore products), skips missed periods, and never
+at the effective control rate, skips missed periods, and never
 replays expired frames. Complete PV or MIT commands atomically overwrite a capacity-one
-latest-value mailbox; if A, B, and C arrive before the next tick, only C is sent. The 500 Hz
+latest-value mailbox; if A, B, and C arrive before the next tick, only C is sent. The native
 control path reads the mailbox storage directly without copying a command queue or allocating a
 per-tick snapshot, and keeps transmitting the latest valid target through `ControllerGroup`. Streaming
 commands must be refreshed by the caller and are covered by the native watchdog; explicit
@@ -78,7 +78,7 @@ atomically discards the previous `final_target` and shared velocity while preser
 transmitted `current_target`; the next tick therefore reverses or changes speed without a position
 jump. The final target remains active and is retransmitted until another explicit control
 transaction, disable, close, or estop replaces it. This persistent behavior does not require a
-Python 500 Hz refresh loop. The original `articore_runtime_submit_mit_ex()` remains a raw advanced
+Python refresh loop. The original `articore_runtime_submit_mit_ex()` remains a raw advanced
 control path: q, dq, Kp, Kd, and feedforward torque are sent exactly as provided and receive no
 ordinary-position ramping.
 
@@ -157,13 +157,13 @@ opening targets to motor position, ramps closing motion with the normal MIT gain
 from torque plus a position-motion window and target error, then switches to a low-gain hold with
 zero feedforward torque. Sustained overload produces a rate-limited bounded retreat. No Python
 gripper control loop is involved in the native dual-arm path. During `ENABLED` and `RUNNING`, the
-gripper state machine and MIT output run at the same `control_hz` as the arm (500 Hz for Yunyi).
+gripper state machine and MIT output run at the same effective `control_hz` as the arm.
 Only `SAFE_HOLD` and protective `FAULT` holding use `safe_hold_hz` (normally 100 Hz). The legacy
 `gripper_control_hz` config field remains in the ABI layout but no longer down-samples normal
 gripper control.
 
 Operational faults use protective fault hold rather than linked torque-off. One missing feedback
-sample only increments the failure counters: arms continue their current 500 Hz output and a
+sample only increments the failure counters: arms continue their current control-rate output and a
 gripper retransmits its last successful safe output. At the configured consecutive-failure
 threshold, both arms enter protection. The runtime captures a fresh
 current position where feedback remains usable, falls back to the last successfully transmitted
@@ -191,6 +191,15 @@ The controller feedback callback introduced in runtime ABI 1.3 matches
 expected/received/missing counts plus missing motor IDs. Disable confirmation and safety diagnostics
 consume those fields directly; diagnostic error text is retained for logs but is never parsed to
 choose safety behavior.
+
+Runtime ABI 2.1 exposes `articore_runtime_get_control_hz()` and advertises
+`ARTICORE_CAP_EFFECTIVE_CONTROL_RATE`. A runtime with both arm sides active caps a requested rate
+above 400 Hz to 400 Hz. This is the verified stable envelope for one DM-USB2FDCAN Dual carrying
+eight CAN-FD motors on each channel; testing at 425 Hz reached the shared-adapter throughput edge,
+while 500 Hz produced fixed-order tail-feedback loss. One channel with eight CAN-FD motors was
+complete at 500 Hz. Single-side runtimes and dual runtimes requesting a lower rate keep the caller's
+configured value. Product SDKs should query and report the effective value instead of assuming the
+requested rate was accepted unchanged.
 
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations

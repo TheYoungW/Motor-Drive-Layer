@@ -82,6 +82,7 @@ class SafetyRuntime {
   void estop(const std::string& reason);
   void recover();
   ArticoreSafetyHealth health() const;
+  uint32_t control_hz() const noexcept { return config_.control_hz; }
   void declare_motor_presence(const std::string& role,
                               ArticorePresenceState state);
   ArticorePresenceState motor_presence(const std::string& role) const;

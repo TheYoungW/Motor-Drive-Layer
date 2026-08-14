@@ -7,7 +7,10 @@ SocketCAN, SocketCAN-FD, Damiao serial bridge, and optional DM_Device transports
 `libmotor_abi` is the generic motor layer; `libarticore_runtime` is the separately versioned
 product safety runtime consumed by Articore SDKs.
 Use `articore_runtime_abi_version()` and `articore_runtime_capabilities()` to inspect that product
-runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 2.0 exposes only
+runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 2.1 adds an
+effective-control-rate capability and native query: dual-arm runtimes cap requests above 400 Hz at
+the verified stable 400 Hz shared-adapter envelope, while single-side runtimes remain configurable.
+Runtime ABI 2.0 exposes only
 PV and MIT arm control and removes the former trajectory ABI. The ordinary `joint_pv_position`
 and `joint_mit_position` capabilities accept one-shot, complete-arm position targets with one
 shared rad/s reference speed while preserving raw PV/MIT submission semantics. Runtime ABI 1.11 expands
@@ -32,7 +35,10 @@ transport is cross-platform; SocketCAN transports remain Linux-only.
 DM-USB2FDCAN Dual works with its original `dual_app` firmware through
 `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000,
 data_bitrate=5_000_000)`. CH0 and CH1 are independently selectable, old positional arguments remain
-compatible, and the loader probes both vendor v1.0 and v1.1 ABIs. The matching vendor runtime is
+compatible, and the loader probes both vendor v1.0 and v1.1 ABIs. Different arbitration/data rates
+select CAN-FD frames with BRS; the default therefore uses 1 Mbps arbitration and a 5 Mbps data phase
+with an 87.5% data sample point. Motors must use the matching CAN-FD baud-rate setting. Equal rates
+explicitly select classic CAN framing. The matching vendor runtime is
 included in every platform wheel; no separate download command is required. Set
 `MOTOR_DM_DEVICE_LIB` only when intentionally overriding the packaged runtime.
 The current official macOS v1.1 dylib requires macOS 26, and the packaged wheel is tagged

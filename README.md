@@ -229,7 +229,7 @@ top-level `motor_drive_layer` package.
 | `Controller(channel="can0")` | Open classic Linux SocketCAN. |
 | `Controller.from_socketcanfd(channel="can0")` | Open Linux SocketCAN-FD. |
 | `Controller.from_dm_serial(serial_port="/dev/ttyACM0", baud=1_000_000)` | Open a Damiao serial bridge. |
-| `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000, data_bitrate=5_000_000)` | Open original DM-USB2FDCAN firmware through the vendor DM_Device runtime; CH0 and CH1 are supported. Legacy positional/keyword arguments remain valid. |
+| `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000, data_bitrate=5_000_000)` | Open original DM-USB2FDCAN firmware with CH0/CH1 support. The default sends CAN-FD+BRS frames at 1 Mbps arbitration and 5 Mbps data; motors must use the matching CAN-FD setting. Equal arbitration/data rates explicitly select classic CAN. |
 | `add_damiao_motor(motor_id, feedback_id, model)` | Register a motor on the bus and return `Motor`. |
 | `discover_damiao_motors(candidates, timeout_ms=50, retries=1)` | Probe Required/Optional/Disabled model candidates without enabling or moving them and freeze the present motor set for this connection. |
 | `enable_all()` / `disable_all()` | Enable or disable every registered motor; these send hardware commands. |
@@ -429,6 +429,13 @@ scripts/                    Linux SocketCAN/CAN-FD interface setup helpers
 ## Performance scope
 
 The current hardware has demonstrated complete feedback counts at 500 Hz per motor on seven-motor serial buses. That establishes throughput, not a hard real-time deadline. USB scheduling, the host kernel, adapter firmware, and application scheduling can still produce millisecond-scale latency outliers.
+
+The default DM_Device 1 Mbps/5 Mbps configuration now configures the channel and sends CAN-FD+BRS
+frames, using an 87.5% sample point for the 5 Mbps data phase. Hardware validation demonstrated
+complete 500 Hz feedback with eight motors on one channel. With eight motors on each of CH0 and CH1
+of the same DM-USB2FDCAN Dual, the verified stable full-batch rate is 400 Hz. Articore Runtime ABI
+2.1 therefore caps a dual-arm request above 400 Hz and exposes the actual value through
+`articore_runtime_get_control_hz()`. Single-side runtimes keep their explicitly requested rate.
 
 ## Contributing and security
 

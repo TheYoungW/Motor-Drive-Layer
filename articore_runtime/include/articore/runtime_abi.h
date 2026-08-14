@@ -56,6 +56,9 @@ enum ArticoreRuntimeCapability {
   // ABI 1.13 adds the symmetric ordinary PV position command while retaining
   // raw submit_pos_vel[_ex]() as an internal direct-control capability.
   ARTICORE_CAP_JOINT_PV_POSITION = 1ULL << 22,
+  // ABI 2.1 exposes the effective native control rate. Dual-arm runtimes cap
+  // the requested rate at 400 Hz for the verified shared-adapter envelope.
+  ARTICORE_CAP_EFFECTIVE_CONTROL_RATE = 1ULL << 23,
 };
 
 enum ArticorePresenceState {
@@ -431,6 +434,11 @@ typedef struct ArticoreSafetyHealth {
 // Packed as 0xMMMMmmmm: major in the high 16 bits, minor in the low 16 bits.
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void);
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void);
+// Returns the immutable rate actually used by the native worker. This can be
+// lower than the requested config rate when a dual-arm runtime is capped to
+// the verified shared-adapter limit.
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_hz(
+    ArticoreRuntime* runtime, uint32_t* control_hz);
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
     const ArticoreRuntimeConfig* config,

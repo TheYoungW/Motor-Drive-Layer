@@ -46,6 +46,21 @@ def test_from_dm_device_accepts_preferred_keywords_and_rates(monkeypatch) -> Non
     controller.close()
 
 
+def test_from_dm_device_can_request_explicit_classic_can(monkeypatch) -> None:
+    abi = FakeDmDeviceAbi()
+    monkeypatch.setattr(core_module, "ensure_dm_device_runtime", lambda **_kwargs: Path("vendor.so"))
+    monkeypatch.setattr(core_module, "get_abi", lambda: abi)
+
+    controller = Controller.from_dm_device(
+        channel=0,
+        bitrate=1_000_000,
+        data_bitrate=1_000_000,
+    )
+
+    assert abi.lib.calls == [(b"usb2canfd-dual", b"0", 1_000_000, 1_000_000)]
+    controller.close()
+
+
 def test_from_dm_device_wraps_runtime_setup_errors(monkeypatch) -> None:
     def fail(**_kwargs):
         raise RuntimeError("missing vendor library")

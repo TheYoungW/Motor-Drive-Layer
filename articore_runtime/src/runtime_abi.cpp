@@ -41,7 +41,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16);
+  return (2U << 16) | 1U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -62,7 +62,16 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_GRIPPER_COMMAND_PROFILES |
          ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS |
          ARTICORE_CAP_JOINT_MIT_POSITION |
-         ARTICORE_CAP_JOINT_PV_POSITION;
+         ARTICORE_CAP_JOINT_PV_POSITION |
+         ARTICORE_CAP_EFFECTIVE_CONTROL_RATE;
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_hz(
+    ArticoreRuntime* runtime, uint32_t* control_hz) {
+  return call([&] {
+    if (!control_hz) throw std::invalid_argument("control_hz output is null");
+    *control_hz = checked(runtime).control_hz();
+  });
 }
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(

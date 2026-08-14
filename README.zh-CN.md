@@ -200,7 +200,7 @@ states = [motor.get_state() for motor in motors]
 | `Controller(channel="can0")` | 打开经典 Linux SocketCAN。 |
 | `Controller.from_socketcanfd(channel="can0")` | 打开 Linux SocketCAN-FD。 |
 | `Controller.from_dm_serial(serial_port="/dev/ttyACM0", baud=1_000_000)` | 打开达妙串口桥。 |
-| `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000, data_bitrate=5_000_000)` | 通过厂商 DM_Device 运行库打开原厂固件，支持 CH0/CH1；旧位置参数和旧关键字仍兼容。 |
+| `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000, data_bitrate=5_000_000)` | 通过厂商 DM_Device 运行库打开原厂固件，支持 CH0/CH1。默认发送 CAN-FD+BRS 帧（1 Mbps 仲裁、5 Mbps 数据段）；电机必须已配置为对应 CAN-FD 波特率。显式把两个速率设为相同值可回退经典 CAN。 |
 | `add_damiao_motor(motor_id, feedback_id, model)` | 在总线上注册电机并返回 `Motor`。 |
 | `discover_damiao_motors(candidates, timeout_ms=50, retries=1)` | 不使能、不运动地探测 Required/Optional/Disabled 候选电机，并冻结本次连接中实际存在的电机集合。 |
 | `enable_all()` / `disable_all()` | 依次使能或失能所有已注册电机；会发送硬件命令。 |
@@ -366,6 +366,12 @@ scripts/                    Linux SocketCAN/CAN-FD接口配置工具
 ## 性能边界
 
 当前硬件已验证七电机串口在每电机500 Hz下反馈计数完整。这证明的是吞吐能力，不代表硬实时保证。USB调度、普通Linux内核、适配器固件和应用调度仍可能产生毫秒级长尾延迟。
+
+DM_Device 默认的 1 Mbps/5 Mbps 配置会同时配置通道并以 CAN-FD+BRS 发送帧，5 Mbps
+数据段使用 87.5% 采样点。实机已验证单通道 8 台电机在 500 Hz 下反馈完整；同一
+DM-USB2FDCAN Dual 的 CH0、CH1 各 8 台电机同时运行时，稳定完整批次频率为 400 Hz。
+因此 Articore Runtime ABI 2.1 会把双臂高于 400 Hz 的请求限制到 400 Hz，并通过
+`articore_runtime_get_control_hz()` 暴露实际生效频率。单臂 Runtime 仍保留调用方明确请求的频率。
 
 ## 贡献与安全
 

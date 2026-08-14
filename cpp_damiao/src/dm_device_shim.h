@@ -14,6 +14,7 @@ struct mb_dm_frame {
   uint8_t channel;
   uint8_t ext;
   uint8_t canfd;
+  uint8_t brs;
 };
 
 struct mb_dm_runtime_info {

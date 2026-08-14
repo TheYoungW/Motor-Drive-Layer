@@ -121,7 +121,9 @@ class Controller:
 
         ``device``/``channel`` are the preferred keyword names.  The original
         ``dm_device_type``/``dm_channel`` names and positional form remain
-        supported for compatibility.
+        supported for compatibility. A data bitrate different from the
+        arbitration bitrate sends CAN-FD frames with BRS; equal rates select
+        the explicit classic-CAN fallback.
         """
         if device is not None:
             if dm_device_type != "usb2canfd-dual" and dm_device_type != device:

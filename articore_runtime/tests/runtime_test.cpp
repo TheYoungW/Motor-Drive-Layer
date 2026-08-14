@@ -289,7 +289,7 @@ int32_t get_transport_health(void* controller,
 
 ArticoreRuntimeConfig config() {
   ArticoreRuntimeConfig value{};
-  value.control_hz = 500;
+  value.control_hz = 400;
   value.command_timeout_ms = 30;
   value.enable_grace_ms = 60;
   value.safe_hold_hz = 100;
@@ -1799,6 +1799,26 @@ void test_repeated_runtime_lifecycle() {
   }
 }
 
+void test_dual_runtime_caps_effective_control_rate_at_400_hz() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.control_hz = 500;
+  articore::SafetyRuntime dual(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors);
+  require(dual.control_hz() == 400,
+          "dual runtime caps a requested 500 Hz rate at the verified 400 Hz envelope");
+
+  std::vector<ArticoreMotorDescriptor> single_motors{motors[0]};
+  articore::SafetyRuntime single(
+      cfg, api(), reinterpret_cast<void*>(0x101), g_left_controller, nullptr,
+      single_motors);
+  require(single.control_hz() == 500,
+          "single-side runtime preserves an explicitly requested 500 Hz rate");
+}
+
 void test_single_side_runtime_and_gripper() {
   FakeDriver driver;
   g_driver = &driver;
@@ -2024,7 +2044,7 @@ void test_latest_value_mailbox_stays_bounded_under_fast_producer() {
                    std::abs(driver.last_pv[0].target_position - 0.333f) < 1e-6f &&
                    std::abs(driver.last_pv[1].target_position - 0.667f) < 1e-6f;
           }, 300ms),
-          "the final producer value reaches the 500 Hz sender");
+          "the final producer value reaches the effective-rate sender");
   std::this_thread::sleep_for(10ms);
   std::lock_guard<std::mutex> lock(driver.mutex);
   require(driver.pv_history.size() - baseline < 5000 &&
@@ -2203,9 +2223,9 @@ void test_ordinary_mit_position_uses_constant_reference_speed() {
         });
     require(first_moving != driver.arm_mit_history.end(),
             "ordinary MIT position starts moving from fresh feedback");
-    require(first_moving->at(0).target_position <= 0.00201f &&
-                first_moving->at(1).target_position <= 1.00201f,
-            "first 500 Hz reference advances by at most velocity/control_hz");
+    require(first_moving->at(0).target_position <= 0.00251f &&
+                first_moving->at(1).target_position <= 1.00251f,
+            "first 400 Hz reference advances by at most velocity/control_hz");
     require(first_moving->at(0).target_velocity == 0.0f &&
                 first_moving->at(0).stiffness == 20.0f &&
                 first_moving->at(0).damping == 3.0f &&
@@ -2215,8 +2235,8 @@ void test_ordinary_mit_position_uses_constant_reference_speed() {
         driver.arm_mit_history.end() - first_moving);
     require(available >= 100,
             "ordinary MIT position produced one hundred moving references");
-    require(std::abs(first_moving[99][0].target_position - 0.2f) < 0.003f,
-            "one hundred 500 Hz cycles at 1 rad/s advance about 0.2 rad");
+    require(std::abs(first_moving[99][0].target_position - 0.25f) < 0.003f,
+            "one hundred 400 Hz cycles at 1 rad/s advance about 0.25 rad");
   }
   require(runtime.health().state == ARTICORE_RUNNING,
           "one-shot ordinary MIT position is persistent beyond the watchdog");
@@ -2242,8 +2262,8 @@ void test_ordinary_mit_position_uses_constant_reference_speed() {
     require(first_reached != driver.arm_mit_history.end(),
             "ordinary MIT position records the exact final target");
     const auto moving_cycles = first_reached - first_moving + 1;
-    require(moving_cycles >= 499 && moving_cycles <= 501,
-            "1 rad at 1 rad/s takes approximately 500 native 500 Hz cycles");
+    require(moving_cycles >= 399 && moving_cycles <= 401,
+            "1 rad at 1 rad/s takes approximately 400 native 400 Hz cycles");
   }
 }
 
@@ -2297,15 +2317,15 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
           return frame[0].target_position > 0.0f;
         });
     require(first_moving != driver.pv_history.end() &&
-                first_moving->at(0).target_position <= 0.00201f &&
-                first_moving->at(1).target_position <= 1.00201f &&
+                first_moving->at(0).target_position <= 0.00251f &&
+                first_moving->at(1).target_position <= 1.00251f &&
                 first_moving->at(0).velocity_limit == 1.0f,
             "ordinary PV starts from feedback with one shared reference speed");
     const auto available = static_cast<std::size_t>(
         driver.pv_history.end() - first_moving);
     require(available >= 100 &&
-                std::abs(first_moving[99][0].target_position - 0.2f) < 0.003f,
-            "ordinary PV advances about 0.2 rad in one hundred 500 Hz cycles");
+                std::abs(first_moving[99][0].target_position - 0.25f) < 0.003f,
+            "ordinary PV advances about 0.25 rad in one hundred 400 Hz cycles");
   }
   require(runtime.health().state == ARTICORE_RUNNING,
           "one-shot ordinary PV remains active beyond the watchdog");
@@ -2331,7 +2351,7 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
     std::lock_guard<std::mutex> lock(driver.mutex);
     require(std::abs((before_reverse -
                       driver.pv_history[reverse_baseline][0].target_position) -
-                     0.002f) < 0.0002f,
+                     0.0025f) < 0.0002f,
             "ordinary PV discards the old endpoint and preserves current q");
   }
 
@@ -2351,7 +2371,7 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     const auto& sent = driver.pv_history[speed_baseline];
-    require(std::abs((before_speed - sent[0].target_position) - 0.004f) <
+    require(std::abs((before_speed - sent[0].target_position) - 0.005f) <
                     0.0002f &&
                 sent[0].velocity_limit == 2.0f &&
                 sent[1].velocity_limit == 2.0f,
@@ -2431,7 +2451,7 @@ void test_ordinary_mit_position_reversal_and_speed_update_are_continuous() {
     std::lock_guard<std::mutex> lock(driver.mutex);
     after_reverse = driver.arm_mit_history[reverse_baseline][0].target_position;
   }
-  require(std::abs((before_reverse - after_reverse) - 0.002f) < 0.0002f,
+  require(std::abs((before_reverse - after_reverse) - 0.0025f) < 0.0002f,
           "target reversal continues from current reference at 1 rad/s");
 
   std::size_t speed_baseline = 0;
@@ -2451,10 +2471,10 @@ void test_ordinary_mit_position_reversal_and_speed_update_are_continuous() {
     std::lock_guard<std::mutex> lock(driver.mutex);
     const auto& next = driver.arm_mit_history[speed_baseline];
     require(std::abs((before_speed_change - next[0].target_position) -
-                     0.004f) < 0.0002f &&
+                     0.005f) < 0.0002f &&
                 std::abs((driver.arm_mit_history[speed_baseline - 1][1]
                               .target_position -
-                          next[1].target_position) - 0.004f) < 0.0002f,
+                          next[1].target_position) - 0.005f) < 0.0002f,
             "shared 2 rad/s update is atomic for both arm sides");
   }
 
@@ -2581,8 +2601,8 @@ void test_ordinary_mit_position_reinitializes_after_reenable() {
           return frame[0].target_position > 0.4f;
         });
     require(first != driver.arm_mit_history.end() &&
-                std::abs(first->at(0).target_position - 0.402f) < 0.0002f &&
-                std::abs(first->at(1).target_position - (-0.398f)) < 0.0002f,
+                std::abs(first->at(0).target_position - 0.4025f) < 0.0002f &&
+                std::abs(first->at(1).target_position - (-0.3975f)) < 0.0002f,
             "reenable discards the old reference and reinitializes both arms "
             "from complete fresh feedback");
   }
@@ -2674,6 +2694,7 @@ int main() {
     RUN_TEST(test_gripper_control_waits_for_atomic_enable_confirmation);
     RUN_TEST(test_atomic_enable_failure_rolls_back_and_fault_disable_is_allowed);
     RUN_TEST(test_repeated_runtime_lifecycle);
+    RUN_TEST(test_dual_runtime_caps_effective_control_rate_at_400_hz);
     RUN_TEST(test_single_side_runtime_and_gripper);
     RUN_TEST(test_normal_gripper_uses_arm_control_rate);
     RUN_TEST(test_motor_presence_is_fixed_and_fault_aware);

@@ -69,12 +69,14 @@ void test_vendor_abi(const char* path, uint8_t expected_abi_generation,
   mb_dm_frame frame{};
   require(mb_dm_recv(channel0, &frame, 10, error, sizeof(error)) == 1,
           "channel 0 receives its frame");
-  require(frame.channel == 0 && frame.can_id == 0x101 && frame.data[3] == 4,
-          "channel 0 frame contents");
+  require(frame.channel == 0 && frame.can_id == 0x101 && frame.data[3] == 4 &&
+              frame.canfd == 1 && frame.brs == 1,
+          "channel 0 frame contents use CAN-FD with bitrate switching");
   require(mb_dm_recv(channel1, &frame, 10, error, sizeof(error)) == 1,
           "channel 1 receives its frame");
-  require(frame.channel == 1 && frame.can_id == 0x202 && frame.data[3] == 4,
-          "channel 1 frame contents");
+  require(frame.channel == 1 && frame.can_id == 0x202 && frame.data[3] == 4 &&
+              frame.canfd == 1 && frame.brs == 1,
+          "channel 1 frame contents use CAN-FD with bitrate switching");
 
   require(mb_dm_shutdown(channel0, error, sizeof(error)) == 0, error);
   require(mb_dm_send(channel1, 0x203, 0, sizeof(payload), payload, error,
@@ -95,6 +97,19 @@ void test_vendor_abi(const char* path, uint8_t expected_abi_generation,
   require(mb_dm_recv(channel0, &frame, 10, error, sizeof(error)) == 1 &&
               frame.can_id == 0x304,
           "reconnected channel receives through the retained callbacks");
+  require(mb_dm_shutdown(channel0, error, sizeof(error)) == 0, error);
+
+  // Equal arbitration/data rates explicitly retain classic-CAN framing.
+  channel0 = nullptr;
+  require(mb_dm_open(path, 1, 0, 1'000'000, 1'000'000, &channel0, error,
+                     sizeof(error)) == 0,
+          error);
+  require(mb_dm_send(channel0, 0x305, 0, sizeof(payload), payload, error,
+                     sizeof(error)) == 0,
+          error);
+  require(mb_dm_recv(channel0, &frame, 10, error, sizeof(error)) == 1 &&
+              frame.can_id == 0x305 && frame.canfd == 0 && frame.brs == 0,
+          "equal bitrates select classic CAN framing");
   require(mb_dm_shutdown(channel0, error, sizeof(error)) == 0, error);
 }
 

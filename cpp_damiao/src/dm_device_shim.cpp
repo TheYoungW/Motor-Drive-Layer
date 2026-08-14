@@ -133,6 +133,7 @@ struct Session {
 struct mb_dm_handle {
   std::shared_ptr<Session> session;
   uint8_t selected_channel = 0;
+  bool canfd_brs = false;
   std::mutex queue_mutex;
   std::condition_variable queue_cv;
   std::deque<mb_dm_frame> queue;
@@ -377,6 +378,7 @@ void route_frame(Session* expected, usb_rx_frame_t* frame) {
   out.channel = frame->head.channel;
   out.ext = static_cast<uint8_t>(frame->head.ext ? 1 : 0);
   out.canfd = static_cast<uint8_t>(frame->head.canfd ? 1 : 0);
+  out.brs = static_cast<uint8_t>(frame->head.brs ? 1 : 0);
   if (out.dlc > 0) std::memcpy(out.data, frame->payload, out.dlc);
 
   std::lock_guard<std::mutex> registry_lock(g_registry_mutex);
@@ -558,6 +560,8 @@ bool configure_channel(Session& session, uint8_t channel, ChannelConfig config, 
   }
 
   bool configured = false;
+  const bool canfd_brs = config.data_bitrate != config.bitrate;
+  const float data_sample_point = config.data_bitrate == 5'000'000 ? 0.875f : 0.75f;
   if (session.api.abi == VendorAbi::V11) {
     if (!retry_bool(
             [&] { return session.api.modern_device_enable_channel(session.modern_device, channel); })) {
@@ -571,11 +575,11 @@ bool configure_channel(Session& session, uint8_t channel, ChannelConfig config, 
       return false;
     }
     info.channel = channel;
-    info.canfd = true;
+    info.canfd = canfd_brs;
     info.can_baudrate = config.bitrate;
     info.canfd_baudrate = config.data_bitrate;
     info.can_sp = 0.75f;
-    info.canfd_sp = 0.75f;
+    info.canfd_sp = data_sample_point;
     configured =
         session.api.modern_device_set_channel_baudrate(session.modern_device, channel, info);
     if (!configured) {
@@ -585,8 +589,8 @@ bool configure_channel(Session& session, uint8_t channel, ChannelConfig config, 
     }
   } else {
     configured = session.api.legacy_device_set_baud(
-        session.legacy_dev, channel, true, static_cast<int>(config.bitrate),
-        static_cast<int>(config.data_bitrate), 0.75f, 0.75f);
+        session.legacy_dev, channel, canfd_brs, static_cast<int>(config.bitrate),
+        static_cast<int>(config.data_bitrate), 0.75f, data_sample_point);
     if (!configured) {
       set_err(err_buf, err_len, channel_error("device_channel_set_baud_with_sp", channel));
       return false;
@@ -732,6 +736,9 @@ extern "C" int mb_dm_open(const char* library_path, int device_type, uint8_t sel
     auto* client = new mb_dm_handle();
     client->session = session;
     client->selected_channel = selected_channel;
+    // A distinct data bitrate selects CAN-FD with bitrate switching. Passing
+    // equal arbitration/data rates is the explicit classic-CAN fallback.
+    client->canfd_brs = canfd_baudrate != can_baudrate;
     {
       std::lock_guard<std::mutex> registry_lock(g_registry_mutex);
       g_clients.push_back(client);
@@ -756,19 +763,20 @@ extern "C" int mb_dm_send(void* opaque_handle, uint32_t can_id, uint8_t ext, uin
   }
   uint8_t payload[8]{};
   std::memcpy(payload, data, dlc);
+  const bool canfd_brs = handle->canfd_brs;
   std::lock_guard<std::mutex> vendor_lock(handle->session->vendor_mutex);
   if (handle->session->api.abi == VendorAbi::V11) {
     if (!handle->session->api.modern_device_send(
-            handle->session->modern_device, handle->selected_channel, can_id, false, ext != 0,
-            false, false, dlc, payload)) {
+            handle->session->modern_device, handle->selected_channel, can_id, canfd_brs, ext != 0,
+            false, canfd_brs, dlc, payload)) {
       set_err(err_buf, err_len,
               channel_error("dmcan_device_send_can", handle->selected_channel));
       return -1;
     }
   } else {
     handle->session->api.legacy_device_send(handle->session->legacy_dev,
-                                            handle->selected_channel, can_id, 1, ext != 0, false,
-                                            false, dlc, payload);
+                                            handle->selected_channel, can_id, 1, ext != 0,
+                                            canfd_brs, canfd_brs, dlc, payload);
   }
   return 0;
 }
