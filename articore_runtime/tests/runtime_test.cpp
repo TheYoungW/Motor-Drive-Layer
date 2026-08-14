@@ -1248,51 +1248,54 @@ void test_single_stale_feedback_sample_keeps_persistent_position_control() {
           "fresh feedback clears the transient failure without interrupting control");
 }
 
-void test_ordinary_position_can_recover_inward_from_soft_limit() {
-  FakeDriver driver;
-  driver.emulate_arm_feedback = true;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  auto cfg = config();
-  cfg.command_timeout_ms = 500;
-  articore::SafetyRuntime runtime(
-      cfg, api(), reinterpret_cast<void*>(0x100),
-      g_left_controller, g_right_controller, motors);
-  const auto configured = joint_configs(motors);
-  runtime.configure_joints(configured.data(),
-                           static_cast<uint32_t>(configured.size()));
-  const auto layered = layered_joint_limits(motors);
-  runtime.configure_joint_safety_limits(
-      layered.data(), static_cast<uint32_t>(layered.size()));
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_MIT);
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    driver.motors[motors[0].motor].position = 1.6f;
-    driver.motors[motors[0].motor].velocity = 0.0f;
-  }
+void test_ordinary_position_can_recover_from_feedback_outside_hard_limit() {
+  for (const auto mode : {ARTICORE_MODE_MIT, ARTICORE_MODE_PV}) {
+    FakeDriver driver;
+    driver.emulate_arm_feedback = true;
+    g_driver = &driver;
+    auto motors = descriptors(driver);
+    auto cfg = config();
+    cfg.command_timeout_ms = 500;
+    {
+      std::lock_guard<std::mutex> lock(driver.mutex);
+      driver.motors[motors[0].motor].position = 2.1f;
+      driver.motors[motors[0].motor].velocity = 0.0f;
+    }
+    articore::SafetyRuntime runtime(
+        cfg, api(), reinterpret_cast<void*>(0x100),
+        g_left_controller, g_right_controller, motors);
+    const auto configured = joint_configs(motors);
+    runtime.configure_joints(configured.data(),
+                             static_cast<uint32_t>(configured.size()));
+    const auto layered = layered_joint_limits(motors);
+    runtime.configure_joint_safety_limits(
+        layered.data(), static_cast<uint32_t>(layered.size()));
+    runtime.connect();
+    runtime.enable(mode);
 
-  ArticoreJointMitTarget inward[] = {
-      {sizeof(ArticoreJointMitTarget), motors[0].motor, 1.0f},
-      {sizeof(ArticoreJointMitTarget), motors[1].motor, 0.0f},
-  };
-  runtime.set_joint_mit(inward, 2, 0.5f);
-  require(wait_for([&] {
-            std::lock_guard<std::mutex> lock(driver.mutex);
-            return driver.motors[motors[0].motor].position < 1.5f;
-          }, 500ms),
-          "ordinary MIT may move inward from outside a soft limit");
-  require(runtime.health().state == ARTICORE_RUNNING,
-          "inward soft-limit recovery does not fault the runtime");
+    if (mode == ARTICORE_MODE_MIT) {
+      ArticoreJointMitTarget inward[] = {
+          {sizeof(ArticoreJointMitTarget), motors[0].motor, 1.0f},
+          {sizeof(ArticoreJointMitTarget), motors[1].motor, 0.0f},
+      };
+      runtime.set_joint_mit(inward, 2, 1.0f);
+    } else {
+      ArticoreJointPvTarget inward[] = {
+          {sizeof(ArticoreJointPvTarget), motors[0].motor, 1.0f},
+          {sizeof(ArticoreJointPvTarget), motors[1].motor, 0.0f},
+      };
+      runtime.set_joint_pv(inward, 2, 1.0f);
+    }
 
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    driver.emulate_arm_feedback = false;
-    driver.motors[motors[0].motor].position = 2.1f;
+    require(wait_for([&] {
+              std::lock_guard<std::mutex> lock(driver.mutex);
+              const auto position = driver.motors[motors[0].motor].position;
+              return position < 2.1f && position > 1.5f;
+            }, 100ms),
+            "ordinary PV/MIT starts continuously from out-of-limit feedback");
+    require(runtime.health().state == ARTICORE_RUNNING,
+            "out-of-limit feedback initialization does not fault the runtime");
   }
-  std::this_thread::sleep_for(100ms);
-  require(runtime.health().state == ARTICORE_RUNNING,
-          "feedback beyond a command hard limit does not fault the runtime");
 }
 
 void test_disable_does_not_stop_after_one_side_fails() {
@@ -2655,7 +2658,7 @@ int main() {
     RUN_TEST(test_feedback_seed_ignores_command_limits);
     RUN_TEST(test_feedback_fault_diagnostics_include_identity_value_and_threshold);
     RUN_TEST(test_single_stale_feedback_sample_keeps_persistent_position_control);
-    RUN_TEST(test_ordinary_position_can_recover_inward_from_soft_limit);
+    RUN_TEST(test_ordinary_position_can_recover_from_feedback_outside_hard_limit);
     RUN_TEST(test_disable_does_not_stop_after_one_side_fails);
     RUN_TEST(test_disable_uses_structured_feedback_report);
     RUN_TEST(test_disable_retries_one_full_feedback_deadline);

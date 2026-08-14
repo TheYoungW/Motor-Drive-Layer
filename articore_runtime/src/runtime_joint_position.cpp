@@ -183,14 +183,6 @@ void SafetyRuntime::install_joint_position(
         }
         current_position = previous->target_position;
       }
-    } else {
-      const auto& limits = joint_config(motor_handle);
-      if (current_position < limits.hard_lower_position ||
-          current_position > limits.hard_upper_position) {
-        throw std::runtime_error(
-            std::string(motor->descriptor.name) +
-            ": fresh position is outside the configured hard limits");
-      }
     }
 
     if (requested_mode == ARTICORE_MODE_PV) {

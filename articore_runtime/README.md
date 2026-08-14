@@ -111,8 +111,9 @@ bindings must call checked `articore_runtime_close()` first.
 
 The additive `articore_runtime_configure_joint_safety_limits()` call keeps the original joint
 configuration ABI stable while separating mechanical hard limits from normal-operation soft
-limits. Feedback may be outside a soft limit while still inside the hard limits: stationary hold
-and ordinary position commands directed back into the safe region remain legal, but outward motion does not.
+limits. A first ordinary-position command initializes its continuous reference from fresh feedback
+even when that measured position is outside the configured command limits; an in-range target can
+therefore move back into the configured region without resetting or jumping the reference.
 Ordinary PV/MIT targets remain bounded by the configured hard and soft position limits. Feedback
 position, velocity, and torque are not compared with command limits and cannot trigger a limit
 FAULT. Any future mechanical feedback protection must use separate product thresholds, tolerances,
