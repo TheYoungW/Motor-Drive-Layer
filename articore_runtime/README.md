@@ -113,9 +113,10 @@ The additive `articore_runtime_configure_joint_safety_limits()` call keeps the o
 configuration ABI stable while separating mechanical hard limits from normal-operation soft
 limits. Feedback may be outside a soft limit while still inside the hard limits: stationary hold
 and ordinary position commands directed back into the safe region remain legal, but outward motion does not.
-Ordinary PV/MIT targets remain bounded by the configured hard and soft position limits. Only fresh feedback beyond a
-configured hard limit is treated as a hard-limit safety fault; ordinary feedback values are not
-compared with command velocity or torque limits.
+Ordinary PV/MIT targets remain bounded by the configured hard and soft position limits. Feedback
+position, velocity, and torque are not compared with command limits and cannot trigger a limit
+FAULT. Any future mechanical feedback protection must use separate product thresholds, tolerances,
+and persistence rules instead of reusing command validation.
 
 Runtime ABI 1.10 adds `articore_runtime_set_gripper_commands()`. Each complete active-gripper
 transaction contains only `opening`, normalized `speed`, and a stable `force_level`; all fields

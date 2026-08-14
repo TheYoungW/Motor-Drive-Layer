@@ -39,8 +39,8 @@ enum ArticoreRuntimeCapability {
   // control traffic, disables active channels in parallel, confirms fresh
   // disabled feedback, and retries only unconfirmed motors once.
   ARTICORE_CAP_DETERMINISTIC_DISABLE = 1ULL << 14,
-  // Mechanical hard limits and normal-operation soft limits are configured
-  // independently, including per-joint dynamic braking constraints.
+  // Outgoing-command hard and soft position limits are configured independently.
+  // Feedback measurements are not compared with these command limits.
   ARTICORE_CAP_LAYERED_JOINT_LIMITS = 1ULL << 18,
   // ABI 1.10 adds atomic per-command gripper speed/force selection and
   // product-owned force calibration profiles.

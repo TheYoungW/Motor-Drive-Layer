@@ -359,26 +359,6 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
       if (recovery_check) mark_unconfirmed(name);
       continue;
     }
-    if (!motor.descriptor.is_gripper) {
-      const auto configured = joint_configs_.find(motor.descriptor.motor);
-      if (configured != joint_configs_.end() &&
-          configured->second.layered_limits_configured &&
-          (state.pos < configured->second.hard_lower_position ||
-           state.pos > configured->second.hard_upper_position)) {
-        motor_faults.push_back(name);
-        faulted_presence.push_back(motor.descriptor.motor);
-        side_ok[motor.descriptor.side] = false;
-        std::ostringstream detail;
-        detail << identity()
-               << ": feedback crossed hard position limit; actual_position="
-               << state.pos << ", hard_lower="
-               << configured->second.hard_lower_position << ", hard_upper="
-               << configured->second.hard_upper_position;
-        side_error[motor.descriptor.side] = detail.str();
-        if (error.empty()) error = side_error[motor.descriptor.side];
-        continue;
-      }
-    }
     if (state.status_code > 1) {
       motor_faults.push_back(name);
       faulted_presence.push_back(motor.descriptor.motor);

@@ -143,7 +143,6 @@ void SafetyRuntime::worker_loop() {
         const bool severe =
             error.find("motor fault status") != std::string::npos ||
             error.find("unexpectedly disabled") != std::string::npos ||
-            error.find("hard position limit") != std::string::npos ||
             error.find("transport disconnected") != std::string::npos;
         bool fault = severe;
         bool enter_hold = false;

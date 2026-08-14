@@ -1290,12 +1290,9 @@ void test_ordinary_position_can_recover_inward_from_soft_limit() {
     driver.emulate_arm_feedback = false;
     driver.motors[motors[0].motor].position = 2.1f;
   }
-  require(wait_for([&] {
-            const auto health = runtime.health();
-            return health.state == ARTICORE_FAULT &&
-                   health.fault_reason[0] != '\0';
-          }, 300ms),
-          "fresh feedback beyond the hard limit still enters FAULT");
+  std::this_thread::sleep_for(100ms);
+  require(runtime.health().state == ARTICORE_RUNNING,
+          "feedback beyond a command hard limit does not fault the runtime");
 }
 
 void test_disable_does_not_stop_after_one_side_fails() {
