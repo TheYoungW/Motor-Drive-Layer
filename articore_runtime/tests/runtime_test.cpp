@@ -1154,7 +1154,7 @@ void test_builtin_yunyi_gripper_profile_owns_product_calibration() {
                    std::abs(driver.last_mit[0].stiffness - 3.0f) < 1e-6f &&
                    std::abs(driver.last_mit[0].damping - 0.3f) < 1e-6f;
           }),
-          "speed=1 maps to 0.005 rad/s and force level 1 calibration");
+          "speed=1 maps to 0.01 rad/s and force level 1 calibration");
 
   command.speed = 1000.0f;
   command.force_level = ARTICORE_GRIPPER_FORCE_LEVEL_10;
@@ -1168,7 +1168,7 @@ void test_builtin_yunyi_gripper_profile_owns_product_calibration() {
                    std::abs(driver.last_mit[0].stiffness - 6.0f) < 1e-6f &&
                    std::abs(driver.last_mit[0].damping - 0.8f) < 1e-6f;
           }),
-          "speed=1000 maps to 5 rad/s and force level 10 calibration");
+          "speed=1000 maps to 10 rad/s and force level 10 calibration");
 
   runtime.estop("profile fault-action check");
   {

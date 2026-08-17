@@ -9,7 +9,7 @@ constexpr GripperProductProfile kYunyiGripperV1{
     "yunyi_gripper_v1",
     2.64f,
     0.0f,
-    5.0f,
+    10.0f,
     200U,
     0.01f,
     0.05f,
