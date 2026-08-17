@@ -594,7 +594,14 @@ ArticoreSafetyHealth SafetyRuntime::health() const {
         ? motor.retreat_target
         : (motor.protective_target_active ? motor.protective_target
                                           : motor.command_position);
-    output.feedback_age_ns = motor.feedback_age_ns;
+    ArticoreFeedbackStats live_stats{};
+    output.feedback_age_ns =
+        state_ != ARTICORE_DISCONNECTED &&
+                api_.motor_get_feedback_stats(motor.descriptor.motor,
+                                              &live_stats) == 0 &&
+                live_stats.has_feedback
+            ? live_stats.age_ns
+            : motor.feedback_age_ns;
     copy_text(output.name, motor.descriptor.name);
     copy_text(output.fault_reason, motor.gripper_fault_reason);
   }

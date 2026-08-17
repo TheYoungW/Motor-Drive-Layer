@@ -55,6 +55,7 @@ struct FakeDriver {
   std::vector<ArticoreMitCommand> last_arm_mit;
   std::vector<std::vector<ArticorePosVelCommand>> pv_history;
   std::vector<std::vector<ArticoreMitCommand>> mit_history;
+  std::vector<std::vector<ArticoreMitCommand>> group_mit_history;
   std::vector<std::vector<ArticoreMitCommand>> arm_mit_history;
   uint32_t pv_sends = 0;
   uint32_t mit_sends = 0;
@@ -135,8 +136,18 @@ int32_t send_mit(void*, const ArticoreMitCommand* commands, uint32_t count) {
   std::unique_lock<std::mutex> lock(g_driver->mutex);
   if (g_driver->fail_group) return -1;
   if (count > 0) {
-    const bool left = commands[0].motor == reinterpret_cast<void*>(0x201);
-    if (g_driver->fail_send_side[left ? 0 : 1]) return -1;
+    const bool contains_left = std::any_of(
+        commands, commands + count, [](const ArticoreMitCommand& command) {
+          return command.motor == reinterpret_cast<void*>(0x201);
+        });
+    const bool contains_right = std::any_of(
+        commands, commands + count, [](const ArticoreMitCommand& command) {
+          return command.motor != reinterpret_cast<void*>(0x201);
+        });
+    if ((contains_left && g_driver->fail_send_side[0]) ||
+        (contains_right && g_driver->fail_send_side[1])) {
+      return -1;
+    }
   }
   if (count == 0) {
     g_driver->events.emplace_back("barrier-mit");
@@ -151,17 +162,32 @@ int32_t send_mit(void*, const ArticoreMitCommand* commands, uint32_t count) {
     g_driver->send_cv.notify_all();
     g_driver->send_cv.wait(lock, [] { return g_driver->release_send; });
   }
-  g_driver->last_mit.assign(commands, commands + count);
-  g_driver->mit_history.emplace_back(commands, commands + count);
+  g_driver->group_mit_history.emplace_back(commands, commands + count);
+  std::vector<ArticoreMitCommand> arm_commands;
+  std::vector<ArticoreMitCommand> gripper_commands;
+  for (uint32_t index = 0; index < count; ++index) {
+    (commands[index].motor == reinterpret_cast<void*>(0x203)
+         ? gripper_commands
+         : arm_commands).push_back(commands[index]);
+  }
+  if (!arm_commands.empty()) {
+    g_driver->mit_history.push_back(arm_commands);
+    g_driver->arm_mit_history.push_back(arm_commands);
+  }
+  if (!gripper_commands.empty()) {
+    g_driver->mit_history.push_back(gripper_commands);
+    g_driver->last_mit = gripper_commands;
+  } else {
+    g_driver->last_mit = arm_commands;
+  }
   g_driver->events.emplace_back("send-mit");
-  if (count == 2) {
-    g_driver->last_arm_mit.assign(commands, commands + count);
-    g_driver->arm_mit_history.emplace_back(commands, commands + count);
+  if (!arm_commands.empty()) {
+    g_driver->last_arm_mit = arm_commands;
     if (g_driver->emulate_arm_feedback) {
-      for (uint32_t index = 0; index < count; ++index) {
-        auto& motor = g_driver->motors[commands[index].motor];
-        motor.position = commands[index].target_position;
-        motor.velocity = commands[index].target_velocity;
+      for (const auto& command : arm_commands) {
+        auto& motor = g_driver->motors[command.motor];
+        motor.position = command.target_position;
+        motor.velocity = command.target_velocity;
       }
     }
   }
@@ -2223,9 +2249,11 @@ void test_normal_gripper_uses_arm_control_rate() {
 
   std::size_t arm_baseline = 0;
   std::size_t gripper_baseline = 0;
+  std::size_t group_baseline = 0;
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     arm_baseline = driver.arm_mit_history.size();
+    group_baseline = driver.group_mit_history.size();
     gripper_baseline = static_cast<std::size_t>(std::count_if(
         driver.mit_history.begin(), driver.mit_history.end(),
         [&](const auto& batch) {
@@ -2249,7 +2277,33 @@ void test_normal_gripper_uses_arm_control_rate() {
     const auto gripper_count = gripper_total - gripper_baseline;
     require(gripper_count + 2 >= arm_count,
             "normal gripper output follows arm control_hz instead of the legacy 100 Hz field");
+    const auto combined = std::find_if(
+        driver.group_mit_history.begin() +
+            static_cast<std::ptrdiff_t>(group_baseline),
+        driver.group_mit_history.end(), [&](const auto& batch) {
+          return batch.size() == 3 && batch.front().motor == motors[2].motor;
+        });
+    require(combined != driver.group_mit_history.end(),
+            "MIT arm and gripper commands share one native ControllerGroup batch");
   }
+}
+
+void test_gripper_health_reads_live_feedback_age() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[2].motor].age_ns = 7'654'321ULL;
+  }
+  const auto health = runtime.health();
+  require(health.gripper_count == 1 &&
+              health.grippers[0].feedback_age_ns == 7'654'321ULL,
+          "gripper health reports the current Motor cache age instead of a prior control tick");
 }
 
 void test_motor_presence_is_fixed_and_fault_aware() {
@@ -3041,6 +3095,7 @@ int main() {
     RUN_TEST(test_dual_runtime_caps_effective_control_rate_at_400_hz);
     RUN_TEST(test_single_side_runtime_and_gripper);
     RUN_TEST(test_normal_gripper_uses_arm_control_rate);
+    RUN_TEST(test_gripper_health_reads_live_feedback_age);
     RUN_TEST(test_motor_presence_is_fixed_and_fault_aware);
     RUN_TEST(test_latest_value_mailbox_drops_superseded_targets);
     RUN_TEST(test_latest_value_mailbox_stays_bounded_under_fast_producer);

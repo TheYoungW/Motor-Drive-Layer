@@ -462,6 +462,7 @@ void SafetyRuntime::submit_mit_ex(const ArticoreMitCommand* commands,
 }
 
 bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
+                                          bool include_grippers,
                                           std::string& error) {
   std::lock_guard<std::mutex> command_lock(command_mutex_);
   ArticoreControlMode mode;
@@ -516,13 +517,38 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
       ? static_cast<uint32_t>(arm_mailbox_.pv.size())
       : static_cast<uint32_t>(arm_mailbox_.mit.size());
 
+  std::vector<ArticoreMitCommand> gripper_commands;
+  std::vector<ArticoreMitCommand> combined_mit;
+  const ArticoreMitCommand* mit_send_data = mit_data;
+  uint32_t mit_send_count = command_count;
+  if (include_grippers && mode == ARTICORE_MODE_MIT) {
+    if (!prepare_gripper_commands_locked(now, gripper_commands, error)) {
+      return false;
+    }
+    if (!gripper_commands.empty()) {
+      combined_mit.reserve(gripper_commands.size() + arm_mailbox_.mit.size());
+      // Put grippers first so they no longer sit behind a completed 14-axis
+      // transaction and a second ControllerGroup dispatch barrier. The group
+      // still preserves one atomic cross-channel generation.
+      combined_mit.insert(combined_mit.end(), gripper_commands.begin(),
+                          gripper_commands.end());
+      combined_mit.insert(combined_mit.end(), arm_mailbox_.mit.begin(),
+                          arm_mailbox_.mit.end());
+      mit_send_data = combined_mit.data();
+      mit_send_count = static_cast<uint32_t>(combined_mit.size());
+    }
+  }
+
   const int32_t result = mode == ARTICORE_MODE_PV
       ? api_.group_send_pos_vel(controller_group_, pv_data, command_count)
-      : api_.group_send_mit(controller_group_, mit_data, command_count);
+      : api_.group_send_mit(controller_group_, mit_send_data, mit_send_count);
   if (result != 0) {
-    error = motor_error(mode == ARTICORE_MODE_PV
-                            ? "ControllerGroup PV send failed"
-                            : "ControllerGroup MIT send failed");
+    error = motor_error(
+        mode == ARTICORE_MODE_PV
+            ? "ControllerGroup PV send failed"
+            : (gripper_commands.empty()
+                   ? "ControllerGroup MIT send failed"
+                   : "combined arm/gripper ControllerGroup MIT send failed"));
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     ++consecutive_send_failures_;
     for (uint8_t side = 0; side < 2; ++side) {
@@ -531,28 +557,32 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     return false;
   }
 
-  std::lock_guard<std::mutex> state_lock(state_mutex_);
-  consecutive_send_failures_ = 0;
-  if (mode == ARTICORE_MODE_PV) {
-    last_sent_pv_.assign(pv_data, pv_data + command_count);
-    last_sent_mit_.clear();
-  } else {
-    last_sent_mit_.assign(mit_data, mit_data + command_count);
-    last_sent_pv_.clear();
-  }
-  for (uint8_t side = 0; side < 2; ++side) {
-    if (!active_sides_[side]) continue;
-    sides_[side].send_failures = 0;
-    sides_[side].healthy = true;
-  }
-  if (mailbox_user_command) {
-    has_successful_command_ = true;
-    state_ = ARTICORE_RUNNING;
-    if (mailbox_generation > arm_mailbox_.sent_generation) {
-      arm_mailbox_.sent_generation = mailbox_generation;
-      last_successful_command_ = now;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    consecutive_send_failures_ = 0;
+    if (mode == ARTICORE_MODE_PV) {
+      last_sent_pv_.assign(pv_data, pv_data + command_count);
+      last_sent_mit_.clear();
+    } else {
+      // Safe arm hold must remain independent from product gripper policy.
+      last_sent_mit_.assign(mit_data, mit_data + command_count);
+      last_sent_pv_.clear();
+    }
+    for (uint8_t side = 0; side < 2; ++side) {
+      if (!active_sides_[side]) continue;
+      sides_[side].send_failures = 0;
+      sides_[side].healthy = true;
+    }
+    if (mailbox_user_command) {
+      has_successful_command_ = true;
+      state_ = ARTICORE_RUNNING;
+      if (mailbox_generation > arm_mailbox_.sent_generation) {
+        arm_mailbox_.sent_generation = mailbox_generation;
+        last_successful_command_ = now;
+      }
     }
   }
+  commit_gripper_commands_sent(gripper_commands, now);
   return true;
 }
 

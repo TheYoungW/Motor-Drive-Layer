@@ -507,18 +507,11 @@ void SafetyRuntime::seed_gripper_targets_from_feedback(bool activate) {
   safe_grippers_ = std::move(seeded);
 }
 
-bool SafetyRuntime::run_gripper_control_once(std::string& error) {
-  std::vector<ArticoreMitCommand> commands;
+bool SafetyRuntime::prepare_gripper_commands_locked(
+    Clock::time_point now, std::vector<ArticoreMitCommand>& commands,
+    std::string& error) {
+  commands.clear();
   commands.reserve(motors_.size());
-  std::lock_guard<std::mutex> command_lock(command_mutex_);
-  {
-    std::lock_guard<std::mutex> state_lock(state_mutex_);
-    if (hardware_transition_ ||
-        (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING)) {
-      return true;
-    }
-  }
-  const auto now = Clock::now();
   for (auto& motor : motors_) {
     if (!motor.descriptor.is_gripper || !motor.has_gripper_target) continue;
     ArticoreFeedbackStats stats{};
@@ -692,24 +685,44 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
         low_gain ? force.hold_kp : force.moving_kp,
         low_gain ? force.hold_kd : force.moving_kd, 0.0f});
   }
+  return true;
+}
+
+void SafetyRuntime::commit_gripper_commands_sent(
+    const std::vector<ArticoreMitCommand>& commands,
+    Clock::time_point now) {
+  if (commands.empty()) return;
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  safe_grippers_ = commands;
+  if (gripper_command_generation_ > gripper_sent_generation_) {
+    gripper_sent_generation_ = gripper_command_generation_;
+    if (!has_successful_command_) {
+      last_successful_command_ = now;
+    }
+    has_successful_command_ = true;
+    if (state_ == ARTICORE_ENABLED) state_ = ARTICORE_RUNNING;
+  }
+}
+
+bool SafetyRuntime::run_gripper_control_once(std::string& error) {
+  std::vector<ArticoreMitCommand> commands;
+  std::lock_guard<std::mutex> command_lock(command_mutex_);
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    if (hardware_transition_ ||
+        (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING)) {
+      return true;
+    }
+  }
+  const auto now = Clock::now();
+  if (!prepare_gripper_commands_locked(now, commands, error)) return false;
   if (commands.empty()) return true;
   if (api_.group_send_mit(controller_group_, commands.data(),
                           static_cast<uint32_t>(commands.size())) != 0) {
     error = motor_error("gripper control batch failed");
     return false;
   }
-  {
-    std::lock_guard<std::mutex> state_lock(state_mutex_);
-    safe_grippers_ = commands;
-    if (gripper_command_generation_ > gripper_sent_generation_) {
-      gripper_sent_generation_ = gripper_command_generation_;
-      if (!has_successful_command_) {
-        last_successful_command_ = now;
-      }
-      has_successful_command_ = true;
-      if (state_ == ARTICORE_ENABLED) state_ = ARTICORE_RUNNING;
-    }
-  }
+  commit_gripper_commands_sent(commands, now);
   return true;
 }
 

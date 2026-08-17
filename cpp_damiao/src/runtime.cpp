@@ -1053,15 +1053,18 @@ void Controller::start_polling() {
 }
 
 void Controller::polling_loop() {
+  constexpr std::size_t kMaximumFramesPerDrain = 64;
   while (polling_active_.load(std::memory_order_acquire)) {
     bool had_frame = false;
     try {
       {
         std::lock_guard<std::mutex> recv_lock(recv_mutex_);
-        const auto frame = bus_->receive_for(std::chrono::milliseconds(0));
-        if (frame.has_value()) {
+        const auto motors = sorted_motors();
+        for (std::size_t drained = 0; drained < kMaximumFramesPerDrain;
+             ++drained) {
+          const auto frame = bus_->receive_for(std::chrono::milliseconds(0));
+          if (!frame.has_value()) break;
           had_frame = true;
-          const auto motors = sorted_motors();
           for (const auto& motor : motors) {
             if (motor->accepts_frame(*frame)) {
               motor->process_feedback_frame(*frame);

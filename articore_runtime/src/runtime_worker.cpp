@@ -56,6 +56,7 @@ void SafetyRuntime::worker_loop() {
     bool run_arm_control = false;
     bool run_hold = false;
     bool run_gripper_control = false;
+    bool combine_mit_arm_and_gripper = false;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       if (state_ == ARTICORE_ENABLED &&
@@ -103,6 +104,9 @@ void SafetyRuntime::worker_loop() {
         detail::advance_periodic_deadline(
             next_gripper_control_, gripper_period, now);
       }
+      combine_mit_arm_and_gripper =
+          run_arm_control && run_gripper_control && mode_ == ARTICORE_MODE_MIT;
+      if (combine_mit_arm_and_gripper) run_gripper_control = false;
       if (state_ == ARTICORE_FAULT && fault_hold_active_ &&
           now >= next_safe_hold_) {
         run_hold = true;
@@ -162,7 +166,7 @@ void SafetyRuntime::worker_loop() {
     }
     if (run_arm_control) {
       std::string error;
-      if (!run_arm_control_cycle(now, error)) {
+      if (!run_arm_control_cycle(now, combine_mit_arm_and_gripper, error)) {
         std::string hold_error;
         if (!enter_safe_hold_from_feedback(
                 "arm control cycle failed: " + error, hold_error)) {

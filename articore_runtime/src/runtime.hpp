@@ -209,7 +209,8 @@ class SafetyRuntime {
   };
 
   void worker_loop();
-  bool run_arm_control_cycle(Clock::time_point now, std::string& error);
+  bool run_arm_control_cycle(Clock::time_point now, bool include_grippers,
+                             std::string& error);
   void initialize_arm_mailbox_from_feedback(ArticoreControlMode mode,
                                             bool require_enabled);
   bool request_feedback_parallel(uint32_t timeout_ms,
@@ -246,6 +247,12 @@ class SafetyRuntime {
   void enter_fault(const std::string& reason, bool torque_off = false);
   bool send_safe_hold_once(std::string& error);
   bool run_gripper_control_once(std::string& error);
+  bool prepare_gripper_commands_locked(
+      Clock::time_point now, std::vector<ArticoreMitCommand>& commands,
+      std::string& error);
+  void commit_gripper_commands_sent(
+      const std::vector<ArticoreMitCommand>& commands,
+      Clock::time_point now);
   bool send_gripper_hold_once(std::string& error);
   static const MotorRecord::GripperForceProfile& active_gripper_profile(
       const MotorRecord& motor);
