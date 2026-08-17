@@ -14,6 +14,8 @@ Motor-Drive-Layer 是供 Python、C++ 和 ROS 2 SDK 共用的原生 C++ 控制�
 - 带 ACK、重试和超时的寄存器读写。
 - C ABI 动态库和 Python 3.10+ 接口。
 - 独立的 Articore runtime ABI 和常驻安全/夹爪工作线程。
+- 同一原生 Runtime 的正式薄绑定：强类型 Python `ArticoreRuntime`、可安装的 C++17 RAII API，
+  以及供 ROS 2 和其他语言使用的稳定 C ABI；绑定层不重新实现控制和安全逻辑。
 - 显式区分需持续续期的流式命令和保持到被替换的单次目标，慢速运动不会被误判为上层失联。
 - 原子轨迹 `SMOOTH_REPLACE_OR_HOLD`：替换不可安全生成时取消旧任务，并同步安装完整、新鲜的当前位置保持，不进入全局 FAULT。
 - 原生 Runtime 独立执行机械硬限位、产品软限位和逐关节动态制动区，并向 SDK 返回结构化轨迹启动/替换结果。
@@ -50,6 +52,31 @@ Python SDK / C++ SDK / ROS 2
 
 通用 `motor/` 层不包含机器人产品策略；产品概念隔离在 `articore_runtime/`，并且只能
 单向依赖稳定的 motor ABI。
+
+原生动态库是唯一行为来源。产品 SDK 只定义机器人名称、电机/通道映射、方向、限位、URDF、
+IK 和动力学，不再复制 ctypes 声明、看门狗、安全状态机、固定频率控制循环、夹爪状态机或
+原生句柄生命周期规则。
+
+### 正式语言绑定
+
+Python 直接从 `motor_drive_layer` 导入 `ArticoreRuntime` 和强类型配置/报告对象。私有
+`_runtime_abi` 模块统一管理 ctypes，公开封装会保证 Runtime 停止和释放前
+ControllerGroup、Controller、Motor 句柄始终有效。
+
+C++17 使用标准 CMake package：
+
+```cmake
+find_package(MotorDriveLayer CONFIG REQUIRED)
+target_link_libraries(robot_driver PRIVATE motorbridge::articore_runtime_cpp)
+```
+
+包含 `<articore/runtime.hpp>` 并使用不可复制、可移动的 `articore::Runtime` RAII 对象；
+`articore/runtime_abi.h` 继续作为 ROS 2 和其他语言的稳定中立边界。
+
+RK3588 可运行 `scripts/build_aarch64_runtime.sh`，直接生成并安装 aarch64 `.so`、头文件和
+CMake package；使用板端 sysroot 时设置 `MOTOR_AARCH64_SYSROOT`。发布 CI 同时生成原生
+Linux aarch64 artifact，并可提供 aarch64 Python wheel。
+产品适配边界和生命周期顺序见 [Native Runtime binding contract](docs/language-bindings.md)。
 
 ## 安全说明
 

@@ -62,6 +62,19 @@ set_target_properties(
   VISIBILITY_INLINES_HIDDEN YES
 )
 
+add_library(articore_runtime_cpp INTERFACE)
+add_library(articore::runtime_cpp ALIAS articore_runtime_cpp)
+target_compile_features(articore_runtime_cpp INTERFACE cxx_std_17)
+target_link_libraries(
+  articore_runtime_cpp INTERFACE articore_runtime motorbridge::motor_abi
+)
+target_include_directories(
+  articore_runtime_cpp
+  INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
 if(MSVC)
   target_compile_options(articore_runtime_core PRIVATE /W4)
 else()
@@ -70,7 +83,8 @@ endif()
 
 include(GNUInstallDirs)
 install(
-  TARGETS articore_runtime
+  TARGETS articore_runtime articore_runtime_cpp
+  EXPORT MotorDriveLayerTargets
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -88,5 +102,14 @@ if(BUILD_TESTING)
   add_test(
     NAME articore_runtime_abi_smoke_test
     COMMAND articore_runtime_abi_smoke_test
+  )
+
+  add_executable(articore_runtime_cpp_binding_test tests/cpp_binding_test.cpp)
+  target_link_libraries(
+    articore_runtime_cpp_binding_test PRIVATE articore::runtime_cpp
+  )
+  add_test(
+    NAME articore_runtime_cpp_binding_test
+    COMMAND articore_runtime_cpp_binding_test
   )
 endif()

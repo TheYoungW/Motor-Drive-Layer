@@ -193,6 +193,12 @@ with the motor function-table ABI and falls back to motor feedback health when t
 present. ABI version and capability functions make mismatches fail during runtime creation rather
 than during motion.
 
+Language bindings live in this repository rather than product SDKs. Python users import the typed
+`motor_drive_layer.ArticoreRuntime` wrapper; ctypes definitions stay private. C++17 users include
+`articore/runtime.hpp` and link the installed `motorbridge::articore_runtime_cpp` CMake target.
+The move-only `articore::Runtime` RAII object delegates every operation to this C ABI and never
+duplicates worker, watchdog, safety, or gripper behavior.
+
 The controller feedback callback introduced in runtime ABI 1.3 matches
 `motor_controller_request_feedback_all_ex()`: it returns a stable motor error code and fills the
 expected/received/missing counts plus missing motor IDs. Disable confirmation and safety diagnostics

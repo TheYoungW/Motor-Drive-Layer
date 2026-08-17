@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .models import FeedbackReport
+    from .runtime_models import DisableReport, EnableReport
 
 
 class MotorBridgeError(RuntimeError):
@@ -16,6 +17,20 @@ class AbiLoadError(MotorBridgeError):
 
 class CallError(MotorBridgeError):
     """Raised when ABI call returns non-zero status."""
+
+
+class RuntimeCallError(CallError):
+    """Raised when the native Articore Runtime rejects an operation."""
+
+
+class RuntimeTransactionError(RuntimeCallError):
+    """A native enable/disable/close transaction failed with a stable report."""
+
+    def __init__(
+        self, message: str, report: EnableReport | DisableReport
+    ) -> None:
+        super().__init__(message)
+        self.report = report
 
 
 class FeedbackRequestError(CallError):

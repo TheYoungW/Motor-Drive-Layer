@@ -24,7 +24,12 @@ printf '%s  %s\n' "$archive_sha256" "$work_dir/$archive_name" | sha256sum --chec
 tar -xf "$work_dir/$archive_name" -C "$work_dir"
 
 pushd "$work_dir/libusb-${libusb_version}" >/dev/null
+configure_host=()
+if [[ -n "${MOTOR_LIBUSB_CONFIGURE_HOST:-}" ]]; then
+  configure_host=("--host=${MOTOR_LIBUSB_CONFIGURE_HOST}")
+fi
 ./configure \
+  "${configure_host[@]}" \
   --prefix="$install_prefix" \
   --disable-static \
   --enable-shared \

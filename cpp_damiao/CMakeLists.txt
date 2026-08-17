@@ -41,8 +41,14 @@ set_target_properties(damiao_runtime PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # C ABI 动态库：封装 C++ 运行时，供 Python ctypes 等外部调用者加载。
 add_library(motor_abi SHARED src/motor_abi.cpp)
+add_library(motorbridge::motor_abi ALIAS motor_abi)
 target_compile_features(motor_abi PRIVATE cxx_std_17)
-target_include_directories(motor_abi PRIVATE include)
+target_include_directories(
+  motor_abi
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
 target_link_libraries(motor_abi PRIVATE damiao::runtime)
 set_target_properties(motor_abi PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 if(UNIX AND NOT APPLE)
@@ -56,11 +62,13 @@ endif()
 include(GNUInstallDirs)
 install(
   TARGETS motor_abi
+  EXPORT MotorDriveLayerTargets
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 install(FILES include/motor_abi.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/motor)
+install(FILES include/motor_abi.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 # 测试目标：仅在 BUILD_TESTING 开启时参与构建并注册到 CTest。
 if(BUILD_TESTING)

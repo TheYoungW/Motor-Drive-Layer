@@ -14,6 +14,9 @@ Motor-Drive-Layer is the native C++ control foundation shared by Python, C++ and
 - Register read/write helpers with acknowledgement and timeout handling.
 - C ABI shared library and Python 3.10+ bindings.
 - A separate Articore runtime ABI with a persistent safety and gripper worker.
+- Official thin bindings over the same native Runtime: a typed Python
+  `ArticoreRuntime`, an installed C++17 RAII API, and the stable C ABI used by ROS 2 and other
+  languages. No binding reimplements control or safety behavior.
 - Explicit streaming and hold-until-replaced command lifetimes, so a slow physical move is not
   mistaken for a stalled real-time command producer.
 - Atomic trajectory `SMOOTH_REPLACE_OR_HOLD`: an unsafe replacement cancels the old task and
@@ -56,6 +59,33 @@ serial / SocketCAN / DM_Device / motors
 
 The generic `motor/` layer does not contain robot-specific policy. Product concepts remain isolated
 under `articore_runtime/`, with a one-way dependency on the stable motor ABI.
+
+The native libraries are the source of truth. Product SDKs define robot names, motor/channel
+mapping, directions, limits, URDF, IK, and dynamics; they do not duplicate ctypes declarations,
+watchdogs, safety state machines, fixed-rate loops, gripper state machines, or native-handle
+lifecycle rules.
+
+### Official language bindings
+
+Python imports `ArticoreRuntime` and typed configuration/report objects directly from
+`motor_drive_layer`. The private `_runtime_abi` module owns ctypes details, and the public wrapper
+keeps ControllerGroup, Controller, and Motor handles alive until the Runtime has stopped and freed.
+
+C++17 consumers install and discover the package normally:
+
+```cmake
+find_package(MotorDriveLayer CONFIG REQUIRED)
+target_link_libraries(robot_driver PRIVATE motorbridge::articore_runtime_cpp)
+```
+
+Include `<articore/runtime.hpp>` and use the move-only `articore::Runtime` RAII wrapper. The C ABI
+in `articore/runtime_abi.h` remains the language-neutral boundary for ROS 2 and future bindings.
+
+For RK3588, `scripts/build_aarch64_runtime.sh` cross-builds and installs the aarch64 shared
+libraries, headers, and CMake package. Set `MOTOR_AARCH64_SYSROOT` when using a board sysroot.
+Release CI also builds a native Linux aarch64 artifact and an optional aarch64 Python wheel.
+See [the native binding contract](docs/language-bindings.md) for the product-adapter boundary and
+required lifecycle order.
 
 ## Safety
 

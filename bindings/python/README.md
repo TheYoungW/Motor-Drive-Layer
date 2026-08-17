@@ -6,6 +6,11 @@ The package loads the two bundled native ABI libraries through Python `ctypes` a
 SocketCAN, SocketCAN-FD, Damiao serial bridge, and optional DM_Device transports.
 `libmotor_abi` is the generic motor layer; `libarticore_runtime` is the separately versioned
 product safety runtime consumed by Articore SDKs.
+The public package includes the official typed `ArticoreRuntime` wrapper. Product SDKs no longer
+declare ctypes structures or native signatures: the private binding module owns those details,
+preserves ControllerGroup/Controller/Motor lifetimes, and converts native health, enable, and
+disable reports into immutable Python values. Fixed-rate control and safety logic continues to
+execute only in `libarticore_runtime`.
 Use `articore_runtime_abi_version()` and `articore_runtime_capabilities()` to inspect that product
 runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 2.1 adds an
 effective-control-rate capability and native query: dual-arm runtimes cap requests above 400 Hz at
@@ -35,6 +40,37 @@ SDK bindings use `articore_runtime_create_ex()` and pass the motor enable callba
 the two packaged native libraries remain independently loadable on Linux, Windows, and macOS.
 Published wheels cover Linux x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x64. The serial
 transport is cross-platform; SocketCAN transports remain Linux-only.
+
+The product adapter constructs the native Runtime from the already-created motor objects without
+touching ctypes:
+
+```python
+from motor_drive_layer import (
+    ArticoreRuntime,
+    GripperProductBinding,
+    RuntimeConfig,
+    RuntimeMotor,
+)
+
+runtime = ArticoreRuntime(
+    RuntimeConfig(control_hz=400),
+    controller_group,
+    left_controller,
+    right_controller,
+    runtime_motors,
+)
+runtime.configure_gripper_products([
+    GripperProductBinding(left_gripper, "yunyi_gripper_v1"),
+    GripperProductBinding(right_gripper, "yunyi_gripper_v1"),
+])
+runtime.connect()
+```
+
+An active Runtime leases its ControllerGroup, Controllers, and Motors. Calling their `close()`
+methods or bypassing Runtime with direct send/configuration/fresh-feedback operations raises
+`CallError`; cached state and transport-health reads remain available. Configure motor modes and
+device parameters before constructing `ArticoreRuntime`. `runtime.close()` performs the native
+close transaction, frees the Runtime, and then releases those leases.
 
 DM-USB2FDCAN Dual works with its original `dual_app` firmware through
 `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000,

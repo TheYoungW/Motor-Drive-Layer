@@ -10,6 +10,12 @@
 #include <stdexcept>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
 namespace damiao {
 namespace {
 
@@ -66,6 +72,29 @@ const char* library_basename() {
 #endif
 }
 
+std::filesystem::path native_library_directory() {
+#if defined(_WIN32)
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExA(
+          GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+          reinterpret_cast<LPCSTR>(&native_library_directory), &module)) {
+    return {};
+  }
+  std::array<char, 4096> path{};
+  const auto length = GetModuleFileNameA(module, path.data(), path.size());
+  if (length == 0 || length >= path.size()) return {};
+  return std::filesystem::path(std::string(path.data(), length)).parent_path();
+#else
+  Dl_info info{};
+  if (dladdr(reinterpret_cast<const void*>(&native_library_directory), &info) == 0 ||
+      !info.dli_fname) {
+    return {};
+  }
+  return std::filesystem::path(info.dli_fname).parent_path();
+#endif
+}
+
 }  // namespace
 
 DmDeviceType parse_dm_device_type(const std::string& raw) {
@@ -119,6 +148,17 @@ std::string resolve_dm_device_library_path() {
   const auto rel = platform_relative_path();
   const auto legacy_rel = legacy_platform_relative_path();
   std::vector<std::filesystem::path> candidates;
+  const auto native_dir = native_library_directory();
+  if (!native_dir.empty()) {
+    if (!legacy_rel.empty()) {
+      candidates.push_back(native_dir / "dm_device/v1.0.0" /
+                           std::filesystem::path(legacy_rel).filename());
+    }
+    if (!rel.empty()) {
+      candidates.push_back(native_dir / "dm_device/v1.1.0" /
+                           std::filesystem::path(rel).filename());
+    }
+  }
   if (!legacy_rel.empty()) {
     candidates.push_back(std::filesystem::current_path() / "third_party/dm_device/v1.0.0" /
                          legacy_rel);

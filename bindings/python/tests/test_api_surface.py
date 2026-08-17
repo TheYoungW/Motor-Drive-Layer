@@ -41,6 +41,9 @@ def test_api_surface_includes_binding_parity_metadata() -> None:
     assert "ControllerGroup.send_pos_vel(commands)" in surface["bindings"]["controller_group_methods"]
     assert "ControllerGroup.prepare_mit(motors)" in surface["bindings"]["controller_group_methods"]
     assert "ControllerGroup.prepare_pos_vel(motors)" in surface["bindings"]["controller_group_methods"]
+    assert "ArticoreRuntime.connect()" in surface["bindings"]["runtime_methods"]
+    assert "ArticoreRuntime.health" in surface["bindings"]["runtime_methods"]
+    assert surface["bindings"]["cpp_damiao"]["raii_target"] == "motorbridge::articore_runtime_cpp"
     assert "MitCommand(motor, pos, vel, kp, kd, tau)" in surface["bindings"]["command_types"]
     assert "Motor.damiao_get_param_f32(param_id, timeout_ms)" in surface["bindings"]["motor_methods"]
     assert "Motor.get_feedback_stats()" in surface["bindings"]["motor_methods"]

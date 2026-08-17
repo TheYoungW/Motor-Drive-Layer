@@ -36,6 +36,13 @@ jobs:
       - name: Run C++ tests
         run: ctest --test-dir build --output-on-failure --timeout 180
 
+      - name: Verify installed C++ RAII package
+        run: |
+          cmake --install build --prefix "$RUNNER_TEMP/motor-drive-layer"
+          cmake -S tests/cmake_package -B build/cmake-consumer -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/motor-drive-layer"
+          cmake --build build/cmake-consumer
+          "$PWD/build/cmake-consumer/motor_drive_layer_consumer"
+
       - name: Run Python tests
         env:
           PYTHONPATH: bindings/python/src
@@ -72,6 +79,8 @@ jobs:
           from importlib.metadata import version
 
           assert motor_drive_layer.get_version() == version("motor-drive-layer")
+          assert motor_drive_layer.ArticoreRuntime
+          assert motor_drive_layer.RuntimeConfig
           assert motor_drive_layer.abi_version() == "0.5.0-cpp"
           assert motor_drive_layer.abi_capabilities()["features"]["feedback_stats"] is True
           assert motor_drive_layer.abi_capabilities()["features"]["register_metadata"] is True

@@ -76,11 +76,23 @@ def _state_from_c(state: CState) -> MotorState | None:
     )
 
 
+def _lease_lock(owner: object) -> Lock:
+    """Lazily support legacy/tests that construct wrappers with ``__new__``."""
+    lock = getattr(owner, "_runtime_lease_lock", None)
+    if lock is None:
+        lock = Lock()
+        setattr(owner, "_runtime_lease_lock", lock)
+        setattr(owner, "_runtime_lease_count", 0)
+    return lock
+
+
 class Controller:
     """Own one native bus and the motor handles added to that bus."""
 
     def __init__(self, channel: str = "can0") -> None:
         self._abi = get_abi()
+        self._runtime_lease_lock = Lock()
+        self._runtime_lease_count = 0
         self._feedback_motor_count = 0
         self._ptr = self._abi.lib.motor_controller_new_socketcan(channel.encode())
         if not self._ptr:
@@ -90,6 +102,8 @@ class Controller:
     def from_socketcanfd(cls, channel: str = "can0") -> "Controller":
         self = cls.__new__(cls)
         self._abi = get_abi()
+        self._runtime_lease_lock = Lock()
+        self._runtime_lease_count = 0
         self._feedback_motor_count = 0
         self._ptr = self._abi.lib.motor_controller_new_socketcanfd(channel.encode())
         if not self._ptr:
@@ -100,6 +114,8 @@ class Controller:
     def from_dm_serial(cls, serial_port: str = "/dev/ttyACM0", baud: int = 1_000_000) -> "Controller":
         self = cls.__new__(cls)
         self._abi = get_abi()
+        self._runtime_lease_lock = Lock()
+        self._runtime_lease_count = 0
         self._feedback_motor_count = 0
         self._ptr = self._abi.lib.motor_controller_new_dm_serial(serial_port.encode(), int(baud))
         if not self._ptr:
@@ -146,6 +162,8 @@ class Controller:
         except RuntimeError as exc:
             raise CallError(f"DM_Device runtime setup failed: {exc}") from exc
         self._abi = get_abi()
+        self._runtime_lease_lock = Lock()
+        self._runtime_lease_count = 0
         self._feedback_motor_count = 0
         if self._abi.has_dm_device_ex:
             self._ptr = self._abi.lib.motor_controller_new_dm_device_ex(
@@ -169,9 +187,12 @@ class Controller:
         return self
 
     def close(self) -> None:
-        if self._ptr:
-            self._abi.lib.motor_controller_free(self._ptr)
-            self._ptr = None
+        with _lease_lock(self):
+            if self._ptr and getattr(self, "_runtime_lease_count", 0):
+                raise CallError("controller is owned by an active ArticoreRuntime")
+            if self._ptr:
+                self._abi.lib.motor_controller_free(self._ptr)
+                self._ptr = None
 
     @property
     def closed(self) -> bool:
@@ -182,19 +203,40 @@ class Controller:
             raise CallError("controller is closed")
         return self._ptr
 
+    def _acquire_runtime_lease(self) -> None:
+        with _lease_lock(self):
+            self._require_open()
+            self._runtime_lease_count += 1
+
+    def _release_runtime_lease(self) -> None:
+        with _lease_lock(self):
+            if self._runtime_lease_count <= 0:
+                raise RuntimeError("unbalanced Controller Runtime lease")
+            self._runtime_lease_count -= 1
+
+    def _require_runtime_unowned(self, operation: str) -> None:
+        with _lease_lock(self):
+            if getattr(self, "_runtime_lease_count", 0):
+                raise CallError(f"{operation} is owned by an active ArticoreRuntime")
+
     def shutdown(self) -> None:
+        self._require_runtime_unowned("controller shutdown")
         _ok(self._abi.lib.motor_controller_shutdown(self._require_open()), "controller_shutdown")
 
     def close_bus(self) -> None:
+        self._require_runtime_unowned("controller bus lifecycle")
         _ok(self._abi.lib.motor_controller_close_bus(self._require_open()), "controller_close_bus")
 
     def enable_all(self) -> None:
+        self._require_runtime_unowned("controller enable")
         _ok(self._abi.lib.motor_controller_enable_all(self._require_open()), "enable_all")
 
     def disable_all(self) -> None:
+        self._require_runtime_unowned("controller disable")
         _ok(self._abi.lib.motor_controller_disable_all(self._require_open()), "disable_all")
 
     def poll_feedback_once(self) -> None:
+        self._require_runtime_unowned("controller feedback polling")
         _ok(
             self._abi.lib.motor_controller_poll_feedback_once(self._require_open()),
             "poll_feedback_once",
@@ -202,6 +244,7 @@ class Controller:
 
     def request_feedback_all(self, timeout_ms: int = 50) -> None:
         """Request fresh feedback or raise an error with a structured report."""
+        self._require_runtime_unowned("controller feedback request")
         if not self._abi.has_structured_feedback_report:
             raise CallError(
                 "the loaded motor_abi does not support structured feedback reports; "
@@ -246,6 +289,7 @@ class Controller:
         raise error_type(message, report)
 
     def set_tx_gap_us(self, gap_us: int) -> None:
+        self._require_runtime_unowned("controller TX pacing")
         value = int(gap_us)
         if value < 0 or value > 0xFFFFFFFF:
             raise ValueError("gap_us must be in 0..=4294967295")
@@ -420,15 +464,20 @@ class Motor:
 
     def __init__(self, ptr: int, controller: Controller | None = None) -> None:
         self._abi = get_abi()
+        self._runtime_lease_lock = Lock()
+        self._runtime_lease_count = 0
         self._ptr = ptr
         self._controller = controller
 
     def close(self) -> None:
-        if self._ptr:
-            # Freeing the ABI wrapper remains valid after the parent controller
-            # closes; operational methods are rejected by _require_open().
-            self._abi.lib.motor_handle_free(self._ptr)
-            self._ptr = None
+        with _lease_lock(self):
+            if self._ptr and getattr(self, "_runtime_lease_count", 0):
+                raise CallError("motor is owned by an active ArticoreRuntime")
+            if self._ptr:
+                # Freeing the ABI wrapper remains valid after the parent controller
+                # closes; operational methods are rejected by _require_open().
+                self._abi.lib.motor_handle_free(self._ptr)
+                self._ptr = None
 
     @property
     def closed(self) -> bool:
@@ -442,6 +491,22 @@ class Motor:
             raise CallError("motor controller is closed")
         return self._ptr
 
+    def _acquire_runtime_lease(self) -> None:
+        with _lease_lock(self):
+            self._require_open()
+            self._runtime_lease_count += 1
+
+    def _release_runtime_lease(self) -> None:
+        with _lease_lock(self):
+            if self._runtime_lease_count <= 0:
+                raise RuntimeError("unbalanced Motor Runtime lease")
+            self._runtime_lease_count -= 1
+
+    def _require_runtime_unowned(self, operation: str) -> None:
+        with _lease_lock(self):
+            if getattr(self, "_runtime_lease_count", 0):
+                raise CallError(f"{operation} is owned by an active ArticoreRuntime")
+
     def __enter__(self) -> "Motor":
         self._require_open()
         return self
@@ -450,40 +515,51 @@ class Motor:
         self.close()
 
     def enable(self) -> None:
+        self._require_runtime_unowned("motor enable")
         _ok(self._abi.lib.motor_handle_enable(self._require_open()), "enable")
 
     def disable(self) -> None:
+        self._require_runtime_unowned("motor disable")
         _ok(self._abi.lib.motor_handle_disable(self._require_open()), "disable")
 
     def clear_error(self) -> None:
+        self._require_runtime_unowned("motor fault clearing")
         _ok(self._abi.lib.motor_handle_clear_error(self._require_open()), "clear_error")
 
     def set_zero_position(self) -> None:
+        self._require_runtime_unowned("motor zeroing")
         _ok(self._abi.lib.motor_handle_set_zero_position(self._require_open()), "set_zero_position")
 
     def ensure_mode(self, mode: Mode | int, timeout_ms: int = 1000) -> None:
+        self._require_runtime_unowned("motor mode configuration")
         _ok(self._abi.lib.motor_handle_ensure_mode(self._require_open(), int(mode), timeout_ms), "ensure_mode")
 
     def send_mit(self, pos: float, vel: float, kp: float, kd: float, tau: float) -> None:
+        self._require_runtime_unowned("motor MIT output")
         _ok(self._abi.lib.motor_handle_send_mit(self._require_open(), pos, vel, kp, kd, tau), "send_mit")
 
     def send_pos_vel(self, pos: float, vlim: float) -> None:
+        self._require_runtime_unowned("motor PV output")
         _ok(self._abi.lib.motor_handle_send_pos_vel(self._require_open(), pos, vlim), "send_pos_vel")
 
     def send_vel(self, vel: float) -> None:
+        self._require_runtime_unowned("motor velocity output")
         _ok(self._abi.lib.motor_handle_send_vel(self._require_open(), vel), "send_vel")
 
     def send_force_pos(self, pos: float, vlim: float, ratio: float) -> None:
+        self._require_runtime_unowned("motor force-position output")
         _ok(
             self._abi.lib.motor_handle_send_force_pos(self._require_open(), pos, vlim, ratio),
             "send_force_pos",
         )
 
     def request_feedback(self) -> None:
+        self._require_runtime_unowned("motor feedback request")
         _ok(self._abi.lib.motor_handle_request_feedback(self._require_open()), "request_feedback")
 
     def request_fresh_state(self, timeout_ms: int = 50) -> MotorState:
         """Request feedback and wait for a newer state than the cached sample."""
+        self._require_runtime_unowned("motor fresh-feedback request")
         state = CState()
         _ok(
             self._abi.lib.motor_handle_request_fresh_state(
@@ -497,18 +573,23 @@ class Motor:
         return result
 
     def set_can_timeout_ms(self, timeout_ms: int) -> None:
+        self._require_runtime_unowned("motor timeout configuration")
         _ok(self._abi.lib.motor_handle_set_can_timeout_ms(self._require_open(), timeout_ms), "set_can_timeout_ms")
 
     def store_parameters(self) -> None:
+        self._require_runtime_unowned("motor parameter storage")
         _ok(self._abi.lib.motor_handle_store_parameters(self._require_open()), "store_parameters")
 
     def write_register_f32(self, rid: int, value: float) -> None:
+        self._require_runtime_unowned("motor register write")
         _ok(self._abi.lib.motor_handle_write_register_f32(self._require_open(), rid, value), "write_register_f32")
 
     def write_register_u32(self, rid: int, value: int) -> None:
+        self._require_runtime_unowned("motor register write")
         _ok(self._abi.lib.motor_handle_write_register_u32(self._require_open(), rid, value), "write_register_u32")
 
     def get_register_f32(self, rid: int, timeout_ms: int = 1000) -> float:
+        self._require_runtime_unowned("motor register read")
         out = c_float(0.0)
         _ok(
             self._abi.lib.motor_handle_get_register_f32(
@@ -519,6 +600,7 @@ class Motor:
         return float(out.value)
 
     def get_register_u32(self, rid: int, timeout_ms: int = 1000) -> int:
+        self._require_runtime_unowned("motor register read")
         out = c_uint32(0)
         _ok(
             self._abi.lib.motor_handle_get_register_u32(
@@ -529,6 +611,7 @@ class Motor:
         return int(out.value)
 
     def damiao_get_param_f32(self, param_id: int, timeout_ms: int = 1000) -> float:
+        self._require_runtime_unowned("motor parameter read")
         out = c_float(0.0)
         _ok(
             self._abi.lib.motor_handle_damiao_get_param_f32(
@@ -539,6 +622,7 @@ class Motor:
         return float(out.value)
 
     def damiao_get_param_u32(self, param_id: int, timeout_ms: int = 1000) -> int:
+        self._require_runtime_unowned("motor parameter read")
         out = c_uint32(0)
         _ok(
             self._abi.lib.motor_handle_damiao_get_param_u32(
@@ -549,9 +633,11 @@ class Motor:
         return int(out.value)
 
     def damiao_write_param_f32(self, param_id: int, value: float) -> None:
+        self._require_runtime_unowned("motor parameter write")
         _ok(self._abi.lib.motor_handle_damiao_write_param_f32(self._require_open(), param_id, value), "damiao_write_param_f32")
 
     def damiao_write_param_u32(self, param_id: int, value: int) -> None:
+        self._require_runtime_unowned("motor parameter write")
         _ok(self._abi.lib.motor_handle_damiao_write_param_u32(self._require_open(), param_id, value), "damiao_write_param_u32")
 
     def get_state(self) -> MotorState | None:
@@ -585,6 +671,8 @@ class ControllerGroup:
             raise ValueError("controllers must not contain duplicates")
         self._abi = get_abi()
         self._call_lock = Lock()
+        self._runtime_lease_lock = Lock()
+        self._runtime_lease_count = 0
         self._ptr = None
         if not self._abi.has_controller_group:
             raise CallError(
@@ -617,7 +705,24 @@ class ControllerGroup:
             raise ValueError("command motor does not belong to this ControllerGroup")
         return ptr
 
+    def _acquire_runtime_lease(self) -> None:
+        with _lease_lock(self):
+            self._require_open()
+            self._runtime_lease_count += 1
+
+    def _release_runtime_lease(self) -> None:
+        with _lease_lock(self):
+            if self._runtime_lease_count <= 0:
+                raise RuntimeError("unbalanced ControllerGroup Runtime lease")
+            self._runtime_lease_count -= 1
+
+    def _require_runtime_unowned(self, operation: str) -> None:
+        with _lease_lock(self):
+            if getattr(self, "_runtime_lease_count", 0):
+                raise CallError(f"{operation} is owned by an active ArticoreRuntime")
+
     def send_mit(self, commands: Sequence[MitCommand]) -> None:
+        self._require_runtime_unowned("controller-group MIT dispatch")
         values = tuple(commands)
         native = (CMitBatchCommand * len(values))(
             *(
@@ -641,6 +746,7 @@ class ControllerGroup:
             )
 
     def send_pos_vel(self, commands: Sequence[PosVelCommand]) -> None:
+        self._require_runtime_unowned("controller-group PV dispatch")
         values = tuple(commands)
         native = (CPosVelBatchCommand * len(values))(
             *(
@@ -667,7 +773,9 @@ class ControllerGroup:
         return PreparedPosVelBatch(self, motors)
 
     def close(self) -> None:
-        with self._call_lock:
+        with _lease_lock(self), self._call_lock:
+            if self._ptr and getattr(self, "_runtime_lease_count", 0):
+                raise CallError("controller group is owned by an active ArticoreRuntime")
             if self._ptr:
                 self._abi.lib.motor_controller_group_free(self._ptr)
                 self._ptr = None
@@ -727,6 +835,7 @@ class PreparedPosVelBatch:
         velocity_limits: float | Sequence[float],
     ) -> None:
         count = self.motor_count
+        self._group._require_runtime_unowned("prepared PV dispatch")
         _check_vector("positions", positions, count)
         _check_vector("velocity_limits", velocity_limits, count)
         with self._lock, self._group._call_lock:
@@ -778,6 +887,7 @@ class PreparedMitBatch:
         feedforward_torques: float | Sequence[float],
     ) -> None:
         count = self.motor_count
+        self._group._require_runtime_unowned("prepared MIT dispatch")
         _check_vector("positions", positions, count)
         _check_vector("velocities", velocities, count)
         _check_vector("stiffness", stiffness, count)
