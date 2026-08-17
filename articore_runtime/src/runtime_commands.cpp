@@ -15,6 +15,22 @@ namespace articore {
 using detail::age_ns;
 using detail::copy_text;
 
+uint64_t SafetyRuntime::next_arm_generation() noexcept {
+  return arm_generation_.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+void SafetyRuntime::consume_pending_arm_mailbox() {
+  std::lock_guard<std::mutex> pending_lock(pending_arm_mutex_);
+  if (!pending_arm_mailbox_.valid) return;
+  arm_mailbox_ = std::move(pending_arm_mailbox_);
+  pending_arm_mailbox_ = ArmMailbox{};
+}
+
+void SafetyRuntime::clear_pending_arm_mailbox() {
+  std::lock_guard<std::mutex> pending_lock(pending_arm_mutex_);
+  pending_arm_mailbox_ = ArmMailbox{};
+}
+
 void SafetyRuntime::configure_joints(
     const ArticoreJointControlConfig* configs, uint32_t count) {
   if (!configs || count == 0) {
@@ -164,7 +180,7 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
   ArmMailbox initialized;
   initialized.valid = true;
   initialized.user_command = false;
-  initialized.generation = arm_mailbox_.generation + 1;
+  initialized.generation = next_arm_generation();
   initialized.submitted_at = Clock::now();
   for (const auto& motor : motors_) {
     if (motor.descriptor.is_gripper) continue;
@@ -345,6 +361,7 @@ bool SafetyRuntime::enter_safe_hold_from_feedback(const std::string& reason,
   safe_pv_ = std::move(pv);
   safe_mit_ = std::move(mit);
   fault_hold_active_ = false;
+  clear_pending_arm_mailbox();
   arm_mailbox_ = ArmMailbox{};
   last_fresh_feedback_ = now - std::chrono::nanoseconds(maximum_age_ns);
   state_ = ARTICORE_SAFE_HOLD;
@@ -378,27 +395,22 @@ void SafetyRuntime::submit_pos_vel_ex(const ArticorePosVelCommand* commands,
   }
   validate_motor_set(commands, count, false);
 
+  ArmMailbox pending;
+  pending.valid = true;
+  pending.user_command = true;
+  pending.lifetime = lifetime;
+  pending.generation = next_arm_generation();
+  pending.submitted_at = Clock::now();
+  pending.joint_position = false;
+  pending.pv.assign(commands, commands + count);
   {
-    std::lock_guard<std::mutex> state_lock(state_mutex_);
-    require_state_for_command();
-  }
-  {
-    std::lock_guard<std::mutex> command_lock(command_mutex_);
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     require_state_for_command();
     if (mode_ != ARTICORE_MODE_PV) {
       throw std::runtime_error("cannot submit PV while runtime mode is MIT");
     }
-    arm_mailbox_.valid = true;
-    arm_mailbox_.user_command = true;
-    arm_mailbox_.lifetime = lifetime;
-    ++arm_mailbox_.generation;
-    arm_mailbox_.submitted_at = Clock::now();
-    arm_mailbox_.joint_position = false;
-    arm_mailbox_.max_reference_velocity = 0.0f;
-    arm_mailbox_.final_positions.clear();
-    arm_mailbox_.pv.assign(commands, commands + count);
-    arm_mailbox_.mit.clear();
+    std::lock_guard<std::mutex> pending_lock(pending_arm_mutex_);
+    pending_arm_mailbox_ = std::move(pending);
   }
   wakeup_.notify_all();
 }
@@ -436,27 +448,22 @@ void SafetyRuntime::submit_mit_ex(const ArticoreMitCommand* commands,
   }
   validate_motor_set(commands, count, false);
 
+  ArmMailbox pending;
+  pending.valid = true;
+  pending.user_command = true;
+  pending.lifetime = lifetime;
+  pending.generation = next_arm_generation();
+  pending.submitted_at = Clock::now();
+  pending.joint_position = false;
+  pending.mit.assign(commands, commands + count);
   {
-    std::lock_guard<std::mutex> state_lock(state_mutex_);
-    require_state_for_command();
-  }
-  {
-    std::lock_guard<std::mutex> command_lock(command_mutex_);
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     require_state_for_command();
     if (mode_ != ARTICORE_MODE_MIT) {
       throw std::runtime_error("cannot submit MIT while runtime mode is PV");
     }
-    arm_mailbox_.valid = true;
-    arm_mailbox_.user_command = true;
-    arm_mailbox_.lifetime = lifetime;
-    ++arm_mailbox_.generation;
-    arm_mailbox_.submitted_at = Clock::now();
-    arm_mailbox_.joint_position = false;
-    arm_mailbox_.max_reference_velocity = 0.0f;
-    arm_mailbox_.final_positions.clear();
-    arm_mailbox_.mit.assign(commands, commands + count);
-    arm_mailbox_.pv.clear();
+    std::lock_guard<std::mutex> pending_lock(pending_arm_mutex_);
+    pending_arm_mailbox_ = std::move(pending);
   }
   wakeup_.notify_all();
 }
@@ -474,6 +481,11 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     }
     mode = mode_;
   }
+
+  // Consume only the newest accepted raw command. Physical sends may take
+  // most of a 2 ms cycle, but publishers can replace this pending slot while
+  // the previous generation is in flight.
+  consume_pending_arm_mailbox();
 
   if (!arm_mailbox_.valid) return true;
   const bool mailbox_user_command = arm_mailbox_.user_command;

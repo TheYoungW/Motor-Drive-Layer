@@ -129,7 +129,7 @@ void SafetyRuntime::install_joint_position(
   next.valid = true;
   next.user_command = true;
   next.lifetime = ARTICORE_COMMAND_HOLD_UNTIL_REPLACED;
-  next.generation = arm_mailbox_.generation + 1;
+  next.generation = next_arm_generation();
   next.submitted_at = now;
   next.joint_position = true;
   next.max_reference_velocity = max_reference_velocity;
@@ -197,6 +197,7 @@ void SafetyRuntime::install_joint_position(
     next.final_positions.push_back(final_position);
   }
 
+  clear_pending_arm_mailbox();
   arm_mailbox_ = std::move(next);
   wakeup_.notify_all();
 }

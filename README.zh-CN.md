@@ -426,11 +426,14 @@ scripts/                    Linux SocketCAN/CAN-FD接口配置工具
 当前硬件已验证七电机串口在每电机500 Hz下反馈计数完整。这证明的是吞吐能力，不代表硬实时保证。USB调度、普通Linux内核、适配器固件和应用调度仍可能产生毫秒级长尾延迟。
 
 DM_Device 默认的 1 Mbps/5 Mbps 配置会同时配置通道并以 CAN-FD+BRS 发送帧，5 Mbps
-数据段使用 87.5% 采样点。实机已验证单通道 8 台电机在 500 Hz 下反馈完整；同一
-DM-USB2FDCAN Dual 的 CH0、CH1 各 8 台电机同时运行时，稳定完整批次频率为 400 Hz。
-Runtime ABI 2.5 对 DM Device 双臂继续保持该上限；只有左右两侧均报告 SocketCAN-FD
-且 BRS 已启用时才允许最高 500 Hz。实际生效频率通过
-`articore_runtime_get_control_hz()` 暴露。
+数据段使用 87.5% 采样点。实机已验证单通道 8 台电机在 500 Hz 下反馈完整；双通道
+各 8 台电机的纯 C++ Runtime 也完成了 30 秒 500 Hz streaming raw MIT 真机测试，并在
+每周期读取全部缓存状态时保持 498.53～498.93 Hz 反馈。两条接口始终 ERROR-ACTIVE、
+错误计数为零，结束后 16 台电机全部正常失能。因此 Runtime ABI 2.5 在左右两侧均报告
+SocketCAN-FD+BRS 时允许最高 500 Hz；DM Device 和旧调用路径仍限制为 400 Hz。容量为一
+的非阻塞 raw mailbox 与内部同步的缓存读取也已通过 Articore SDK 公开 raw MIT 路径验收：
+30 秒提交 500.02 Hz，16 台反馈 497.36～499.36 Hz，原生 transport 错误为零，最终确认
+16/16 失能。实际生效频率通过 `articore_runtime_get_control_hz()` 暴露。
 
 ## 贡献与安全
 

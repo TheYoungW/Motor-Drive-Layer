@@ -781,7 +781,10 @@ int32_t motor_handle_get_register_u32(MotorHandle* handle,
 
 int32_t motor_handle_get_state(MotorHandle* handle, MotorState* out_state) {
   if (handle == nullptr || out_state == nullptr) return fail("motor or out_state is null");
-  std::lock_guard<std::mutex> lock(handle->mutex);
+  // latest_state() owns the cache mutex internally.  Taking the ABI wrapper's
+  // transport-operation mutex here makes independent cache readers contend
+  // with a 500 Hz Runtime worker once per motor, turning a 14-axis snapshot
+  // into tens of milliseconds of lock convoying.
   return ffi_call([&] {
     std::memset(out_state, 0, sizeof(MotorState));
     const auto state = handle->motor->latest_state();
@@ -795,7 +798,7 @@ int32_t motor_handle_get_state(MotorHandle* handle, MotorState* out_state) {
 int32_t motor_handle_get_feedback_stats(MotorHandle* handle,
                                         MotorFeedbackStats* out_stats) {
   if (handle == nullptr || out_stats == nullptr) return fail("motor or out_stats is null");
-  std::lock_guard<std::mutex> lock(handle->mutex);
+  // feedback_stats() is synchronized by MotorHandle::state_mutex_.
   return ffi_call([&] {
     std::memset(out_stats, 0, sizeof(MotorFeedbackStats));
     const auto stats = handle->motor->feedback_stats();
@@ -813,7 +816,7 @@ int32_t motor_handle_get_feedback_integrity_stats(
   if (out_stats->struct_size < sizeof(MotorFeedbackIntegrityStats)) {
     return fail("feedback integrity stats struct_size is too small");
   }
-  std::lock_guard<std::mutex> lock(handle->mutex);
+  // feedback_integrity_stats() owns integrity_mutex_ internally.
   return ffi_call([&] {
     const auto stats = handle->motor->feedback_integrity_stats();
     const auto struct_size = out_stats->struct_size;

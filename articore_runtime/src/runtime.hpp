@@ -213,6 +213,9 @@ class SafetyRuntime {
   void worker_loop();
   bool run_arm_control_cycle(Clock::time_point now, bool include_grippers,
                              std::string& error);
+  uint64_t next_arm_generation() noexcept;
+  void consume_pending_arm_mailbox();
+  void clear_pending_arm_mailbox();
   void initialize_arm_mailbox_from_feedback(ArticoreControlMode mode,
                                             bool require_enabled);
   bool request_feedback_parallel(uint32_t timeout_ms,
@@ -297,6 +300,10 @@ class SafetyRuntime {
   std::unordered_map<void*, JointControlConfig> joint_configs_;
   mutable std::mutex state_mutex_;
   mutable std::mutex command_mutex_;
+  // Raw arm submissions use a capacity-one pending mailbox so callers never
+  // wait for the native worker's physical ControllerGroup dispatch. The
+  // command mutex remains the transport/lifecycle serialization barrier.
+  mutable std::mutex pending_arm_mutex_;
   mutable std::recursive_mutex lifecycle_mutex_;
   std::condition_variable wakeup_;
   std::thread worker_;
@@ -324,7 +331,9 @@ class SafetyRuntime {
   uint32_t consecutive_send_failures_ = 0;
   uint32_t consecutive_feedback_failures_ = 0;
   uint32_t consecutive_hold_failures_ = 0;
+  std::atomic<uint64_t> arm_generation_{0};
   ArmMailbox arm_mailbox_;
+  ArmMailbox pending_arm_mailbox_;
   Clock::time_point next_control_tick_{};
   SideHealth sides_[2];
   std::string fault_reason_;

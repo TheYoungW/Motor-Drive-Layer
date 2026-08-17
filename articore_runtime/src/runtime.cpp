@@ -167,9 +167,10 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
       }
     }
   }
-  // A shared DM-USB2FDCAN Dual remains verified at 400 Hz. Independent
-  // SocketCAN-FD+BRS transports are verified at 500 Hz with eight motors per
-  // side. Missing capability records use the conservative legacy envelope.
+  // A pure C++ Runtime streaming test at 500 Hz, including continuous raw-MIT
+  // mailbox updates and all 16 cached-state reads, sustained approximately
+  // 499 Hz feedback for 30 seconds over two SocketCAN-FD+BRS interfaces. A
+  // product SDK may still request a lower rate for an unverified workload.
   if (active_sides_[0] && active_sides_[1]) {
     const bool dual_socketcanfd_brs =
         capability_present[0] && capability_present[1] &&
@@ -462,6 +463,7 @@ void SafetyRuntime::stop_worker() {
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (stopping_) return;
     stopping_ = true;
+    clear_pending_arm_mailbox();
     arm_mailbox_ = ArmMailbox{};
     fault_hold_active_ = false;
   }

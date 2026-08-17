@@ -630,6 +630,7 @@ void SafetyRuntime::enable(ArticoreControlMode mode) {
       hardware_transition_ = true;
       disable_confirmed_ = false;
       fault_reason_ = "runtime enable failed: " + enable_error;
+      clear_pending_arm_mailbox();
       arm_mailbox_ = ArmMailbox{};
     }
     update_enable_report(false, false, missing_motors, enable_error);
@@ -953,6 +954,7 @@ void SafetyRuntime::disable() {
     last_sent_pv_.clear();
     last_sent_mit_.clear();
     fault_hold_active_ = false;
+    clear_pending_arm_mailbox();
     arm_mailbox_ = ArmMailbox{};
     has_successful_command_ = false;
     gripper_command_generation_ = 0;
@@ -1036,6 +1038,7 @@ void SafetyRuntime::recover() {
   last_sent_pv_.clear();
   last_sent_mit_.clear();
   fault_hold_active_ = false;
+  clear_pending_arm_mailbox();
   arm_mailbox_ = ArmMailbox{};
   has_successful_command_ = false;
   gripper_command_generation_ = 0;

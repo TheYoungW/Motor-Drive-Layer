@@ -131,6 +131,42 @@ def test_runtime_binding_owns_handles_and_converts_health() -> None:
         _abandon_fake_handles(group, (left,), (joint,))
 
 
+def test_failed_close_keeps_runtime_and_native_resource_leases(monkeypatch) -> None:
+    left = _fake_controller(0x141)
+    group = _fake_group((left,), 0x241)
+    joint = Motor(0x341, left)
+    runtime = ArticoreRuntime(
+        RuntimeConfig(), group, left, None,
+        [RuntimeMotor(joint, side=0, name="l-joint1")],
+    )
+    native_pointer = runtime._ptr
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            runtime._runtime_abi.lib,
+            "articore_runtime_close",
+            lambda _runtime: -1,
+        )
+        with pytest.raises(RuntimeTransactionError, match="close failed"):
+            runtime.close()
+
+    assert not runtime.closed
+    assert runtime._ptr == native_pointer
+    assert joint._runtime_lease_count == 1
+    assert group._runtime_lease_count == 1
+    assert left._runtime_lease_count == 1
+    with pytest.raises(CallError, match="active ArticoreRuntime"):
+        group.close()
+    with pytest.raises(CallError, match="active ArticoreRuntime"):
+        left.close()
+
+    runtime.close()
+    assert runtime.closed
+    assert joint._runtime_lease_count == 0
+    assert group._runtime_lease_count == 0
+    assert left._runtime_lease_count == 0
+    _abandon_fake_handles(group, (left,), (joint,))
+
+
 def test_dual_runtime_500_hz_requires_socketcanfd_brs_on_both_sides() -> None:
     left = _fake_controller(
         0x121, transport="socketcanfd", can_fd=True, can_fd_brs=True

@@ -498,11 +498,16 @@ The current hardware has demonstrated complete feedback counts at 500 Hz per mot
 
 The default DM_Device 1 Mbps/5 Mbps configuration now configures the channel and sends CAN-FD+BRS
 frames, using an 87.5% sample point for the 5 Mbps data phase. Hardware validation demonstrated
-complete 500 Hz feedback with eight motors on one channel. With eight motors on each of CH0 and CH1
-of the same DM-USB2FDCAN Dual, the verified stable full-batch rate is 400 Hz. Runtime ABI 2.5 keeps
-that DM Device dual limit, but allows up to 500 Hz when both independent transports report
-SocketCAN-FD with active BRS. The effective value is exposed through
-`articore_runtime_get_control_hz()`.
+complete 500 Hz feedback with eight motors on one channel. With eight motors on each of CH0 and CH1,
+the native C++ Runtime sustained 498.53--498.93 Hz feedback for all 16 motors during a 30-second
+500 Hz streaming raw-MIT test with all cached states read continuously. Both interfaces remained
+ERROR-ACTIVE with zero errors and all motors disabled cleanly afterward. Runtime ABI 2.5 therefore
+allows up to 500 Hz when both transports report SocketCAN-FD with active BRS, while DM Device and
+legacy dual transports retain the 400 Hz ceiling. The non-blocking capacity-one raw mailbox and
+internally synchronized cache reads were also validated through the Articore SDK public raw-MIT
+path: 500.02 Hz submissions for 30 seconds, 497.36--499.36 Hz feedback across all 16 motors, zero
+native transport errors, and a confirmed 16/16 disable. The effective control value is exposed
+through `articore_runtime_get_control_hz()`.
 
 ## Contributing and security
 

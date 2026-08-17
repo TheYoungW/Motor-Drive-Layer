@@ -503,6 +503,7 @@ void SafetyRuntime::enter_fault(const std::string& reason, bool torque_off) {
     disable_confirmed_ = false;
     fault_reason_ = reason;
     if (!hold_error.empty()) fault_reason_ += "; protective hold: " + hold_error;
+    clear_pending_arm_mailbox();
     arm_mailbox_ = ArmMailbox{};
     next_safe_hold_ = Clock::now();
     fault_hold_active_ = arm_hold_available || !safe_grippers_.empty();

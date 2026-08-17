@@ -15,7 +15,9 @@ Use `articore_runtime_abi_version()` and `articore_runtime_capabilities()` to in
 runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 2.1 adds an
 effective-control-rate capability and native query. Runtime ABI 2.5 passes immutable per-side
 transport capabilities during creation: dual SocketCAN-FD+BRS runtimes may run at 500 Hz, while
-legacy, mixed, and DM Device dual runtimes retain the 400 Hz envelope.
+legacy, mixed, and DM Device dual runtimes retain the 400 Hz envelope. Raw Runtime submission uses
+a non-blocking latest-value mailbox, and Motor cached-state/statistics reads rely on their internal
+snapshot locks instead of contending with the Runtime transport worker.
 Runtime ABI 2.2 adds built-in gripper product profiles. SDKs bind every installed gripper to
 `yunyi_gripper_v1` with `articore_runtime_configure_gripper_products()` before `connect()`; Python
 no longer supplies motor-position mapping, MIT gains, contact/stall/overload timing, retreat values,
@@ -72,7 +74,10 @@ An active Runtime leases its ControllerGroup, Controllers, and Motors. Calling t
 methods or bypassing Runtime with direct send/configuration/fresh-feedback operations raises
 `CallError`; cached state and transport-health reads remain available. Configure motor modes and
 device parameters before constructing `ArticoreRuntime`. `runtime.close()` performs the native
-close transaction, frees the Runtime, and then releases those leases.
+close transaction and frees the Runtime/releases leases only after physical disable is confirmed.
+If native close fails, the Python object remains open and retains its Runtime, ControllerGroup,
+Controller, Motor, and Transport ownership so the structured report can be inspected and close can
+be retried.
 
 DM-USB2FDCAN Dual works with its original `dual_app` firmware through
 `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000,

@@ -1864,6 +1864,66 @@ void test_disable_waits_for_inflight_batch_and_rejects_new_commands() {
           "transition rejects new commands and completes after the batch barrier");
 }
 
+void test_raw_mit_publish_does_not_wait_for_inflight_transport_send() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+  ArticoreMitCommand first[] = {
+      {motors[0].motor, 0.1f, 0.0f, 5.0f, 1.0f, 0.0f},
+      {motors[1].motor, 0.2f, 0.0f, 5.0f, 1.0f, 0.0f}};
+  ArticoreMitCommand replacement[] = {
+      {motors[0].motor, 0.3f, 0.0f, 5.0f, 1.0f, 0.0f},
+      {motors[1].motor, 0.4f, 0.0f, 5.0f, 1.0f, 0.0f}};
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.block_nonempty_send = true;
+    driver.block_target_position = first[0].target_position;
+  }
+  runtime.submit_mit(first, 2);
+  {
+    std::unique_lock<std::mutex> lock(driver.mutex);
+    require(driver.send_cv.wait_for(lock, 200ms,
+                                    [&] { return driver.send_entered; }),
+            "test MIT batch entered the fake transport");
+  }
+
+  std::atomic<bool> publish_finished{false};
+  std::string publish_error;
+  std::thread publisher([&] {
+    try {
+      runtime.submit_mit(replacement, 2);
+    } catch (const std::exception& error) {
+      publish_error = error.what();
+    }
+    publish_finished.store(true, std::memory_order_release);
+  });
+  const bool published_while_send_blocked = wait_for(
+      [&] { return publish_finished.load(std::memory_order_acquire); }, 50ms);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.release_send = true;
+    driver.send_cv.notify_all();
+  }
+  publisher.join();
+
+  require(published_while_send_blocked && publish_error.empty(),
+          "raw MIT publish completes while the previous transport send is in flight");
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return !driver.last_arm_mit.empty() &&
+                   std::abs(driver.last_arm_mit[0].target_position -
+                            replacement[0].target_position) < 1e-6f;
+          }),
+          "worker consumes the newest pending raw MIT generation");
+  runtime.disable();
+}
+
 void test_close_reuses_checked_disable_transaction() {
   FakeDriver driver;
   g_driver = &driver;
@@ -3121,6 +3181,7 @@ int main() {
     RUN_TEST(test_disable_retries_one_full_feedback_deadline);
     RUN_TEST(test_disable_barrier_and_targeted_motor_retry);
     RUN_TEST(test_disable_waits_for_inflight_batch_and_rejects_new_commands);
+    RUN_TEST(test_raw_mit_publish_does_not_wait_for_inflight_transport_send);
     RUN_TEST(test_close_reuses_checked_disable_transaction);
     RUN_TEST(test_close_refuses_to_disconnect_after_unconfirmed_disable);
     RUN_TEST(test_transport_disconnect_holds_the_connected_side);

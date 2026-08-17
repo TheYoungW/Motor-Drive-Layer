@@ -582,7 +582,6 @@ class ArticoreRuntime:
         )
 
     def close(self) -> None:
-        error: RuntimeTransactionError | None = None
         with self._lock:
             if not self._ptr:
                 return
@@ -593,14 +592,17 @@ class ArticoreRuntime:
                     report = self.last_disable_report()
                 except Exception:
                     report = DisableReport(False, False, 0, 0, 0, 1, 0, (), (), self._last_error())
-                error = RuntimeTransactionError(
+                # A failed native close means physical disable was not
+                # confirmed. Keep the native Runtime and every acquired lease
+                # alive so callers can inspect the report and retry close;
+                # releasing the group/controllers here would violate the
+                # deterministic-close ownership barrier.
+                raise RuntimeTransactionError(
                     f"close failed: {failure}", report
                 )
             self._runtime_abi.lib.articore_runtime_free(self._ptr)
             self._ptr = None
             self._release_leases()
-        if error is not None:
-            raise error
 
     def __enter__(self) -> ArticoreRuntime:
         self._require_open()
