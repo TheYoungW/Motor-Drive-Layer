@@ -62,6 +62,10 @@ enum ArticoreRuntimeCapability {
   // ABI 2.2 moves product gripper calibration and safety policy into named,
   // immutable motor-layer profiles selected before connect.
   ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES = 1ULL << 24,
+  // ABI 2.3 makes connect() a feedback barrier. Success guarantees that every
+  // configured arm joint and installed gripper has a fresh cached state. READY
+  // then refreshes the complete cache at a bounded low rate.
+  ARTICORE_CAP_CONNECT_FEEDBACK_BARRIER = 1ULL << 25,
 };
 
 enum ArticorePresenceState {

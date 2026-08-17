@@ -40,7 +40,8 @@ int main() {
                             ARTICORE_CAP_JOINT_MIT_POSITION |
                             ARTICORE_CAP_JOINT_PV_POSITION |
                             ARTICORE_CAP_EFFECTIVE_CONTROL_RATE |
-                            ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES;
+                            ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES |
+                            ARTICORE_CAP_CONNECT_FEEDBACK_BARRIER;
   const uint64_t removed_trajectory_bits =
       (1ULL << 9) | (1ULL << 12) | (1ULL << 15) |
       (1ULL << 16) | (1ULL << 17);
@@ -49,7 +50,7 @@ int main() {
       !effective_control_hz ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x00020002U ||
+      version != 0x00020003U ||
       (capabilities & required) != required ||
       (capabilities & removed_trajectory_bits) != 0) {
     std::cerr << "Articore runtime ABI metadata is incomplete\n";

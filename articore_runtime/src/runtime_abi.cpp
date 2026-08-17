@@ -41,7 +41,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 2U;
+  return (2U << 16) | 3U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -64,7 +64,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_JOINT_MIT_POSITION |
          ARTICORE_CAP_JOINT_PV_POSITION |
          ARTICORE_CAP_EFFECTIVE_CONTROL_RATE |
-         ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES;
+         ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES |
+         ARTICORE_CAP_CONNECT_FEEDBACK_BARRIER;
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_hz(

@@ -95,6 +95,166 @@ bool SafetyRuntime::request_feedback_parallel(
   return ok;
 }
 
+bool SafetyRuntime::validate_fresh_feedback_snapshot(
+    const std::vector<MissingMotor>& request_missing, std::string& error) {
+  struct Snapshot {
+    MotorRecord* motor = nullptr;
+    uint32_t can_id = 0;
+    bool has_can_id = false;
+    bool valid = false;
+    uint64_t age_ns = std::numeric_limits<uint64_t>::max();
+    std::string reason;
+  };
+
+  std::vector<uint32_t> missing_ids[2];
+  for (const auto& missing : request_missing) {
+    if (missing.side > 1) continue;
+    auto& ids = missing_ids[missing.side];
+    if (std::find(ids.begin(), ids.end(), missing.id) == ids.end()) {
+      ids.push_back(missing.id);
+    }
+  }
+
+  const auto maximum_allowed_age =
+      static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL;
+  uint64_t maximum_age[2] = {0, 0};
+  bool side_valid[2] = {active_sides_[0], active_sides_[1]};
+  std::vector<Snapshot> snapshots;
+  snapshots.reserve(motors_.size());
+  for (auto& motor : motors_) {
+    Snapshot snapshot;
+    snapshot.motor = &motor;
+    ArticoreFeedbackStats stats{};
+    ArticoreMotorState state{};
+    const bool has_stats =
+        api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
+        stats.has_feedback;
+    const bool has_state =
+        api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+        state.has_value;
+    if (has_state) {
+      snapshot.has_can_id = true;
+      snapshot.can_id = state.can_id;
+    }
+    if (!has_stats) {
+      snapshot.reason = "no motor feedback";
+    } else {
+      snapshot.age_ns = stats.age_ns;
+      maximum_age[motor.descriptor.side] =
+          std::max(maximum_age[motor.descriptor.side], stats.age_ns);
+      if (stats.age_ns > maximum_allowed_age) {
+        snapshot.reason = "feedback is stale: actual_age_ns=" +
+            std::to_string(stats.age_ns) + ", threshold_age_ns<=" +
+            std::to_string(maximum_allowed_age);
+      } else if (!has_state) {
+        snapshot.reason = "motor state is unavailable";
+      } else if (!finite(state.pos) || !finite(state.vel) ||
+                 !finite(state.torq)) {
+        snapshot.reason = "feedback contains a non-finite value";
+      } else {
+        const auto& ids = missing_ids[motor.descriptor.side];
+        const bool missed_transaction = std::find(
+            ids.begin(), ids.end(), static_cast<uint32_t>(state.can_id)) !=
+            ids.end();
+        if (missed_transaction) {
+          snapshot.reason =
+              "did not return new feedback in the connect/READY transaction";
+        } else {
+          snapshot.valid = true;
+          if (motor.descriptor.is_gripper) {
+            motor.last_position = state.pos;
+            motor.has_position = true;
+            motor.feedback_age_ns = stats.age_ns;
+            motor.last_torque = state.torq;
+          }
+        }
+      }
+    }
+    if (!snapshot.valid) side_valid[motor.descriptor.side] = false;
+    snapshots.push_back(std::move(snapshot));
+  }
+
+  // A motor with no prior cache cannot reveal its CAN ID through get_state().
+  // The controller's structured report still contains the missing IDs. Pair
+  // them only when the mapping is unambiguous within that channel; otherwise
+  // report the complete channel ID list without inventing an association.
+  for (uint8_t side = 0; side < 2; ++side) {
+    std::vector<Snapshot*> unknown;
+    std::vector<uint32_t> remaining = missing_ids[side];
+    for (auto& snapshot : snapshots) {
+      if (snapshot.motor->descriptor.side != side || snapshot.valid) continue;
+      if (!snapshot.has_can_id) {
+        unknown.push_back(&snapshot);
+        continue;
+      }
+      remaining.erase(
+          std::remove(remaining.begin(), remaining.end(), snapshot.can_id),
+          remaining.end());
+    }
+    if (unknown.size() == remaining.size()) {
+      for (std::size_t index = 0; index < unknown.size(); ++index) {
+        unknown[index]->can_id = remaining[index];
+        unknown[index]->has_can_id = true;
+      }
+    }
+  }
+
+  std::string snapshot_error;
+  for (const auto& snapshot : snapshots) {
+    if (snapshot.valid) continue;
+    if (!snapshot_error.empty()) snapshot_error += "; ";
+    snapshot_error += "CH" +
+        std::to_string(snapshot.motor->descriptor.side) + "/" +
+        std::string(snapshot.motor->descriptor.name) + " (CAN ID ";
+    snapshot_error += snapshot.has_can_id
+        ? std::to_string(snapshot.can_id)
+        : std::string("unavailable");
+    snapshot_error += "): " + snapshot.reason;
+  }
+  for (uint8_t side = 0; side < 2; ++side) {
+    const bool has_unknown = std::any_of(
+        snapshots.begin(), snapshots.end(), [side](const Snapshot& snapshot) {
+          return !snapshot.valid && snapshot.motor->descriptor.side == side &&
+                 !snapshot.has_can_id;
+        });
+    if (!has_unknown || missing_ids[side].empty()) continue;
+    snapshot_error += "; CH" + std::to_string(side) + " missing CAN IDs:";
+    for (const auto id : missing_ids[side]) {
+      snapshot_error += " " + std::to_string(id);
+    }
+  }
+
+  const bool valid = snapshot_error.empty();
+  const auto now = Clock::now();
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    for (uint8_t side = 0; side < 2; ++side) {
+      if (!active_sides_[side]) continue;
+      sides_[side].last_feedback_age_ns = maximum_age[side];
+      if (side_valid[side]) {
+        sides_[side].feedback_failures = 0;
+      } else {
+        ++sides_[side].feedback_failures;
+        sides_[side].healthy = false;
+        sides_[side].last_error = snapshot_error;
+      }
+    }
+    if (valid) {
+      const auto maximum_active_age = std::max(
+          active_sides_[0] ? maximum_age[0] : 0,
+          active_sides_[1] ? maximum_age[1] : 0);
+      last_fresh_feedback_ =
+          now - std::chrono::nanoseconds(maximum_active_age);
+      consecutive_feedback_failures_ = 0;
+    }
+  }
+  if (!snapshot_error.empty()) {
+    if (!error.empty()) error += "; ";
+    error += snapshot_error;
+  }
+  return valid;
+}
+
 bool SafetyRuntime::confirm_enabled_feedback(
     Clock::time_point deadline, std::vector<MissingMotor>& missing_motors,
     std::string& error) {
@@ -283,6 +443,7 @@ void SafetyRuntime::initialize_enabled_state(ArticoreControlMode mode) {
     }
   }
   next_feedback_check_ = enabled_at_;
+  next_ready_feedback_ = {};
   next_gripper_control_ = enabled_at_;
   next_control_tick_ = enabled_at_;
 }
@@ -761,6 +922,9 @@ void SafetyRuntime::disable() {
       } else {
         state_ = ARTICORE_READY;
         fault_reason_.clear();
+        const auto ready_refresh_hz = std::min(config_.feedback_check_hz, 10U);
+        next_ready_feedback_ = Clock::now() + std::chrono::nanoseconds(
+            1'000'000'000ULL / ready_refresh_hz);
       }
     } else {
       state_ = ARTICORE_FAULT;
@@ -770,6 +934,7 @@ void SafetyRuntime::disable() {
           : "disable confirmation failed: " + error;
     }
   }
+  wakeup_.notify_all();
   if (!confirmed) throw std::runtime_error(error);
 }
 
@@ -832,9 +997,13 @@ void SafetyRuntime::recover() {
   gripper_command_generation_ = 0;
   gripper_sent_generation_ = 0;
   hardware_transition_ = false;
+  const auto ready_refresh_hz = std::min(config_.feedback_check_hz, 10U);
+  next_ready_feedback_ = Clock::now() + std::chrono::nanoseconds(
+      1'000'000'000ULL / ready_refresh_hz);
   for (auto& entry : presence_) {
     if (entry.second == ARTICORE_FAULTED) entry.second = ARTICORE_PRESENT;
   }
+  wakeup_.notify_all();
 }
 
 }  // namespace articore

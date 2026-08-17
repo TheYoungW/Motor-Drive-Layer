@@ -21,6 +21,8 @@ void SafetyRuntime::worker_loop() {
   const auto idle_poll_period = std::chrono::milliseconds(2);
   const auto feedback_period = std::chrono::nanoseconds(
       1'000'000'000ULL / config_.feedback_check_hz);
+  const auto ready_feedback_period = std::chrono::nanoseconds(
+      1'000'000'000ULL / std::min(config_.feedback_check_hz, 10U));
   const auto hold_period = std::chrono::nanoseconds(
       1'000'000'000ULL / config_.safe_hold_hz);
   // Product grippers are part of the normal control surface. While ENABLED
@@ -31,12 +33,16 @@ void SafetyRuntime::worker_loop() {
     {
       std::unique_lock<std::mutex> lock(state_mutex_);
       const auto now = Clock::now();
-      const auto deadline =
-          !hardware_transition_ &&
-                  (state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING) &&
-                  next_control_tick_ != Clock::time_point{}
-              ? next_control_tick_
-              : now + idle_poll_period;
+      auto deadline = now + idle_poll_period;
+      if (!hardware_transition_ && state_ == ARTICORE_READY &&
+          next_ready_feedback_ != Clock::time_point{}) {
+        deadline = std::min(deadline, next_ready_feedback_);
+      } else if (!hardware_transition_ &&
+                 (state_ == ARTICORE_ENABLED ||
+                  state_ == ARTICORE_RUNNING) &&
+                 next_control_tick_ != Clock::time_point{}) {
+        deadline = std::min(deadline, next_control_tick_);
+      }
       wakeup_.wait_until(lock, deadline, [&] { return stopping_; });
       if (stopping_) return;
       if (hardware_transition_) continue;
@@ -45,6 +51,7 @@ void SafetyRuntime::worker_loop() {
     const auto now = Clock::now();
     bool grace_fault = false;
     bool command_timeout = false;
+    bool run_ready_feedback = false;
     bool run_feedback_check = false;
     bool run_arm_control = false;
     bool run_hold = false;
@@ -68,6 +75,11 @@ void SafetyRuntime::worker_loop() {
         run_arm_control = true;
         detail::advance_periodic_deadline(
             next_control_tick_, control_period, now);
+      }
+      if (state_ == ARTICORE_READY && now >= next_ready_feedback_) {
+        run_ready_feedback = true;
+        detail::advance_periodic_deadline(
+            next_ready_feedback_, ready_feedback_period, now);
       }
       if ((state_ == ARTICORE_RUNNING || state_ == ARTICORE_SAFE_HOLD) &&
           now >= next_feedback_check_) {
@@ -108,6 +120,43 @@ void SafetyRuntime::worker_loop() {
                                          hold_error)) {
         enter_fault("command watchdog timed out; current-position hold "
                     "unavailable: " + hold_error);
+      }
+      continue;
+    }
+    if (run_ready_feedback) {
+      std::string error;
+      std::vector<MissingMotor> missing_motors;
+      bool complete = false;
+      bool still_ready = false;
+      {
+        std::lock_guard<std::mutex> command_lock(command_mutex_);
+        {
+          std::lock_guard<std::mutex> state_lock(state_mutex_);
+          still_ready = !hardware_transition_ && state_ == ARTICORE_READY;
+        }
+        if (still_ready) {
+          complete = request_feedback_parallel(
+              config_.disable_feedback_timeout_ms, missing_motors, error);
+          complete = validate_fresh_feedback_snapshot(missing_motors, error) &&
+                     complete;
+        }
+      }
+      if (!still_ready) continue;
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (complete) {
+        for (uint8_t side = 0; side < 2; ++side) {
+          if (!active_sides_[side]) continue;
+          sides_[side].healthy =
+              sides_[side].connected && sides_[side].transport_healthy;
+          sides_[side].last_error.clear();
+        }
+      } else {
+        ++consecutive_feedback_failures_;
+        for (uint8_t side = 0; side < 2; ++side) {
+          if (!active_sides_[side]) continue;
+          sides_[side].healthy = false;
+          if (!error.empty()) sides_[side].last_error = error;
+        }
       }
       continue;
     }

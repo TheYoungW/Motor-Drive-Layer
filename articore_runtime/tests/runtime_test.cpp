@@ -67,6 +67,11 @@ struct FakeDriver {
   uint32_t feedback_expected = 2;
   uint32_t feedback_received = 2;
   std::vector<uint32_t> feedback_missing_ids;
+  bool feedback_uses_per_side_results = false;
+  int32_t feedback_code_by_side[2]{};
+  uint32_t feedback_expected_by_side[2]{1, 2};
+  uint32_t feedback_received_by_side[2]{1, 2};
+  std::vector<uint32_t> feedback_missing_ids_by_side[2];
   uint32_t feedback_timeouts_remaining = 0;
   std::set<uint32_t> feedback_timeout_calls;
   std::map<uint32_t, void*> feedback_enable_on_call;
@@ -220,10 +225,11 @@ int32_t disable_motor(void* handle) {
   return 0;
 }
 
-int32_t request_feedback(void*, uint32_t timeout_ms,
+int32_t request_feedback(void* controller, uint32_t timeout_ms,
                          ArticoreFeedbackReport* report,
                          uint32_t* missing_ids, uint32_t missing_capacity) {
   std::unique_lock<std::mutex> lock(g_driver->mutex);
+  const uint8_t side = controller == g_left_controller ? 0 : 1;
   ++g_driver->feedback_requests;
   g_driver->events.emplace_back("feedback");
   const auto enable_on_call =
@@ -236,21 +242,47 @@ int32_t request_feedback(void*, uint32_t timeout_ms,
   if (g_driver->feedback_timeouts_remaining > 0) {
     --g_driver->feedback_timeouts_remaining;
   }
+  const auto feedback_code = g_driver->feedback_uses_per_side_results
+      ? g_driver->feedback_code_by_side[side]
+      : g_driver->feedback_code;
+  const auto feedback_expected = g_driver->feedback_uses_per_side_results
+      ? g_driver->feedback_expected_by_side[side]
+      : g_driver->feedback_expected;
+  const auto feedback_received = g_driver->feedback_uses_per_side_results
+      ? g_driver->feedback_received_by_side[side]
+      : g_driver->feedback_received;
+  const auto& feedback_missing_ids = g_driver->feedback_uses_per_side_results
+      ? g_driver->feedback_missing_ids_by_side[side]
+      : g_driver->feedback_missing_ids;
   if (report) {
     report->struct_size = sizeof(*report);
     report->timeout_ms = timeout_ms;
-    report->expected_count = g_driver->feedback_expected;
-    report->received_count = injected_timeout ? 0 : g_driver->feedback_received;
+    report->expected_count = feedback_expected;
+    report->received_count = injected_timeout ? 0 : feedback_received;
     report->missing_count = injected_timeout
-        ? g_driver->feedback_expected
-        : static_cast<uint32_t>(g_driver->feedback_missing_ids.size());
+        ? feedback_expected
+        : static_cast<uint32_t>(feedback_missing_ids.size());
     const auto copied = std::min<std::size_t>(
-        g_driver->feedback_missing_ids.size(), missing_capacity);
+        feedback_missing_ids.size(), missing_capacity);
     for (std::size_t i = 0; i < copied; ++i) {
-      missing_ids[i] = g_driver->feedback_missing_ids[i];
+      missing_ids[i] = feedback_missing_ids[i];
     }
   }
-  const auto result = injected_timeout ? 3 : g_driver->feedback_code;
+  if (!injected_timeout) {
+    for (auto& entry : g_driver->motors) {
+      const bool motor_is_left =
+          entry.first == reinterpret_cast<void*>(0x201);
+      if ((side == 0) != motor_is_left) continue;
+      const auto can_id = static_cast<uint32_t>(
+          reinterpret_cast<std::uintptr_t>(entry.first) - 0x200U);
+      if (std::find(feedback_missing_ids.begin(), feedback_missing_ids.end(),
+                    can_id) == feedback_missing_ids.end()) {
+        entry.second.has_feedback = true;
+        entry.second.age_ns = 0;
+      }
+    }
+  }
+  const auto result = injected_timeout ? 3 : feedback_code;
   const bool consume_deadline =
       injected_timeout && g_driver->feedback_timeout_consumes_deadline;
   lock.unlock();
@@ -434,6 +466,62 @@ bool wait_for(Predicate predicate, std::chrono::milliseconds timeout = 300ms) {
   return predicate();
 }
 
+void test_connect_is_a_complete_feedback_barrier_and_ready_refreshes_cache() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  for (auto& entry : driver.motors) {
+    entry.second.has_feedback = false;
+    entry.second.age_ns = std::numeric_limits<uint64_t>::max();
+  }
+  articore::SafetyRuntime runtime(config(), api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  require(runtime.health().state == ARTICORE_READY,
+          "connect enters READY only after the feedback barrier");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.feedback_requests == 2,
+            "connect requests CH0 and CH1 feedback in parallel");
+    require(std::all_of(
+                driver.motors.begin(), driver.motors.end(),
+                [](const auto& entry) { return entry.second.has_feedback; }),
+            "connect populates every joint and gripper cache");
+    driver.motors[motors[2].motor].has_feedback = false;
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.feedback_requests >= 4 &&
+                   driver.motors[motors[2].motor].has_feedback;
+          }),
+          "READY performs a bounded low-rate full-cache refresh");
+}
+
+void test_connect_failure_names_missing_installed_motor_and_can_id() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  driver.motors[motors[2].motor].has_feedback = false;
+  driver.feedback_uses_per_side_results = true;
+  driver.feedback_code_by_side[1] = 4;
+  driver.feedback_received_by_side[1] = 1;
+  driver.feedback_missing_ids_by_side[1] = {3};
+  articore::SafetyRuntime runtime(config(), api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  require_throws(
+      [&] { runtime.connect(); },
+      "CH1/right/gripper (CAN ID 3): no motor feedback",
+      "connect failure reports channel, configured name, and CAN ID");
+  require(runtime.health().state == ARTICORE_DISCONNECTED,
+          "failed feedback barrier does not expose READY");
+  driver.feedback_code_by_side[1] = 0;
+  driver.feedback_received_by_side[1] = 2;
+  driver.feedback_missing_ids_by_side[1].clear();
+  runtime.connect();
+  require(runtime.health().state == ARTICORE_READY,
+          "connect can be retried after feedback becomes complete");
+}
+
 void test_pv_watchdog_safe_hold_and_fault() {
   FakeDriver driver;
   g_driver = &driver;
@@ -441,6 +529,11 @@ void test_pv_watchdog_safe_hold_and_fault() {
   articore::SafetyRuntime runtime(config(), api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);
   runtime.connect();
+  uint32_t feedback_requests_after_connect = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    feedback_requests_after_connect = driver.feedback_requests;
+  }
   require(runtime.health().state == ARTICORE_READY, "connect enters READY");
   runtime.enable(ARTICORE_MODE_PV);
   require(runtime.health().state == ARTICORE_ENABLED, "enable enters ENABLED");
@@ -473,7 +566,7 @@ void test_pv_watchdog_safe_hold_and_fault() {
                 std::abs(driver.last_pv[1].target_position - 0.8f) < 1e-6f &&
                 std::abs(driver.last_pv[0].velocity_limit - 0.15f) < 1e-6f,
             "PV safe hold captures actual positions and limits velocity");
-    require(driver.feedback_requests == 0,
+    require(driver.feedback_requests == feedback_requests_after_connect,
             "safe-hold entry reads cache without a blocking feedback request");
     driver.fail_group = true;
   }
@@ -1556,9 +1649,14 @@ void test_disable_barrier_and_targeted_motor_retry() {
   runtime.enable(ARTICORE_MODE_PV);
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
-    // Calls 1/2 establish the two-channel queue marker. During the initial
-    // post-disable confirmation, make only the right gripper appear enabled.
-    driver.feedback_enable_on_call[3] = motors[2].motor;
+    // During the first post-disable feedback batch, make only the right
+    // gripper appear enabled. Use a relative call index because connect now
+    // owns an initial two-channel feedback transaction.
+    // The deterministic queue barrier itself first performs one request on
+    // each active channel, so the first disable-state confirmation starts at
+    // the third subsequent request.
+    driver.feedback_enable_on_call[driver.feedback_requests + 3] =
+        motors[2].motor;
   }
   runtime.disable();
   const auto report = runtime.last_disable_report();
@@ -2819,6 +2917,8 @@ int main() {
 #define RUN_TEST(test) \
     current_test = #test; \
     test()
+    RUN_TEST(test_connect_is_a_complete_feedback_barrier_and_ready_refreshes_cache);
+    RUN_TEST(test_connect_failure_names_missing_installed_motor_and_can_id);
     RUN_TEST(test_pv_watchdog_safe_hold_and_fault);
     RUN_TEST(test_mit_hold_removes_motion_and_feedforward);
     RUN_TEST(test_safe_hold_rejects_stale_current_position);

@@ -84,8 +84,11 @@ def test_runtime_binding_owns_handles_and_converts_health() -> None:
         runtime.configure_gripper_products([])
         runtime.declare_motor_presence("l-tool", PresenceState.NOT_INSTALLED)
         assert runtime.motor_presence("l-tool") is PresenceState.NOT_INSTALLED
-        runtime.connect()
-        assert runtime.health.state is SafetyState.READY
+        # These ownership tests intentionally use sentinel native pointers,
+        # not live Controller/Motor handles. Runtime ABI 2.3 connect performs
+        # real feedback I/O, which is covered with the native fake driver and
+        # hardware tests rather than dereferencing these sentinels.
+        assert runtime.health.state is SafetyState.DISCONNECTED
         assert runtime.control_hz == 400
         assert runtime.active_capabilities == ActiveCapability.ARM_SIDE_0
         assert runtime.last_enable_report().expected_count == 0
@@ -112,19 +115,18 @@ def test_runtime_binding_requires_native_gripper_profile_before_connect() -> Non
     try:
         with pytest.raises(RuntimeCallError, match="profile is required"):
             runtime.connect()
+        with pytest.raises(RuntimeCallError, match="unknown built-in"):
+            runtime.configure_gripper_products([
+                GripperProductBinding(gripper, "unknown_product")
+            ])
         runtime.configure_gripper_products([
             GripperProductBinding(gripper, "yunyi_gripper_v1")
         ])
-        runtime.connect()
         health = runtime.health
-        assert health.state is SafetyState.READY
+        assert health.state is SafetyState.DISCONNECTED
         assert len(health.grippers) == 1
         assert health.grippers[0].name == "l-gripper"
         assert runtime.active_capabilities == ActiveCapability.GRIPPER_SIDE_0
-        with pytest.raises(RuntimeCallError, match="fixed after connect"):
-            runtime.configure_gripper_products([
-                GripperProductBinding(gripper, "yunyi_gripper_v1")
-            ])
     finally:
         runtime.close()
         _abandon_fake_handles(group, (left,), (gripper,))

@@ -163,29 +163,69 @@ SafetyRuntime::~SafetyRuntime() {
 
 void SafetyRuntime::connect() {
   std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  if (state_ != ARTICORE_DISCONNECTED) return;
-  if (require_gripper_product_profiles_) {
-    for (const auto& motor : motors_) {
-      if (motor.descriptor.is_gripper &&
-          !motor.gripper_product_profile_bound) {
-        throw std::runtime_error(
-            std::string(motor.descriptor.name) +
-            ": built-in gripper product profile is required before connect");
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (state_ != ARTICORE_DISCONNECTED) return;
+    if (require_gripper_product_profiles_) {
+      for (const auto& motor : motors_) {
+        if (motor.descriptor.is_gripper &&
+            !motor.gripper_product_profile_bound) {
+          throw std::runtime_error(
+              std::string(motor.descriptor.name) +
+              ": built-in gripper product profile is required before connect");
+        }
       }
     }
+    hardware_transition_ = true;
+    for (uint8_t side = 0; side < 2; ++side) {
+      sides_[side] = SideHealth{};
+      sides_[side].connected = active_sides_[side];
+      sides_[side].healthy = false;
+    }
   }
-  state_ = ARTICORE_READY;
-  fault_latched_ = false;
-  disable_confirmed_ = true;
-  fault_reason_.clear();
-  motor_faults_.clear();
-  unconfirmed_disable_.clear();
-  for (uint8_t side = 0; side < 2; ++side) {
-    sides_[side] = SideHealth{};
-    sides_[side].connected = active_sides_[side];
-    sides_[side].healthy = active_sides_[side];
+
+  std::vector<MissingMotor> missing_motors;
+  std::string error;
+  const bool request_complete = request_feedback_parallel(
+      config_.disable_feedback_timeout_ms, missing_motors, error);
+  const bool snapshot_complete =
+      validate_fresh_feedback_snapshot(missing_motors, error);
+  if (!request_complete || !snapshot_complete) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    hardware_transition_ = false;
+    for (uint8_t side = 0; side < 2; ++side) {
+      if (!active_sides_[side]) continue;
+      sides_[side].connected = false;
+      sides_[side].healthy = false;
+      if (!error.empty()) sides_[side].last_error = error;
+    }
+    throw std::runtime_error(
+        "connect initial feedback transaction failed: " +
+        (error.empty() ? std::string("incomplete motor feedback") : error));
   }
+
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    state_ = ARTICORE_READY;
+    fault_latched_ = false;
+    disable_confirmed_ = true;
+    fault_reason_.clear();
+    motor_faults_.clear();
+    unconfirmed_disable_.clear();
+    hardware_transition_ = false;
+    const auto now = Clock::now();
+    const auto ready_refresh_hz = std::min(config_.feedback_check_hz, 10U);
+    next_ready_feedback_ = now + std::chrono::nanoseconds(
+        1'000'000'000ULL / ready_refresh_hz);
+    for (uint8_t side = 0; side < 2; ++side) {
+      if (!active_sides_[side]) continue;
+      sides_[side].connected = true;
+      sides_[side].healthy = true;
+      sides_[side].feedback_failures = 0;
+      sides_[side].last_error.clear();
+    }
+  }
+  wakeup_.notify_all();
 }
 
 void SafetyRuntime::declare_motor_presence(const std::string& role,

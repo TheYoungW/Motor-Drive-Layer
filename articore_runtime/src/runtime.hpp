@@ -200,6 +200,9 @@ class SafetyRuntime {
   bool request_feedback_parallel(uint32_t timeout_ms,
                                  std::vector<MissingMotor>& missing_motors,
                                  std::string& error);
+  bool validate_fresh_feedback_snapshot(
+      const std::vector<MissingMotor>& request_missing,
+      std::string& error);
   bool confirm_enabled_feedback(Clock::time_point deadline,
                                 std::vector<MissingMotor>& missing_motors,
                                 std::string& error);
@@ -282,6 +285,7 @@ class SafetyRuntime {
   Clock::time_point enabled_at_{};
   Clock::time_point last_successful_command_{};
   Clock::time_point last_fresh_feedback_{};
+  Clock::time_point next_ready_feedback_{};
   Clock::time_point next_feedback_check_{};
   Clock::time_point next_safe_hold_{};
   Clock::time_point next_gripper_control_{};
