@@ -79,6 +79,16 @@ class CRuntimeMotorApi(Structure):
     ]
 
 
+class CRuntimeTransportCapabilities(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32),
+        ("side", c_uint32),
+        ("can_fd", c_int32),
+        ("can_fd_brs", c_int32),
+        ("transport", c_char * 32),
+    ]
+
+
 class CJointControlConfig(Structure):
     _fields_ = [
         ("motor", c_void_p),
@@ -286,6 +296,17 @@ class RuntimeAbi:
             c_void_p, POINTER(CRuntimeMotorDescriptor), c_uint32, c_void_p, c_void_p,
         ]
         lib.articore_runtime_create_ex.restype = c_void_p
+        self.has_transport_aware_create = hasattr(
+            lib, "articore_runtime_create_ex2"
+        )
+        if self.has_transport_aware_create:
+            lib.articore_runtime_create_ex2.argtypes = [
+                POINTER(CRuntimeConfig), POINTER(CRuntimeMotorApi), c_void_p,
+                c_void_p, c_void_p, POINTER(CRuntimeMotorDescriptor), c_uint32,
+                c_void_p, c_void_p, POINTER(CRuntimeTransportCapabilities),
+                c_uint32,
+            ]
+            lib.articore_runtime_create_ex2.restype = c_void_p
         lib.articore_runtime_free.argtypes = [c_void_p]
         for name in ("connect", "disable", "recover", "close"):
             function = getattr(lib, f"articore_runtime_{name}")

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -120,6 +121,26 @@ inline ArticoreMotorApi motor_api() noexcept {
   };
 }
 
+inline ArticoreRuntimeTransportCapabilities transport_capabilities(
+    MotorController* controller, uint32_t side) {
+  MotorTransportCapabilitiesV2 native{};
+  native.struct_size = sizeof(native);
+  if (motor_controller_get_transport_capabilities_v2(controller, &native) != 0) {
+    const char* reason = motor_last_error_message();
+    throw RuntimeError(
+        std::string("get transport capabilities failed: ") +
+        (reason ? reason : "unknown motor error"));
+  }
+  ArticoreRuntimeTransportCapabilities result{};
+  result.struct_size = sizeof(result);
+  result.side = side;
+  result.can_fd = native.can_fd;
+  result.can_fd_brs = native.can_fd_brs;
+  std::strncpy(result.transport, native.transport,
+               sizeof(result.transport) - 1);
+  return result;
+}
+
 inline void check(int32_t result, const char* operation) {
   if (result == 0) return;
   const char* reason = articore_runtime_last_error();
@@ -136,10 +157,21 @@ class Runtime final {
           MotorController* right_controller,
           const std::vector<ArticoreMotorDescriptor>& motors)
       : motor_api_(detail::motor_api()) {
-    runtime_ = articore_runtime_create_ex(
+    if (motors.empty()) {
+      throw RuntimeError("Articore runtime requires at least one motor");
+    }
+    std::vector<ArticoreRuntimeTransportCapabilities> transports;
+    if (left_controller) {
+      transports.push_back(detail::transport_capabilities(left_controller, 0));
+    }
+    if (right_controller) {
+      transports.push_back(detail::transport_capabilities(right_controller, 1));
+    }
+    runtime_ = articore_runtime_create_ex2(
         &config, &motor_api_, group, left_controller, right_controller,
         motors.data(), static_cast<uint32_t>(motors.size()),
-        &detail::controller_enable_all, &detail::motor_enable);
+        &detail::controller_enable_all, &detail::motor_enable,
+        transports.data(), static_cast<uint32_t>(transports.size()));
     if (!runtime_) {
       const char* reason = articore_runtime_last_error();
       throw RuntimeError(std::string("articore_runtime_create_ex failed: ") +

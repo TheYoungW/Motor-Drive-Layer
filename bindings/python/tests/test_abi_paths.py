@@ -39,8 +39,8 @@ def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
     assert hasattr(library, "articore_runtime_set_gripper_commands")
     assert not hasattr(library, "articore_runtime_start_joint_trajectory")
     assert not hasattr(library, "articore_runtime_cancel_trajectory")
-    assert library.articore_runtime_abi_version() == 0x00020004
-    assert abi.articore_runtime_abi_version() == "2.4"
+    assert library.articore_runtime_abi_version() == 0x00020005
+    assert abi.articore_runtime_abi_version() == "2.5"
     assert abi.articore_runtime_capabilities()["connect_feedback_barrier"] is True
     assert abi.articore_runtime_capabilities()["structured_connect_report"] is True
     assert abi.articore_runtime_capabilities()["gripper_protection"] is True
@@ -56,6 +56,7 @@ def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
     assert abi.articore_runtime_capabilities()["joint_mit_position"] is True
     assert abi.articore_runtime_capabilities()["joint_pv_position"] is True
     assert abi.articore_runtime_capabilities()["effective_control_rate"] is True
+    assert abi.articore_runtime_capabilities()["transport_aware_control_rate"] is True
     assert abi.articore_runtime_capabilities()["builtin_gripper_product_profiles"] is True
 
 

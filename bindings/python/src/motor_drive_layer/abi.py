@@ -344,6 +344,7 @@ def articore_runtime_capabilities() -> dict[str, bool]:
         "builtin_gripper_product_profiles": bool(bits & (1 << 24)),
         "connect_feedback_barrier": bool(bits & (1 << 25)),
         "structured_connect_report": bool(bits & (1 << 26)),
+        "transport_aware_control_rate": bool(bits & (1 << 27)),
     }
 
 

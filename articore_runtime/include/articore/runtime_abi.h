@@ -56,8 +56,8 @@ enum ArticoreRuntimeCapability {
   // ABI 1.13 adds the symmetric ordinary PV position command while retaining
   // raw submit_pos_vel[_ex]() as an internal direct-control capability.
   ARTICORE_CAP_JOINT_PV_POSITION = 1ULL << 22,
-  // ABI 2.1 exposes the effective native control rate. Dual-arm runtimes cap
-  // the requested rate at 400 Hz for the verified shared-adapter envelope.
+  // ABI 2.1 exposes the effective native control rate. ABI 2.5 selects its
+  // dual-arm ceiling from per-side transport capabilities.
   ARTICORE_CAP_EFFECTIVE_CONTROL_RATE = 1ULL << 23,
   // ABI 2.2 moves product gripper calibration and safety policy into named,
   // immutable motor-layer profiles selected before connect.
@@ -70,6 +70,10 @@ enum ArticoreRuntimeCapability {
   // report for every connect transaction. Language bindings no longer need
   // to parse error text or infer the identity of a motor with no prior cache.
   ARTICORE_CAP_STRUCTURED_CONNECT_REPORT = 1ULL << 26,
+  // ABI 2.5 selects the dual-arm control-rate envelope from immutable
+  // per-side transport capabilities. Two SocketCAN-FD+BRS sides may run at
+  // 500 Hz; legacy and DM Device dual transports remain capped at 400 Hz.
+  ARTICORE_CAP_TRANSPORT_AWARE_CONTROL_RATE = 1ULL << 27,
 };
 
 enum ArticoreConnectErrorCode {
@@ -412,6 +416,15 @@ typedef struct ArticoreMotorApi {
   ArticoreControllerCallFn motor_disable;
 } ArticoreMotorApi;
 
+typedef struct ArticoreRuntimeTransportCapabilities {
+  // Caller initializes this to sizeof(ArticoreRuntimeTransportCapabilities).
+  uint32_t struct_size;
+  uint32_t side;
+  int32_t can_fd;
+  int32_t can_fd_brs;
+  char transport[32];
+} ArticoreRuntimeTransportCapabilities;
+
 typedef struct ArticoreRuntimeConfig {
   uint32_t control_hz;
   uint32_t command_timeout_ms;
@@ -513,7 +526,7 @@ ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void);
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void);
 // Returns the immutable rate actually used by the native worker. This can be
 // lower than the requested config rate when a dual-arm runtime is capped to
-// the verified shared-adapter limit.
+// its transport-specific verified limit.
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_hz(
     ArticoreRuntime* runtime, uint32_t* control_hz);
 
@@ -538,6 +551,21 @@ ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex(
     uint32_t motor_count,
     ArticoreControllerCallFn controller_enable_all,
     ArticoreControllerCallFn motor_enable);
+// ABI 2.5 entry point. Official bindings provide exactly one immutable
+// capability record for each active side. Legacy creation entry points pass
+// no records and retain the conservative 400 Hz dual-arm limit.
+ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex2(
+    const ArticoreRuntimeConfig* config,
+    const ArticoreMotorApi* motor_api,
+    void* controller_group,
+    void* left_controller,
+    void* right_controller,
+    const ArticoreMotorDescriptor* motors,
+    uint32_t motor_count,
+    ArticoreControllerCallFn controller_enable_all,
+    ArticoreControllerCallFn motor_enable,
+    const ArticoreRuntimeTransportCapabilities* transport_capabilities,
+    uint32_t transport_capability_count);
 ARTICORE_RUNTIME_API void articore_runtime_free(ArticoreRuntime* runtime);
 
 // Configures the immutable CAN identity of every Runtime motor. The complete

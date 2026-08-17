@@ -27,7 +27,9 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
                              std::vector<ArticoreMotorDescriptor> motors,
                              ArticoreControllerCallFn controller_enable_all,
                              ArticoreControllerCallFn motor_enable,
-                             bool require_gripper_product_profiles)
+                             bool require_gripper_product_profiles,
+                             std::vector<ArticoreRuntimeTransportCapabilities>
+                                 transport_capabilities)
     : config_(config), api_(api), controller_group_(controller_group),
       controller_enable_all_(controller_enable_all), motor_enable_(motor_enable),
       require_gripper_product_profiles_(require_gripper_product_profiles) {
@@ -130,12 +132,50 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
     throw std::invalid_argument(
         "Articore runtime requires a controller for every active side");
   }
-  // A shared DM-USB2FDCAN Dual with eight motors per side is fully stable at
-  // 400 Hz; 425 Hz is only the measured edge and 500 Hz loses feedback from
-  // motors late in each batch. Keep single-side runtimes configurable while
-  // enforcing the verified production envelope for dual-arm products.
+  std::array<bool, 2> capability_present{};
+  std::array<bool, 2> socketcanfd_brs{};
+  for (const auto& capability : transport_capabilities) {
+    if (capability.struct_size <
+        sizeof(ArticoreRuntimeTransportCapabilities)) {
+      throw std::invalid_argument(
+          "Articore transport capability struct_size is too small");
+    }
+    if (capability.side > 1 || !active_sides_[capability.side] ||
+        capability_present[capability.side]) {
+      throw std::invalid_argument(
+          "Articore transport capabilities must uniquely cover active sides");
+    }
+    capability_present[capability.side] = true;
+    const auto* transport_end = capability.transport + sizeof(capability.transport);
+    const auto* terminator =
+        std::find(capability.transport, transport_end, '\0');
+    if (terminator == transport_end) {
+      throw std::invalid_argument(
+          "Articore transport capability name is not NUL-terminated");
+    }
+    const auto length = static_cast<std::size_t>(
+        terminator - capability.transport);
+    socketcanfd_brs[capability.side] =
+        std::string(capability.transport, length) == "socketcanfd" &&
+        capability.can_fd != 0 && capability.can_fd_brs != 0;
+  }
+  if (!transport_capabilities.empty()) {
+    for (uint8_t side = 0; side < 2; ++side) {
+      if (active_sides_[side] && !capability_present[side]) {
+        throw std::invalid_argument(
+            "Articore transport capabilities do not cover every active side");
+      }
+    }
+  }
+  // A shared DM-USB2FDCAN Dual remains verified at 400 Hz. Independent
+  // SocketCAN-FD+BRS transports are verified at 500 Hz with eight motors per
+  // side. Missing capability records use the conservative legacy envelope.
   if (active_sides_[0] && active_sides_[1]) {
-    config_.control_hz = std::min(config_.control_hz, 400U);
+    const bool dual_socketcanfd_brs =
+        capability_present[0] && capability_present[1] &&
+        socketcanfd_brs[0] && socketcanfd_brs[1];
+    config_.control_hz = std::min(
+        config_.control_hz, dual_socketcanfd_brs ? 500U : 400U);
   }
   const auto arm_count = static_cast<std::size_t>(std::count_if(
       motors_.begin(), motors_.end(), [](const MotorRecord& motor) {

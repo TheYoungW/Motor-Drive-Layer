@@ -376,6 +376,20 @@ ArticoreRuntimeConfig config() {
   return value;
 }
 
+std::vector<ArticoreRuntimeTransportCapabilities> transport_capabilities(
+    const char* transport, bool can_fd, bool can_fd_brs) {
+  std::vector<ArticoreRuntimeTransportCapabilities> values(2);
+  for (uint32_t side = 0; side < values.size(); ++side) {
+    values[side].struct_size = sizeof(values[side]);
+    values[side].side = side;
+    values[side].can_fd = can_fd ? 1 : 0;
+    values[side].can_fd_brs = can_fd_brs ? 1 : 0;
+    std::strncpy(values[side].transport, transport,
+                 sizeof(values[side].transport) - 1);
+  }
+  return values;
+}
+
 ArticoreMotorApi api() {
   return ArticoreMotorApi{send_pv, send_mit, disable_all, request_feedback,
                           get_state, get_feedback_stats, last_error,
@@ -2164,21 +2178,46 @@ void test_repeated_runtime_lifecycle() {
   }
 }
 
-void test_dual_runtime_caps_effective_control_rate_at_400_hz() {
+void test_dual_runtime_selects_control_rate_from_transport_capabilities() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
   cfg.control_hz = 500;
-  articore::SafetyRuntime dual(
+  articore::SafetyRuntime legacy_dual(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
       g_right_controller, motors);
-  require(dual.control_hz() == 400,
-          "dual runtime caps a requested 500 Hz rate at the verified 400 Hz envelope");
+  require(legacy_dual.control_hz() == 400,
+          "legacy dual runtime retains the conservative 400 Hz envelope");
+
+  articore::SafetyRuntime socketcanfd_brs_dual(
+      cfg, api(), reinterpret_cast<void*>(0x101), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false,
+      transport_capabilities("socketcanfd", true, true));
+  require(socketcanfd_brs_dual.control_hz() == 500,
+          "dual SocketCAN-FD+BRS runtime preserves a requested 500 Hz rate");
+
+  articore::SafetyRuntime dm_device_dual(
+      cfg, api(), reinterpret_cast<void*>(0x102), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false,
+      transport_capabilities("dm-device", true, true));
+  require(dm_device_dual.control_hz() == 400,
+          "dual DM Device runtime remains capped at 400 Hz");
+
+  auto mixed_capabilities = transport_capabilities("socketcanfd", true, true);
+  std::strncpy(mixed_capabilities[1].transport, "socketcan",
+               sizeof(mixed_capabilities[1].transport) - 1);
+  mixed_capabilities[1].can_fd_brs = 0;
+  articore::SafetyRuntime mixed_dual(
+      cfg, api(), reinterpret_cast<void*>(0x103), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false,
+      mixed_capabilities);
+  require(mixed_dual.control_hz() == 400,
+          "both dual transports must report SocketCAN-FD+BRS for 500 Hz");
 
   std::vector<ArticoreMotorDescriptor> single_motors{motors[0]};
   articore::SafetyRuntime single(
-      cfg, api(), reinterpret_cast<void*>(0x101), g_left_controller, nullptr,
+      cfg, api(), reinterpret_cast<void*>(0x104), g_left_controller, nullptr,
       single_motors);
   require(single.control_hz() == 500,
           "single-side runtime preserves an explicitly requested 500 Hz rate");
@@ -3092,7 +3131,7 @@ int main() {
     RUN_TEST(test_gripper_control_waits_for_atomic_enable_confirmation);
     RUN_TEST(test_atomic_enable_failure_rolls_back_and_fault_disable_is_allowed);
     RUN_TEST(test_repeated_runtime_lifecycle);
-    RUN_TEST(test_dual_runtime_caps_effective_control_rate_at_400_hz);
+    RUN_TEST(test_dual_runtime_selects_control_rate_from_transport_capabilities);
     RUN_TEST(test_single_side_runtime_and_gripper);
     RUN_TEST(test_normal_gripper_uses_arm_control_rate);
     RUN_TEST(test_gripper_health_reads_live_feedback_age);

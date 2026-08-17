@@ -1,14 +1,14 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.10.6",
+  "version": "0.10.7",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",
     "articore_runtime": "product watchdog, safety state machine and gripper ABI"
   },
   "runtime_abi": {
-    "version": "2.4",
+    "version": "2.5",
     "capabilities": [
       "atomic_enable",
       "builtin_gripper_product_profiles",
@@ -31,6 +31,7 @@
       "safe_hold",
       "single_channel",
       "structured_connect_report",
+      "transport_aware_control_rate",
       "transport_health"
     ],
     "removed_terms": [
@@ -232,6 +233,7 @@
         "articore_runtime_get_control_hz",
         "articore_runtime_create",
         "articore_runtime_create_ex",
+        "articore_runtime_create_ex2",
         "articore_runtime_free",
         "articore_runtime_configure_motor_identities",
         "articore_runtime_connect",

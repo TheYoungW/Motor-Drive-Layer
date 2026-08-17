@@ -216,13 +216,12 @@ consume those fields directly; diagnostic error text is retained for logs but is
 choose safety behavior.
 
 Runtime ABI 2.1 exposes `articore_runtime_get_control_hz()` and advertises
-`ARTICORE_CAP_EFFECTIVE_CONTROL_RATE`. A runtime with both arm sides active caps a requested rate
-above 400 Hz to 400 Hz. This is the verified stable envelope for one DM-USB2FDCAN Dual carrying
-eight CAN-FD motors on each channel; testing at 425 Hz reached the shared-adapter throughput edge,
-while 500 Hz produced fixed-order tail-feedback loss. One channel with eight CAN-FD motors was
-complete at 500 Hz. Single-side runtimes and dual runtimes requesting a lower rate keep the caller's
-configured value. Product SDKs should query and report the effective value instead of assuming the
-requested rate was accepted unchanged.
+`ARTICORE_CAP_EFFECTIVE_CONTROL_RATE`. Runtime ABI 2.5 adds immutable per-side transport
+capabilities to runtime creation. A dual runtime preserves a requested rate up to 500 Hz only when
+both sides report `socketcanfd`, CAN-FD, and active BRS. Legacy callers, mixed transports, and
+DM Device dual runtimes remain capped at the verified 400 Hz shared-adapter envelope. Single-side
+runtimes keep their explicitly requested rate. Product SDKs should query and report the effective
+value instead of assuming the requested rate was accepted unchanged.
 
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations

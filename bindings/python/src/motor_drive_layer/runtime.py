@@ -18,6 +18,7 @@ from ._runtime_abi import (
     CPosVelCommand,
     CRuntimeConfig,
     CRuntimeMotorDescriptor,
+    CRuntimeTransportCapabilities,
     CRuntimeTransportHealth,
     CSafetyHealth,
     get_runtime_abi,
@@ -171,7 +172,7 @@ class ArticoreRuntime:
                 self._leases.append(resource)
             self._motor_api = self._runtime_abi.motor_api()
             motor_lib = self._runtime_abi.motor.lib
-            pointer = self._runtime_abi.lib.articore_runtime_create_ex(
+            create_arguments = (
                 ctypes.byref(native_config), ctypes.byref(self._motor_api),
                 controller_group._require_open(),
                 left_controller._require_open() if left_controller else None,
@@ -180,6 +181,31 @@ class ArticoreRuntime:
                 ctypes.cast(motor_lib.motor_controller_enable_all, ctypes.c_void_p),
                 ctypes.cast(motor_lib.motor_handle_enable, ctypes.c_void_p),
             )
+            if self._runtime_abi.has_transport_aware_create:
+                native_transports = (
+                    CRuntimeTransportCapabilities * len(controllers)
+                )()
+                for output, controller in zip(native_transports, controllers):
+                    capabilities = controller.transport_capabilities()
+                    encoded_transport = capabilities.transport.encode()
+                    if not encoded_transport or len(encoded_transport) >= 32:
+                        raise ValueError(
+                            "transport capability name must contain 1..31 bytes"
+                        )
+                    output.struct_size = ctypes.sizeof(
+                        CRuntimeTransportCapabilities
+                    )
+                    output.side = 0 if controller is left_controller else 1
+                    output.can_fd = int(capabilities.can_fd)
+                    output.can_fd_brs = int(capabilities.can_fd_brs)
+                    output.transport = encoded_transport
+                pointer = self._runtime_abi.lib.articore_runtime_create_ex2(
+                    *create_arguments, native_transports, len(native_transports)
+                )
+            else:
+                pointer = self._runtime_abi.lib.articore_runtime_create_ex(
+                    *create_arguments
+                )
             if not pointer:
                 raise RuntimeCallError(
                     f"articore_runtime_create_ex failed: {self._last_error()}"

@@ -13,8 +13,9 @@ disable reports into immutable Python values. Fixed-rate control and safety logi
 execute only in `libarticore_runtime`.
 Use `articore_runtime_abi_version()` and `articore_runtime_capabilities()` to inspect that product
 runtime independently from `abi_version()` and `abi_capabilities()`. Runtime ABI 2.1 adds an
-effective-control-rate capability and native query: dual-arm runtimes cap requests above 400 Hz at
-the verified stable 400 Hz shared-adapter envelope, while single-side runtimes remain configurable.
+effective-control-rate capability and native query. Runtime ABI 2.5 passes immutable per-side
+transport capabilities during creation: dual SocketCAN-FD+BRS runtimes may run at 500 Hz, while
+legacy, mixed, and DM Device dual runtimes retain the 400 Hz envelope.
 Runtime ABI 2.2 adds built-in gripper product profiles. SDKs bind every installed gripper to
 `yunyi_gripper_v1` with `articore_runtime_configure_gripper_products()` before `connect()`; Python
 no longer supplies motor-position mapping, MIT gains, contact/stall/overload timing, retreat values,
@@ -36,7 +37,8 @@ confirmation, and all-motor rollback. Runtime ABI 1.3 introduced the native late
 mailbox in addition to `current_position_hold`. Runtime ABI 1.5 also advertises
 `protective_fault_hold`: a transient feedback miss keeps the current output, while persistent loss holds every
 still-controllable motor/channel without automatically torque-disabling unrelated hardware.
-SDK bindings use `articore_runtime_create_ex()` and pass the motor enable callbacks explicitly;
+SDK bindings use `articore_runtime_create_ex2()` and pass motor enable callbacks plus immutable
+per-side transport capabilities explicitly;
 the two packaged native libraries remain independently loadable on Linux, Windows, and macOS.
 Published wheels cover Linux x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x64. The serial
 transport is cross-platform; SocketCAN transports remain Linux-only.

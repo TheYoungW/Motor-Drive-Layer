@@ -428,8 +428,9 @@ scripts/                    Linux SocketCAN/CAN-FD接口配置工具
 DM_Device 默认的 1 Mbps/5 Mbps 配置会同时配置通道并以 CAN-FD+BRS 发送帧，5 Mbps
 数据段使用 87.5% 采样点。实机已验证单通道 8 台电机在 500 Hz 下反馈完整；同一
 DM-USB2FDCAN Dual 的 CH0、CH1 各 8 台电机同时运行时，稳定完整批次频率为 400 Hz。
-因此 Articore Runtime ABI 2.1 会把双臂高于 400 Hz 的请求限制到 400 Hz，并通过
-`articore_runtime_get_control_hz()` 暴露实际生效频率。单臂 Runtime 仍保留调用方明确请求的频率。
+Runtime ABI 2.5 对 DM Device 双臂继续保持该上限；只有左右两侧均报告 SocketCAN-FD
+且 BRS 已启用时才允许最高 500 Hz。实际生效频率通过
+`articore_runtime_get_control_hz()` 暴露。
 
 ## 贡献与安全
 

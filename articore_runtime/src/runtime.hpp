@@ -44,7 +44,9 @@ class SafetyRuntime {
                 std::vector<ArticoreMotorDescriptor> motors,
                 ArticoreControllerCallFn controller_enable_all = nullptr,
                 ArticoreControllerCallFn motor_enable = nullptr,
-                bool require_gripper_product_profiles = false);
+                bool require_gripper_product_profiles = false,
+                std::vector<ArticoreRuntimeTransportCapabilities>
+                    transport_capabilities = {});
   ~SafetyRuntime();
 
   SafetyRuntime(const SafetyRuntime&) = delete;

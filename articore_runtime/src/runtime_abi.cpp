@@ -41,7 +41,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 4U;
+  return (2U << 16) | 5U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -66,7 +66,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_EFFECTIVE_CONTROL_RATE |
          ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES |
          ARTICORE_CAP_CONNECT_FEEDBACK_BARRIER |
-         ARTICORE_CAP_STRUCTURED_CONNECT_REPORT;
+         ARTICORE_CAP_STRUCTURED_CONNECT_REPORT |
+         ARTICORE_CAP_TRANSPORT_AWARE_CONTROL_RATE;
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_hz(
@@ -100,15 +101,43 @@ ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex(
     uint32_t motor_count,
     ArticoreControllerCallFn controller_enable_all,
     ArticoreControllerCallFn motor_enable) {
+  return articore_runtime_create_ex2(
+      config, motor_api, controller_group, left_controller, right_controller,
+      motors, motor_count, controller_enable_all, motor_enable, nullptr, 0);
+}
+
+ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex2(
+    const ArticoreRuntimeConfig* config,
+    const ArticoreMotorApi* motor_api,
+    void* controller_group,
+    void* left_controller,
+    void* right_controller,
+    const ArticoreMotorDescriptor* motors,
+    uint32_t motor_count,
+    ArticoreControllerCallFn controller_enable_all,
+    ArticoreControllerCallFn motor_enable,
+    const ArticoreRuntimeTransportCapabilities* transport_capabilities,
+    uint32_t transport_capability_count) {
   if (!config || !motor_api || (!motors && motor_count > 0)) {
     g_last_error = "invalid Articore runtime creation arguments";
     return nullptr;
   }
+  if (!transport_capabilities && transport_capability_count > 0) {
+    g_last_error = "transport capabilities pointer is null";
+    return nullptr;
+  }
   try {
     std::vector<ArticoreMotorDescriptor> descriptors(motors, motors + motor_count);
+    std::vector<ArticoreRuntimeTransportCapabilities> capabilities;
+    if (transport_capability_count > 0) {
+      capabilities.assign(
+          transport_capabilities,
+          transport_capabilities + transport_capability_count);
+    }
     auto value = std::make_unique<articore::SafetyRuntime>(
         *config, *motor_api, controller_group, left_controller, right_controller,
-        std::move(descriptors), controller_enable_all, motor_enable, true);
+        std::move(descriptors), controller_enable_all, motor_enable, true,
+        std::move(capabilities));
     g_last_error = "ok";
     return new ArticoreRuntime(std::move(value));
   } catch (const std::exception& error) {
