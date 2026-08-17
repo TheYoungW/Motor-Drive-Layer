@@ -56,6 +56,14 @@ def _abandon_fake_handles(
         controller._ptr = None
 
 
+def test_runtime_config_uses_50_ms_feedback_freshness_window() -> None:
+    config = RuntimeConfig()
+
+    assert config.feedback_check_hz == 100
+    assert config.feedback_max_age_ms == 50
+    assert config.feedback_failure_threshold == 3
+
+
 def test_runtime_binding_owns_handles_and_converts_health() -> None:
     left = _fake_controller(0x101)
     group = _fake_group((left,), 0x201)

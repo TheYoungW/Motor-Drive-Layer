@@ -67,7 +67,7 @@ class RuntimeConfig:
     safe_hold_hz: int = 100
     feedback_check_hz: int = 100
     feedback_failure_threshold: int = 3
-    feedback_max_age_ms: int = 20
+    feedback_max_age_ms: int = 50
     safe_hold_failure_threshold: int = 3
     disable_feedback_timeout_ms: int = 50
     safe_pv_velocity_limit: float = 0.5
