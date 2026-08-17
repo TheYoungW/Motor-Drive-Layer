@@ -16,6 +16,7 @@ from .abi import (
     CPosVelBatchCommand,
     CState,
     CTransportCapabilities,
+    CTransportCapabilitiesV2,
     CTransportHealth,
     get_abi,
 )
@@ -102,13 +103,33 @@ class Controller:
             raise CallError(f"new_socketcan failed: {_err_text()}")
 
     @classmethod
-    def from_socketcanfd(cls, channel: str = "can0") -> "Controller":
+    def from_socketcanfd(
+        cls, channel: str = "can0", enable_brs: bool = True
+    ) -> "Controller":
+        """Open Linux SocketCAN-FD, using BRS by default.
+
+        Set ``enable_brs=False`` only for devices whose CAN-FD data phase runs
+        at the arbitration bitrate. The Linux interface must be configured
+        with ``fd on`` and a matching ``dbitrate`` when BRS is enabled.
+        """
+        if not isinstance(enable_brs, bool):
+            raise TypeError("enable_brs must be bool")
         self = cls.__new__(cls)
         self._abi = get_abi()
         self._runtime_lease_lock = Lock()
         self._runtime_lease_count = 0
         self._feedback_motor_count = 0
-        self._ptr = self._abi.lib.motor_controller_new_socketcanfd(channel.encode())
+        if getattr(self._abi, "has_socketcanfd_ex", False):
+            self._ptr = self._abi.lib.motor_controller_new_socketcanfd_ex(
+                channel.encode(), int(enable_brs)
+            )
+        elif enable_brs:
+            raise CallError(
+                "the loaded motor_abi cannot guarantee SocketCAN-FD BRS; "
+                "upgrade motor-drive-layer or pass enable_brs=False"
+            )
+        else:
+            self._ptr = self._abi.lib.motor_controller_new_socketcanfd(channel.encode())
         if not self._ptr:
             raise CallError(f"new_socketcanfd failed: {_err_text()}")
         return self
@@ -307,13 +328,25 @@ class Controller:
                 "the loaded motor_abi does not support transport capabilities; "
                 "upgrade motor-drive-layer"
             )
-        native = CTransportCapabilities()
-        _ok(
-            self._abi.lib.motor_controller_get_transport_capabilities(
-                self._require_open(), ctypes.byref(native)
-            ),
-            "controller_get_transport_capabilities",
-        )
+        if getattr(self._abi, "has_transport_capabilities_v2", False):
+            native = CTransportCapabilitiesV2()
+            native.struct_size = ctypes.sizeof(CTransportCapabilitiesV2)
+            _ok(
+                self._abi.lib.motor_controller_get_transport_capabilities_v2(
+                    self._require_open(), ctypes.byref(native)
+                ),
+                "controller_get_transport_capabilities_v2",
+            )
+            can_fd_brs = bool(native.can_fd_brs)
+        else:
+            native = CTransportCapabilities()
+            _ok(
+                self._abi.lib.motor_controller_get_transport_capabilities(
+                    self._require_open(), ctypes.byref(native)
+                ),
+                "controller_get_transport_capabilities",
+            )
+            can_fd_brs = False
         return TransportCapabilities(
             transport=bytes(native.transport).split(b"\0", 1)[0].decode(),
             max_payload_bytes=int(native.max_payload_bytes),
@@ -323,6 +356,7 @@ class Controller:
             hardware_rx_timestamps=bool(native.hardware_rx_timestamps),
             reconnect=bool(native.reconnect),
             process_session_reuse=bool(native.process_session_reuse),
+            can_fd_brs=can_fd_brs,
         )
 
     def transport_health(self) -> TransportHealth:

@@ -113,7 +113,8 @@ pacing waits, and return after every controller finishes. Errors retain the cont
 motor ID, and native reason.
 For fixed high-rate layouts, `prepare_pos_vel(motors)` and `prepare_mit(motors)` reuse one validated
 ctypes command array across calls. `Controller.transport_capabilities()` reports the active
-transport's CAN-FD, channel, parallel-send, reconnect, session-reuse, and timestamp capabilities.
+transport's CAN-FD, active BRS, channel, parallel-send, reconnect, session-reuse, and timestamp
+capabilities.
 `Controller.transport_health()` reports live connection state, TX/RX counters, errors, and last
 activity ages without adding robot-product policy to the transport layer.
 

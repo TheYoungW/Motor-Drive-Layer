@@ -27,6 +27,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default="socketcan",
     )
     parser.add_argument("--channel", default="can0")
+    parser.add_argument(
+        "--socketcanfd-brs", choices=["on", "off"], default="on"
+    )
     parser.add_argument("--serial-port", default="/dev/ttyACM0")
     parser.add_argument("--serial-baud", type=int, default=1_000_000)
     parser.add_argument("--dm-device-type", default="usb2canfd-dual")
@@ -46,7 +49,9 @@ def _open_controller(args: argparse.Namespace) -> Controller:
     if args.transport == "socketcan":
         return Controller(args.channel)
     if args.transport == "socketcanfd":
-        return Controller.from_socketcanfd(args.channel)
+        return Controller.from_socketcanfd(
+            args.channel, enable_brs=args.socketcanfd_brs == "on"
+        )
     if args.transport == "dm-serial":
         return Controller.from_dm_serial(args.serial_port, args.serial_baud)
     return Controller.from_dm_device(

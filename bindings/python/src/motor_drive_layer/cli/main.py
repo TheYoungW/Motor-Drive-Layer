@@ -64,13 +64,21 @@ def _open_controller(args: argparse.Namespace) -> Controller:
     if transport in ("auto", "socketcan"):
         return Controller(args.channel)
     if transport == "socketcanfd":
-        return Controller.from_socketcanfd(args.channel)
+        return Controller.from_socketcanfd(
+            args.channel, enable_brs=args.socketcanfd_brs == "on"
+        )
     raise ValueError(f"unsupported transport: {transport}")
 
 
 def _add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--vendor", default="damiao", choices=["damiao"], help="only Damiao is supported")
     p.add_argument("--channel", default="can0", help="SocketCAN/CAN-FD channel")
+    p.add_argument(
+        "--socketcanfd-brs",
+        choices=["on", "off"],
+        default="on",
+        help="set CANFD_BRS on SocketCAN-FD TX frames (default: on)",
+    )
     p.add_argument(
         "--transport",
         default="auto",

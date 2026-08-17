@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.10.2",
+  "version": "0.10.6",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",
@@ -49,6 +49,7 @@
     "controller": [
       "motor_controller_new_socketcan",
       "motor_controller_new_socketcanfd",
+      "motor_controller_new_socketcanfd_ex",
       "motor_controller_new_dm_serial",
       "motor_controller_new_dm_device",
       "motor_controller_new_dm_device_ex",
@@ -62,6 +63,7 @@
       "motor_controller_close_bus",
       "motor_controller_set_tx_gap_us",
       "motor_controller_get_transport_capabilities",
+      "motor_controller_get_transport_capabilities_v2",
       "motor_controller_get_transport_health",
       "motor_controller_discover_damiao_motors",
       "motor_controller_add_damiao_motor"
@@ -109,7 +111,7 @@
   "bindings": {
     "controller_methods": [
       "Controller(channel)",
-      "Controller.from_socketcanfd(channel)",
+      "Controller.from_socketcanfd(channel, enable_brs)",
       "Controller.from_dm_serial(serial_port, baud)",
       "Controller.from_dm_device(dm_device_type, dm_channel, bitrate, data_bitrate, *, device, channel)",
       "Controller.close()",

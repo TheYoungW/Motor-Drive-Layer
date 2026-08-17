@@ -10,6 +10,7 @@ from motor_drive_layer.abi import (
     CFeedbackStats,
     CState,
     CTransportCapabilities,
+    CTransportCapabilitiesV2,
     CTransportHealth,
 )
 from motor_drive_layer.core import Controller, Motor
@@ -80,6 +81,22 @@ class FakeLib:
         capabilities.process_session_reuse = 1
         return 0
 
+    def motor_controller_get_transport_capabilities_v2(self, ptr: int, out_capabilities) -> int:
+        capabilities = ctypes.cast(
+            out_capabilities, ctypes.POINTER(CTransportCapabilitiesV2)
+        ).contents
+        assert capabilities.struct_size == ctypes.sizeof(CTransportCapabilitiesV2)
+        capabilities.transport = b"socketcanfd"
+        capabilities.max_payload_bytes = 8
+        capabilities.channel_count = 1
+        capabilities.can_fd = 1
+        capabilities.parallel_batches = 1
+        capabilities.hardware_rx_timestamps = 0
+        capabilities.reconnect = 1
+        capabilities.process_session_reuse = 0
+        capabilities.can_fd_brs = 1
+        return 0
+
     def motor_controller_get_transport_health(self, ptr: int, out_health) -> int:
         health = ctypes.cast(out_health, ctypes.POINTER(CTransportHealth)).contents
         health.connected = 1
@@ -119,6 +136,7 @@ class FakeAbi:
     def __init__(self) -> None:
         self.lib = FakeLib()
         self.has_transport_capabilities = True
+        self.has_transport_capabilities_v2 = True
         self.has_transport_health = True
         self.has_structured_feedback_report = True
 
@@ -203,14 +221,15 @@ def test_controller_exposes_per_transport_capabilities() -> None:
     controller._ptr = 123
 
     assert controller.transport_capabilities() == TransportCapabilities(
-        transport="dm-device",
+        transport="socketcanfd",
         max_payload_bytes=8,
-        channel_count=2,
+        channel_count=1,
         can_fd=True,
         parallel_batches=True,
         hardware_rx_timestamps=False,
         reconnect=True,
-        process_session_reuse=True,
+        process_session_reuse=False,
+        can_fd_brs=True,
     )
 
 

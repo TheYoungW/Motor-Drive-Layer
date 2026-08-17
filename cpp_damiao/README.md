@@ -35,7 +35,7 @@ The unified build produces public `libmotor_abi.so` and
 int main() {
   auto bus = damiao::DmSerialBus::open("/dev/ttyACM0", 1000000);
   damiao::Controller controller(bus);
-  controller.set_tx_gap(std::chrono::microseconds(120));
+  controller.set_tx_gap(std::chrono::microseconds(200));
 
   auto motor = controller.add_damiao_motor(0x01, 0x201, "4340P");
   const auto state = motor->request_fresh_state(std::chrono::milliseconds(50));
@@ -44,8 +44,8 @@ int main() {
 ```
 
 The port, baud rate, IDs, and model above are examples supplied by the caller. The one-motor
-example sets a 120 µs TX interval explicitly. Without an explicit or environment override, a
-controller starts with no artificial TX delay and automatically applies a 120 µs minimum interval
+example sets a 200 µs TX interval explicitly. Without an explicit or environment override, a
+controller starts with no artificial TX delay and automatically applies a 200 µs minimum interval
 between all outgoing frames when its second motor is added. Call `Controller::set_tx_gap()` after
 adding motors to change the current value, or set `MOTOR_DRIVE_LAYER_TX_GAP_US` before constructing
 the controller to override the automatic default. `enable_all()` and `disable_all()` also use a
@@ -87,7 +87,9 @@ transport-specific shared vendor locks remain responsible for vendor-library thr
 
 Every `CanBus` exposes `TransportCapabilities`; `Controller::transport_capabilities()` and the C
 ABI return the active instance's transport name, canonical payload size, physical channel count,
-CAN-FD, parallel-batch, reconnect, process-session reuse, and hardware RX timestamp flags.
+CAN-FD, active CAN-FD BRS, parallel-batch, reconnect, process-session reuse, and hardware RX
+timestamp flags. The legacy capability struct remains ABI-stable; new callers use the
+size-versioned V2 query for `can_fd_brs`.
 The generic pacing wrapper also records `TransportHealth`; `Controller::transport_health()` and
 the C ABI expose live connection state, TX/RX counters, activity ages, and transport errors.
 

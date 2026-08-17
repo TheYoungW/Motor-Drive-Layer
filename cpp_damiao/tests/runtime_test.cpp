@@ -879,6 +879,22 @@ int main() {
   }
   concurrent_controller.close_bus();
 
+  auto default_gap_bus = std::make_shared<FakeBus>();
+  damiao::Controller default_gap_controller(default_gap_bus);
+  auto default_gap_motor1 =
+      default_gap_controller.add_damiao_motor(0x01, 0x11, "4340P");
+  auto default_gap_motor2 =
+      default_gap_controller.add_damiao_motor(0x02, 0x12, "4310");
+  default_gap_motor1->send_vel(1.0f);
+  default_gap_motor2->send_vel(2.0f);
+  const auto default_gap_times = default_gap_bus->sent_times_snapshot();
+  require(default_gap_times.size() == 2,
+          "default multi-motor TX-gap test sends two frames");
+  require(default_gap_times[1] - default_gap_times[0] >=
+              std::chrono::microseconds(190),
+          "multi-motor controller defaults to a 200 us TX gap");
+  default_gap_controller.close_bus();
+
   auto resilient_bus = std::make_shared<FakeBus>();
   resilient_bus->fail_next_receives(1);
   damiao::Controller resilient_controller(resilient_bus);

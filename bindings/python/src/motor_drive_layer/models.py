@@ -133,6 +133,7 @@ class TransportCapabilities:
     hardware_rx_timestamps: bool
     reconnect: bool
     process_session_reuse: bool
+    can_fd_brs: bool = False
 
 
 @dataclass(frozen=True)

@@ -4,6 +4,10 @@
 
 #include "damiao/socketcan_bus.hpp"
 
+#if defined(__linux__)
+#include <linux/can.h>
+#endif
+
 namespace {
 
 void require(bool condition, const char* message) {
@@ -35,9 +39,21 @@ int main() {
   require(decoded.dlc == 8, "decoded dlc");
   require(decoded.data == ext.data, "decoded payload");
 
-  const auto fd_raw = damiao::SocketCanCodec::encode_fd(frame, true);
+  const auto fd_raw = damiao::SocketCanCodec::encode_fd(frame);
   require(fd_raw.len == 8, "fd len");
-  require((fd_raw.flags & damiao::SocketCanCodec::kCanFdBrs) != 0, "fd brs flag");
+  require((fd_raw.flags & damiao::SocketCanCodec::kCanFdBrs) != 0,
+          "fd default includes CANFD_BRS");
+#if defined(__linux__)
+  static_assert(damiao::SocketCanCodec::kCanFdBrs == CANFD_BRS,
+                "portable BRS flag must match Linux canfd_frame");
+  canfd_frame kernel_fd_frame{};
+  kernel_fd_frame.flags = fd_raw.flags;
+  require((kernel_fd_frame.flags & CANFD_BRS) != 0,
+          "Linux canfd_frame.flags includes CANFD_BRS");
+#endif
+  const auto fd_raw_without_brs = damiao::SocketCanCodec::encode_fd(frame, false);
+  require((fd_raw_without_brs.flags & damiao::SocketCanCodec::kCanFdBrs) == 0,
+          "fd explicit BRS disable clears CANFD_BRS");
   const auto fd_decoded = damiao::SocketCanCodec::decode_fd(fd_raw);
   require(fd_decoded.id == 0x123, "fd decoded id");
   require(fd_decoded.data == frame.data, "fd decoded payload");

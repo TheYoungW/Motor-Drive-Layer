@@ -12,8 +12,8 @@ DBITRATE=5000000
 RESTART_MS=100
 LOOPBACK=off
 FD=on
-CAN_SP=""
-DATA_SP=""
+CAN_SP="0.75"
+DATA_SP="0.875"
 SJW=""
 DSJW=""
 IFS_LIST=()
@@ -66,8 +66,8 @@ Options:
   --restart-ms <num>     bus-off auto-restart (default: 100)
   --loopback <on|off>    loopback mode (default: off)
   --fd <on|off>          CAN-FD on/off (default: on)
-  --sample-point <v>     arbitration sample-point (e.g. 0.8)
-  --dsample-point <v>    data sample-point (e.g. 0.75)
+  --sample-point <v>     arbitration sample-point (default: 0.75)
+  --dsample-point <v>    data sample-point (default: 0.875)
   --sjw <num>            arbitration SJW
   --dsjw <num>           data SJW
   -h, --help             show help
@@ -75,7 +75,7 @@ Options:
 Examples:
   scripts/canfd_restart.sh
   scripts/canfd_restart.sh can0
-  scripts/canfd_restart.sh --bitrate 1000000 --dbitrate 5000000 --sample-point 0.8 --dsample-point 0.75 --sjw 5 --dsjw 3 can0
+  scripts/canfd_restart.sh --bitrate 1000000 --dbitrate 5000000 --sample-point 0.75 --dsample-point 0.875 can0
 EOF
       exit 0
       ;;

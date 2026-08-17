@@ -37,12 +37,13 @@ class DmDeviceBus final : public CanBus {
 
  private:
   DmDeviceBus(void* handle, uint8_t channel, DmDeviceType device_type,
-              bool process_session_reuse);
+              bool process_session_reuse, bool enable_brs);
 
   void* handle_;
   uint8_t channel_;
   DmDeviceType device_type_;
   bool process_session_reuse_;
+  bool enable_brs_;
   std::mutex mutex_;
 };
 

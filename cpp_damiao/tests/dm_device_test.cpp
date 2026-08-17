@@ -189,7 +189,7 @@ int main() {
   require(capabilities.transport == "dm-device" && capabilities.can_fd &&
               capabilities.channel_count == 2 && capabilities.parallel_batches &&
               capabilities.reconnect && capabilities.process_session_reuse &&
-              !capabilities.hardware_rx_timestamps,
+              !capabilities.hardware_rx_timestamps && capabilities.can_fd_brs,
           "DM_Device bus reports instance capabilities from the v1.0 runtime");
   bus->shutdown();
   unset_test_env("MOTOR_DM_DEVICE_LIB");

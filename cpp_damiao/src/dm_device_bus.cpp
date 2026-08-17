@@ -206,15 +206,17 @@ std::shared_ptr<DmDeviceBus> DmDeviceBus::open(DmDeviceType device_type,
     throw std::runtime_error("failed to query DM_Device runtime capabilities");
   }
   return std::shared_ptr<DmDeviceBus>(new DmDeviceBus(
-      raw, channel, device_type, runtime_info.process_session_reuse != 0));
+      raw, channel, device_type, runtime_info.process_session_reuse != 0,
+      data_bitrate != bitrate));
 }
 
 DmDeviceBus::DmDeviceBus(void* handle, uint8_t channel, DmDeviceType device_type,
-                         bool process_session_reuse)
+                         bool process_session_reuse, bool enable_brs)
     : handle_(handle),
       channel_(channel),
       device_type_(device_type),
-      process_session_reuse_(process_session_reuse) {}
+      process_session_reuse_(process_session_reuse),
+      enable_brs_(enable_brs) {}
 
 DmDeviceBus::~DmDeviceBus() {
   try {
@@ -287,7 +289,7 @@ TransportCapabilities DmDeviceBus::capabilities() const {
   if (device_type_ == DmDeviceType::Usb2CanFdDual) channels = 2;
   if (device_type_ == DmDeviceType::LinkX4C) channels = 4;
   return TransportCapabilities{"dm-device", 8, channels, true, true, false, true,
-                               process_session_reuse_};
+                               process_session_reuse_, enable_brs_};
 }
 
 }  // namespace damiao

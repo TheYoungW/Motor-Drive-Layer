@@ -27,6 +27,10 @@ struct TransportCapabilities {
   bool hardware_rx_timestamps = false;
   bool reconnect = false;
   bool process_session_reuse = false;
+  // True when outgoing CAN-FD frames use bit-rate switching for their data
+  // phase. This describes the active transport configuration, not merely
+  // whether the underlying adapter could support BRS.
+  bool can_fd_brs = false;
 };
 
 struct TransportHealth {

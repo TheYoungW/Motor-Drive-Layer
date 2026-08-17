@@ -32,6 +32,10 @@ int main() {
           "capabilities include configurable DM_Device bitrates");
   require(capabilities.find("dm_device_canfd_brs") != std::string::npos,
           "capabilities include DM_Device CAN-FD+BRS framing");
+  require(capabilities.find("socketcanfd_canfd_brs") != std::string::npos &&
+              capabilities.find("socketcanfd_configurable_brs") != std::string::npos &&
+              capabilities.find("transport_capabilities_v2") != std::string::npos,
+          "capabilities include configurable SocketCAN-FD+BRS framing");
   require(capabilities.find("dm_device_v10_process_session_reuse") != std::string::npos,
           "capabilities include v1.0 process-session reuse");
   require(capabilities.find("register_metadata") != std::string::npos,
@@ -55,6 +59,10 @@ int main() {
 
   require(motor_controller_get_transport_capabilities(nullptr, nullptr) != 0,
           "transport capabilities rejects null controller and output");
+  require(motor_controller_get_transport_capabilities_v2(nullptr, nullptr) != 0,
+          "transport capabilities v2 rejects null controller and output");
+  require(motor_controller_new_socketcanfd_ex(nullptr, 1) == nullptr,
+          "SocketCAN-FD options reject null channel");
 
   MotorRegisterInfo register_info{};
   require(motor_damiao_register_info(11, &register_info) == 0,

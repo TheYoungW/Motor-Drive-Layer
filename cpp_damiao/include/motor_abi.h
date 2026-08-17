@@ -129,6 +129,23 @@ typedef struct MotorTransportCapabilities {
   int32_t process_session_reuse;
 } MotorTransportCapabilities;
 
+// Additive, size-versioned transport capability query. The legacy structure
+// above remains unchanged so applications compiled against earlier releases
+// keep their ABI layout. Callers must set struct_size before invoking the V2
+// query.
+typedef struct MotorTransportCapabilitiesV2 {
+  uint32_t struct_size;
+  char transport[32];
+  uint32_t max_payload_bytes;
+  uint32_t channel_count;
+  int32_t can_fd;
+  int32_t parallel_batches;
+  int32_t hardware_rx_timestamps;
+  int32_t reconnect;
+  int32_t process_session_reuse;
+  int32_t can_fd_brs;
+} MotorTransportCapabilitiesV2;
+
 typedef struct MotorTransportHealth {
   int32_t connected;
   int32_t healthy;
@@ -200,7 +217,12 @@ int32_t motor_damiao_register_info(uint8_t rid, MotorRegisterInfo* out_info);
 //   controller. The handle itself may still be passed to motor_handle_free.
 
 MotorController* motor_controller_new_socketcan(const char* channel);
+// Opens SocketCAN-FD with CAN-FD bit-rate switching enabled by default.
 MotorController* motor_controller_new_socketcanfd(const char* channel);
+// Explicitly enables (non-zero) or disables (zero) CANFD_BRS on transmitted
+// frames. Use the legacy constructor above for the recommended BRS default.
+MotorController* motor_controller_new_socketcanfd_ex(const char* channel,
+                                                     int32_t enable_brs);
 MotorController* motor_controller_new_dm_serial(const char* serial_port, uint32_t baud);
 MotorController* motor_controller_new_dm_device(const char* dm_device_type, const char* dm_channel);
 MotorController* motor_controller_new_dm_device_ex(const char* dm_device_type, const char* dm_channel,
@@ -244,6 +266,8 @@ int32_t motor_controller_close_bus(MotorController* controller);
 int32_t motor_controller_set_tx_gap_us(MotorController* controller, uint32_t gap_us);
 int32_t motor_controller_get_transport_capabilities(
     MotorController* controller, MotorTransportCapabilities* out_capabilities);
+int32_t motor_controller_get_transport_capabilities_v2(
+    MotorController* controller, MotorTransportCapabilitiesV2* out_capabilities);
 int32_t motor_controller_get_transport_health(
     MotorController* controller, MotorTransportHealth* out_health);
 

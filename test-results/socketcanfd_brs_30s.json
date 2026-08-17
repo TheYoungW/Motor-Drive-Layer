@@ -1,0 +1,287 @@
+{
+  "passed": true,
+  "control_hz_requested": 400.0,
+  "control_hz_completed": 399.9979408905999,
+  "cycles": 12000,
+  "elapsed_s": 30.000154434,
+  "minimum_feedback_ratio": 0.95,
+  "hold_kp": 5.0,
+  "hold_kd": 1.0,
+  "tx_gap_us": 200,
+  "feedback_hz": [
+    {
+      "spec": {
+        "channel": 0,
+        "motor_id": 1,
+        "feedback_id": 17,
+        "model": "8009"
+      },
+      "driver_hz": 400.0312740523408,
+      "raw_bus_hz": 399.9979408905999,
+      "raw_bus_brs_hz": 399.9979408905999,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 0,
+        "motor_id": 2,
+        "feedback_id": 18,
+        "model": "8009"
+      },
+      "driver_hz": 400.0312740523408,
+      "raw_bus_hz": 399.9979408905999,
+      "raw_bus_brs_hz": 399.9979408905999,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 0,
+        "motor_id": 3,
+        "feedback_id": 19,
+        "model": "4340P"
+      },
+      "driver_hz": 400.0312740523408,
+      "raw_bus_hz": 399.9979408905999,
+      "raw_bus_brs_hz": 399.9979408905999,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 0,
+        "motor_id": 4,
+        "feedback_id": 20,
+        "model": "4340P"
+      },
+      "driver_hz": 399.9979408905999,
+      "raw_bus_hz": 399.964607728859,
+      "raw_bus_brs_hz": 399.964607728859,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 0,
+        "motor_id": 5,
+        "feedback_id": 21,
+        "model": "4310"
+      },
+      "driver_hz": 400.0312740523408,
+      "raw_bus_hz": 399.9979408905999,
+      "raw_bus_brs_hz": 399.9979408905999,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 0,
+        "motor_id": 6,
+        "feedback_id": 22,
+        "model": "4310"
+      },
+      "driver_hz": 399.89794140537725,
+      "raw_bus_hz": 399.8646082436364,
+      "raw_bus_brs_hz": 399.8646082436364,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 0,
+        "motor_id": 7,
+        "feedback_id": 23,
+        "model": "4310"
+      },
+      "driver_hz": 399.9979408905999,
+      "raw_bus_hz": 399.964607728859,
+      "raw_bus_brs_hz": 399.964607728859,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 0,
+        "motor_id": 8,
+        "feedback_id": 24,
+        "model": "4310"
+      },
+      "driver_hz": 399.9312745671181,
+      "raw_bus_hz": 399.89794140537725,
+      "raw_bus_brs_hz": 399.89794140537725,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 1,
+        "motor_id": 1,
+        "feedback_id": 17,
+        "model": "8009"
+      },
+      "driver_hz": 399.9312745671181,
+      "raw_bus_hz": 399.89794140537725,
+      "raw_bus_brs_hz": 399.89794140537725,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 1,
+        "motor_id": 2,
+        "feedback_id": 18,
+        "model": "8009"
+      },
+      "driver_hz": 399.964607728859,
+      "raw_bus_hz": 399.9312745671181,
+      "raw_bus_brs_hz": 399.9312745671181,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 1,
+        "motor_id": 3,
+        "feedback_id": 19,
+        "model": "4340P"
+      },
+      "driver_hz": 399.964607728859,
+      "raw_bus_hz": 399.9312745671181,
+      "raw_bus_brs_hz": 399.9312745671181,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 1,
+        "motor_id": 4,
+        "feedback_id": 20,
+        "model": "4340P"
+      },
+      "driver_hz": 399.9979408905999,
+      "raw_bus_hz": 399.964607728859,
+      "raw_bus_brs_hz": 399.964607728859,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 1,
+        "motor_id": 5,
+        "feedback_id": 21,
+        "model": "4310"
+      },
+      "driver_hz": 399.9979408905999,
+      "raw_bus_hz": 399.964607728859,
+      "raw_bus_brs_hz": 399.964607728859,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 1,
+        "motor_id": 6,
+        "feedback_id": 22,
+        "model": "4310"
+      },
+      "driver_hz": 400.0312740523408,
+      "raw_bus_hz": 399.9979408905999,
+      "raw_bus_brs_hz": 399.9979408905999,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 1,
+        "motor_id": 7,
+        "feedback_id": 23,
+        "model": "4310"
+      },
+      "driver_hz": 400.0312740523408,
+      "raw_bus_hz": 399.9979408905999,
+      "raw_bus_brs_hz": 399.9979408905999,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    },
+    {
+      "spec": {
+        "channel": 1,
+        "motor_id": 8,
+        "feedback_id": 24,
+        "model": "4310"
+      },
+      "driver_hz": 399.89794140537725,
+      "raw_bus_hz": 399.8646082436364,
+      "raw_bus_brs_hz": 399.8646082436364,
+      "rejected_frames": 0,
+      "identity_mismatches": 0,
+      "implausible_jumps": 0
+    }
+  ],
+  "low_feedback": [],
+  "interfaces": {
+    "can0": {
+      "state": "ERROR-ACTIVE",
+      "bus_error": 0,
+      "error_warning": 0,
+      "error_passive": 0,
+      "bus_off": 0,
+      "rx_errors": 0,
+      "rx_dropped": 0,
+      "tx_errors": 0,
+      "tx_dropped": 0
+    },
+    "can1": {
+      "state": "ERROR-ACTIVE",
+      "bus_error": 0,
+      "error_warning": 0,
+      "error_passive": 0,
+      "bus_off": 0,
+      "rx_errors": 0,
+      "rx_dropped": 0,
+      "tx_errors": 0,
+      "tx_dropped": 0
+    }
+  },
+  "interface_counter_deltas": {
+    "can0": {
+      "bus_error": 0,
+      "error_warning": 0,
+      "error_passive": 0,
+      "bus_off": 0,
+      "rx_errors": 0,
+      "rx_dropped": 0,
+      "tx_errors": 0,
+      "tx_dropped": 0
+    },
+    "can1": {
+      "bus_error": 0,
+      "error_warning": 0,
+      "error_passive": 0,
+      "bus_off": 0,
+      "rx_errors": 0,
+      "rx_dropped": 0,
+      "tx_errors": 0,
+      "tx_dropped": 0
+    }
+  },
+  "bad_interfaces": {},
+  "disabled_count": 16,
+  "disable_errors": []
+}

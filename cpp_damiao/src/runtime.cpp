@@ -16,6 +16,7 @@ namespace {
 constexpr auto kRegisterWriteAckTimeout = std::chrono::milliseconds(50);
 constexpr auto kRegisterWriteRetryGap = std::chrono::milliseconds(20);
 constexpr auto kBulkFeedbackRetryDelay = std::chrono::milliseconds(5);
+constexpr auto kDefaultMultiMotorTxGap = std::chrono::microseconds(200);
 
 bool matches_feedback_arbitration_id(uint32_t arbitration_id,
                                      uint16_t configured_feedback_id,
@@ -689,7 +690,7 @@ std::shared_ptr<MotorHandle> Controller::add_damiao_motor(uint16_t motor_id,
     }
     motors_[motor_id] = motor;
     if (!tx_gap_env_override_ && motors_.size() >= 2) {
-      bus_->set_tx_gap(std::chrono::microseconds(120));
+      bus_->set_tx_gap(kDefaultMultiMotorTxGap);
     }
   }
   start_polling();
@@ -770,7 +771,7 @@ std::vector<MotorDiscoveryResult> Controller::discover_damiao_motors(
         results.push_back(std::move(result));
       }
       if (!tx_gap_env_override_ && motors_.size() >= 2) {
-        bus_->set_tx_gap(std::chrono::microseconds(120));
+        bus_->set_tx_gap(kDefaultMultiMotorTxGap);
       }
     }
     if (!pending.empty()) start_polling();

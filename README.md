@@ -10,7 +10,7 @@ Motor-Drive-Layer is the native C++ control foundation shared by Python, C++ and
 - Linux SocketCAN and SocketCAN-FD, cross-platform Damiao serial bridge, and optional DM_Device SDK transports.
 - Damiao serial rates through 1,000,000 baud where supported by the host.
 - Background feedback reception and per-motor state cache.
-- Multi-motor controllers default to a configurable 120 µs minimum interval between outgoing frames.
+- Multi-motor controllers default to a configurable 200 µs minimum interval between outgoing frames.
 - Register read/write helpers with acknowledgement and timeout handling.
 - C ABI shared library and Python 3.10+ bindings.
 - A separate Articore runtime ABI with a persistent safety and gripper worker.
@@ -181,7 +181,7 @@ closed, so a motor that later drops offline cannot silently become `NOT_INSTALLE
 ## TX pacing
 
 A controller starts without an artificial TX delay while it has one motor. When a second motor
-is added, the runtime applies a minimum 120 µs interval between all outgoing frames. Configure a
+is added, the runtime applies a minimum 200 µs interval between all outgoing frames. Configure a
 different value after adding the motors with `Controller.set_tx_gap_us()` in Python or
 `Controller::set_tx_gap()` in C++; zero disables the delay. Setting
 `MOTOR_DRIVE_LAYER_TX_GAP_US` before creating the controller overrides the automatic multi-motor
@@ -261,7 +261,7 @@ top-level `motor_drive_layer` package.
 | API | Behavior |
 | --- | --- |
 | `Controller(channel="can0")` | Open classic Linux SocketCAN. |
-| `Controller.from_socketcanfd(channel="can0")` | Open Linux SocketCAN-FD. |
+| `Controller.from_socketcanfd(channel="can0", enable_brs=True)` | Open Linux SocketCAN-FD and set `CANFD_BRS` on transmitted frames by default. Pass `False` only for compatibility with devices that do not switch the data-phase rate. |
 | `Controller.from_dm_serial(serial_port="/dev/ttyACM0", baud=1_000_000)` | Open a Damiao serial bridge. |
 | `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000, data_bitrate=5_000_000)` | Open original DM-USB2FDCAN firmware with CH0/CH1 support. The default sends CAN-FD+BRS frames at 1 Mbps arbitration and 5 Mbps data; motors must use the matching CAN-FD setting. Equal arbitration/data rates explicitly select classic CAN. |
 | `add_damiao_motor(motor_id, feedback_id, model)` | Register a motor on the bus and return `Motor`. |
@@ -270,7 +270,7 @@ top-level `motor_drive_layer` package.
 | `request_feedback_all(timeout_ms=50)` | Request and wait for one fresh frame per motor against one shared timeout. Python internally uses the structured ABI and raises typed errors carrying the stable code, counts, and missing motor IDs. |
 | `poll_feedback_once()` | Non-blocking drain of frames that have already arrived. |
 | `set_tx_gap_us(gap_us)` | Configure the minimum host-side interval between outgoing frames. |
-| `transport_capabilities()` | Query the active transport's CAN-FD, channel-count, parallel-batch, reconnect, process-session reuse, and hardware RX timestamp capabilities. |
+| `transport_capabilities()` | Query the active transport's CAN-FD, active BRS, channel-count, parallel-batch, reconnect, process-session reuse, and hardware RX timestamp capabilities. |
 | `transport_health()` | Read live connection/health flags, TX/RX frame and error counters, last activity ages, and the latest transport error. |
 | `shutdown()` | Attempt to disable every motor, stop polling, and close the bus. |
 | `close_bus()` | Stop polling and close the bus without sending disable commands. |
@@ -447,6 +447,20 @@ scripts/canable_restart.sh can0    # CANable/candleLight (gs_usb)
 They are not needed for `dm-serial` or `dm-device`. Pip-installed users can follow the
 self-contained `ip link` commands printed by the CLI when an interface is not ready.
 
+For Damiao motors configured with `CAN_BR=9`, configure both Linux bitrates and leave BRS enabled:
+
+```bash
+ip link set can0 type can bitrate 1000000 sample-point 0.75 \
+  dbitrate 5000000 dsample-point 0.875 fd on
+ip link set can0 up
+```
+
+Setting `dbitrate` only prepares the interface; the transmitted `canfd_frame.flags` must also
+contain `CANFD_BRS`. `Controller.from_socketcanfd("can0")` now does this by default, and
+`transport_capabilities().can_fd_brs` reports the active choice. The additive C entry point is
+`motor_controller_new_socketcanfd_ex(channel, enable_brs)`; the legacy one-argument entry point
+also defaults to BRS.
+
 ## Tests
 
 No-hardware tests:
@@ -458,6 +472,15 @@ PYTHONPATH=bindings/python/src python3 -m pytest -q bindings/python/tests
 ```
 
 Default CI does not open serial devices or enable motors.
+
+The opt-in hardware acceptance script checks two SocketCAN-FD interfaces, eight motors per
+interface, 400 Hz initial-position MIT hold with zero feed-forward torque, per-motor feedback rates, Linux CAN error
+counters, and 16/16 post-test disable feedback. It requires 16 explicit `--motor` mappings and the
+`--i-understand-motors-will-be-enabled` acknowledgement:
+
+```bash
+python3 scripts/test_socketcanfd_brs_dual_channel.py --help
+```
 
 ## Repository layout
 

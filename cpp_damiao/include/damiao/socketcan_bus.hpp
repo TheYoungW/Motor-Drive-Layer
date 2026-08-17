@@ -31,7 +31,7 @@ class SocketCanCodec {
 
   static SocketCanRawFrame encode_classic(const CanFrame& frame);
   static CanFrame decode_classic(const SocketCanRawFrame& raw);
-  static SocketCanFdRawFrame encode_fd(const CanFrame& frame, bool enable_brs);
+  static SocketCanFdRawFrame encode_fd(const CanFrame& frame, bool enable_brs = true);
   static CanFrame decode_fd(const SocketCanFdRawFrame& raw);
 };
 
@@ -59,7 +59,7 @@ class SocketCanBus final : public CanBus {
 class SocketCanFdBus final : public CanBus {
  public:
   static std::shared_ptr<SocketCanFdBus> open(const std::string& interface,
-                                             bool enable_brs = false);
+                                             bool enable_brs = true);
   ~SocketCanFdBus() override;
 
   SocketCanFdBus(const SocketCanFdBus&) = delete;

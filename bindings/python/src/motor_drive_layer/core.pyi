@@ -17,7 +17,9 @@ from .models import (
 class Controller:
     def __init__(self, channel: str = "can0") -> None: ...
     @classmethod
-    def from_socketcanfd(cls, channel: str = "can0") -> Controller: ...
+    def from_socketcanfd(
+        cls, channel: str = "can0", enable_brs: bool = True
+    ) -> Controller: ...
     @classmethod
     def from_dm_serial(
         cls, serial_port: str = "/dev/ttyACM0", baud: int = 1_000_000

@@ -10,7 +10,7 @@ Motor-Drive-Layer 是供 Python、C++ 和 ROS 2 SDK 共用的原生 C++ 控制�
 - Linux SocketCAN、SocketCAN-FD、跨平台达妙串口桥和可选 DM_Device SDK。
 - 主机支持时，达妙串口支持最高 1,000,000 波特率。
 - 后台反馈接收和每电机状态缓存。
-- 多电机 Controller 默认在输出帧之间保持可配置的最小 120 µs 间隔。
+- 多电机 Controller 默认在输出帧之间保持可配置的最小 200 µs 间隔。
 - 带 ACK、重试和超时的寄存器读写。
 - C ABI 动态库和 Python 3.10+ 接口。
 - 独立的 Articore runtime ABI 和常驻安全/夹爪工作线程。
@@ -167,7 +167,7 @@ finally:
 ## 发送间隔
 
 Controller 只有一台电机时，运行时不额外延迟发送。添加第二台电机后，运行时会在所有输出帧之间保持最小
-120 µs 间隔。添加完电机后，可以通过 Python 的 `Controller.set_tx_gap_us()` 或 C++ 的
+200 µs 间隔。添加完电机后，可以通过 Python 的 `Controller.set_tx_gap_us()` 或 C++ 的
 `Controller::set_tx_gap()` 修改该值；设为零可关闭延迟。在创建 Controller 前设置
 `MOTOR_DRIVE_LAYER_TX_GAP_US` 可覆盖自动的多电机默认值。
 
@@ -228,7 +228,7 @@ states = [motor.get_state() for motor in motors]
 | 接口 | 作用 |
 | --- | --- |
 | `Controller(channel="can0")` | 打开经典 Linux SocketCAN。 |
-| `Controller.from_socketcanfd(channel="can0")` | 打开 Linux SocketCAN-FD。 |
+| `Controller.from_socketcanfd(channel="can0", enable_brs=True)` | 打开 Linux SocketCAN-FD；默认在发送帧上设置 `CANFD_BRS`。仅对数据段不切换速率的兼容设备显式传入 `False`。 |
 | `Controller.from_dm_serial(serial_port="/dev/ttyACM0", baud=1_000_000)` | 打开达妙串口桥。 |
 | `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000, data_bitrate=5_000_000)` | 通过厂商 DM_Device 运行库打开原厂固件，支持 CH0/CH1。默认发送 CAN-FD+BRS 帧（1 Mbps 仲裁、5 Mbps 数据段）；电机必须已配置为对应 CAN-FD 波特率。显式把两个速率设为相同值可回退经典 CAN。 |
 | `add_damiao_motor(motor_id, feedback_id, model)` | 在总线上注册电机并返回 `Motor`。 |
@@ -237,7 +237,7 @@ states = [motor.get_state() for motor in motors]
 | `request_feedback_all(timeout_ms=50)` | 请求并等待所有电机各收到一帧新反馈，共享一个总超时。Python 内部使用结构化 ABI，并通过分类异常携带稳定错误码、反馈统计和缺失电机 ID。 |
 | `poll_feedback_once()` | 非阻塞排空当前已经到达的帧。 |
 | `set_tx_gap_us(gap_us)` | 设置相邻输出帧的最小主机提交间隔。 |
-| `transport_capabilities()` | 查询当前 Transport 实例是否支持 CAN-FD、物理通道数、并行批量、重连、进程会话复用及硬件接收时间戳。 |
+| `transport_capabilities()` | 查询当前 Transport 实例是否支持 CAN-FD、是否实际启用 BRS、物理通道数、并行批量、重连、进程会话复用及硬件接收时间戳。 |
 | `transport_health()` | 查询实时连接/健康标志、收发帧与错误计数、最近收发时间以及最后一个 Transport 错误。 |
 | `shutdown()` | 先尝试失能全部电机，再停止接收线程并关闭总线。 |
 | `close_bus()` | 不发送失能命令，直接停止接收并关闭总线。 |
@@ -378,6 +378,19 @@ scripts/canable_restart.sh can0    # CANable/candleLight（gs_usb）
 
 使用 `dm-serial` 或 `dm-device` 时不需要这些脚本。通过 pip 安装的用户可以按照 CLI 错误提示中的完整 `ip link` 命令配置接口。
 
+达妙电机设置为 `CAN_BR=9` 时，需要同时配置 Linux 的仲裁速率和数据速率，并保持 BRS 开启：
+
+```bash
+ip link set can0 type can bitrate 1000000 sample-point 0.75 \
+  dbitrate 5000000 dsample-point 0.875 fd on
+ip link set can0 up
+```
+
+仅设置 `dbitrate` 只是让接口具备数据段速率；发送帧的 `canfd_frame.flags` 仍必须包含
+`CANFD_BRS`。`Controller.from_socketcanfd("can0")` 现在默认设置该标志，
+`transport_capabilities().can_fd_brs` 可诊断当前实例是否实际启用。新增 C 接口为
+`motor_controller_new_socketcanfd_ex(channel, enable_brs)`，旧的单参数接口也改为默认 BRS。
+
 ## 测试
 
 无硬件测试：
@@ -389,6 +402,14 @@ PYTHONPATH=bindings/python/src python3 -m pytest -q bindings/python/tests
 ```
 
 默认 CI 不会打开串口，也不会使能真实电机。
+
+显式启用的真机验收脚本会检查两路 SocketCAN-FD、每路8台电机、400 Hz 初始位置MIT保持
+（前馈力矩为零）、逐电机反馈频率、Linux CAN 错误计数以及测试后16/16失能反馈。必须提供16个真实
+`--motor` 映射并显式传入 `--i-understand-motors-will-be-enabled`：
+
+```bash
+python3 scripts/test_socketcanfd_brs_dual_channel.py --help
+```
 
 ## 项目结构
 

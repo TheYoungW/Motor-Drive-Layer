@@ -82,6 +82,21 @@ class CTransportCapabilities(Structure):
     ]
 
 
+class CTransportCapabilitiesV2(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32),
+        ("transport", ctypes.c_char * 32),
+        ("max_payload_bytes", c_uint32),
+        ("channel_count", c_uint32),
+        ("can_fd", c_int32),
+        ("parallel_batches", c_int32),
+        ("hardware_rx_timestamps", c_int32),
+        ("reconnect", c_int32),
+        ("process_session_reuse", c_int32),
+        ("can_fd_brs", c_int32),
+    ]
+
+
 class CTransportHealth(Structure):
     _fields_ = [
         ("connected", c_int32),
@@ -387,6 +402,10 @@ class Abi:
         lib.motor_controller_new_socketcan.restype = c_void_p
         lib.motor_controller_new_socketcanfd.argtypes = [c_char_p]
         lib.motor_controller_new_socketcanfd.restype = c_void_p
+        self.has_socketcanfd_ex = hasattr(lib, "motor_controller_new_socketcanfd_ex")
+        if self.has_socketcanfd_ex:
+            lib.motor_controller_new_socketcanfd_ex.argtypes = [c_char_p, c_int32]
+            lib.motor_controller_new_socketcanfd_ex.restype = c_void_p
         lib.motor_controller_new_dm_serial.argtypes = [c_char_p, c_uint32]
         lib.motor_controller_new_dm_serial.restype = c_void_p
         lib.motor_controller_new_dm_device.argtypes = [c_char_p, c_char_p]
@@ -463,6 +482,15 @@ class Abi:
                 POINTER(CTransportCapabilities),
             ]
             lib.motor_controller_get_transport_capabilities.restype = c_int32
+        self.has_transport_capabilities_v2 = hasattr(
+            lib, "motor_controller_get_transport_capabilities_v2"
+        )
+        if self.has_transport_capabilities_v2:
+            lib.motor_controller_get_transport_capabilities_v2.argtypes = [
+                c_void_p,
+                POINTER(CTransportCapabilitiesV2),
+            ]
+            lib.motor_controller_get_transport_capabilities_v2.restype = c_int32
         self.has_transport_health = hasattr(lib, "motor_controller_get_transport_health")
         if self.has_transport_health:
             lib.motor_controller_get_transport_health.argtypes = [

@@ -72,7 +72,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cycles", type=int, default=50)
     parser.add_argument("--period-ms", type=int, default=20)
-    parser.add_argument("--tx-gap-us", type=int, default=120)
+    parser.add_argument("--tx-gap-us", type=int, default=200)
     parser.add_argument("--ensure-timeout-ms", type=int, default=1000)
     return parser
 
