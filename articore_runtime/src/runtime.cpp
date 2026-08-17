@@ -147,6 +147,7 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
   safe_grippers_.reserve(gripper_count);
   last_enable_report_.struct_size = sizeof(last_enable_report_);
   last_disable_report_.struct_size = sizeof(last_disable_report_);
+  last_connect_report_.struct_size = sizeof(last_connect_report_);
   worker_ = std::thread([this] { worker_loop(); });
 }
 
@@ -161,15 +162,90 @@ SafetyRuntime::~SafetyRuntime() {
   }
 }
 
+void SafetyRuntime::configure_motor_identities(
+    const ArticoreMotorIdentity* identities, uint32_t count) {
+  std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (state_ != ARTICORE_DISCONNECTED || hardware_transition_) {
+    throw std::runtime_error(
+        "motor identities can only be configured before connect");
+  }
+  if (!identities || count != motors_.size()) {
+    throw std::invalid_argument(
+        "motor identities must cover the complete active motor set");
+  }
+  std::set<void*> handles;
+  std::set<std::pair<uint8_t, uint32_t>> channel_ids;
+  std::vector<std::pair<MotorRecord*, uint32_t>> resolved;
+  resolved.reserve(count);
+  for (uint32_t index = 0; index < count; ++index) {
+    const auto& identity = identities[index];
+    if (identity.struct_size < sizeof(ArticoreMotorIdentity) ||
+        !identity.motor || identity.can_id > 0xFFU) {
+      throw std::invalid_argument("invalid motor identity");
+    }
+    auto found = std::find_if(
+        motors_.begin(), motors_.end(), [&](const MotorRecord& motor) {
+          return motor.descriptor.motor == identity.motor;
+        });
+    if (found == motors_.end() || !handles.insert(identity.motor).second ||
+        !channel_ids.emplace(found->descriptor.side, identity.can_id).second) {
+      throw std::invalid_argument(
+          "motor identities contain an unknown handle or duplicate channel ID");
+    }
+    resolved.emplace_back(&*found, identity.can_id);
+  }
+  for (const auto& [motor, can_id] : resolved) {
+    motor->configured_can_id = can_id;
+    motor->motor_identity_configured = true;
+  }
+}
+
+ArticoreConnectReport SafetyRuntime::last_connect_report() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return last_connect_report_;
+}
+
 void SafetyRuntime::connect() {
   std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+  ArticoreConnectReport report{};
+  report.struct_size = sizeof(report);
+  report.expected_count = static_cast<uint32_t>(motors_.size());
+  report.channel_count = static_cast<uint32_t>(active_sides_[0]) +
+                         static_cast<uint32_t>(active_sides_[1]);
+  report.motor_count = static_cast<uint32_t>(motors_.size());
+  for (uint8_t side = 0; side < 2; ++side) {
+    report.channels[side].side = side;
+    report.channels[side].active = active_sides_[side];
+  }
+  for (std::size_t index = 0; index < motors_.size(); ++index) {
+    const auto& motor = motors_[index];
+    auto& result = report.motors[index];
+    result.side = motor.descriptor.side;
+    result.configured_can_id = motor.motor_identity_configured
+        ? motor.configured_can_id
+        : 0;
+    result.feedback_age_ns = std::numeric_limits<uint64_t>::max();
+    copy_text(result.name, motor.descriptor.name);
+  }
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (state_ != ARTICORE_DISCONNECTED) return;
+    if (state_ != ARTICORE_DISCONNECTED) {
+      return;
+    }
     if (require_gripper_product_profiles_) {
-      for (const auto& motor : motors_) {
+      for (std::size_t index = 0; index < motors_.size(); ++index) {
+        const auto& motor = motors_[index];
         if (motor.descriptor.is_gripper &&
             !motor.gripper_product_profile_bound) {
+          report.error_code = ARTICORE_CONNECT_CONFIGURATION;
+          report.failure_count = 1;
+          copy_text(report.motors[index].error,
+                    "built-in gripper product profile is required before connect");
+          copy_text(report.error,
+                    std::string(motor.descriptor.name) +
+                        ": built-in gripper product profile is required before connect");
+          last_connect_report_ = report;
           throw std::runtime_error(
               std::string(motor.descriptor.name) +
               ": built-in gripper product profile is required before connect");
@@ -186,12 +262,53 @@ void SafetyRuntime::connect() {
 
   std::vector<MissingMotor> missing_motors;
   std::string error;
+  FeedbackTransactionResults side_results{};
   const bool request_complete = request_feedback_parallel(
-      config_.disable_feedback_timeout_ms, missing_motors, error);
+      config_.disable_feedback_timeout_ms, missing_motors, error, &side_results);
+  for (uint8_t side = 0; side < 2; ++side) {
+    const auto& source = side_results[side];
+    auto& target = report.channels[side];
+    target.side = side;
+    target.active = source.active;
+    target.request_code = source.code;
+    target.expected_count = source.report.expected_count;
+    target.received_count = source.report.received_count;
+    report.received_count += source.report.received_count;
+    target.missing_count = static_cast<uint32_t>(source.missing.size());
+    for (std::size_t index = 0;
+         index < source.missing.size() && index < 32; ++index) {
+      target.missing_motor_ids[index] = source.missing[index];
+    }
+    copy_text(target.error, source.error);
+  }
   const bool snapshot_complete =
-      validate_fresh_feedback_snapshot(missing_motors, error);
+      validate_fresh_feedback_snapshot(missing_motors, error, &report);
+  report.missing_count = static_cast<uint32_t>(missing_motors.size());
   if (!request_complete || !snapshot_complete) {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    bool transport = false;
+    bool any_received = false;
+    bool unexpected_request_error = false;
+    for (const auto& side : side_results) {
+      transport = transport || side.code == 2;
+      any_received = any_received || side.report.received_count > 0;
+      unexpected_request_error = unexpected_request_error ||
+          (side.active && side.code != 0 && side.code != 2 &&
+           side.code != 3 && side.code != 4);
+    }
+    report.error_code = transport
+        ? ARTICORE_CONNECT_TRANSPORT
+        : (unexpected_request_error
+               ? ARTICORE_CONNECT_FEEDBACK_INVALID
+               : (!any_received
+                      ? ARTICORE_CONNECT_FEEDBACK_TIMEOUT
+                      : (request_complete
+                             ? ARTICORE_CONNECT_FEEDBACK_INVALID
+                             : ARTICORE_CONNECT_FEEDBACK_INCOMPLETE)));
+    copy_text(report.error, error.empty()
+                                ? std::string("incomplete motor feedback")
+                                : error);
+    last_connect_report_ = report;
     hardware_transition_ = false;
     for (uint8_t side = 0; side < 2; ++side) {
       if (!active_sides_[side]) continue;
@@ -206,6 +323,13 @@ void SafetyRuntime::connect() {
 
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    report.success = 1;
+    report.error_code = ARTICORE_CONNECT_OK;
+    report.missing_count = 0;
+    report.failure_count = 0;
+    report.received_count = static_cast<uint32_t>(motors_.size());
+    report.error[0] = '\0';
+    last_connect_report_ = report;
     state_ = ARTICORE_READY;
     fault_latched_ = false;
     disable_confirmed_ = true;

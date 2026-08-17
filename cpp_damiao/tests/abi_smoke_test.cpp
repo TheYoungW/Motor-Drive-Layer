@@ -44,6 +44,14 @@ int main() {
           "capabilities include motor presence discovery");
   require(capabilities.find("structured_feedback_report") != std::string::npos,
           "capabilities include structured feedback reports");
+  require(capabilities.find("feedback_integrity_stats") != std::string::npos &&
+              capabilities.find("dm_device_callback_frame_snapshot") !=
+                  std::string::npos &&
+              capabilities.find("strict_feedback_identity") !=
+                  std::string::npos &&
+              capabilities.find("implausible_feedback_jump_rejection") !=
+                  std::string::npos,
+          "capabilities include dual-channel feedback integrity protection");
 
   require(motor_controller_get_transport_capabilities(nullptr, nullptr) != 0,
           "transport capabilities rejects null controller and output");
@@ -91,6 +99,11 @@ int main() {
   MotorFeedbackStats feedback_stats{};
   require(motor_handle_get_feedback_stats(nullptr, &feedback_stats) != 0,
           "feedback stats reject a null motor");
+  MotorFeedbackIntegrityStats integrity_stats{};
+  integrity_stats.struct_size = sizeof(integrity_stats);
+  require(motor_handle_get_feedback_integrity_stats(nullptr,
+                                                    &integrity_stats) != 0,
+          "feedback integrity stats reject a null motor");
   MotorState fresh_state{};
   require(motor_handle_request_fresh_state(nullptr, 50, &fresh_state) != 0,
           "fresh-state request rejects a null motor");

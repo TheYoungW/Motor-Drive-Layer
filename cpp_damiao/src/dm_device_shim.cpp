@@ -370,16 +370,16 @@ bool retry_bool(const std::function<bool()>& fn) {
   return false;
 }
 
-void route_frame(Session* expected, usb_rx_frame_t* frame) {
-  if (!expected || !frame || frame->head.rtr) return;
+void route_frame(Session* expected, const usb_rx_frame_t& frame) {
+  if (!expected || frame.head.rtr) return;
   mb_dm_frame out{};
-  out.can_id = frame->head.can_id;
-  out.dlc = static_cast<uint8_t>(frame->head.dlc > 8 ? 8 : frame->head.dlc);
-  out.channel = frame->head.channel;
-  out.ext = static_cast<uint8_t>(frame->head.ext ? 1 : 0);
-  out.canfd = static_cast<uint8_t>(frame->head.canfd ? 1 : 0);
-  out.brs = static_cast<uint8_t>(frame->head.brs ? 1 : 0);
-  if (out.dlc > 0) std::memcpy(out.data, frame->payload, out.dlc);
+  out.can_id = frame.head.can_id;
+  out.dlc = static_cast<uint8_t>(frame.head.dlc > 8 ? 8 : frame.head.dlc);
+  out.channel = frame.head.channel;
+  out.ext = static_cast<uint8_t>(frame.head.ext ? 1 : 0);
+  out.canfd = static_cast<uint8_t>(frame.head.canfd ? 1 : 0);
+  out.brs = static_cast<uint8_t>(frame.head.brs ? 1 : 0);
+  if (out.dlc > 0) std::memcpy(out.data, frame.payload, out.dlc);
 
   std::lock_guard<std::mutex> registry_lock(g_registry_mutex);
   for (auto* client : g_clients) {
@@ -397,16 +397,16 @@ void route_frame(Session* expected, usb_rx_frame_t* frame) {
   }
 }
 
-void route_error(Session* expected, usb_rx_frame_t* frame) {
-  if (!expected || !frame) return;
+void route_error(Session* expected, const usb_rx_frame_t& frame) {
+  if (!expected) return;
   std::ostringstream message;
   message << "DM_Device asynchronous CAN error on channel "
-          << static_cast<unsigned>(frame->head.channel) << " (id=0x" << std::hex
-          << frame->head.can_id << ")";
+          << static_cast<unsigned>(frame.head.channel) << " (id=0x" << std::hex
+          << frame.head.can_id << ")";
   std::lock_guard<std::mutex> registry_lock(g_registry_mutex);
   for (auto* client : g_clients) {
     if (!client || client->session.get() != expected ||
-        client->selected_channel != frame->head.channel) {
+        client->selected_channel != frame.head.channel) {
       continue;
     }
     {
@@ -431,20 +431,35 @@ std::shared_ptr<Session> legacy_session() {
 }
 
 void modern_recv_callback(dmcan_device_handle* device, usb_rx_frame_t* frame) {
+  if (!frame) return;
+  // The vendor owns callback memory and may immediately reuse it for the other
+  // physical channel. Copy the complete header and payload before acquiring a
+  // registry lock or doing any session lookup.
+  usb_rx_frame_t snapshot{};
+  std::memcpy(&snapshot, frame, sizeof(snapshot));
   const auto session = modern_session(device);
-  route_frame(session.get(), frame);
+  route_frame(session.get(), snapshot);
 }
 void modern_err_callback(dmcan_device_handle* device, usb_rx_frame_t* frame) {
+  if (!frame) return;
+  usb_rx_frame_t snapshot{};
+  std::memcpy(&snapshot, frame, sizeof(snapshot));
   const auto session = modern_session(device);
-  route_error(session.get(), frame);
+  route_error(session.get(), snapshot);
 }
 void legacy_recv_callback_fn(usb_rx_frame_t* frame) {
+  if (!frame) return;
+  usb_rx_frame_t snapshot{};
+  std::memcpy(&snapshot, frame, sizeof(snapshot));
   const auto session = legacy_session();
-  route_frame(session.get(), frame);
+  route_frame(session.get(), snapshot);
 }
 void legacy_err_callback_fn(usb_rx_frame_t* frame) {
+  if (!frame) return;
+  usb_rx_frame_t snapshot{};
+  std::memcpy(&snapshot, frame, sizeof(snapshot));
   const auto session = legacy_session();
-  route_error(session.get(), frame);
+  route_error(session.get(), snapshot);
 }
 
 bool install_callbacks(const std::shared_ptr<Session>& session) {

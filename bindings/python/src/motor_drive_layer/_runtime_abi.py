@@ -128,6 +128,10 @@ class CGripperProductBinding(Structure):
     _fields_ = [("struct_size", c_uint32), ("motor", c_void_p), ("profile_id", c_char * 64)]
 
 
+class CMotorIdentity(Structure):
+    _fields_ = [("struct_size", c_uint32), ("motor", c_void_p), ("can_id", c_uint32)]
+
+
 class CGripperCommand(Structure):
     _fields_ = [
         ("struct_size", c_uint32),
@@ -143,6 +147,36 @@ class CEnableMotorResult(Structure):
         ("side", c_uint8), ("can_id", c_uint8), ("status_code", c_uint8),
         ("has_feedback", c_uint8), ("feedback_fresh", c_uint8), ("enabled", c_uint8),
         ("name", c_char * 64),
+    ]
+
+
+class CConnectChannelResult(Structure):
+    _fields_ = [
+        ("side", c_uint8), ("active", c_uint8), ("request_code", c_int32),
+        ("expected_count", c_uint32), ("received_count", c_uint32),
+        ("missing_count", c_uint32), ("missing_motor_ids", c_uint32 * 32),
+        ("error", c_char * 256),
+    ]
+
+
+class CConnectMotorResult(Structure):
+    _fields_ = [
+        ("side", c_uint8), ("has_feedback", c_uint8),
+        ("feedback_fresh", c_uint8), ("feedback_valid", c_uint8),
+        ("configured_can_id", c_uint32), ("reported_can_id", c_uint32),
+        ("update_count", c_uint64), ("feedback_age_ns", c_uint64),
+        ("name", c_char * 64), ("error", c_char * 256),
+    ]
+
+
+class CConnectReport(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32), ("success", c_int32), ("error_code", c_int32),
+        ("expected_count", c_uint32), ("received_count", c_uint32),
+        ("missing_count", c_uint32), ("failure_count", c_uint32),
+        ("channel_count", c_uint32), ("channels", CConnectChannelResult * 2),
+        ("motor_count", c_uint32), ("motors", CConnectMotorResult * 32),
+        ("error", c_char * 512),
     ]
 
 
@@ -223,9 +257,9 @@ class RuntimeAbi:
         self.lib = ctypes.CDLL(articore_runtime_library_path())
         self.lib.articore_runtime_abi_version.restype = c_uint32
         version = int(self.lib.articore_runtime_abi_version())
-        if version < 0x00020002:
+        if version < 0x00020004:
             raise AbiLoadError(
-                "official ArticoreRuntime binding requires Runtime ABI >= 2.2; "
+                "official ArticoreRuntime binding requires Runtime ABI >= 2.4; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self._bind()
@@ -269,6 +303,10 @@ class RuntimeAbi:
         lib.articore_runtime_get_last_enable_report.restype = c_int32
         lib.articore_runtime_get_last_disable_report.argtypes = [c_void_p, POINTER(CDisableReport)]
         lib.articore_runtime_get_last_disable_report.restype = c_int32
+        lib.articore_runtime_configure_motor_identities.argtypes = [c_void_p, POINTER(CMotorIdentity), c_uint32]
+        lib.articore_runtime_configure_motor_identities.restype = c_int32
+        lib.articore_runtime_get_last_connect_report.argtypes = [c_void_p, POINTER(CConnectReport)]
+        lib.articore_runtime_get_last_connect_report.restype = c_int32
         lib.articore_runtime_configure_joints.argtypes = [c_void_p, POINTER(CJointControlConfig), c_uint32]
         lib.articore_runtime_configure_joints.restype = c_int32
         lib.articore_runtime_configure_joint_safety_limits.argtypes = [c_void_p, POINTER(CJointSafetyLimits), c_uint32]

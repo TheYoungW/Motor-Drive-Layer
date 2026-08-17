@@ -31,6 +31,26 @@ class CFeedbackStats(Structure):
     ]
 
 
+class CFeedbackIntegrityStats(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32),
+        ("rejected_frame_count", c_uint64),
+        ("short_frame_count", c_uint64),
+        ("identity_mismatch_count", c_uint64),
+        ("implausible_position_jump_count", c_uint64),
+        ("last_reason", c_int32),
+        ("channel", c_uint8),
+        ("arbitration_id", c_uint32),
+        ("expected_arbitration_id", c_uint32),
+        ("decoded_can_id", c_uint16),
+        ("expected_can_id", c_uint16),
+        ("position", c_float),
+        ("previous_position", c_float),
+        ("allowed_position_delta", c_float),
+        ("error", ctypes.c_char * 256),
+    ]
+
+
 class CFeedbackReport(Structure):
     _fields_ = [
         ("struct_size", c_uint32),
@@ -308,6 +328,7 @@ def articore_runtime_capabilities() -> dict[str, bool]:
         "effective_control_rate": bool(bits & (1 << 23)),
         "builtin_gripper_product_profiles": bool(bits & (1 << 24)),
         "connect_feedback_barrier": bool(bits & (1 << 25)),
+        "structured_connect_report": bool(bits & (1 << 26)),
     }
 
 
@@ -510,6 +531,10 @@ class Abi:
         lib.motor_handle_get_state.restype = c_int32
         lib.motor_handle_get_feedback_stats.argtypes = [c_void_p, POINTER(CFeedbackStats)]
         lib.motor_handle_get_feedback_stats.restype = c_int32
+        lib.motor_handle_get_feedback_integrity_stats.argtypes = [
+            c_void_p, POINTER(CFeedbackIntegrityStats)
+        ]
+        lib.motor_handle_get_feedback_integrity_stats.restype = c_int32
 
         lib.motor_handle_damiao_get_param_f32.argtypes = [c_void_p, c_uint16, c_uint32, POINTER(c_float)]
         lib.motor_handle_damiao_get_param_f32.restype = c_int32

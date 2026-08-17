@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -50,6 +51,9 @@ class SafetyRuntime {
   SafetyRuntime& operator=(const SafetyRuntime&) = delete;
 
   void connect();
+  void configure_motor_identities(const ArticoreMotorIdentity* identities,
+                                  uint32_t count);
+  ArticoreConnectReport last_connect_report() const;
   void configure_joints(const ArticoreJointControlConfig* configs,
                         uint32_t count);
   void configure_joint_safety_limits(
@@ -106,6 +110,8 @@ class SafetyRuntime {
     };
 
     ArticoreMotorDescriptor descriptor{};
+    uint32_t configured_can_id = 0;
+    bool motor_identity_configured = false;
     float last_position = 0.0f;
     bool has_position = false;
     float retreat_target = 0.0f;
@@ -162,6 +168,15 @@ class SafetyRuntime {
     uint32_t id = 0;
   };
 
+  struct FeedbackSideResult {
+    bool active = false;
+    int32_t code = 0;
+    ArticoreFeedbackReport report{};
+    std::vector<uint32_t> missing;
+    std::string error;
+  };
+  using FeedbackTransactionResults = std::array<FeedbackSideResult, 2>;
+
   struct JointControlConfig {
     float hard_lower_position = 0.0f;
     float hard_upper_position = 0.0f;
@@ -199,10 +214,12 @@ class SafetyRuntime {
                                             bool require_enabled);
   bool request_feedback_parallel(uint32_t timeout_ms,
                                  std::vector<MissingMotor>& missing_motors,
-                                 std::string& error);
+                                 std::string& error,
+                                 FeedbackTransactionResults* results = nullptr);
   bool validate_fresh_feedback_snapshot(
       const std::vector<MissingMotor>& request_missing,
-      std::string& error);
+      std::string& error,
+      ArticoreConnectReport* connect_report = nullptr);
   bool confirm_enabled_feedback(Clock::time_point deadline,
                                 std::vector<MissingMotor>& missing_motors,
                                 std::string& error);
@@ -312,6 +329,7 @@ class SafetyRuntime {
   bool fault_hold_active_ = false;
   ArticoreEnableReport last_enable_report_{};
   ArticoreDisableReport last_disable_report_{};
+  ArticoreConnectReport last_connect_report_{};
 };
 
 }  // namespace articore

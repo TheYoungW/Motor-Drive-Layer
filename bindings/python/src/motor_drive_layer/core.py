@@ -10,6 +10,7 @@ from .abi import (
     CDiscoveryCandidate,
     CDiscoveryResult,
     CFeedbackReport,
+    CFeedbackIntegrityStats,
     CFeedbackStats,
     CMitBatchCommand,
     CPosVelBatchCommand,
@@ -29,6 +30,8 @@ from .errors import (
 )
 from .models import (
     FeedbackStats,
+    FeedbackIntegrityStats,
+    FeedbackRejectionReason,
     FeedbackReport,
     MitCommand,
     Mode,
@@ -362,7 +365,10 @@ class Controller:
         self._feedback_motor_count = int(
             getattr(self, "_feedback_motor_count", 0)
         ) + 1
-        return Motor(m, self)
+        return Motor(
+            m, self, motor_id=int(motor_id), feedback_id=int(feedback_id),
+            model=model,
+        )
 
     def discover_damiao_motors(
         self,
@@ -438,7 +444,14 @@ class Controller:
                     feedback_id=int(native.feedback_id),
                     policy=PresencePolicy(native.policy),
                     state=PresenceState(native.state),
-                    motor=Motor(native.motor, self) if native.motor else None,
+                    motor=(
+                        Motor(
+                            native.motor, self,
+                            motor_id=int(native.motor_id),
+                            feedback_id=int(native.feedback_id),
+                        )
+                        if native.motor else None
+                    ),
                     reason=reason.decode(errors="replace") if reason else None,
                 )
             )
@@ -462,12 +475,19 @@ class Controller:
 class Motor:
     """A native motor handle whose parent Controller must remain open."""
 
-    def __init__(self, ptr: int, controller: Controller | None = None) -> None:
+    def __init__(
+        self, ptr: int, controller: Controller | None = None, *,
+        motor_id: int | None = None, feedback_id: int | None = None,
+        model: str | None = None,
+    ) -> None:
         self._abi = get_abi()
         self._runtime_lease_lock = Lock()
         self._runtime_lease_count = 0
         self._ptr = ptr
         self._controller = controller
+        self._motor_id = motor_id
+        self._feedback_id = feedback_id
+        self._model = model
 
     def close(self) -> None:
         with _lease_lock(self):
@@ -657,6 +677,35 @@ class Motor:
             has_feedback=bool(stats.has_feedback),
             update_count=int(stats.update_count),
             age_ns=int(stats.age_ns),
+        )
+
+    def get_feedback_integrity_stats(self) -> FeedbackIntegrityStats:
+        stats = CFeedbackIntegrityStats()
+        stats.struct_size = ctypes.sizeof(CFeedbackIntegrityStats)
+        _ok(
+            self._abi.lib.motor_handle_get_feedback_integrity_stats(
+                self._require_open(), ctypes.byref(stats)
+            ),
+            "get_feedback_integrity_stats",
+        )
+        raw_error = bytes(stats.error).split(b"\0", 1)[0]
+        return FeedbackIntegrityStats(
+            rejected_frame_count=int(stats.rejected_frame_count),
+            short_frame_count=int(stats.short_frame_count),
+            identity_mismatch_count=int(stats.identity_mismatch_count),
+            implausible_position_jump_count=int(
+                stats.implausible_position_jump_count
+            ),
+            last_reason=FeedbackRejectionReason(int(stats.last_reason)),
+            channel=None if int(stats.channel) == 0xFF else int(stats.channel),
+            arbitration_id=int(stats.arbitration_id),
+            expected_arbitration_id=int(stats.expected_arbitration_id),
+            decoded_can_id=int(stats.decoded_can_id),
+            expected_can_id=int(stats.expected_can_id),
+            position=float(stats.position),
+            previous_position=float(stats.previous_position),
+            allowed_position_delta=float(stats.allowed_position_delta),
+            error=raw_error.decode(errors="replace") if raw_error else None,
         )
 
 

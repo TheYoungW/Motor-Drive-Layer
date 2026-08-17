@@ -109,6 +109,26 @@ class FeedbackStats:
     update_count: int
     age_ns: int
     def __init__(self, has_feedback: bool, update_count: int, age_ns: int) -> None: ...
+class FeedbackRejectionReason(IntEnum):
+    NONE: int
+    SHORT_FRAME: int
+    IDENTITY_MISMATCH: int
+    IMPLAUSIBLE_POSITION_JUMP: int
+class FeedbackIntegrityStats:
+    rejected_frame_count: int
+    short_frame_count: int
+    identity_mismatch_count: int
+    implausible_position_jump_count: int
+    last_reason: FeedbackRejectionReason
+    channel: int | None
+    arbitration_id: int
+    expected_arbitration_id: int
+    decoded_can_id: int
+    expected_can_id: int
+    position: float
+    previous_position: float
+    allowed_position_delta: float
+    error: str | None
 
 class TransportCapabilities:
     transport: str

@@ -66,6 +66,19 @@ enum ArticoreRuntimeCapability {
   // configured arm joint and installed gripper has a fresh cached state. READY
   // then refreshes the complete cache at a bounded low rate.
   ARTICORE_CAP_CONNECT_FEEDBACK_BARRIER = 1ULL << 25,
+  // ABI 2.4 adds immutable pre-connect motor CAN identities and a structured
+  // report for every connect transaction. Language bindings no longer need
+  // to parse error text or infer the identity of a motor with no prior cache.
+  ARTICORE_CAP_STRUCTURED_CONNECT_REPORT = 1ULL << 26,
+};
+
+enum ArticoreConnectErrorCode {
+  ARTICORE_CONNECT_OK = 0,
+  ARTICORE_CONNECT_CONFIGURATION = 1,
+  ARTICORE_CONNECT_TRANSPORT = 2,
+  ARTICORE_CONNECT_FEEDBACK_TIMEOUT = 3,
+  ARTICORE_CONNECT_FEEDBACK_INCOMPLETE = 4,
+  ARTICORE_CONNECT_FEEDBACK_INVALID = 5,
 };
 
 enum ArticorePresenceState {
@@ -256,6 +269,54 @@ typedef struct ArticoreFeedbackReport {
   uint32_t received_count;
   uint32_t missing_count;
 } ArticoreFeedbackReport;
+
+typedef struct ArticoreMotorIdentity {
+  // Caller initializes this to sizeof(ArticoreMotorIdentity).
+  uint32_t struct_size;
+  void* motor;
+  // Damiao motor identity carried by decoded feedback (0..255).
+  uint32_t can_id;
+} ArticoreMotorIdentity;
+
+typedef struct ArticoreConnectChannelResult {
+  uint8_t side;
+  uint8_t active;
+  int32_t request_code;
+  uint32_t expected_count;
+  uint32_t received_count;
+  uint32_t missing_count;
+  uint32_t missing_motor_ids[32];
+  char error[256];
+} ArticoreConnectChannelResult;
+
+typedef struct ArticoreConnectMotorResult {
+  uint8_t side;
+  uint8_t has_feedback;
+  uint8_t feedback_fresh;
+  uint8_t feedback_valid;
+  uint32_t configured_can_id;
+  uint32_t reported_can_id;
+  uint64_t update_count;
+  uint64_t feedback_age_ns;
+  char name[64];
+  char error[256];
+} ArticoreConnectMotorResult;
+
+typedef struct ArticoreConnectReport {
+  // Caller initializes this to sizeof(ArticoreConnectReport).
+  uint32_t struct_size;
+  int32_t success;
+  int32_t error_code;
+  uint32_t expected_count;
+  uint32_t received_count;
+  uint32_t missing_count;
+  uint32_t failure_count;
+  uint32_t channel_count;
+  ArticoreConnectChannelResult channels[2];
+  uint32_t motor_count;
+  ArticoreConnectMotorResult motors[32];
+  char error[512];
+} ArticoreConnectReport;
 
 typedef struct ArticoreEnableMotorResult {
   uint8_t side;
@@ -479,7 +540,17 @@ ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex(
     ArticoreControllerCallFn motor_enable);
 ARTICORE_RUNTIME_API void articore_runtime_free(ArticoreRuntime* runtime);
 
+// Configures the immutable CAN identity of every Runtime motor. The complete
+// active motor set must be supplied before connect(); IDs must be unique within
+// a channel. This additive call preserves compatibility for legacy embedders,
+// while official bindings always configure identities.
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_motor_identities(
+    ArticoreRuntime* runtime,
+    const ArticoreMotorIdentity* identities,
+    uint32_t identity_count);
 ARTICORE_RUNTIME_API int32_t articore_runtime_connect(ArticoreRuntime* runtime);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_last_connect_report(
+    ArticoreRuntime* runtime, ArticoreConnectReport* report);
 // With ARTICORE_CAP_ATOMIC_ENABLE this owns the complete native transaction:
 // fresh disabled-state position capture, parallel controller enable, immediate
 // current-position hold, parallel enabled-feedback confirmation, and linked
@@ -491,8 +562,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_enable(
 // disabled state.
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_last_enable_report(
     ArticoreRuntime* runtime, ArticoreEnableReport* report);
-// Configures every active arm joint before connect. Trajectories require this
-// configuration so position, velocity and torque limits are explicit.
+// Configures every active arm joint before connect so ordinary and raw Runtime
+// commands use explicit position, velocity and torque limits.
 ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joints(
     ArticoreRuntime* runtime,
     const ArticoreJointControlConfig* configs,

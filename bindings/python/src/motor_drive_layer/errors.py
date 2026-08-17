@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .models import FeedbackReport
-    from .runtime_models import DisableReport, EnableReport
+    from .runtime_models import ConnectReport, DisableReport, EnableReport
 
 
 class MotorBridgeError(RuntimeError):
@@ -24,10 +24,10 @@ class RuntimeCallError(CallError):
 
 
 class RuntimeTransactionError(RuntimeCallError):
-    """A native enable/disable/close transaction failed with a stable report."""
+    """A native connect/enable/disable/close transaction failed with a stable report."""
 
     def __init__(
-        self, message: str, report: EnableReport | DisableReport
+        self, message: str, report: ConnectReport | EnableReport | DisableReport
     ) -> None:
         super().__init__(message)
         self.report = report

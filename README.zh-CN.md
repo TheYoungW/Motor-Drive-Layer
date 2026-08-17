@@ -17,18 +17,16 @@ Motor-Drive-Layer 是供 Python、C++ 和 ROS 2 SDK 共用的原生 C++ 控制�
 - 同一原生 Runtime 的正式薄绑定：强类型 Python `ArticoreRuntime`、可安装的 C++17 RAII API，
   以及供 ROS 2 和其他语言使用的稳定 C ABI；绑定层不重新实现控制和安全逻辑。
 - 显式区分需持续续期的流式命令和保持到被替换的单次目标，慢速运动不会被误判为上层失联。
-- 原子轨迹 `SMOOTH_REPLACE_OR_HOLD`：替换不可安全生成时取消旧任务，并同步安装完整、新鲜的当前位置保持，不进入全局 FAULT。
-- 原生 Runtime 独立执行机械硬限位、产品软限位和逐关节动态制动区，并向 SDK 返回结构化轨迹启动/替换结果。
+- 原生 Runtime 对输出命令独立执行机械硬限位、产品软限位和逐关节动态制动区。
 - 按次夹爪命令只包含开合度、归一化速度和标定力矩等级；Runtime 对张开与闭合统一生成速度斜坡，
   堵转窗口、回退距离和持续时间仍是不可由普通用户覆盖的产品安全参数。
 - Runtime ABI 2.2 内置 `yunyi_gripper_v1` 产品 profile；SDK 只需在 connect 前绑定 profile ID，
   不再在 Python 配置中复制夹爪映射、增益、阈值、时序、回退、十档力控表和故障策略。
-- Runtime ABI 2.3 将 `connect()` 定义为完整反馈屏障：成功返回时，每个已配置关节和已安装夹爪
-  都已有新鲜缓存；READY 状态还会以受限低频持续刷新。任一电机缺失会按通道、名称和 CAN ID
-  明确报错，而不会先进入 READY。
-- 原生轨迹使用单个不可被普通命令抢占的活动槽；并发运动请求直接拒绝而不排队，失能、急停、
-  关闭和安全故障仍可立即中断。
-- 保护性故障保持：单次反馈缺失时机械臂和夹爪继续当前输出并计数；连续缺失会停止轨迹，
+- Runtime ABI 2.4 将 `connect()` 定义为结构化反馈屏障：成功返回时，每个已配置关节和已安装夹爪
+  都已有新鲜缓存；失败时返回稳定分类、逐通道统计和逐电机配置 CAN ID，不再依赖解析日志字符串。
+- 普通 PV/MIT 位置命令使用容量为一的最新值槽位，由原生固定频率线程限步推进；新目标原子替换
+  旧终点，不建立 FIFO 队列。
+- 保护性故障保持：单次反馈缺失时机械臂和夹爪继续当前输出并计数；连续缺失会停止普通运动，
   但健康电机和可用通道继续保持，不会被底层自动联动失能。
 - 确定性的 Runtime 失能/关闭事务：先排空旧控制流量，再并行失能并确认双通道，只有未确认
   的电机才会定向重发一次失能命令。
@@ -260,6 +258,13 @@ Python 对外仍然只提供 `Controller.request_feedback_all()`，不会暴露 
 `FeedbackTransportError` 或 `FeedbackMotorFaultError`；它们继续继承 `CallError`，并提供
 `error_code`、`missing_motor_ids` 和完整 `FeedbackReport`。Articore runtime 的反馈回调也
 使用相同的结构化签名，安全逻辑不再解析 `motor_last_error_message()` 字符串。
+
+DM-USB2FDCAN Dual 的回调帧会在进入任何共享注册表操作前立即复制为 motor 自有的不可变
+帧，并保留物理 channel。MotorHandle 同时严格校验协议定义的仲裁 ID 和 payload 解码出的
+电机 ID。Linux DM_Device v1.0 仍可能偶发交付“帧头与 payload 来自不同通道”的帧，因此与
+时间间隔、反馈速度和电机模型速度明显不相容的单次位置跳变会在写缓存前被丢弃，只保留上一份
+有效缓存；该处理只记录 `FeedbackIntegrityStats`，不会进入全局 FAULT 或失能。可使用
+`Motor.get_feedback_integrity_stats()` 读取身份不匹配、短帧和异常跳变统计。
 
 DM_Device 后端不需要刷写 SocketCAN 固件。可执行一次
 `motor-drive-layer-install-dm-device --download` 安装对应厂商运行库，也可通过

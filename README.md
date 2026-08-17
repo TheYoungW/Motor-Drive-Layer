@@ -19,23 +19,21 @@ Motor-Drive-Layer is the native C++ control foundation shared by Python, C++ and
   languages. No binding reimplements control or safety behavior.
 - Explicit streaming and hold-until-replaced command lifetimes, so a slow physical move is not
   mistaken for a stalled real-time command producer.
-- Atomic trajectory `SMOOTH_REPLACE_OR_HOLD`: an unsafe replacement cancels the old task and
-  synchronously installs a fresh full-arm current-position hold without entering global FAULT.
-- Independent mechanical hard limits, product soft limits, and per-joint dynamic braking zones in
-  the native Runtime, with structured replacement/start outcomes for SDKs.
+- Independent mechanical hard limits, product soft limits, and per-joint dynamic braking zones for
+  outgoing commands in the native Runtime.
 - Atomic per-call gripper commands carry only opening, normalized speed, and a calibrated force
   level. The Runtime ramps both opening and closing directions and keeps stall/retreat timing as
   private product safety configuration.
 - Runtime ABI 2.2 provides the built-in `yunyi_gripper_v1` product profile, so SDKs bind a profile
   ID before connect instead of copying gripper mapping, gains, thresholds, timing, retreat, force
   tables, and fault policy into Python configuration.
-- Runtime ABI 2.3 makes `connect()` a complete feedback barrier: success guarantees a fresh cache
-  entry for every configured joint and installed gripper. READY refreshes that cache at a bounded
-  low rate, while a missing motor fails connect with channel, name, and CAN ID diagnostics.
-- A single non-preemptive native trajectory slot: ordinary concurrent motion requests are rejected
-  instead of queued, while disable, estop, close, and safety faults retain immediate authority.
+- Runtime ABI 2.4 makes `connect()` a structured feedback barrier: success guarantees a fresh cache
+  entry for every configured joint and installed gripper. Failure returns a stable classification,
+  per-channel counts, and per-motor configured CAN identity without parsing log text.
+- Ordinary PV/MIT position commands use one latest-value slot and native fixed-rate reference
+  stepping; a newer target atomically replaces the old endpoint without building a FIFO queue.
 - Protective fault hold: one missed feedback sample keeps the current arm and gripper outputs;
-  persistent loss stops trajectories while healthy motors/channels keep holding instead of being
+  persistent loss stops ordinary motion while healthy motors/channels keep holding instead of being
   automatically torque-disabled.
 - Deterministic Runtime disable/close: prior control traffic is drained, active channels are
   disabled and confirmed in parallel, and only unconfirmed motors receive one directed retry.
@@ -295,6 +293,15 @@ uses the structured entry point internally and maps its result to `FeedbackTimeo
 `CallError` subclasses for compatibility and expose `error_code`, `missing_motor_ids`, and the full
 `FeedbackReport`. The Articore runtime callback uses the same structured signature, so safety
 decisions never depend on parsing `motor_last_error_message()`.
+
+DM-USB2FDCAN Dual receive callbacks are copied into immutable motor-owned frames before any shared
+registry lookup. Each frame keeps its physical channel, and MotorHandle acceptance requires the
+protocol-defined arbitration ID together with the decoded motor ID. The Linux DM_Device v1.0
+runtime can still occasionally deliver a frame whose header and payload came from different
+channels; a single position sample that is incompatible with elapsed time and reported/model
+velocity is therefore discarded before it replaces the cache. This records
+`FeedbackIntegrityStats` (identity mismatch, short frame, or implausible jump) and does not enter a
+global fault or disable motors. Use `Motor.get_feedback_integrity_stats()` for diagnostics.
 
 The DM_Device backend does not require flashing SocketCAN firmware. Platform wheels include the
 matching vendor runtime, so installing `motor-drive-layer` is sufficient. `MOTOR_DM_DEVICE_LIB`

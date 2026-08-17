@@ -50,6 +50,15 @@ class ActiveCapability(IntFlag):
     GRIPPER_SIDE_1 = 1 << 3
 
 
+class ConnectErrorCode(IntEnum):
+    OK = 0
+    CONFIGURATION = 1
+    TRANSPORT = 2
+    FEEDBACK_TIMEOUT = 3
+    FEEDBACK_INCOMPLETE = 4
+    FEEDBACK_INVALID = 5
+
+
 @dataclass(frozen=True)
 class RuntimeConfig:
     control_hz: int = 400
@@ -178,6 +187,44 @@ class EnableMotorResult:
     feedback_fresh: bool
     enabled: bool
     name: str
+
+
+@dataclass(frozen=True)
+class ConnectChannelResult:
+    side: int
+    active: bool
+    request_code: int
+    expected_count: int
+    received_count: int
+    missing_motor_ids: tuple[int, ...]
+    error: str | None
+
+
+@dataclass(frozen=True)
+class ConnectMotorResult:
+    side: int
+    configured_can_id: int
+    reported_can_id: int
+    has_feedback: bool
+    feedback_fresh: bool
+    feedback_valid: bool
+    update_count: int
+    feedback_age_ns: int | None
+    name: str
+    error: str | None
+
+
+@dataclass(frozen=True)
+class ConnectReport:
+    success: bool
+    error_code: ConnectErrorCode
+    expected_count: int
+    received_count: int
+    missing_count: int
+    failure_count: int
+    channels: tuple[ConnectChannelResult, ...]
+    motors: tuple[ConnectMotorResult, ...]
+    error: str | None
 
 
 @dataclass(frozen=True)

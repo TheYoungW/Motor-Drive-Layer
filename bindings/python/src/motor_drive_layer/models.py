@@ -98,6 +98,31 @@ class FeedbackStats:
     age_ns: int
 
 
+class FeedbackRejectionReason(IntEnum):
+    NONE = 0
+    SHORT_FRAME = 1
+    IDENTITY_MISMATCH = 2
+    IMPLAUSIBLE_POSITION_JUMP = 3
+
+
+@dataclass(frozen=True)
+class FeedbackIntegrityStats:
+    rejected_frame_count: int
+    short_frame_count: int
+    identity_mismatch_count: int
+    implausible_position_jump_count: int
+    last_reason: FeedbackRejectionReason
+    channel: int | None
+    arbitration_id: int
+    expected_arbitration_id: int
+    decoded_can_id: int
+    expected_can_id: int
+    position: float
+    previous_position: float
+    allowed_position_delta: float
+    error: str | None
+
+
 @dataclass(frozen=True)
 class TransportCapabilities:
     transport: str

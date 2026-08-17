@@ -1,7 +1,9 @@
 #include <cstdlib>
+#include <array>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #include "damiao/dm_device_bus.hpp"
 #include "dm_device_shim.h"
@@ -77,6 +79,42 @@ void test_vendor_abi(const char* path, uint8_t expected_abi_generation,
   require(frame.channel == 1 && frame.can_id == 0x202 && frame.data[3] == 4 &&
               frame.canfd == 1 && frame.brs == 1,
           "channel 1 frame contents use CAN-FD with bitrate switching");
+
+  constexpr uint32_t kConcurrentFrames = 64;
+  std::thread channel0_sender([&] {
+    for (uint32_t sequence = 0; sequence < kConcurrentFrames; ++sequence) {
+      const std::array<uint8_t, 8> data{
+          0x04, static_cast<uint8_t>(sequence), 0xA0, 0xA1,
+          0xA2, 0xA3, 0xA4, 0xA5};
+      require(mb_dm_send(channel0, 0x204, 0, data.size(), data.data(), error,
+                         sizeof(error)) == 0,
+              "concurrent CH0 send succeeds");
+    }
+  });
+  std::thread channel1_sender([&] {
+    for (uint32_t sequence = 0; sequence < kConcurrentFrames; ++sequence) {
+      const std::array<uint8_t, 8> data{
+          0x04, static_cast<uint8_t>(sequence), 0xB0, 0xB1,
+          0xB2, 0xB3, 0xB4, 0xB5};
+      require(mb_dm_send(channel1, 0x204, 0, data.size(), data.data(), error,
+                         sizeof(error)) == 0,
+              "concurrent CH1 send succeeds");
+    }
+  });
+  channel0_sender.join();
+  channel1_sender.join();
+  for (uint32_t sequence = 0; sequence < kConcurrentFrames; ++sequence) {
+    require(mb_dm_recv(channel0, &frame, 100, error, sizeof(error)) == 1 &&
+                frame.channel == 0 && frame.can_id == 0x204 &&
+                frame.data[1] == static_cast<uint8_t>(sequence) &&
+                frame.data[2] == 0xA0,
+            "same-ID CH0 payload remains isolated during concurrent callbacks");
+    require(mb_dm_recv(channel1, &frame, 100, error, sizeof(error)) == 1 &&
+                frame.channel == 1 && frame.can_id == 0x204 &&
+                frame.data[1] == static_cast<uint8_t>(sequence) &&
+                frame.data[2] == 0xB0,
+            "same-ID CH1 payload remains isolated during concurrent callbacks");
+  }
 
   require(mb_dm_shutdown(channel0, error, sizeof(error)) == 0, error);
   require(mb_dm_send(channel1, 0x203, 0, sizeof(payload), payload, error,

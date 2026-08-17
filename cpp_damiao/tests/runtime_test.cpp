@@ -315,6 +315,68 @@ int main() {
   require(!capability_controller.transport_health().connected,
           "closed controller reports disconnected transport health");
 
+  {
+    auto integrity_bus = std::make_shared<FakeBus>();
+    damiao::Controller integrity_controller(integrity_bus,
+                                            "feedback integrity endpoint");
+    const auto integrity_motor =
+        integrity_controller.add_damiao_motor(0x04, 0x14, "4310");
+
+    auto wrong_identity = feedback_frame(
+        0x14, 0x05, 0x01, -1.0f, 0.0f, 0.0f,
+        damiao::model_limits("4310"));
+    wrong_identity.channel = 1;
+    integrity_bus->push_rx(wrong_identity);
+    integrity_controller.poll_feedback_once();
+    require(!integrity_motor->latest_state().has_value(),
+            "matching arbitration ID with a different payload CAN ID is rejected");
+    auto integrity = integrity_motor->feedback_integrity_stats();
+    require(integrity.identity_mismatch_count == 1 &&
+                integrity.last_reason ==
+                    damiao::FeedbackRejectionReason::IdentityMismatch &&
+                integrity.channel == 1,
+            "identity rejection is recorded with physical channel context");
+
+    auto initial = feedback_frame(0x14, 0x04, 0x01, 0.0f, 0.0f, 0.0f,
+                                  damiao::model_limits("4310"));
+    initial.channel = 1;
+    integrity_bus->push_rx(initial);
+    integrity_controller.poll_feedback_once();
+    require(integrity_motor->latest_state().has_value(),
+            "strict identity matching accepts the configured feedback frame");
+
+    auto dm_device_identity = feedback_frame(
+        0x204, 0x04, 0x01, 0.01f, 0.0f, 0.0f,
+        damiao::model_limits("4310"));
+    dm_device_identity.channel = 1;
+    integrity_bus->push_rx(dm_device_identity);
+    integrity_controller.poll_feedback_once();
+    require(integrity_motor->latest_state().has_value() &&
+                integrity_motor->latest_state()->arbitration_id == 0x204,
+            "strict identity matching accepts the DM Device Dual feedback ID");
+
+    auto mixed_payload = feedback_frame(
+        0x14, 0x04, 0x01, 2.0f, 0.0f, 0.0f,
+        damiao::model_limits("4310"));
+    mixed_payload.channel = 1;
+    integrity_bus->push_rx(mixed_payload);
+    integrity_controller.poll_feedback_once();
+    const auto retained = integrity_motor->latest_state();
+    integrity = integrity_motor->feedback_integrity_stats();
+    require(retained.has_value() && std::fabs(retained->pos) < 0.01f &&
+                integrity.implausible_position_jump_count == 1 &&
+                integrity.last_reason ==
+                    damiao::FeedbackRejectionReason::ImplausiblePositionJump,
+            "a one-frame cross-channel position jump is dropped without replacing cache");
+
+    integrity_bus->push_rx(feedback_frame(
+        0x14, 0x04, 0x01, 0.02f, 0.0f, 0.0f,
+        damiao::model_limits("4310")));
+    integrity_controller.poll_feedback_once();
+    require(std::fabs(integrity_motor->latest_state()->pos - 0.02f) < 0.01f,
+            "normal feedback resumes immediately after a rejected outlier");
+  }
+
   auto discovery_bus = std::make_shared<FakeBus>();
   damiao::Controller discovery_controller(discovery_bus, "test discovery endpoint");
   const std::vector<damiao::MotorCandidate> discovery_candidates{
@@ -328,7 +390,7 @@ int main() {
       std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
     discovery_bus->push_rx(feedback_frame(
-        0x209, 0x09, 0x01, 0.0f, 0.0f, 0.0f, damiao::model_limits("4310")));
+        0x19, 0x09, 0x01, 0.0f, 0.0f, 0.0f, damiao::model_limits("4310")));
   });
   std::vector<damiao::MotorDiscoveryResult> discovery;
   try {
@@ -482,7 +544,7 @@ int main() {
       std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(3));
-    delayed_bus->push_rx(feedback_frame(0x11, 0x01, 0x01, 0.75f, 0.0f, 0.0f,
+    delayed_bus->push_rx(feedback_frame(0x11, 0x01, 0x01, 0.55f, 0.0f, 0.0f,
                                         damiao::model_limits("4340P")));
   });
   std::optional<damiao::MotorState> fresh_state;
@@ -494,7 +556,7 @@ int main() {
   }
   single_responder.join();
   require(fresh_state.has_value(), "single-motor fresh-state request waits for delayed response");
-  require_close(fresh_state->pos, 0.75f, 0.05f, "fresh-state position");
+  require_close(fresh_state->pos, 0.55f, 0.05f, "fresh-state position");
   delayed_controller.close_bus();
 
   auto timeout_bus = std::make_shared<FakeBus>();

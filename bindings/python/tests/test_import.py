@@ -6,4 +6,4 @@ def test_import_symbols() -> None:
     assert Mode.MIT.value == 1
     assert MotorState is not None
     assert ArticoreRuntime is not None
-    assert get_version() == "0.10.1"
+    assert get_version() == "0.10.2"

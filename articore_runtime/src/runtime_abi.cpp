@@ -41,7 +41,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 3U;
+  return (2U << 16) | 4U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -65,7 +65,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_JOINT_PV_POSITION |
          ARTICORE_CAP_EFFECTIVE_CONTROL_RATE |
          ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES |
-         ARTICORE_CAP_CONNECT_FEEDBACK_BARRIER;
+         ARTICORE_CAP_CONNECT_FEEDBACK_BARRIER |
+         ARTICORE_CAP_STRUCTURED_CONNECT_REPORT;
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_hz(
@@ -125,6 +126,25 @@ ARTICORE_RUNTIME_API void articore_runtime_free(ArticoreRuntime* runtime) {
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_connect(ArticoreRuntime* runtime) {
   return call([&] { checked(runtime).connect(); });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_motor_identities(
+    ArticoreRuntime* runtime, const ArticoreMotorIdentity* identities,
+    uint32_t identity_count) {
+  return call([&] {
+    checked(runtime).configure_motor_identities(identities, identity_count);
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_last_connect_report(
+    ArticoreRuntime* runtime, ArticoreConnectReport* report) {
+  return call([&] {
+    if (!report) throw std::invalid_argument("connect report is null");
+    if (report->struct_size < sizeof(ArticoreConnectReport)) {
+      throw std::invalid_argument("connect report struct_size is too small");
+    }
+    *report = checked(runtime).last_connect_report();
+  });
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_enable(ArticoreRuntime* runtime,

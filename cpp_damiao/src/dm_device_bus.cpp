@@ -255,10 +255,17 @@ std::optional<CanFrame> DmDeviceBus::receive_for(std::chrono::milliseconds timeo
   if (rc == 0) {
     return std::nullopt;
   }
+  if (raw.channel != channel_) {
+    throw std::runtime_error(
+        "dm-device receive queue returned a frame for channel " +
+        std::to_string(raw.channel) + " to channel " +
+        std::to_string(channel_));
+  }
   CanFrame frame;
   frame.id = raw.can_id;
   frame.dlc = std::min<uint8_t>(raw.dlc, 8);
   frame.is_extended = raw.ext != 0;
+  frame.channel = raw.channel;
   std::copy(raw.data, raw.data + 8, frame.data.begin());
   return frame;
 }

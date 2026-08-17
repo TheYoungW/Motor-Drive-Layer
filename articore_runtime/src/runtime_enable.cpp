@@ -17,22 +17,18 @@ using detail::copy_text;
 
 bool SafetyRuntime::request_feedback_parallel(
     uint32_t timeout_ms, std::vector<MissingMotor>& missing_motors,
-    std::string& error) {
-  struct SideResult {
-    int32_t code = 0;
-    ArticoreFeedbackReport report{};
-    std::vector<uint32_t> missing;
-    std::string error;
-  } results[2];
+    std::string& error, FeedbackTransactionResults* output_results) {
+  FeedbackTransactionResults local_results{};
   std::vector<std::thread> workers;
   for (uint8_t side = 0; side < 2; ++side) {
     if (!active_sides_[side]) continue;
+    local_results[side].active = true;
     workers.emplace_back([&, side] {
       const auto motor_count = static_cast<uint32_t>(std::count_if(
           motors_.begin(), motors_.end(), [&](const MotorRecord& motor) {
             return motor.descriptor.side == side;
           }));
-      auto& result = results[side];
+      auto& result = local_results[side];
       result.missing.assign(std::max<uint32_t>(motor_count, 1),
                             std::numeric_limits<uint32_t>::max());
       result.report.struct_size = sizeof(result.report);
@@ -58,7 +54,7 @@ bool SafetyRuntime::request_feedback_parallel(
   missing_motors.clear();
   for (uint8_t side = 0; side < 2; ++side) {
     if (!active_sides_[side]) continue;
-    const auto& result = results[side];
+    const auto& result = local_results[side];
     for (const auto id : result.missing) {
       missing_motors.push_back(MissingMotor{side, id});
     }
@@ -70,11 +66,12 @@ bool SafetyRuntime::request_feedback_parallel(
       for (const auto& motor : motors_) {
         if (motor.descriptor.side != side) continue;
         ArticoreMotorState state{};
-        const uint32_t id =
-            api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
-                    state.has_value
-                ? state.can_id
-                : 0;
+        const uint32_t id = motor.motor_identity_configured
+            ? motor.configured_can_id
+            : (api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+                       state.has_value
+                   ? state.can_id
+                   : 0);
         missing_motors.push_back(MissingMotor{side, id});
       }
     }
@@ -92,16 +89,22 @@ bool SafetyRuntime::request_feedback_parallel(
     }
     if (!result.error.empty()) error += ": " + result.error;
   }
+  if (output_results) *output_results = std::move(local_results);
   return ok;
 }
 
 bool SafetyRuntime::validate_fresh_feedback_snapshot(
-    const std::vector<MissingMotor>& request_missing, std::string& error) {
+    const std::vector<MissingMotor>& request_missing, std::string& error,
+    ArticoreConnectReport* connect_report) {
   struct Snapshot {
     MotorRecord* motor = nullptr;
     uint32_t can_id = 0;
     bool has_can_id = false;
+    uint32_t reported_can_id = 0;
+    bool has_reported_can_id = false;
     bool valid = false;
+    bool has_feedback = false;
+    uint64_t update_count = 0;
     uint64_t age_ns = std::numeric_limits<uint64_t>::max();
     std::string reason;
   };
@@ -135,6 +138,14 @@ bool SafetyRuntime::validate_fresh_feedback_snapshot(
     if (has_state) {
       snapshot.has_can_id = true;
       snapshot.can_id = state.can_id;
+      snapshot.has_reported_can_id = true;
+      snapshot.reported_can_id = state.can_id;
+    }
+    snapshot.has_feedback = has_stats;
+    snapshot.update_count = has_stats ? stats.update_count : 0;
+    if (motor.motor_identity_configured) {
+      snapshot.can_id = motor.configured_can_id;
+      snapshot.has_can_id = true;
     }
     if (!has_stats) {
       snapshot.reason = "no motor feedback";
@@ -148,6 +159,11 @@ bool SafetyRuntime::validate_fresh_feedback_snapshot(
             std::to_string(maximum_allowed_age);
       } else if (!has_state) {
         snapshot.reason = "motor state is unavailable";
+      } else if (motor.motor_identity_configured &&
+                 state.can_id != motor.configured_can_id) {
+        snapshot.reason = "feedback CAN ID does not match configured identity: actual=" +
+            std::to_string(state.can_id) + ", configured=" +
+            std::to_string(motor.configured_can_id);
       } else if (!finite(state.pos) || !finite(state.vel) ||
                  !finite(state.torq)) {
         snapshot.reason = "feedback contains a non-finite value";
@@ -225,6 +241,34 @@ bool SafetyRuntime::validate_fresh_feedback_snapshot(
   }
 
   const bool valid = snapshot_error.empty();
+  if (connect_report) {
+    connect_report->motor_count = static_cast<uint32_t>(
+        std::min<std::size_t>(snapshots.size(), 32));
+    uint32_t failure_count = 0;
+    for (uint32_t index = 0; index < connect_report->motor_count; ++index) {
+      const auto& snapshot = snapshots[index];
+      auto& result = connect_report->motors[index];
+      result.side = snapshot.motor->descriptor.side;
+      result.has_feedback = snapshot.has_feedback;
+      result.feedback_fresh = snapshot.has_feedback &&
+          snapshot.age_ns <= maximum_allowed_age;
+      result.feedback_valid = snapshot.valid;
+      result.configured_can_id = snapshot.motor->motor_identity_configured
+          ? snapshot.motor->configured_can_id
+          : 0;
+      result.reported_can_id = snapshot.has_reported_can_id
+          ? snapshot.reported_can_id
+          : 0;
+      result.update_count = snapshot.update_count;
+      result.feedback_age_ns = snapshot.age_ns;
+      copy_text(result.name, snapshot.motor->descriptor.name);
+      copy_text(result.error, snapshot.reason);
+      if (!snapshot.valid) {
+        ++failure_count;
+      }
+    }
+    connect_report->failure_count = failure_count;
+  }
   const auto now = Clock::now();
   {
     std::lock_guard<std::mutex> lock(state_mutex_);

@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from threading import RLock
 
 from ._runtime_abi import (
+    CConnectReport,
     CDisableReport,
     CEnableReport,
     CGripperCommand,
@@ -12,6 +13,7 @@ from ._runtime_abi import (
     CJointControlConfig,
     CJointSafetyLimits,
     CJointTarget,
+    CMotorIdentity,
     CMitCommand,
     CPosVelCommand,
     CRuntimeConfig,
@@ -26,6 +28,10 @@ from .models import PresenceState
 from .runtime_models import (
     ActiveCapability,
     CommandLifetime,
+    ConnectChannelResult,
+    ConnectErrorCode,
+    ConnectMotorResult,
+    ConnectReport,
     DisableMotorResult,
     DisableReport,
     EnableMotorResult,
@@ -179,7 +185,25 @@ class ArticoreRuntime:
                     f"articore_runtime_create_ex failed: {self._last_error()}"
                 )
             self._ptr = int(pointer)
+            motor_ids = tuple(getattr(item.motor, "_motor_id", None) for item in values)
+            if any(value is not None for value in motor_ids):
+                if not all(value is not None for value in motor_ids):
+                    raise ValueError(
+                        "Runtime motor CAN identities are only partially available"
+                    )
+                identities = (CMotorIdentity * len(values))()
+                for identity, item, can_id in zip(identities, values, motor_ids):
+                    identity.struct_size = ctypes.sizeof(CMotorIdentity)
+                    identity.motor = item.motor._require_open()
+                    identity.can_id = int(can_id)
+                self._call(
+                    self._runtime_abi.lib.articore_runtime_configure_motor_identities,
+                    "configure_motor_identities", identities, len(values),
+                )
         except Exception:
+            if self._ptr:
+                self._runtime_abi.lib.articore_runtime_free(self._ptr)
+                self._ptr = None
             self._release_leases()
             raise
 
@@ -291,8 +315,65 @@ class ArticoreRuntime:
             )
             return ActiveCapability(value)
 
-    def connect(self) -> None:
-        self._call(self._runtime_abi.lib.articore_runtime_connect, "connect")
+    def connect(self) -> ConnectReport:
+        with self._lock:
+            rc = int(self._runtime_abi.lib.articore_runtime_connect(
+                self._require_open()
+            ))
+            failure = self._last_error() if rc != 0 else None
+            report = self.last_connect_report()
+            if rc != 0:
+                raise RuntimeTransactionError(
+                    f"connect failed: {failure}", report
+                )
+            return report
+
+    def last_connect_report(self) -> ConnectReport:
+        native = CConnectReport()
+        native.struct_size = ctypes.sizeof(CConnectReport)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_last_connect_report,
+            "get_last_connect_report", ctypes.byref(native),
+        )
+        channels = tuple(
+            ConnectChannelResult(
+                side=int(item.side), active=bool(item.active),
+                request_code=int(item.request_code),
+                expected_count=int(item.expected_count),
+                received_count=int(item.received_count),
+                missing_motor_ids=tuple(
+                    int(item.missing_motor_ids[index])
+                    for index in range(min(int(item.missing_count), 32))
+                ),
+                error=_optional_text(item.error),
+            )
+            for item in native.channels
+            if item.active
+        )
+        motors = tuple(
+            ConnectMotorResult(
+                side=int(item.side),
+                configured_can_id=int(item.configured_can_id),
+                reported_can_id=int(item.reported_can_id),
+                has_feedback=bool(item.has_feedback),
+                feedback_fresh=bool(item.feedback_fresh),
+                feedback_valid=bool(item.feedback_valid),
+                update_count=int(item.update_count),
+                feedback_age_ns=_optional_age(item.feedback_age_ns),
+                name=_text(item.name), error=_optional_text(item.error),
+            )
+            for item in native.motors[:min(int(native.motor_count), 32)]
+        )
+        return ConnectReport(
+            success=bool(native.success),
+            error_code=ConnectErrorCode(native.error_code),
+            expected_count=int(native.expected_count),
+            received_count=int(native.received_count),
+            missing_count=int(native.missing_count),
+            failure_count=int(native.failure_count),
+            channels=channels, motors=motors,
+            error=_optional_text(native.error),
+        )
 
     def enable(self, mode: RuntimeControlMode) -> EnableReport:
         with self._lock:

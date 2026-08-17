@@ -30,6 +30,13 @@ class ActiveCapability(IntFlag):
     ARM_SIDE_1: int
     GRIPPER_SIDE_0: int
     GRIPPER_SIDE_1: int
+class ConnectErrorCode(IntEnum):
+    OK: int
+    CONFIGURATION: int
+    TRANSPORT: int
+    FEEDBACK_TIMEOUT: int
+    FEEDBACK_INCOMPLETE: int
+    FEEDBACK_INVALID: int
 
 class RuntimeConfig:
     control_hz: int
@@ -107,6 +114,35 @@ class EnableMotorResult:
     feedback_fresh: bool
     enabled: bool
     name: str
+class ConnectChannelResult:
+    side: int
+    active: bool
+    request_code: int
+    expected_count: int
+    received_count: int
+    missing_motor_ids: tuple[int, ...]
+    error: str | None
+class ConnectMotorResult:
+    side: int
+    configured_can_id: int
+    reported_can_id: int
+    has_feedback: bool
+    feedback_fresh: bool
+    feedback_valid: bool
+    update_count: int
+    feedback_age_ns: int | None
+    name: str
+    error: str | None
+class ConnectReport:
+    success: bool
+    error_code: ConnectErrorCode
+    expected_count: int
+    received_count: int
+    missing_count: int
+    failure_count: int
+    channels: tuple[ConnectChannelResult, ...]
+    motors: tuple[ConnectMotorResult, ...]
+    error: str | None
 class EnableReport:
     success: bool
     disable_confirmed: bool

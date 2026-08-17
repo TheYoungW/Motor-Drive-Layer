@@ -13,6 +13,9 @@ struct CanFrame {
   std::array<uint8_t, 8> data;
   uint8_t dlc = 8;
   bool is_extended = false;
+  // Physical receive channel when the transport exposes one. 0xFF means the
+  // transport is already single-channel or does not report channel identity.
+  uint8_t channel = 0xFF;
 };
 
 struct TransportCapabilities {

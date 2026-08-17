@@ -386,6 +386,19 @@ std::vector<ArticoreMotorDescriptor> descriptors(FakeDriver& driver) {
   return values;
 }
 
+std::vector<ArticoreMotorIdentity> motor_identities(
+    const std::vector<ArticoreMotorDescriptor>& motors) {
+  std::vector<ArticoreMotorIdentity> values;
+  values.reserve(motors.size());
+  for (const auto& motor : motors) {
+    values.push_back(ArticoreMotorIdentity{
+        sizeof(ArticoreMotorIdentity), motor.motor,
+        static_cast<uint32_t>(reinterpret_cast<std::uintptr_t>(motor.motor) -
+                              0x200U)});
+  }
+  return values;
+}
+
 std::vector<ArticoreJointControlConfig> joint_configs(
     const std::vector<ArticoreMotorDescriptor>& motors) {
   std::vector<ArticoreJointControlConfig> values;
@@ -508,18 +521,87 @@ void test_connect_failure_names_missing_installed_motor_and_can_id() {
   driver.feedback_missing_ids_by_side[1] = {3};
   articore::SafetyRuntime runtime(config(), api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);
+  const auto identities = motor_identities(motors);
+  runtime.configure_motor_identities(
+      identities.data(), static_cast<uint32_t>(identities.size()));
   require_throws(
       [&] { runtime.connect(); },
       "CH1/right/gripper (CAN ID 3): no motor feedback",
       "connect failure reports channel, configured name, and CAN ID");
+  const auto failed = runtime.last_connect_report();
+  require(failed.success == 0 &&
+              failed.error_code == ARTICORE_CONNECT_FEEDBACK_INCOMPLETE &&
+              failed.expected_count == 3 && failed.received_count == 2 &&
+              failed.missing_count == 1,
+          "connect failure exposes stable counts and error classification");
+  require(failed.channels[1].missing_count == 1 &&
+              failed.channels[1].missing_motor_ids[0] == 3,
+          "connect report preserves the failing channel and missing CAN ID");
+  require(failed.motors[2].configured_can_id == 3 &&
+              std::string(failed.motors[2].name) == "right/gripper" &&
+              failed.motors[2].feedback_valid == 0,
+          "connect report maps a cacheless motor to its configured identity");
   require(runtime.health().state == ARTICORE_DISCONNECTED,
           "failed feedback barrier does not expose READY");
   driver.feedback_code_by_side[1] = 0;
   driver.feedback_received_by_side[1] = 2;
   driver.feedback_missing_ids_by_side[1].clear();
   runtime.connect();
+  const auto succeeded = runtime.last_connect_report();
+  require(succeeded.success == 1 &&
+              succeeded.error_code == ARTICORE_CONNECT_OK &&
+              succeeded.received_count == 3 && succeeded.failure_count == 0,
+          "successful connect report covers every configured motor");
   require(runtime.health().state == ARTICORE_READY,
           "connect can be retried after feedback becomes complete");
+}
+
+void test_connect_report_classifies_zero_feedback_and_transport_failures() {
+  {
+    FakeDriver driver;
+    g_driver = &driver;
+    auto motors = descriptors(driver);
+    for (auto& entry : driver.motors) entry.second.has_feedback = false;
+    driver.feedback_uses_per_side_results = true;
+    driver.feedback_code_by_side[0] = 3;
+    driver.feedback_code_by_side[1] = 3;
+    driver.feedback_received_by_side[0] = 0;
+    driver.feedback_received_by_side[1] = 0;
+    driver.feedback_missing_ids_by_side[0] = {1};
+    driver.feedback_missing_ids_by_side[1] = {2, 3};
+    articore::SafetyRuntime runtime(
+        config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+        g_right_controller, motors);
+    const auto identities = motor_identities(motors);
+    runtime.configure_motor_identities(
+        identities.data(), static_cast<uint32_t>(identities.size()));
+    require_throws([&] { runtime.connect(); }, "initial feedback transaction",
+                   "zero-feedback connect must fail");
+    const auto report = runtime.last_connect_report();
+    require(report.error_code == ARTICORE_CONNECT_FEEDBACK_TIMEOUT &&
+                report.received_count == 0 && report.missing_count == 3,
+            "zero valid transaction feedback has a stable timeout code");
+  }
+  {
+    FakeDriver driver;
+    g_driver = &driver;
+    auto motors = descriptors(driver);
+    driver.feedback_uses_per_side_results = true;
+    driver.feedback_code_by_side[0] = 2;
+    driver.feedback_received_by_side[0] = 0;
+    driver.feedback_missing_ids_by_side[0] = {1};
+    articore::SafetyRuntime runtime(
+        config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+        g_right_controller, motors);
+    const auto identities = motor_identities(motors);
+    runtime.configure_motor_identities(
+        identities.data(), static_cast<uint32_t>(identities.size()));
+    require_throws([&] { runtime.connect(); }, "initial feedback transaction",
+                   "transport-error connect must fail");
+    require(runtime.last_connect_report().error_code ==
+                ARTICORE_CONNECT_TRANSPORT,
+            "transport feedback failure has a stable transport code");
+  }
 }
 
 void test_pv_watchdog_safe_hold_and_fault() {
@@ -2919,6 +3001,7 @@ int main() {
     test()
     RUN_TEST(test_connect_is_a_complete_feedback_barrier_and_ready_refreshes_cache);
     RUN_TEST(test_connect_failure_names_missing_installed_motor_and_can_id);
+    RUN_TEST(test_connect_report_classifies_zero_feedback_and_transport_failures);
     RUN_TEST(test_pv_watchdog_safe_hold_and_fault);
     RUN_TEST(test_mit_hold_removes_motion_and_feedforward);
     RUN_TEST(test_safe_hold_rejects_stale_current_position);

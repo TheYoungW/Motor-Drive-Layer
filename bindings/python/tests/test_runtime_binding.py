@@ -8,6 +8,7 @@ from motor_drive_layer import (
     ActiveCapability,
     ArticoreRuntime,
     CallError,
+    ConnectErrorCode,
     Controller,
     ControllerGroup,
     GripperProductBinding,
@@ -85,7 +86,7 @@ def test_runtime_binding_owns_handles_and_converts_health() -> None:
         runtime.declare_motor_presence("l-tool", PresenceState.NOT_INSTALLED)
         assert runtime.motor_presence("l-tool") is PresenceState.NOT_INSTALLED
         # These ownership tests intentionally use sentinel native pointers,
-        # not live Controller/Motor handles. Runtime ABI 2.3 connect performs
+        # not live Controller/Motor handles. Runtime ABI 2.4 connect performs
         # real feedback I/O, which is covered with the native fake driver and
         # hardware tests rather than dereferencing these sentinels.
         assert runtime.health.state is SafetyState.DISCONNECTED
@@ -113,8 +114,11 @@ def test_runtime_binding_requires_native_gripper_profile_before_connect() -> Non
         [RuntimeMotor(gripper, side=0, name="l-gripper", is_gripper=True)],
     )
     try:
-        with pytest.raises(RuntimeCallError, match="profile is required"):
+        with pytest.raises(RuntimeTransactionError, match="profile is required") as failure:
             runtime.connect()
+        assert failure.value.report.error_code is ConnectErrorCode.CONFIGURATION
+        assert failure.value.report.failure_count == 1
+        assert failure.value.report.motors[0].name == "l-gripper"
         with pytest.raises(RuntimeCallError, match="unknown built-in"):
             runtime.configure_gripper_products([
                 GripperProductBinding(gripper, "unknown_product")

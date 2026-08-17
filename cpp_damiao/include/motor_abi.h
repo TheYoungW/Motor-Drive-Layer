@@ -92,6 +92,32 @@ typedef struct MotorFeedbackStats {
   uint64_t age_ns;
 } MotorFeedbackStats;
 
+enum MotorFeedbackRejectionReason {
+  MOTOR_FEEDBACK_REJECTION_NONE = 0,
+  MOTOR_FEEDBACK_REJECTION_SHORT_FRAME = 1,
+  MOTOR_FEEDBACK_REJECTION_IDENTITY_MISMATCH = 2,
+  MOTOR_FEEDBACK_REJECTION_IMPLAUSIBLE_POSITION_JUMP = 3,
+};
+
+typedef struct MotorFeedbackIntegrityStats {
+  // Caller must initialize this to sizeof(MotorFeedbackIntegrityStats).
+  uint32_t struct_size;
+  uint64_t rejected_frame_count;
+  uint64_t short_frame_count;
+  uint64_t identity_mismatch_count;
+  uint64_t implausible_position_jump_count;
+  int32_t last_reason;
+  uint8_t channel;
+  uint32_t arbitration_id;
+  uint32_t expected_arbitration_id;
+  uint16_t decoded_can_id;
+  uint16_t expected_can_id;
+  float position;
+  float previous_position;
+  float allowed_position_delta;
+  char error[256];
+} MotorFeedbackIntegrityStats;
+
 typedef struct MotorTransportCapabilities {
   char transport[32];
   uint32_t max_payload_bytes;
@@ -260,6 +286,8 @@ int32_t motor_handle_get_register_u32(MotorHandle* handle, uint8_t rid, uint32_t
 
 int32_t motor_handle_get_state(MotorHandle* handle, MotorState* out_state);
 int32_t motor_handle_get_feedback_stats(MotorHandle* handle, MotorFeedbackStats* out_stats);
+int32_t motor_handle_get_feedback_integrity_stats(
+    MotorHandle* handle, MotorFeedbackIntegrityStats* out_stats);
 
 int32_t motor_handle_damiao_get_param_f32(MotorHandle* handle, uint16_t param_id, uint32_t timeout_ms, float* out_value);
 int32_t motor_handle_damiao_get_param_u32(MotorHandle* handle, uint16_t param_id, uint32_t timeout_ms, uint32_t* out_value);

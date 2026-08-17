@@ -119,7 +119,7 @@ const char* motor_abi_version(void) {
 }
 
 const char* motor_abi_capabilities_json(void) {
-  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.5.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"fresh_feedback_wait":true,"structured_feedback_report":true,"register_metadata":true,"transport_capabilities":true,"transport_health":true,"motor_presence_discovery":true,"dm_device_abis":["v1.0","v1.1"],"dm_device_configurable_bitrates":true,"dm_device_canfd_brs":true,"dm_device_v10_process_session_reuse":true,"parallel_controller_batches":["mit","pos-vel"],"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","request_feedback_all_ex","discover_damiao_motors","enable_all","disable_all","set_tx_gap_us","transport_capabilities","transport_health"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
+  return R"({"schema":1,"abi":{"name":"motor_abi","version":"0.5.0-cpp"},"transports":["socketcan","socketcanfd","dm-serial","dm-device"],"vendors":["damiao"],"features":{"state_cache":true,"background_polling":true,"tx_pacing":true,"feedback_stats":true,"feedback_integrity_stats":true,"fresh_feedback_wait":true,"structured_feedback_report":true,"register_metadata":true,"transport_capabilities":true,"transport_health":true,"motor_presence_discovery":true,"dm_device_abis":["v1.0","v1.1"],"dm_device_configurable_bitrates":true,"dm_device_canfd_brs":true,"dm_device_v10_process_session_reuse":true,"dm_device_callback_frame_snapshot":true,"strict_feedback_identity":true,"implausible_feedback_jump_rejection":true,"parallel_controller_batches":["mit","pos-vel"],"controller_lifecycle":["shutdown","close_bus","poll_feedback_once","request_feedback_all","request_feedback_all_ex","discover_damiao_motors","enable_all","disable_all","set_tx_gap_us","transport_capabilities","transport_health"],"control_modes":["mit","pos-vel","vel","force-pos"],"damiao":["dm-serial","dm-device","register_u32","register_f32","param_u32","param_f32","set_can_timeout_ms"]}})";
 }
 
 int32_t motor_damiao_register_info(uint8_t rid, MotorRegisterInfo* out_info) {
@@ -770,6 +770,38 @@ int32_t motor_handle_get_feedback_stats(MotorHandle* handle,
     out_stats->has_feedback = stats.has_feedback ? 1 : 0;
     out_stats->update_count = stats.update_count;
     out_stats->age_ns = stats.age.count() < 0 ? 0 : static_cast<uint64_t>(stats.age.count());
+  });
+}
+
+int32_t motor_handle_get_feedback_integrity_stats(
+    MotorHandle* handle, MotorFeedbackIntegrityStats* out_stats) {
+  if (!handle || !out_stats) {
+    return fail("handle or feedback integrity stats output is null");
+  }
+  if (out_stats->struct_size < sizeof(MotorFeedbackIntegrityStats)) {
+    return fail("feedback integrity stats struct_size is too small");
+  }
+  std::lock_guard<std::mutex> lock(handle->mutex);
+  return ffi_call([&] {
+    const auto stats = handle->motor->feedback_integrity_stats();
+    const auto struct_size = out_stats->struct_size;
+    std::memset(out_stats, 0, sizeof(*out_stats));
+    out_stats->struct_size = struct_size;
+    out_stats->rejected_frame_count = stats.rejected_frame_count;
+    out_stats->short_frame_count = stats.short_frame_count;
+    out_stats->identity_mismatch_count = stats.identity_mismatch_count;
+    out_stats->implausible_position_jump_count =
+        stats.implausible_position_jump_count;
+    out_stats->last_reason = static_cast<int32_t>(stats.last_reason);
+    out_stats->channel = stats.channel;
+    out_stats->arbitration_id = stats.arbitration_id;
+    out_stats->expected_arbitration_id = stats.expected_arbitration_id;
+    out_stats->decoded_can_id = stats.decoded_can_id;
+    out_stats->expected_can_id = stats.expected_can_id;
+    out_stats->position = stats.position;
+    out_stats->previous_position = stats.previous_position;
+    out_stats->allowed_position_delta = stats.allowed_position_delta;
+    copy_text(stats.error, out_stats->error);
   });
 }
 

@@ -1,11 +1,43 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",
     "articore_runtime": "product watchdog, safety state machine and gripper ABI"
+  },
+  "runtime_abi": {
+    "version": "2.4",
+    "capabilities": [
+      "atomic_enable",
+      "builtin_gripper_product_profiles",
+      "command_lifetime",
+      "command_watchdog",
+      "connect_feedback_barrier",
+      "current_position_hold",
+      "deterministic_disable",
+      "dual_channel",
+      "effective_control_rate",
+      "gripper_command_profiles",
+      "gripper_force_10_levels",
+      "gripper_protection",
+      "joint_mit_position",
+      "joint_pv_position",
+      "layered_joint_limits",
+      "motor_presence",
+      "protective_fault_hold",
+      "realtime_joint_mailbox",
+      "safe_hold",
+      "single_channel",
+      "structured_connect_report",
+      "transport_health"
+    ],
+    "removed_terms": [
+      "SMOOTH_REPLACE_OR_HOLD",
+      "start_joint_trajectory",
+      "cancel_trajectory"
+    ]
   },
   "abi": {
     "metadata": [
@@ -59,6 +91,7 @@
       "motor_handle_request_fresh_state",
       "motor_handle_get_state",
       "motor_handle_get_feedback_stats",
+      "motor_handle_get_feedback_integrity_stats",
       "motor_handle_set_can_timeout_ms",
       "motor_handle_store_parameters"
     ],
@@ -118,7 +151,8 @@
       "Motor.damiao_write_param_f32(param_id, value)",
       "Motor.damiao_write_param_u32(param_id, value)",
       "Motor.get_state()",
-      "Motor.get_feedback_stats()"
+      "Motor.get_feedback_stats()",
+      "Motor.get_feedback_integrity_stats()"
     ],
     "controller_group_methods": [
       "ControllerGroup(controllers)",
@@ -135,6 +169,7 @@
       "ArticoreRuntime.configure_joint_safety_limits(limits)",
       "ArticoreRuntime.configure_gripper_products(bindings)",
       "ArticoreRuntime.connect()",
+      "ArticoreRuntime.last_connect_report()",
       "ArticoreRuntime.enable(mode)",
       "ArticoreRuntime.set_joint_mit(targets, velocity)",
       "ArticoreRuntime.set_joint_pv(targets, velocity)",
@@ -154,6 +189,8 @@
       "PreparedPosVelBatch(group, motors)",
       "MotorErrorCode",
       "FeedbackReport",
+      "FeedbackIntegrityStats",
+      "FeedbackRejectionReason",
       "FeedbackRequestError",
       "FeedbackTimeoutError",
       "IncompleteFeedbackError",
@@ -190,18 +227,39 @@
       "abi_metadata": [
         "articore_runtime_abi_version",
         "articore_runtime_capabilities",
-        "articore_runtime_create_ex",
         "articore_runtime_get_control_hz",
+        "articore_runtime_create",
+        "articore_runtime_create_ex",
+        "articore_runtime_free",
+        "articore_runtime_configure_motor_identities",
+        "articore_runtime_connect",
+        "articore_runtime_get_last_connect_report",
+        "articore_runtime_enable",
         "articore_runtime_get_last_enable_report",
-        "articore_runtime_get_last_disable_report",
+        "articore_runtime_configure_joints",
+        "articore_runtime_configure_joint_safety_limits",
+        "articore_runtime_submit_pos_vel",
+        "articore_runtime_submit_mit",
         "articore_runtime_submit_pos_vel_ex",
         "articore_runtime_submit_mit_ex",
-        "articore_runtime_set_joint_mit",
         "articore_runtime_set_joint_pv",
+        "articore_runtime_set_joint_mit",
+        "articore_runtime_submit_gripper_mit",
+        "articore_runtime_set_gripper_openings",
         "articore_runtime_configure_gripper_products",
         "articore_runtime_configure_gripper_force_profiles",
         "articore_runtime_set_gripper_commands",
-        "articore_runtime_configure_joint_safety_limits"
+        "articore_runtime_report_feedback_failure",
+        "articore_runtime_disable",
+        "articore_runtime_get_last_disable_report",
+        "articore_runtime_estop",
+        "articore_runtime_recover",
+        "articore_runtime_get_health",
+        "articore_runtime_declare_motor_presence",
+        "articore_runtime_motor_presence",
+        "articore_runtime_active_capabilities",
+        "articore_runtime_close",
+        "articore_runtime_last_error"
       ],
       "status": "aligned"
     }

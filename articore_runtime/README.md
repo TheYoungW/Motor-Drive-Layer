@@ -128,12 +128,15 @@ the fault action. The Runtime copies `profile_id`; it never depends on caller st
 An unknown profile, a partial active-gripper binding, or a post-connect configuration attempt is
 rejected. A Runtime with no active grippers needs no binding.
 
-Runtime ABI 2.3 advertises `connect_feedback_barrier`. `connect()` now performs one parallel,
-structured feedback transaction on every active channel and validates fresh finite cache state for
-every configured joint and installed gripper before exposing READY. A failure identifies the
-channel, configured motor name, and CAN ID whenever the controller report provides it. While the
-Runtime remains READY, its native worker repeats this full-cache refresh at no more than 10 Hz, so
-SDKs may read cached state before enable without issuing their own transport request.
+Runtime ABI 2.4 advertises both `connect_feedback_barrier` and
+`structured_connect_report`. Official bindings configure the complete immutable motor-to-CAN-ID
+mapping before connect. `connect()` performs one parallel structured feedback transaction on every
+active channel and validates fresh finite cache state for every configured joint and installed
+gripper before exposing READY. `ArticoreConnectReport` classifies configuration, transport,
+zero-feedback timeout, incomplete feedback, and invalid-cache failures; it also carries channel
+counts and per-motor identity/age/error data. While the Runtime remains READY, its native worker
+repeats this full-cache refresh at no more than 10 Hz, so SDKs may read cached state before enable
+without issuing their own transport request.
 
 Runtime ABI 1.10 adds `articore_runtime_set_gripper_commands()`. Each complete active-gripper
 transaction contains only `opening`, normalized `speed`, and a stable `force_level`; all fields

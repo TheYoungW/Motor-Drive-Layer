@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+
+import motor_drive_layer
 
 
 def test_api_surface_includes_binding_parity_metadata() -> None:
@@ -48,3 +51,35 @@ def test_api_surface_includes_binding_parity_metadata() -> None:
     assert "Motor.damiao_get_param_f32(param_id, timeout_ms)" in surface["bindings"]["motor_methods"]
     assert "Motor.get_feedback_stats()" in surface["bindings"]["motor_methods"]
     assert "Motor.request_fresh_state(timeout_ms)" in surface["bindings"]["motor_methods"]
+
+
+def test_runtime_metadata_and_docs_follow_the_canonical_surface() -> None:
+    root = Path(__file__).resolve().parents[3]
+    surface = json.loads((root / "bindings" / "api_surface.json").read_text(encoding="utf-8"))
+    runtime = surface["runtime_abi"]
+
+    assert motor_drive_layer.articore_runtime_abi_version() == runtime["version"]
+    enabled = {
+        name for name, value in motor_drive_layer.articore_runtime_capabilities().items()
+        if value
+    }
+    assert enabled == set(runtime["capabilities"])
+
+    public_docs = "\n".join(
+        (root / name).read_text(encoding="utf-8")
+        for name in ("README.md", "README.zh-CN.md")
+    )
+    for removed in runtime["removed_terms"]:
+        assert removed not in public_docs
+
+    header = (root / "articore_runtime" / "include" / "articore" / "runtime_abi.h").read_text(
+        encoding="utf-8"
+    )
+    declared_symbols = set(re.findall(
+        r"ARTICORE_RUNTIME_API\s+(?:[^;]*?\s)?(articore_runtime_[a-z0-9_]+)\s*\(",
+        header,
+        re.DOTALL,
+    ))
+    assert declared_symbols == set(
+        surface["bindings"]["articore_runtime"]["abi_metadata"]
+    )

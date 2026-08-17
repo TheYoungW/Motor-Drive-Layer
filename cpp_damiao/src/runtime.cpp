@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <limits>
@@ -15,6 +16,19 @@ namespace {
 constexpr auto kRegisterWriteAckTimeout = std::chrono::milliseconds(50);
 constexpr auto kRegisterWriteRetryGap = std::chrono::milliseconds(20);
 constexpr auto kBulkFeedbackRetryDelay = std::chrono::milliseconds(5);
+
+bool matches_feedback_arbitration_id(uint32_t arbitration_id,
+                                     uint16_t configured_feedback_id,
+                                     uint16_t motor_id) {
+  const auto expected_can_id = static_cast<uint16_t>(motor_id & 0x0FU);
+  const auto configured_standard_feedback_id =
+      static_cast<uint16_t>(0x10U | expected_can_id);
+  const auto dm_device_feedback_id =
+      static_cast<uint32_t>(0x200U | expected_can_id);
+  return arbitration_id == configured_feedback_id ||
+         (configured_feedback_id == configured_standard_feedback_id &&
+          arbitration_id == dm_device_feedback_id);
+}
 
 void validate_register(uint8_t rid, RegisterDataType expected_type, bool writing) {
   const auto info = register_info(rid);
@@ -478,12 +492,33 @@ void MotorHandle::set_can_timeout_ms(uint32_t timeout_ms) {
 }
 
 bool MotorHandle::accepts_frame(const CanFrame& frame) const {
-  if (frame.is_extended) {
+  if (frame.is_extended ||
+      !matches_feedback_arbitration_id(frame.id, feedback_id_, motor_id_)) {
     return false;
   }
-  return frame.id == feedback_id_ ||
-         (frame.dlc > 0 &&
-          (frame.data[0] & 0x0F) == static_cast<uint8_t>(motor_id_ & 0x0F));
+  if (frame.dlc != 8) {
+    record_feedback_rejection(
+        FeedbackRejectionReason::ShortFrame, frame, 0, 0.0f, 0.0f, 0.0f,
+        "feedback frame is shorter than the required 8-byte Damiao payload");
+    return false;
+  }
+  const bool register_frame =
+      is_register_reply(frame.data) || is_register_write_ack(frame.data);
+  const uint16_t decoded_can_id = register_frame
+      ? static_cast<uint16_t>(frame.data[0]) |
+            (static_cast<uint16_t>(frame.data[1]) << 8)
+      : static_cast<uint16_t>(frame.data[0] & 0x0F);
+  const uint16_t expected_can_id = register_frame
+      ? motor_id_
+      : static_cast<uint16_t>(motor_id_ & 0x0F);
+  if (decoded_can_id != expected_can_id) {
+    record_feedback_rejection(
+        FeedbackRejectionReason::IdentityMismatch, frame, decoded_can_id,
+        0.0f, 0.0f, 0.0f,
+        "feedback arbitration ID matched but payload CAN ID did not match the MotorHandle");
+    return false;
+  }
+  return true;
 }
 
 void MotorHandle::process_feedback_frame(const CanFrame& frame) {
@@ -512,13 +547,75 @@ void MotorHandle::process_feedback_frame(const CanFrame& frame) {
   state.t_mos = decoded.t_mos;
   state.t_rotor = decoded.t_rotor;
 
+  const auto now = std::chrono::steady_clock::now();
   {
-    std::lock_guard<std::mutex> lock(state_mutex_);
+    std::unique_lock<std::mutex> lock(state_mutex_);
+    if (state_.has_value() && state_time_.has_value()) {
+      const float elapsed = std::max(
+          0.0f,
+          std::chrono::duration<float>(now - *state_time_).count());
+      const float observed_velocity = std::max(
+          std::fabs(state_->vel), std::fabs(decoded.vel));
+      const float velocity_bound = std::max(
+          observed_velocity * 4.0f, std::fabs(limits_.v_max) * 1.5f);
+      const float allowed_delta = std::max(
+          0.15f, 0.03f + velocity_bound * elapsed);
+      const float actual_delta = std::fabs(decoded.pos - state_->pos);
+      if (actual_delta > allowed_delta) {
+        const float previous_position = state_->pos;
+        lock.unlock();
+        std::ostringstream message;
+        message << "rejected implausible feedback position jump: channel="
+                << static_cast<unsigned>(frame.channel)
+                << ", arbitration_id=0x" << std::hex << frame.id << std::dec
+                << ", can_id=" << static_cast<unsigned>(decoded.can_id)
+                << ", previous_position=" << previous_position
+                << ", position=" << decoded.pos
+                << ", actual_delta=" << actual_delta
+                << ", allowed_delta=" << allowed_delta
+                << ", elapsed_s=" << elapsed;
+        record_feedback_rejection(
+            FeedbackRejectionReason::ImplausiblePositionJump, frame,
+            decoded.can_id, decoded.pos, previous_position, allowed_delta,
+            message.str());
+        return;
+      }
+    }
     state_ = state;
-    state_time_ = std::chrono::steady_clock::now();
+    state_time_ = now;
     ++feedback_update_count_;
   }
   state_cv_.notify_all();
+}
+
+void MotorHandle::record_feedback_rejection(
+    FeedbackRejectionReason reason, const CanFrame& frame,
+    uint16_t decoded_can_id, float position, float previous_position,
+    float allowed_position_delta, const std::string& error) const {
+  std::lock_guard<std::mutex> lock(integrity_mutex_);
+  ++integrity_stats_.rejected_frame_count;
+  if (reason == FeedbackRejectionReason::ShortFrame) {
+    ++integrity_stats_.short_frame_count;
+  } else if (reason == FeedbackRejectionReason::IdentityMismatch) {
+    ++integrity_stats_.identity_mismatch_count;
+  } else if (reason == FeedbackRejectionReason::ImplausiblePositionJump) {
+    ++integrity_stats_.implausible_position_jump_count;
+  }
+  integrity_stats_.last_reason = reason;
+  integrity_stats_.channel = frame.channel;
+  integrity_stats_.arbitration_id = frame.id;
+  integrity_stats_.expected_arbitration_id = feedback_id_;
+  integrity_stats_.decoded_can_id = decoded_can_id;
+  integrity_stats_.expected_can_id = motor_id_;
+  integrity_stats_.position = position;
+  integrity_stats_.previous_position = previous_position;
+  integrity_stats_.allowed_position_delta = allowed_position_delta;
+  integrity_stats_.error = error;
+}
+
+FeedbackIntegrityStats MotorHandle::feedback_integrity_stats() const {
+  std::lock_guard<std::mutex> lock(integrity_mutex_);
+  return integrity_stats_;
 }
 
 std::optional<MotorState> MotorHandle::latest_state() const {
@@ -704,15 +801,11 @@ std::vector<MotorDiscoveryResult> Controller::discover_damiao_motors(
         // ID directly. Accept those two protocol-defined representations,
         // but still reject arbitrary arbitration IDs that merely contain a
         // matching motor nibble in the payload.
-        const auto configured_standard_feedback_id =
-            static_cast<uint16_t>(0x10U | expected_can_id);
-        const auto dm_device_feedback_id =
-            static_cast<uint32_t>(0x200U | expected_can_id);
         const bool arbitration_id_matches =
             state.has_value() &&
-            (state->arbitration_id == result.candidate.feedback_id ||
-             (result.candidate.feedback_id == configured_standard_feedback_id &&
-              state->arbitration_id == dm_device_feedback_id));
+            matches_feedback_arbitration_id(
+                state->arbitration_id, result.candidate.feedback_id,
+                result.candidate.motor_id);
         if (!state.has_value() || state->can_id != expected_can_id ||
             !arbitration_id_matches) {
           std::ostringstream reason;

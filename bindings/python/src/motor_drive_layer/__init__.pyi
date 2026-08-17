@@ -16,6 +16,10 @@ from .runtime import ArticoreRuntime as ArticoreRuntime
 from .runtime_models import (
     ActiveCapability as ActiveCapability,
     CommandLifetime as CommandLifetime,
+    ConnectChannelResult as ConnectChannelResult,
+    ConnectErrorCode as ConnectErrorCode,
+    ConnectMotorResult as ConnectMotorResult,
+    ConnectReport as ConnectReport,
     DisableMotorResult as DisableMotorResult,
     DisableReport as DisableReport,
     EnableMotorResult as EnableMotorResult,
@@ -74,6 +78,8 @@ from .errors import (
 )
 from .models import (
     FeedbackStats as FeedbackStats,
+    FeedbackIntegrityStats as FeedbackIntegrityStats,
+    FeedbackRejectionReason as FeedbackRejectionReason,
     FeedbackReport as FeedbackReport,
     MitCommand as MitCommand,
     Mode as Mode,

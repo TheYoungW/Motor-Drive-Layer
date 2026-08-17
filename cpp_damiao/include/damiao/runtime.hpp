@@ -37,6 +37,30 @@ struct FeedbackStats {
   std::chrono::nanoseconds age{0};
 };
 
+enum class FeedbackRejectionReason : uint8_t {
+  None = 0,
+  ShortFrame = 1,
+  IdentityMismatch = 2,
+  ImplausiblePositionJump = 3,
+};
+
+struct FeedbackIntegrityStats {
+  uint64_t rejected_frame_count = 0;
+  uint64_t short_frame_count = 0;
+  uint64_t identity_mismatch_count = 0;
+  uint64_t implausible_position_jump_count = 0;
+  FeedbackRejectionReason last_reason = FeedbackRejectionReason::None;
+  uint8_t channel = 0xFF;
+  uint32_t arbitration_id = 0;
+  uint32_t expected_arbitration_id = 0;
+  uint16_t decoded_can_id = 0;
+  uint16_t expected_can_id = 0;
+  float position = 0.0f;
+  float previous_position = 0.0f;
+  float allowed_position_delta = 0.0f;
+  std::string error;
+};
+
 struct MitBatchCommand {
   std::shared_ptr<MotorHandle> motor;
   float pos = 0.0f;
@@ -131,6 +155,7 @@ class MotorHandle {
   void process_feedback_frame(const CanFrame& frame);
   std::optional<MotorState> latest_state() const;
   FeedbackStats feedback_stats() const;
+  FeedbackIntegrityStats feedback_integrity_stats() const;
 
  private:
   friend class Controller;
@@ -144,6 +169,13 @@ class MotorHandle {
   std::array<uint8_t, 4> wait_for_register(uint8_t rid, std::chrono::milliseconds timeout);
   void wait_for_write_ack(uint8_t rid, std::array<uint8_t, 4> expected,
                           std::chrono::milliseconds timeout);
+  void record_feedback_rejection(FeedbackRejectionReason reason,
+                                 const CanFrame& frame,
+                                 uint16_t decoded_can_id,
+                                 float position,
+                                 float previous_position,
+                                 float allowed_position_delta,
+                                 const std::string& error) const;
 
   std::shared_ptr<CanBus> bus_;
   uint16_t motor_id_;
@@ -155,6 +187,8 @@ class MotorHandle {
   std::optional<MotorState> state_;
   std::optional<std::chrono::steady_clock::time_point> state_time_;
   uint64_t feedback_update_count_ = 0;
+  mutable std::mutex integrity_mutex_;
+  mutable FeedbackIntegrityStats integrity_stats_;
   std::atomic<bool> disabled_hint_{true};
   mutable std::mutex register_mutex_;
   std::map<uint8_t, std::pair<std::array<uint8_t, 4>, std::chrono::steady_clock::time_point>>

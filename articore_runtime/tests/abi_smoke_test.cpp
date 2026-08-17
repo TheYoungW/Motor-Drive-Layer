@@ -20,6 +20,9 @@ int main() {
       &articore_runtime_set_gripper_commands;
   const auto disable_report = &articore_runtime_get_last_disable_report;
   const auto effective_control_hz = &articore_runtime_get_control_hz;
+  const auto configure_motor_identities =
+      &articore_runtime_configure_motor_identities;
+  const auto connect_report = &articore_runtime_get_last_connect_report;
   const auto version = articore_runtime_abi_version();
   const auto capabilities = articore_runtime_capabilities();
   const uint64_t required = ARTICORE_CAP_COMMAND_WATCHDOG |
@@ -41,16 +44,18 @@ int main() {
                             ARTICORE_CAP_JOINT_PV_POSITION |
                             ARTICORE_CAP_EFFECTIVE_CONTROL_RATE |
                             ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES |
-                            ARTICORE_CAP_CONNECT_FEEDBACK_BARRIER;
+                            ARTICORE_CAP_CONNECT_FEEDBACK_BARRIER |
+                            ARTICORE_CAP_STRUCTURED_CONNECT_REPORT;
   const uint64_t removed_trajectory_bits =
       (1ULL << 9) | (1ULL << 12) | (1ULL << 15) |
       (1ULL << 16) | (1ULL << 17);
   if (!create_ex || !enable_report || !submit_pos_vel_ex || !submit_mit_ex ||
       !set_joint_mit || !set_joint_pv || !disable_report ||
       !effective_control_hz ||
+      !configure_motor_identities || !connect_report ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x00020003U ||
+      version != 0x00020004U ||
       (capabilities & required) != required ||
       (capabilities & removed_trajectory_bits) != 0) {
     std::cerr << "Articore runtime ABI metadata is incomplete\n";

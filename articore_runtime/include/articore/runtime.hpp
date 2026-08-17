@@ -17,6 +17,17 @@ class RuntimeError : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
+class ConnectError : public RuntimeError {
+ public:
+  ConnectError(std::string message, ArticoreConnectReport report)
+      : RuntimeError(std::move(message)), report_(report) {}
+
+  const ArticoreConnectReport& report() const noexcept { return report_; }
+
+ private:
+  ArticoreConnectReport report_{};
+};
+
 namespace detail {
 
 inline int32_t group_send_pos_vel(void* group,
@@ -186,6 +197,15 @@ class Runtime final {
                   "configure_joint_safety_limits");
   }
 
+  void configure_motor_identities(
+      const std::vector<ArticoreMotorIdentity>& identities) {
+    auto native = identities;
+    for (auto& value : native) value.struct_size = sizeof(value);
+    detail::check(articore_runtime_configure_motor_identities(
+                      checked(), native.data(), size(native)),
+                  "configure_motor_identities");
+  }
+
   void configure_gripper_products(
       const std::vector<ArticoreGripperProductBinding>& bindings) {
     auto native = bindings;
@@ -214,8 +234,25 @@ class Runtime final {
     return articore_runtime_active_capabilities(checked());
   }
 
-  void connect() {
-    detail::check(articore_runtime_connect(checked()), "connect");
+  ArticoreConnectReport connect() {
+    const auto result = articore_runtime_connect(checked());
+    const std::string failure = result == 0 || !articore_runtime_last_error()
+        ? std::string{}
+        : articore_runtime_last_error();
+    auto report = last_connect_report();
+    if (result != 0) {
+      throw ConnectError("connect failed: " + failure, report);
+    }
+    return report;
+  }
+
+  ArticoreConnectReport last_connect_report() const {
+    ArticoreConnectReport report{};
+    report.struct_size = sizeof(report);
+    detail::check(
+        articore_runtime_get_last_connect_report(checked(), &report),
+        "get_last_connect_report");
+    return report;
   }
 
   ArticoreEnableReport enable(ArticoreControlMode mode) {
