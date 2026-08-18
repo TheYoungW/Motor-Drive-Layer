@@ -101,11 +101,11 @@ Python 可分别调用 `abi_capabilities()` 与 `articore_runtime_capabilities()
 
 ## 支持平台
 
-PyPI wheel 通过 GitHub Actions 为 Linux x86_64/ARM64、macOS Intel/Apple Silicon 和 Windows
-x64 构建。达妙串口传输支持以上所有平台；SocketCAN 和 SocketCAN-FD 仅支持 Linux。可选的
-`dm-device` 直连方式还需要对应平台的厂商运行库和 USB 驱动。
+PyPI 正式 wheel 仅通过 GitHub Actions 为 Linux x86_64/ARM64 构建。SocketCAN 和
+SocketCAN-FD 仅支持 Linux；可选的 `dm-device` 直连方式在每个 Linux wheel 中包含匹配的
+厂商运行库。其他平台仍可尝试从源码构建，但不属于正式 PyPI wheel 矩阵。
 
-常见串口名称为 Linux 的 `/dev/ttyACM0`、macOS 的 `/dev/cu.usbmodem*` 和 Windows 的 `COM3`。
+Linux 常见串口名称为 `/dev/ttyACM0`。
 
 ## 从源码安装 Python
 
