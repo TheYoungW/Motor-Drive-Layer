@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -8,6 +9,8 @@
 #include "damiao/can_bus.hpp"
 
 namespace damiao {
+
+class SocketCanBusTestPeer;
 
 struct SocketCanRawFrame {
   uint32_t can_id = 0;
@@ -49,10 +52,14 @@ class SocketCanBus final : public CanBus {
   TransportCapabilities capabilities() const override;
 
  private:
-  SocketCanBus(int fd, std::string interface);
+  friend class SocketCanBusTestPeer;
+
+  SocketCanBus(int fd, std::string interface,
+               std::chrono::milliseconds send_timeout);
 
   int fd_;
   std::string interface_;
+  std::chrono::milliseconds send_timeout_;
   std::mutex mutex_;
 };
 
@@ -71,11 +78,15 @@ class SocketCanFdBus final : public CanBus {
   TransportCapabilities capabilities() const override;
 
  private:
-  SocketCanFdBus(int fd, std::string interface, bool enable_brs);
+  friend class SocketCanBusTestPeer;
+
+  SocketCanFdBus(int fd, std::string interface, bool enable_brs,
+                 std::chrono::milliseconds send_timeout);
 
   int fd_;
   std::string interface_;
   bool enable_brs_;
+  std::chrono::milliseconds send_timeout_;
   std::mutex mutex_;
 };
 

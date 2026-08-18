@@ -1,10 +1,15 @@
 #include "damiao/socketcan_bus.hpp"
 
 #include <algorithm>
+#include <cerrno>
+#include <charconv>
 #include <cstring>
+#include <cstdlib>
+#include <limits>
 #include <stdexcept>
 
 #if defined(__linux__)
+#include <fcntl.h>
 #include <linux/can.h>
 #include <linux/can/raw.h>
 #include <net/if.h>
@@ -30,14 +35,90 @@ void validate_frame(const CanFrame& frame) {
 }
 
 #if defined(__linux__)
+constexpr auto kDefaultSendTimeout = std::chrono::milliseconds(20);
+constexpr uint64_t kMaximumSendTimeoutMs = 60000;
+
 std::runtime_error os_error(const std::string& prefix) {
   return std::runtime_error(prefix + ": " + std::strerror(errno));
+}
+
+std::chrono::milliseconds configured_send_timeout() {
+  const char* raw = std::getenv("MOTOR_DRIVE_LAYER_SOCKETCAN_SEND_TIMEOUT_MS");
+  if (raw == nullptr) return kDefaultSendTimeout;
+
+  uint64_t timeout_ms = 0;
+  const auto* end = raw + std::strlen(raw);
+  const auto parsed = std::from_chars(raw, end, timeout_ms);
+  if (parsed.ec != std::errc{} || parsed.ptr != end || timeout_ms == 0 ||
+      timeout_ms > kMaximumSendTimeoutMs) {
+    return kDefaultSendTimeout;
+  }
+  return std::chrono::milliseconds(static_cast<int64_t>(timeout_ms));
+}
+
+void write_frame_with_timeout(int fd, const void* frame, size_t frame_size,
+                              std::chrono::milliseconds timeout,
+                              const std::string& endpoint) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  int queue_error = EAGAIN;
+
+  while (true) {
+    const ssize_t written = ::write(fd, frame, frame_size);
+    if (written == static_cast<ssize_t>(frame_size)) return;
+    if (written >= 0) {
+      throw std::runtime_error(endpoint + " send failed: short frame write (" +
+                               std::to_string(written) + "/" +
+                               std::to_string(frame_size) + " bytes)");
+    }
+
+    const int error = errno;
+    if (error == EINTR) {
+      if (std::chrono::steady_clock::now() >= deadline) break;
+      continue;
+    }
+    if (error != EAGAIN && error != EWOULDBLOCK && error != ENOBUFS) {
+      throw std::runtime_error(endpoint + " send failed: " + std::strerror(error));
+    }
+    queue_error = error;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) break;
+    const auto remaining = deadline - now;
+    auto poll_ms = std::chrono::ceil<std::chrono::milliseconds>(remaining).count();
+    poll_ms = std::min<int64_t>(poll_ms, std::numeric_limits<int>::max());
+
+    pollfd pfd{fd, POLLOUT, 0};
+    const int rc = ::poll(&pfd, 1, static_cast<int>(poll_ms));
+    if (rc < 0) {
+      if (errno == EINTR) {
+        if (std::chrono::steady_clock::now() >= deadline) break;
+        continue;
+      }
+      throw os_error(endpoint + " send poll failed");
+    }
+    if (rc == 0) break;
+    if ((pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+      throw std::runtime_error(endpoint + " send poll reported socket error (revents=" +
+                               std::to_string(pfd.revents) + ")");
+    }
+  }
+
+  throw std::runtime_error(
+      endpoint + " send timed out after " + std::to_string(timeout.count()) +
+      " ms: transmit queue remained full (" + std::strerror(queue_error) + ")");
 }
 
 int open_bound_socket(const std::string& interface, bool canfd) {
   const int fd = ::socket(PF_CAN, SOCK_RAW, CAN_RAW);
   if (fd < 0) {
     throw os_error("socket(PF_CAN, SOCK_RAW, CAN_RAW) failed");
+  }
+
+  const int flags = ::fcntl(fd, F_GETFL, 0);
+  if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+    const auto err = os_error("failed to make SocketCAN socket non-blocking");
+    ::close(fd);
+    throw err;
   }
 
   if (canfd) {
@@ -111,15 +192,19 @@ CanFrame SocketCanCodec::decode_fd(const SocketCanFdRawFrame& raw) {
 std::shared_ptr<SocketCanBus> SocketCanBus::open(const std::string& interface) {
 #if defined(__linux__)
   return std::shared_ptr<SocketCanBus>(new SocketCanBus(open_bound_socket(interface, false),
-                                                        interface));
+                                                        interface,
+                                                        configured_send_timeout()));
 #else
   (void)interface;
   throw std::runtime_error("socketcan transport is only available on Linux");
 #endif
 }
 
-SocketCanBus::SocketCanBus(int fd, std::string interface)
-    : fd_(fd), interface_(std::move(interface)) {}
+SocketCanBus::SocketCanBus(int fd, std::string interface,
+                           std::chrono::milliseconds send_timeout)
+    : fd_(fd),
+      interface_(std::move(interface)),
+      send_timeout_(send_timeout) {}
 
 SocketCanBus::~SocketCanBus() {
   try {
@@ -137,9 +222,8 @@ void SocketCanBus::send(const CanFrame& frame) {
   std::copy(raw_portable.data.begin(), raw_portable.data.end(), raw.data);
   std::lock_guard<std::mutex> lock(mutex_);
   if (fd_ < 0) throw std::runtime_error("socketcan fd already closed");
-  if (::write(fd_, &raw, sizeof(raw)) != static_cast<ssize_t>(sizeof(raw))) {
-    throw os_error("socketcan write failed");
-  }
+  write_frame_with_timeout(fd_, &raw, sizeof(raw), send_timeout_,
+                           "socketcan " + interface_);
 #else
   (void)frame;
   throw std::runtime_error("socketcan transport is only available on Linux");
@@ -152,10 +236,17 @@ std::optional<CanFrame> SocketCanBus::receive_for(std::chrono::milliseconds time
   if (fd_ < 0) throw std::runtime_error("socketcan fd already closed");
   pollfd pfd{fd_, POLLIN, 0};
   const int rc = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
-  if (rc < 0) throw os_error("socketcan poll failed");
+  if (rc < 0) {
+    if (errno == EINTR) return std::nullopt;
+    throw os_error("socketcan poll failed");
+  }
   if (rc == 0) return std::nullopt;
   can_frame raw{};
-  if (::read(fd_, &raw, sizeof(raw)) != static_cast<ssize_t>(sizeof(raw))) {
+  const ssize_t received = ::read(fd_, &raw, sizeof(raw));
+  if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+    return std::nullopt;
+  }
+  if (received != static_cast<ssize_t>(sizeof(raw))) {
     throw os_error("socketcan read failed");
   }
   SocketCanRawFrame portable;
@@ -187,7 +278,8 @@ std::shared_ptr<SocketCanFdBus> SocketCanFdBus::open(const std::string& interfac
                                                      bool enable_brs) {
 #if defined(__linux__)
   return std::shared_ptr<SocketCanFdBus>(new SocketCanFdBus(open_bound_socket(interface, true),
-                                                            interface, enable_brs));
+                                                            interface, enable_brs,
+                                                            configured_send_timeout()));
 #else
   (void)interface;
   (void)enable_brs;
@@ -195,8 +287,12 @@ std::shared_ptr<SocketCanFdBus> SocketCanFdBus::open(const std::string& interfac
 #endif
 }
 
-SocketCanFdBus::SocketCanFdBus(int fd, std::string interface, bool enable_brs)
-    : fd_(fd), interface_(std::move(interface)), enable_brs_(enable_brs) {}
+SocketCanFdBus::SocketCanFdBus(int fd, std::string interface, bool enable_brs,
+                               std::chrono::milliseconds send_timeout)
+    : fd_(fd),
+      interface_(std::move(interface)),
+      enable_brs_(enable_brs),
+      send_timeout_(send_timeout) {}
 
 SocketCanFdBus::~SocketCanFdBus() {
   try {
@@ -215,9 +311,8 @@ void SocketCanFdBus::send(const CanFrame& frame) {
   std::copy(raw_portable.data.begin(), raw_portable.data.end(), raw.data);
   std::lock_guard<std::mutex> lock(mutex_);
   if (fd_ < 0) throw std::runtime_error("socketcanfd fd already closed");
-  if (::write(fd_, &raw, sizeof(raw)) != static_cast<ssize_t>(sizeof(raw))) {
-    throw os_error("socketcanfd write failed");
-  }
+  write_frame_with_timeout(fd_, &raw, sizeof(raw), send_timeout_,
+                           "socketcanfd " + interface_);
 #else
   (void)frame;
   throw std::runtime_error("socketcanfd transport is only available on Linux");
@@ -230,10 +325,17 @@ std::optional<CanFrame> SocketCanFdBus::receive_for(std::chrono::milliseconds ti
   if (fd_ < 0) throw std::runtime_error("socketcanfd fd already closed");
   pollfd pfd{fd_, POLLIN, 0};
   const int rc = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
-  if (rc < 0) throw os_error("socketcanfd poll failed");
+  if (rc < 0) {
+    if (errno == EINTR) return std::nullopt;
+    throw os_error("socketcanfd poll failed");
+  }
   if (rc == 0) return std::nullopt;
   canfd_frame raw{};
-  if (::read(fd_, &raw, sizeof(raw)) != static_cast<ssize_t>(sizeof(raw))) {
+  const ssize_t received = ::read(fd_, &raw, sizeof(raw));
+  if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+    return std::nullopt;
+  }
+  if (received != static_cast<ssize_t>(sizeof(raw))) {
     throw os_error("socketcanfd read failed");
   }
   SocketCanFdRawFrame portable;

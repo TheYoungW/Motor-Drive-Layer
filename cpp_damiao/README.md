@@ -52,6 +52,11 @@ the controller to override the automatic default. `enable_all()` and `disable_al
 separate 2 ms inter-motor delay by default, configurable through
 `MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS`.
 
+Linux SocketCAN and SocketCAN-FD sockets use non-blocking writes with a 20 ms bounded wait when
+the kernel transmit queue is full. A timeout raises a transport error, updates
+`TransportHealth::send_errors`/`last_error`, and allows controller shutdown to continue. Set
+`MOTOR_DRIVE_LAYER_SOCKETCAN_SEND_TIMEOUT_MS` before opening the bus to configure 1--60000 ms.
+
 `MotorHandle::request_feedback()` only transmits an asynchronous request, and
 `Controller::poll_feedback_once()` only drains frames that have already arrived. Use
 `MotorHandle::request_fresh_state(timeout)` when the caller needs one newer sample before

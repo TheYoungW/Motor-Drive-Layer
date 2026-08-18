@@ -174,6 +174,11 @@ Controller 只有一台电机时，运行时不额外延迟发送。添加第二
 `enable_all()` 和 `disable_all()` 还会默认在电机之间额外等待 2 ms。在创建 Controller 前设置
 `MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS` 可修改这个批量操作间隔。这些数值是主机侧的最小提交间隔，不是对 CAN 总线物理时序的硬实时保证。
 
+Linux SocketCAN 和 SocketCAN-FD socket 使用非阻塞模式。如果内核发送队列持续满，发送会在
+20 ms 后失败，不再让 Controller worker 无限期卡住。该错误会写入 `TransportHealth`，并沿批量发送
+和 Runtime 故障链路上报；关闭操作至多等待当前这次有界发送结束。打开 transport 前设置
+`MOTOR_DRIVE_LAYER_SOCKETCAN_SEND_TIMEOUT_MS` 可将超时调整为 1 到 60000 ms。
+
 ## 多 Controller 并行批量发送
 
 `ControllerGroup` 为每个 Controller 常驻一个原生工作线程，并在每次发送时复用。一次调用会用同一批次代数唤醒全部 Controller，保持每个 Controller 内部的命令顺序，等待所有 Controller 完成后统一返回。控制循环不再每周期创建或调度 Python 线程，不同 Controller 的发送间隔等待可以重叠。

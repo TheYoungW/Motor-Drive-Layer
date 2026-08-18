@@ -188,6 +188,13 @@ default.
 interval. These are host-side minimum submission intervals, not hard real-time guarantees for
 physical CAN bus timing.
 
+Linux SocketCAN and SocketCAN-FD sockets are non-blocking. If the kernel transmit queue remains
+full, a send fails after 20 ms instead of leaving the controller worker blocked indefinitely. The
+failure is recorded in `TransportHealth` and propagates through batch and Runtime fault handling;
+shutdown waits at most for the in-progress bounded send. Set
+`MOTOR_DRIVE_LAYER_SOCKETCAN_SEND_TIMEOUT_MS` before opening the transport to choose a timeout from
+1 to 60000 ms.
+
 ## Parallel controller batches
 
 `ControllerGroup` keeps one native worker per Controller and reuses those workers on every

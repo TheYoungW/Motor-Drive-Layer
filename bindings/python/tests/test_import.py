@@ -16,4 +16,4 @@ def test_import_symbols() -> None:
     assert ArticoreRuntime is not None
     assert GravityCompensationPhase.ACTIVE.value == 2
     assert GravityProductBinding(0, 0).product_id == "yunyi_v1_0"
-    assert get_version() == "0.10.12"
+    assert get_version() == "0.10.13"
