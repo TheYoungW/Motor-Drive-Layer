@@ -74,6 +74,12 @@ enum ArticoreRuntimeCapability {
   // per-side transport capabilities. Two SocketCAN-FD+BRS sides may run at
   // 500 Hz; legacy and DM Device dual transports remain capped at 400 Hz.
   ARTICORE_CAP_TRANSPORT_AWARE_CONTROL_RATE = 1ULL << 27,
+  // ABI 2.6 recomputes complete raw-MIT P + D + feedforward output from the
+  // newest native feedback on every actual control tick, including ticks
+  // that repeat the latest mailbox target. Per-joint output is bounded to
+  // 80% of its configured torque limit by scaling Kp, Kd and feedforward
+  // together.
+  ARTICORE_CAP_PER_CYCLE_MIT_TORQUE_LIMIT = 1ULL << 28,
 };
 
 enum ArticoreConnectErrorCode {
@@ -521,6 +527,26 @@ typedef struct ArticoreSafetyHealth {
   char fault_reason[512];
 } ArticoreSafetyHealth;
 
+enum { ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS = 32 };
+
+typedef struct ArticoreMitTorqueLimitStats {
+  // Caller initializes this to sizeof(ArticoreMitTorqueLimitStats).
+  uint32_t struct_size;
+  // Number of successfully transmitted native control cycles in which at
+  // least one arm joint required limiting.
+  uint64_t torque_limit_activation_count;
+  // Bit i describes joints[i] from the most recently transmitted MIT arm
+  // batch. A set bit means that joint was limited in that cycle.
+  uint64_t torque_limited_joint_mask;
+  uint32_t joint_count;
+  void* joints[ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS];
+  // Values use the motor command/feedback torque domain used by the native
+  // MIT protocol after any product range mapping performed by the caller.
+  float requested_resultant_torque[ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS];
+  float applied_scale[ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS];
+  float applied_resultant_torque[ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS];
+} ArticoreMitTorqueLimitStats;
+
 // Packed as 0xMMMMmmmm: major in the high 16 bits, minor in the low 16 bits.
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void);
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void);
@@ -699,6 +725,11 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_estop(
 ARTICORE_RUNTIME_API int32_t articore_runtime_recover(ArticoreRuntime* runtime);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_health(
     ArticoreRuntime* runtime, ArticoreSafetyHealth* health);
+// Returns the cumulative activation counter and the latest successfully sent
+// MIT arm cycle. Statistics are updated for both newly consumed mailbox
+// targets and native cycles that repeat the previous target.
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_mit_torque_limit_stats(
+    ArticoreRuntime* runtime, ArticoreMitTorqueLimitStats* stats);
 // Declares roles omitted from the active motor descriptor set. This is only
 // valid while DISCONNECTED and is intended for Optional/Disabled model roles.
 // Active descriptor names are registered as PRESENT automatically.

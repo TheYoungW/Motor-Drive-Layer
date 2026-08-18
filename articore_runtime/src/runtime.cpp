@@ -117,6 +117,14 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
     }
     motors_.push_back(std::move(record));
   }
+  mit_torque_limit_stats_.struct_size =
+      sizeof(ArticoreMitTorqueLimitStats);
+  std::fill(std::begin(mit_torque_limit_stats_.applied_scale),
+            std::end(mit_torque_limit_stats_.applied_scale), 1.0f);
+  mit_torque_limited_commands_.reserve(static_cast<std::size_t>(std::count_if(
+      motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
+        return motor.descriptor.is_gripper == 0;
+      })));
   const bool has_gripper = std::any_of(
       motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
         return motor.descriptor.is_gripper != 0;
@@ -450,6 +458,11 @@ uint64_t SafetyRuntime::active_capabilities() const {
     }
   }
   return capabilities;
+}
+
+ArticoreMitTorqueLimitStats SafetyRuntime::mit_torque_limit_stats() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return mit_torque_limit_stats_;
 }
 
 void SafetyRuntime::mark_motor_faulted(void* motor) {

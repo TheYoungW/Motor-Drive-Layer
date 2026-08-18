@@ -358,6 +358,15 @@ class Runtime final {
     return result;
   }
 
+  ArticoreMitTorqueLimitStats mit_torque_limit_stats() const {
+    ArticoreMitTorqueLimitStats result{};
+    result.struct_size = sizeof(result);
+    detail::check(articore_runtime_get_mit_torque_limit_stats(
+                      checked(), &result),
+                  "get_mit_torque_limit_stats");
+    return result;
+  }
+
   void estop(const std::string& reason) {
     detail::check(articore_runtime_estop(checked(), reason.c_str()), "estop");
   }

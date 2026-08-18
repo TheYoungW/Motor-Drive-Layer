@@ -41,7 +41,7 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 5U;
+  return (2U << 16) | 6U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -67,7 +67,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES |
          ARTICORE_CAP_CONNECT_FEEDBACK_BARRIER |
          ARTICORE_CAP_STRUCTURED_CONNECT_REPORT |
-         ARTICORE_CAP_TRANSPORT_AWARE_CONTROL_RATE;
+         ARTICORE_CAP_TRANSPORT_AWARE_CONTROL_RATE |
+         ARTICORE_CAP_PER_CYCLE_MIT_TORQUE_LIMIT;
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_hz(
@@ -354,6 +355,18 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_health(
     return -1;
   }
   return call([&] { *health = checked(runtime).health(); });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_mit_torque_limit_stats(
+    ArticoreRuntime* runtime, ArticoreMitTorqueLimitStats* stats) {
+  return call([&] {
+    if (!stats) throw std::invalid_argument("MIT torque limit stats are null");
+    if (stats->struct_size < sizeof(ArticoreMitTorqueLimitStats)) {
+      throw std::invalid_argument(
+          "MIT torque limit stats struct_size is too small");
+    }
+    *stats = checked(runtime).mit_torque_limit_stats();
+  });
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_declare_motor_presence(

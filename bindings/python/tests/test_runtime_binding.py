@@ -117,6 +117,10 @@ def test_runtime_binding_owns_handles_and_converts_health() -> None:
         # hardware tests rather than dereferencing these sentinels.
         assert runtime.health.state is SafetyState.DISCONNECTED
         assert runtime.control_hz == 400
+        torque_stats = runtime.mit_torque_limit_stats
+        assert torque_stats.torque_limit_activation_count == 0
+        assert torque_stats.torque_limited_joint_mask == 0
+        assert torque_stats.joints == ()
         assert runtime.active_capabilities == ActiveCapability.ARM_SIDE_0
         assert runtime.last_enable_report().expected_count == 0
         assert runtime.last_disable_report().expected_count == 0

@@ -134,6 +134,22 @@ class JointSafetyLimits:
 
 
 @dataclass(frozen=True)
+class MitTorqueLimitJointStats:
+    motor: Motor
+    requested_resultant_torque: float
+    applied_scale: float
+    applied_resultant_torque: float
+    limited: bool
+
+
+@dataclass(frozen=True)
+class MitTorqueLimitStats:
+    torque_limit_activation_count: int
+    torque_limited_joint_mask: int
+    joints: tuple[MitTorqueLimitJointStats, ...]
+
+
+@dataclass(frozen=True)
 class GripperProductBinding:
     motor: Motor
     profile_id: str

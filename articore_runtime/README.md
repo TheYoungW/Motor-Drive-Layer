@@ -226,6 +226,18 @@ transports, and DM Device dual runtimes remain capped at 400 Hz. Single-side run
 explicitly requested rate. Product SDKs should query and report the effective value instead of
 assuming the requested rate was accepted unchanged.
 
+Runtime ABI 2.6 advertises `ARTICORE_CAP_PER_CYCLE_MIT_TORQUE_LIMIT`. Before every native MIT arm
+send—including cycles that repeat the latest capacity-one mailbox target—the worker reads the
+newest native position and velocity feedback and computes
+`Kp * (q_target - q_feedback) + Kd * (dq_target - dq_feedback) + tau_ff`. Each joint is bounded to
+80% of its configured `torque_limit`; when limiting is necessary, Kp, Kd, and feedforward torque
+are multiplied by the same scale so their relative contributions are preserved. The complete arm
+batch is rejected before transmission if any required feedback is missing, stale, disabled, or
+non-finite, which then enters the existing protective fault-hold path. This keeps the protection at
+the actual native control rate even when a publisher updates at only 100--500 Hz. The cumulative
+activation count and latest per-joint requested torque, applied scale, and applied torque are
+available through `articore_runtime_get_mit_torque_limit_stats()`.
+
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations
 are rejected after connect, and a present motor that loses fresh feedback, reports a motor fault,

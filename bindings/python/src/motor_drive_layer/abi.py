@@ -345,6 +345,7 @@ def articore_runtime_capabilities() -> dict[str, bool]:
         "connect_feedback_barrier": bool(bits & (1 << 25)),
         "structured_connect_report": bool(bits & (1 << 26)),
         "transport_aware_control_rate": bool(bits & (1 << 27)),
+        "per_cycle_mit_torque_limit": bool(bits & (1 << 28)),
     }
 
 

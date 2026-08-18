@@ -254,6 +254,22 @@ class CSafetyHealth(Structure):
     ]
 
 
+_MAX_MIT_TORQUE_LIMIT_JOINTS = 32
+
+
+class CMitTorqueLimitStats(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32),
+        ("torque_limit_activation_count", c_uint64),
+        ("torque_limited_joint_mask", c_uint64),
+        ("joint_count", c_uint32),
+        ("joints", c_void_p * _MAX_MIT_TORQUE_LIMIT_JOINTS),
+        ("requested_resultant_torque", c_float * _MAX_MIT_TORQUE_LIMIT_JOINTS),
+        ("applied_scale", c_float * _MAX_MIT_TORQUE_LIMIT_JOINTS),
+        ("applied_resultant_torque", c_float * _MAX_MIT_TORQUE_LIMIT_JOINTS),
+    ]
+
+
 def _address(function: object) -> int:
     value = ctypes.cast(function, c_void_p).value
     if value is None:
@@ -267,9 +283,9 @@ class RuntimeAbi:
         self.lib = ctypes.CDLL(articore_runtime_library_path())
         self.lib.articore_runtime_abi_version.restype = c_uint32
         version = int(self.lib.articore_runtime_abi_version())
-        if version < 0x00020004:
+        if version < 0x00020006:
             raise AbiLoadError(
-                "official ArticoreRuntime binding requires Runtime ABI >= 2.4; "
+                "official ArticoreRuntime binding requires Runtime ABI >= 2.6; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self._bind()
@@ -320,6 +336,10 @@ class RuntimeAbi:
         lib.articore_runtime_get_control_hz.restype = c_int32
         lib.articore_runtime_get_health.argtypes = [c_void_p, POINTER(CSafetyHealth)]
         lib.articore_runtime_get_health.restype = c_int32
+        lib.articore_runtime_get_mit_torque_limit_stats.argtypes = [
+            c_void_p, POINTER(CMitTorqueLimitStats)
+        ]
+        lib.articore_runtime_get_mit_torque_limit_stats.restype = c_int32
         lib.articore_runtime_get_last_enable_report.argtypes = [c_void_p, POINTER(CEnableReport)]
         lib.articore_runtime_get_last_enable_report.restype = c_int32
         lib.articore_runtime_get_last_disable_report.argtypes = [c_void_p, POINTER(CDisableReport)]

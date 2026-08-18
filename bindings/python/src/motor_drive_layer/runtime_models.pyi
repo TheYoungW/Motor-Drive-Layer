@@ -79,6 +79,18 @@ class JointSafetyLimits:
     soft_limit_braking_zone: float
     braking_acceleration: float
     def __init__(self, motor: Motor, hard_lower_position: float, hard_upper_position: float, soft_lower_position: float, soft_upper_position: float, soft_limit_braking_zone: float, braking_acceleration: float) -> None: ...
+class MitTorqueLimitJointStats:
+    motor: Motor
+    requested_resultant_torque: float
+    applied_scale: float
+    applied_resultant_torque: float
+    limited: bool
+    def __init__(self, motor: Motor, requested_resultant_torque: float, applied_scale: float, applied_resultant_torque: float, limited: bool) -> None: ...
+class MitTorqueLimitStats:
+    torque_limit_activation_count: int
+    torque_limited_joint_mask: int
+    joints: tuple[MitTorqueLimitJointStats, ...]
+    def __init__(self, torque_limit_activation_count: int, torque_limited_joint_mask: int, joints: tuple[MitTorqueLimitJointStats, ...]) -> None: ...
 class GripperProductBinding:
     motor: Motor
     profile_id: str

@@ -86,10 +86,11 @@ jobs:
           assert motor_drive_layer.abi_capabilities()["features"]["register_metadata"] is True
           runtime_path = motor_drive_layer.articore_runtime_library_path()
           assert runtime_path.endswith("libarticore_runtime.so")
-          assert motor_drive_layer.articore_runtime_abi_version() == "2.5"
+          assert motor_drive_layer.articore_runtime_abi_version() == "2.6"
           assert motor_drive_layer.articore_runtime_capabilities()["connect_feedback_barrier"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["structured_connect_report"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["transport_aware_control_rate"] is True
+          assert motor_drive_layer.articore_runtime_capabilities()["per_cycle_mit_torque_limit"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["safe_hold"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["current_position_hold"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["realtime_joint_mailbox"] is True

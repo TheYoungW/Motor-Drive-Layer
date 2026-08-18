@@ -1,14 +1,14 @@
 {
   "schema": 1,
   "package": "motor_drive_layer",
-  "version": "0.10.8",
+  "version": "0.10.9",
   "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",
     "articore_runtime": "product watchdog, safety state machine and gripper ABI"
   },
   "runtime_abi": {
-    "version": "2.5",
+    "version": "2.6",
     "capabilities": [
       "atomic_enable",
       "builtin_gripper_product_profiles",
@@ -26,6 +26,7 @@
       "joint_pv_position",
       "layered_joint_limits",
       "motor_presence",
+      "per_cycle_mit_torque_limit",
       "protective_fault_hold",
       "realtime_joint_mailbox",
       "safe_hold",
@@ -180,6 +181,7 @@
       "ArticoreRuntime.submit_pv(commands, lifetime)",
       "ArticoreRuntime.set_grippers(commands)",
       "ArticoreRuntime.health",
+      "ArticoreRuntime.mit_torque_limit_stats",
       "ArticoreRuntime.disable()",
       "ArticoreRuntime.estop(reason)",
       "ArticoreRuntime.recover()",
@@ -259,6 +261,7 @@
         "articore_runtime_estop",
         "articore_runtime_recover",
         "articore_runtime_get_health",
+        "articore_runtime_get_mit_torque_limit_stats",
         "articore_runtime_declare_motor_presence",
         "articore_runtime_motor_presence",
         "articore_runtime_active_capabilities",

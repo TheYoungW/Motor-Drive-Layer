@@ -88,6 +88,7 @@ class SafetyRuntime {
   void report_feedback_failure(uint8_t side, const std::string& reason);
   void disable();
   ArticoreDisableReport last_disable_report() const;
+  ArticoreMitTorqueLimitStats mit_torque_limit_stats() const;
   void estop(const std::string& reason);
   void recover();
   ArticoreSafetyHealth health() const;
@@ -213,6 +214,11 @@ class SafetyRuntime {
   void worker_loop();
   bool run_arm_control_cycle(Clock::time_point now, bool include_grippers,
                              std::string& error);
+  bool prepare_mit_torque_limited_commands(
+      const std::vector<ArticoreMitCommand>& requested,
+      std::vector<ArticoreMitCommand>& applied,
+      ArticoreMitTorqueLimitStats& cycle_stats,
+      std::string& error) const;
   uint64_t next_arm_generation() noexcept;
   void consume_pending_arm_mailbox();
   void clear_pending_arm_mailbox();
@@ -344,10 +350,14 @@ class SafetyRuntime {
   std::vector<ArticoreMitCommand> safe_grippers_;
   std::vector<ArticorePosVelCommand> last_sent_pv_;
   std::vector<ArticoreMitCommand> last_sent_mit_;
+  // Reused by the single native worker so per-cycle MIT limiting does not
+  // allocate after the first complete arm batch.
+  std::vector<ArticoreMitCommand> mit_torque_limited_commands_;
   bool fault_hold_active_ = false;
   ArticoreEnableReport last_enable_report_{};
   ArticoreDisableReport last_disable_report_{};
   ArticoreConnectReport last_connect_report_{};
+  ArticoreMitTorqueLimitStats mit_torque_limit_stats_{};
 };
 
 }  // namespace articore

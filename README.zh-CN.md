@@ -435,6 +435,13 @@ SocketCAN-FD+BRS 时允许最高 500 Hz；DM Device 和旧调用路径仍限制�
 30 秒提交 500.02 Hz，16 台反馈 497.36～499.36 Hz，原生 transport 错误为零，最终确认
 16/16 失能。实际生效频率通过 `articore_runtime_get_control_hz()` 暴露。
 
+Runtime ABI 2.6 将完整 MIT 合成力矩保护下沉到原生 worker。每个实际 MIT 发送周期
+——包括重复发送 latest-mailbox 目标的周期——都使用最新原生 q/dq 反馈重新计算 P+D+
+前馈，并将每个关节限制在配置力矩上限的 80%。超限时 Kp、Kd 和前馈力矩按同一比例
+缩放；任一必需反馈缺失、过期或非有限时，整个双臂批次不发送并进入现有保护性故障保持路径。
+诊断统计可以低频读取，Python raw MIT 提交热路径不再需要读反馈。该修改已通过模拟原生
+测试和绑定层测试，本轮按要求未连接真机。
+
 ## 贡献与安全
 
 提交修改前请阅读[CONTRIBUTING.md](CONTRIBUTING.md)。涉及机械臂安全或通信漏洞的问题请按照[SECURITY.md](SECURITY.md)私下报告，不要先公开可直接复现危险动作的细节。

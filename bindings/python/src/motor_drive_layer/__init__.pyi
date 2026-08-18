@@ -32,6 +32,8 @@ from .runtime_models import (
     JointControlConfig as JointControlConfig,
     JointPositionTarget as JointPositionTarget,
     JointSafetyLimits as JointSafetyLimits,
+    MitTorqueLimitJointStats as MitTorqueLimitJointStats,
+    MitTorqueLimitStats as MitTorqueLimitStats,
     RuntimeConfig as RuntimeConfig,
     RuntimeControlMode as RuntimeControlMode,
     RuntimeMitCommand as RuntimeMitCommand,

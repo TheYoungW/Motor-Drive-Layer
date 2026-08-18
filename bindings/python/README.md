@@ -18,6 +18,11 @@ transport capabilities during creation: dual SocketCAN-FD+BRS runtimes may run a
 legacy, mixed, and DM Device dual runtimes retain the 400 Hz envelope. Raw Runtime submission uses
 a non-blocking latest-value mailbox, and Motor cached-state/statistics reads rely on their internal
 snapshot locks instead of contending with the Runtime transport worker.
+Runtime ABI 2.6 moves complete MIT resultant-torque protection into every native send cycle. It
+recomputes P + D + feedforward from the latest feedback, applies the per-joint 80% torque bound by
+scaling Kp/Kd/feedforward together, and exposes `ArticoreRuntime.mit_torque_limit_stats` for
+low-rate diagnostics. Python raw-MIT publishers therefore do not need feedback reads or NumPy
+torque limiting in their submission hot path.
 Runtime ABI 2.2 adds built-in gripper product profiles. SDKs bind every installed gripper to
 `yunyi_gripper_v1` with `articore_runtime_configure_gripper_products()` before `connect()`; Python
 no longer supplies motor-position mapping, MIT gains, contact/stall/overload timing, retreat values,

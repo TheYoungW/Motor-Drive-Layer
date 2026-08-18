@@ -1924,6 +1924,121 @@ void test_raw_mit_publish_does_not_wait_for_inflight_transport_send() {
   runtime.disable();
 }
 
+void test_raw_mit_torque_limit_recomputes_on_every_native_cycle() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.control_hz = 500;
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100),
+      g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+
+  // Left requested output is 10*(1-0) + 4*(1-(-1)) + 3 = 21. The
+  // configured torque limit is 10, so the native 80% bound is 8.
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].position = 0.0f;
+    driver.motors[motors[0].motor].velocity = -1.0f;
+  }
+  ArticoreMitCommand commands[] = {
+      {motors[0].motor, 1.0f, 1.0f, 10.0f, 4.0f, 3.0f},
+      {motors[1].motor, 1.0f, 0.0f, 10.0f, 4.0f, 0.0f},
+  };
+  runtime.submit_mit(commands, 2);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return !driver.last_arm_mit.empty() &&
+                driver.last_arm_mit[0].target_position == 1.0f &&
+                driver.last_arm_mit[0].stiffness < 10.0f;
+          }),
+          "native MIT cycle limits complete P+D+FF output");
+  ArticoreMitCommand limited{};
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    limited = driver.last_arm_mit[0];
+  }
+  const float expected_scale = 8.0f / 21.0f;
+  require(std::abs(limited.stiffness - 10.0f * expected_scale) < 1e-5f &&
+              std::abs(limited.damping - 4.0f * expected_scale) < 1e-5f &&
+              std::abs(limited.feedforward_torque -
+                       3.0f * expected_scale) < 1e-5f,
+          "Kp, Kd and feedforward retain their ratio when limited");
+  auto stats = runtime.mit_torque_limit_stats();
+  require(stats.torque_limit_activation_count > 0 &&
+              stats.torque_limited_joint_mask == 1 &&
+              stats.joint_count == 2 &&
+              stats.joints[0] == motors[0].motor &&
+              std::abs(stats.requested_resultant_torque[0] - 21.0f) < 1e-5f &&
+              std::abs(stats.applied_scale[0] - expected_scale) < 1e-5f &&
+              std::abs(stats.applied_resultant_torque[0] - 8.0f) < 1e-5f,
+          "MIT limiter statistics describe the actual native send cycle");
+
+  std::size_t history_before = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    history_before = driver.arm_mit_history.size();
+    // With no new submit, the same target now requests
+    // 10*(1-.8) + 4*(1-.5) + 3 = 7, below the 8-unit bound.
+    driver.motors[motors[0].motor].position = 0.8f;
+    driver.motors[motors[0].motor].velocity = 0.5f;
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.arm_mit_history.size() > history_before &&
+                std::abs(driver.arm_mit_history.back()[0].stiffness - 10.0f) <
+                    1e-6f;
+          }),
+          "repeated mailbox target is recomputed from newer feedback");
+  stats = runtime.mit_torque_limit_stats();
+  require(stats.torque_limited_joint_mask == 0 &&
+              std::abs(stats.requested_resultant_torque[0] - 7.0f) < 1e-5f &&
+              stats.applied_scale[0] == 1.0f &&
+              std::abs(stats.applied_resultant_torque[0] - 7.0f) < 1e-5f,
+          "latest unbounded repeated cycle replaces per-cycle limiter stats");
+  runtime.disable();
+}
+
+void test_raw_mit_torque_limit_rejects_stale_feedback() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100),
+      g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+  ArticoreMitCommand commands[] = {
+      {motors[0].motor, 0.1f, 0.0f, 10.0f, 1.0f, 0.0f},
+      {motors[1].motor, 0.9f, 0.0f, 10.0f, 1.0f, 0.0f},
+  };
+  runtime.submit_mit(commands, 2);
+  require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
+          "stale-feedback test reaches RUNNING");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].age_ns = 201'000'000ULL;
+  }
+  require(wait_for([&] { return runtime.health().state == ARTICORE_FAULT; }),
+          "stale feedback prevents another unknown-state MIT send");
+  require(std::string(runtime.health().fault_reason).find(
+              "MIT torque limit feedback exceeds maximum age") !=
+              std::string::npos,
+          "stale native-cycle feedback reports the limiter safety reason");
+  runtime.disable();
+}
+
 void test_close_reuses_checked_disable_transaction() {
   FakeDriver driver;
   g_driver = &driver;
@@ -2980,7 +3095,7 @@ void test_ordinary_mit_position_reversal_and_speed_update_are_continuous() {
           "one unsafe shared velocity rejects the complete arm batch");
 }
 
-void test_raw_mit_remains_direct_after_ordinary_position_control() {
+void test_raw_mit_targets_remain_direct_after_ordinary_position_control() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
@@ -3025,12 +3140,19 @@ void test_raw_mit_remains_direct_after_ordinary_position_control() {
     const auto& sent = driver.arm_mit_history[baseline];
     require(sent[0].target_position == raw[0].target_position &&
                 sent[0].target_velocity == raw[0].target_velocity &&
-                sent[0].stiffness == raw[0].stiffness &&
-                sent[0].damping == raw[0].damping &&
-                sent[0].feedforward_torque == raw[0].feedforward_torque &&
                 sent[1].target_position == raw[1].target_position &&
-                sent[1].target_velocity == raw[1].target_velocity,
-            "raw MIT q/dq/kp/kd/tau remains byte-for-field direct");
+                sent[1].target_velocity == raw[1].target_velocity &&
+                sent[1].stiffness == raw[1].stiffness &&
+                sent[1].damping == raw[1].damping &&
+                sent[1].feedforward_torque == raw[1].feedforward_torque &&
+                sent[0].stiffness < raw[0].stiffness &&
+                std::abs(sent[0].stiffness / raw[0].stiffness -
+                         sent[0].damping / raw[0].damping) < 1e-6f &&
+                std::abs(sent[0].stiffness / raw[0].stiffness -
+                         sent[0].feedforward_torque /
+                             raw[0].feedforward_torque) < 1e-6f,
+            "raw MIT q/dq remains direct while the per-cycle limiter scales "
+            "Kp/Kd/tau together only when required");
   }
 }
 
@@ -3182,6 +3304,8 @@ int main() {
     RUN_TEST(test_disable_barrier_and_targeted_motor_retry);
     RUN_TEST(test_disable_waits_for_inflight_batch_and_rejects_new_commands);
     RUN_TEST(test_raw_mit_publish_does_not_wait_for_inflight_transport_send);
+    RUN_TEST(test_raw_mit_torque_limit_recomputes_on_every_native_cycle);
+    RUN_TEST(test_raw_mit_torque_limit_rejects_stale_feedback);
     RUN_TEST(test_close_reuses_checked_disable_transaction);
     RUN_TEST(test_close_refuses_to_disconnect_after_unconfirmed_disable);
     RUN_TEST(test_transport_disconnect_holds_the_connected_side);
@@ -3204,7 +3328,7 @@ int main() {
     RUN_TEST(test_ordinary_mit_position_uses_constant_reference_speed);
     RUN_TEST(test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct);
     RUN_TEST(test_ordinary_mit_position_reversal_and_speed_update_are_continuous);
-    RUN_TEST(test_raw_mit_remains_direct_after_ordinary_position_control);
+    RUN_TEST(test_raw_mit_targets_remain_direct_after_ordinary_position_control);
     RUN_TEST(test_ordinary_mit_position_reinitializes_after_reenable);
     RUN_TEST(test_deadline_skips_missed_periods_and_reenable_seeds_feedback);
 #undef RUN_TEST

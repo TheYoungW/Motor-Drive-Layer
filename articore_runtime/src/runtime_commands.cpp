@@ -468,6 +468,113 @@ void SafetyRuntime::submit_mit_ex(const ArticoreMitCommand* commands,
   wakeup_.notify_all();
 }
 
+bool SafetyRuntime::prepare_mit_torque_limited_commands(
+    const std::vector<ArticoreMitCommand>& requested,
+    std::vector<ArticoreMitCommand>& applied,
+    ArticoreMitTorqueLimitStats& cycle_stats,
+    std::string& error) const {
+  cycle_stats = {};
+  cycle_stats.struct_size = sizeof(cycle_stats);
+  std::fill(std::begin(cycle_stats.applied_scale),
+            std::end(cycle_stats.applied_scale), 1.0f);
+  if (requested.size() > ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS) {
+    error = "MIT torque limiter received too many arm joints";
+    return false;
+  }
+
+  applied.assign(requested.begin(), requested.end());
+  cycle_stats.joint_count = static_cast<uint32_t>(requested.size());
+  for (std::size_t index = 0; index < requested.size(); ++index) {
+    cycle_stats.joints[index] = requested[index].motor;
+  }
+
+  // Direct legacy embedders may omit native joint configuration. Preserve
+  // that ABI behavior; production SDK runtimes configure every arm motor and
+  // therefore always take the protected path below.
+  if (joint_configs_.empty()) return true;
+
+  std::array<ArticoreMotorState,
+             ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS> feedback{};
+  const uint64_t maximum_age_ns =
+      static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL;
+  for (std::size_t index = 0; index < requested.size(); ++index) {
+    const auto& command = requested[index];
+    const auto configured = joint_configs_.find(command.motor);
+    const auto role = motor_roles_.find(command.motor);
+    const std::string name = role == motor_roles_.end()
+        ? std::string("unknown arm motor") : role->second;
+    if (configured == joint_configs_.end()) {
+      error = name + ": MIT torque limit configuration is unavailable";
+      return false;
+    }
+
+    ArticoreFeedbackStats stats{};
+    if (api_.motor_get_feedback_stats(command.motor, &stats) != 0 ||
+        !stats.has_feedback) {
+      error = name +
+          ": MIT torque limit requires available native feedback";
+      return false;
+    }
+    if (stats.age_ns > maximum_age_ns) {
+      error = name +
+          ": MIT torque limit feedback exceeds maximum age; actual_age_ns=" +
+          std::to_string(stats.age_ns) + ", threshold_age_ns<=" +
+          std::to_string(maximum_age_ns);
+      return false;
+    }
+    auto& state = feedback[index];
+    if (api_.motor_get_state(command.motor, &state) != 0 ||
+        !state.has_value || !finite(state.pos) || !finite(state.vel)) {
+      error = name +
+          ": MIT torque limit requires finite position/velocity feedback";
+      return false;
+    }
+    if (state.status_code != 1) {
+      error = name +
+          ": MIT torque limit requires enabled feedback; actual_status=" +
+          std::to_string(state.status_code);
+      return false;
+    }
+  }
+
+  for (std::size_t index = 0; index < requested.size(); ++index) {
+    const auto& command = requested[index];
+    auto& output = applied[index];
+    const auto& state = feedback[index];
+    const auto& limits = joint_configs_.at(command.motor);
+    const double resultant =
+        static_cast<double>(command.stiffness) *
+            (static_cast<double>(command.target_position) - state.pos) +
+        static_cast<double>(command.damping) *
+            (static_cast<double>(command.target_velocity) - state.vel) +
+        command.feedforward_torque;
+    if (!std::isfinite(resultant)) {
+      error = motor_roles_.at(command.motor) +
+          ": MIT resultant torque is not finite";
+      return false;
+    }
+    const float requested_torque = static_cast<float>(resultant);
+    if (!finite(requested_torque)) {
+      error = motor_roles_.at(command.motor) +
+          ": MIT resultant torque exceeds the native command range";
+      return false;
+    }
+    const float torque_limit = 0.8f * limits.torque_limit;
+    float scale = 1.0f;
+    if (std::abs(requested_torque) > torque_limit) {
+      scale = torque_limit / std::abs(requested_torque);
+      output.stiffness *= scale;
+      output.damping *= scale;
+      output.feedforward_torque *= scale;
+      cycle_stats.torque_limited_joint_mask |= uint64_t{1} << index;
+    }
+    cycle_stats.requested_resultant_torque[index] = requested_torque;
+    cycle_stats.applied_scale[index] = scale;
+    cycle_stats.applied_resultant_torque[index] = requested_torque * scale;
+  }
+  return true;
+}
+
 bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
                                           bool include_grippers,
                                           std::string& error) {
@@ -524,7 +631,16 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
   }
 
   const auto* pv_data = arm_mailbox_.pv.data();
+  ArticoreMitTorqueLimitStats torque_limit_cycle{};
   const auto* mit_data = arm_mailbox_.mit.data();
+  if (mode == ARTICORE_MODE_MIT) {
+    if (!prepare_mit_torque_limited_commands(
+            arm_mailbox_.mit, mit_torque_limited_commands_,
+            torque_limit_cycle, error)) {
+      return false;
+    }
+    mit_data = mit_torque_limited_commands_.data();
+  }
   const uint32_t command_count = mode == ARTICORE_MODE_PV
       ? static_cast<uint32_t>(arm_mailbox_.pv.size())
       : static_cast<uint32_t>(arm_mailbox_.mit.size());
@@ -544,8 +660,9 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
       // still preserves one atomic cross-channel generation.
       combined_mit.insert(combined_mit.end(), gripper_commands.begin(),
                           gripper_commands.end());
-      combined_mit.insert(combined_mit.end(), arm_mailbox_.mit.begin(),
-                          arm_mailbox_.mit.end());
+      combined_mit.insert(combined_mit.end(),
+                          mit_torque_limited_commands_.begin(),
+                          mit_torque_limited_commands_.end());
       mit_send_data = combined_mit.data();
       mit_send_count = static_cast<uint32_t>(combined_mit.size());
     }
@@ -579,6 +696,12 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
       // Safe arm hold must remain independent from product gripper policy.
       last_sent_mit_.assign(mit_data, mit_data + command_count);
       last_sent_pv_.clear();
+      const auto activation_count =
+          mit_torque_limit_stats_.torque_limit_activation_count;
+      mit_torque_limit_stats_ = torque_limit_cycle;
+      mit_torque_limit_stats_.torque_limit_activation_count =
+          activation_count +
+          (torque_limit_cycle.torque_limited_joint_mask != 0 ? 1 : 0);
     }
     for (uint8_t side = 0; side < 2; ++side) {
       if (!active_sides_[side]) continue;

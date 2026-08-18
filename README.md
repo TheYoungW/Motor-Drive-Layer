@@ -509,6 +509,14 @@ path: 500.02 Hz submissions for 30 seconds, 497.36--499.36 Hz feedback across al
 native transport errors, and a confirmed 16/16 disable. The effective control value is exposed
 through `articore_runtime_get_control_hz()`.
 
+Runtime ABI 2.6 moves complete MIT resultant-torque protection into the native worker. Every
+actual MIT send cycle—including a repeated latest-mailbox target—uses fresh native q/dq feedback,
+limits each joint to 80% of its configured torque limit, and scales Kp, Kd, and feedforward torque
+together when necessary. Missing or stale feedback rejects the complete arm batch and enters the
+existing protective fault-hold path. Per-cycle limiter diagnostics are exposed without requiring
+Python feedback reads on the raw submission hot path. This change is covered by simulated native
+and binding tests; hardware validation is intentionally separate.
+
 ## Contributing and security
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes. Report safety or security-sensitive motor-control issues according to [SECURITY.md](SECURITY.md) rather than publishing exploit details first.

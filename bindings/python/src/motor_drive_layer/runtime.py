@@ -13,6 +13,7 @@ from ._runtime_abi import (
     CJointControlConfig,
     CJointSafetyLimits,
     CJointTarget,
+    CMitTorqueLimitStats,
     CMotorIdentity,
     CMitCommand,
     CPosVelCommand,
@@ -44,6 +45,8 @@ from .runtime_models import (
     JointControlConfig,
     JointPositionTarget,
     JointSafetyLimits,
+    MitTorqueLimitJointStats,
+    MitTorqueLimitStats,
     RuntimeConfig,
     RuntimeControlMode,
     RuntimeMitCommand,
@@ -270,6 +273,45 @@ class ArticoreRuntime:
             "get_control_hz", ctypes.byref(value),
         )
         return int(value.value)
+
+    @property
+    def mit_torque_limit_stats(self) -> MitTorqueLimitStats:
+        native = CMitTorqueLimitStats()
+        native.struct_size = ctypes.sizeof(native)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_mit_torque_limit_stats,
+            "get_mit_torque_limit_stats", ctypes.byref(native),
+        )
+        motors_by_pointer = {
+            self._motor_pointer(item.motor): item.motor for item in self._motors
+        }
+        count = min(int(native.joint_count), len(native.joints))
+        joints = []
+        for index in range(count):
+            pointer = int(native.joints[index] or 0)
+            motor = motors_by_pointer.get(pointer)
+            if motor is None:
+                raise RuntimeCallError(
+                    "MIT torque limit stats returned an unknown motor handle"
+                )
+            joints.append(MitTorqueLimitJointStats(
+                motor=motor,
+                requested_resultant_torque=float(
+                    native.requested_resultant_torque[index]
+                ),
+                applied_scale=float(native.applied_scale[index]),
+                applied_resultant_torque=float(
+                    native.applied_resultant_torque[index]
+                ),
+                limited=bool(native.torque_limited_joint_mask & (1 << index)),
+            ))
+        return MitTorqueLimitStats(
+            torque_limit_activation_count=int(
+                native.torque_limit_activation_count
+            ),
+            torque_limited_joint_mask=int(native.torque_limited_joint_mask),
+            joints=tuple(joints),
+        )
 
     def configure_joints(self, configs: Sequence[JointControlConfig]) -> None:
         values = tuple(configs)
