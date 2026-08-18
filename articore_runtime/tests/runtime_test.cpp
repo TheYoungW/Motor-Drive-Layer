@@ -1360,7 +1360,7 @@ void test_estop_can_disable_gripper_by_product_policy() {
           "disable-policy estop disables arms and gripper");
 }
 
-void test_feedback_fault_uses_protective_hold_without_linked_disable() {
+void test_missing_feedback_is_diagnostic_only() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
@@ -1372,31 +1372,36 @@ void test_feedback_fault_uses_protective_hold_without_linked_disable() {
   runtime.enable(ARTICORE_MODE_PV);
   ArticorePosVelCommand commands[] = {
       {motors[0].motor, 0.0f, 1.0f}, {motors[1].motor, 0.0f, 1.0f}};
-  runtime.submit_pos_vel(commands, 2);
+  runtime.submit_pos_vel_ex(
+      commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     driver.motors[motors[0].motor].has_feedback = false;
   }
-  require(wait_for([&] { return runtime.health().state == ARTICORE_FAULT; }),
-          "continuous missing feedback stops normal motion and latches FAULT");
+  require(wait_for([&] {
+            return runtime.health().consecutive_feedback_failures >=
+                   cfg.feedback_failure_threshold;
+          }),
+          "continuous missing feedback remains visible in diagnostics");
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
             return std::any_of(
                 driver.pv_history.begin(), driver.pv_history.end(),
                 [&](const auto& batch) {
-                  return batch.size() == 1 &&
-                         batch[0].motor == motors[1].motor;
+                  return batch.size() == 2;
                 });
           }),
-          "healthy joint continues receiving a protective hold target");
+          "the complete arm command continues while feedback is missing");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     require(driver.disable_calls[0] == 0 && driver.disable_calls[1] == 0,
-            "feedback fault does not automatically disable either side");
+            "missing feedback does not automatically disable either side");
   }
   const auto health = runtime.health();
-  require(health.safe_holding == 1 && health.disable_confirmed == 0,
-          "feedback fault reports active protective holding");
+  require(health.state == ARTICORE_RUNNING && health.safe_holding == 0 &&
+              health.disable_confirmed == 0 && health.left_transport.healthy == 0,
+          "missing feedback leaves Runtime RUNNING and marks side health unhealthy");
+  runtime.disable();
 }
 
 void test_single_gripper_feedback_miss_reuses_current_output() {
@@ -2012,7 +2017,7 @@ void test_raw_mit_torque_limit_recomputes_on_every_native_cycle() {
   runtime.disable();
 }
 
-void test_raw_mit_torque_limit_rejects_stale_feedback() {
+void test_raw_mit_torque_limit_keeps_sending_with_stale_feedback() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
@@ -2030,19 +2035,30 @@ void test_raw_mit_torque_limit_rejects_stale_feedback() {
       {motors[0].motor, 0.1f, 0.0f, 10.0f, 1.0f, 0.0f},
       {motors[1].motor, 0.9f, 0.0f, 10.0f, 1.0f, 0.0f},
   };
-  runtime.submit_mit(commands, 2);
+  runtime.submit_mit_ex(
+      commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
   require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
           "stale-feedback test reaches RUNNING");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     driver.motors[motors[0].motor].age_ns = 201'000'000ULL;
   }
-  require(wait_for([&] { return runtime.health().state == ARTICORE_FAULT; }),
-          "stale feedback prevents another unknown-state MIT send");
-  require(std::string(runtime.health().fault_reason).find(
-              "MIT torque limit feedback exceeds maximum age") !=
-              std::string::npos,
-          "stale native-cycle feedback reports the limiter safety reason");
+  std::size_t history_before = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    history_before = driver.arm_mit_history.size();
+  }
+  require(wait_for([&] {
+            if (runtime.health().state != ARTICORE_RUNNING ||
+                runtime.health().consecutive_feedback_failures == 0) {
+              return false;
+            }
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.arm_mit_history.size() > history_before;
+          }),
+          "stale feedback is diagnosed while native MIT sending continues");
+  require(runtime.health().safe_holding == 0,
+          "stale feedback alone does not enter protective hold");
   runtime.disable();
 }
 
@@ -2140,56 +2156,36 @@ void test_transport_disconnect_holds_the_connected_side() {
   }
 }
 
-void test_fault_hold_failure_isolated_per_channel() {
+void test_reported_feedback_failure_is_diagnostic_only() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
   cfg.command_timeout_ms = 500;
-  cfg.safe_hold_hz = 200;
   articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);
   runtime.connect();
   runtime.enable(ARTICORE_MODE_PV);
   ArticorePosVelCommand commands[] = {
       {motors[0].motor, 0.25f, 1.0f}, {motors[1].motor, 0.75f, 1.0f}};
-  runtime.submit_pos_vel_ex(
-      commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
+  runtime.submit_pos_vel_ex(commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
   require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
           "per-channel hold test reaches RUNNING");
 
   runtime.report_feedback_failure(0, "injected miss 1");
   runtime.report_feedback_failure(0, "injected miss 2");
   runtime.report_feedback_failure(0, "injected miss 3");
-  require(runtime.health().state == ARTICORE_SAFE_HOLD,
-          "consecutive feedback misses enter protective SAFE_HOLD");
-  runtime.report_feedback_failure(0, "injected miss during hold");
-  require(runtime.health().state == ARTICORE_FAULT &&
-              runtime.health().safe_holding == 1,
-          "feedback failure during hold latches FAULT but preserves holding");
-
-  std::size_t history_before = 0;
-  {
-    std::lock_guard<std::mutex> lock(driver.mutex);
-    history_before = driver.pv_history.size();
-    driver.fail_send_side[0] = true;
-  }
-  require(wait_for([&] {
-            std::lock_guard<std::mutex> lock(driver.mutex);
-            for (std::size_t i = history_before; i < driver.pv_history.size(); ++i) {
-              const auto& batch = driver.pv_history[i];
-              if (batch.size() == 1 && batch[0].motor == motors[1].motor) {
-                return true;
-              }
-            }
-            return false;
-          }),
-          "right channel keeps receiving hold frames when left hold send fails");
+  const auto health = runtime.health();
+  require(health.state == ARTICORE_RUNNING && health.safe_holding == 0 &&
+              health.consecutive_feedback_failures == 3 &&
+              health.left_transport.consecutive_feedback_failures >= 3,
+          "reported feedback misses update diagnostics without changing state");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     require(driver.disable_calls[0] == 0 && driver.disable_calls[1] == 0,
-            "one failed hold channel does not disable the controllable channel");
+            "reported feedback misses do not disable either channel");
   }
+  runtime.disable();
 }
 
 void test_enable_grace_and_fault_latch() {
@@ -2559,15 +2555,21 @@ void test_motor_presence_is_fixed_and_fault_aware() {
       {motors[0].motor, 0.1f, 1.0f},
       {motors[1].motor, -0.1f, 1.0f},
   };
-  runtime.submit_pos_vel(commands, 2);
+  runtime.submit_pos_vel_ex(
+      commands, 2, ARTICORE_COMMAND_HOLD_UNTIL_REPLACED);
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     driver.motors[motors[2].motor].has_feedback = false;
   }
   require(wait_for([&] {
-            return runtime.motor_presence("right/gripper") == ARTICORE_FAULTED;
+            return runtime.health().right_transport.healthy == 0 &&
+                   runtime.health().consecutive_feedback_failures > 0;
           }),
-          "a present motor that loses feedback becomes Faulted, not NotInstalled");
+          "a present motor that loses feedback is reported as unhealthy");
+  require(runtime.motor_presence("right/gripper") == ARTICORE_PRESENT &&
+              runtime.health().state == ARTICORE_RUNNING,
+          "diagnostic-only feedback loss preserves fixed presence and RUNNING state");
+  runtime.disable();
 }
 
 void test_latest_value_mailbox_drops_superseded_targets() {
@@ -3273,6 +3275,84 @@ void test_deadline_skips_missed_periods_and_reenable_seeds_feedback() {
           "re-enable seeds the target from current feedback, not an old command");
 }
 
+void test_gravity_compensation_is_an_exclusive_hand_guiding_mode() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.feedback_expected = 7;
+  driver.feedback_received = 7;
+  std::vector<ArticoreMotorDescriptor> motors(7);
+  for (std::size_t index = 0; index < motors.size(); ++index) {
+    auto& motor = motors[index];
+    motor.motor = reinterpret_cast<void*>(0x201 + index);
+    motor.side = 0;
+    motor.is_gripper = 0;
+    const auto name = std::string("l-joint") + std::to_string(index + 1);
+    std::strncpy(motor.name, name.c_str(), sizeof(motor.name) - 1);
+    motor.safe_kp = 5.0f;
+    motor.safe_kd = 0.5f;
+    motor.lower_position = -3.0f;
+    motor.upper_position = 3.0f;
+    driver.motors[motor.motor] = FakeMotor{
+        1, 0.1f * static_cast<float>(index), 0.0f, 0.0f, 0, true};
+  }
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller, nullptr,
+      motors);
+  auto configs = joint_configs(motors);
+  for (auto& item : configs) item.torque_limit = 100.0f;
+  runtime.configure_joints(configs.data(), static_cast<uint32_t>(configs.size()));
+  ArticoreGravityProductBinding binding{};
+  binding.struct_size = sizeof(binding);
+  binding.runtime_side = 0;
+  binding.robot_side = ARTICORE_ROBOT_LEFT;
+  std::strncpy(binding.product_id, "yunyi_v1_0",
+               sizeof(binding.product_id) - 1);
+  runtime.configure_gravity_products(&binding, 1);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+
+  ArticoreGravityCompensationConfig gravity_config{};
+  gravity_config.struct_size = sizeof(gravity_config);
+  gravity_config.transition_ms = 1;
+  runtime.start_gravity_compensation(&gravity_config);
+  require(wait_for([&] {
+            return runtime.gravity_compensation_status().phase ==
+                ARTICORE_GRAVITY_ACTIVE;
+          }), "gravity compensation reaches ACTIVE");
+  const auto active = runtime.gravity_compensation_status();
+  require(active.active && active.joint_count == 7 && active.control_cycles > 0,
+          "gravity status reports the active seven-axis controller");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(!driver.group_mit_history.empty() &&
+                driver.group_mit_history.back().size() == 7,
+            "gravity mode sends one complete seven-axis MIT batch");
+    const auto& commands = driver.group_mit_history.back();
+    require(std::all_of(commands.begin(), commands.end(), [](const auto& command) {
+              return command.stiffness == 0.0f && command.damping == 0.0f;
+            }), "active hand guiding uses zero stiffness and damping");
+    require(std::any_of(commands.begin(), commands.end(), [](const auto& command) {
+              return std::abs(command.feedforward_torque) > 1e-5f;
+            }), "active hand guiding sends posture-dependent gravity torque");
+  }
+  ArticoreMitCommand rejected[7]{};
+  for (std::size_t index = 0; index < motors.size(); ++index) {
+    rejected[index].motor = motors[index].motor;
+  }
+  require_throws([&] { runtime.submit_mit(rejected, 7); },
+                 "owned by active gravity compensation",
+                 "gravity mode exclusively owns arm output");
+
+  runtime.stop_gravity_compensation();
+  require(wait_for([&] {
+            return runtime.gravity_compensation_status().phase ==
+                ARTICORE_GRAVITY_INACTIVE;
+          }), "stopping gravity compensation returns to MIT hold");
+  runtime.disable();
+}
+
 }  // namespace
 
 int main() {
@@ -3298,7 +3378,7 @@ int main() {
     RUN_TEST(test_legacy_three_level_gripper_profiles_expand_to_ten_levels);
     RUN_TEST(test_estop_obeys_configured_gripper_hold_policy);
     RUN_TEST(test_estop_can_disable_gripper_by_product_policy);
-    RUN_TEST(test_feedback_fault_uses_protective_hold_without_linked_disable);
+    RUN_TEST(test_missing_feedback_is_diagnostic_only);
     RUN_TEST(test_single_gripper_feedback_miss_reuses_current_output);
     RUN_TEST(test_feedback_measurements_do_not_reuse_command_limits);
     RUN_TEST(test_feedback_seed_ignores_command_limits);
@@ -3312,11 +3392,11 @@ int main() {
     RUN_TEST(test_disable_waits_for_inflight_batch_and_rejects_new_commands);
     RUN_TEST(test_raw_mit_publish_does_not_wait_for_inflight_transport_send);
     RUN_TEST(test_raw_mit_torque_limit_recomputes_on_every_native_cycle);
-    RUN_TEST(test_raw_mit_torque_limit_rejects_stale_feedback);
+    RUN_TEST(test_raw_mit_torque_limit_keeps_sending_with_stale_feedback);
     RUN_TEST(test_close_reuses_checked_disable_transaction);
     RUN_TEST(test_close_refuses_to_disconnect_after_unconfirmed_disable);
     RUN_TEST(test_transport_disconnect_holds_the_connected_side);
-    RUN_TEST(test_fault_hold_failure_isolated_per_channel);
+    RUN_TEST(test_reported_feedback_failure_is_diagnostic_only);
     RUN_TEST(test_enable_grace_and_fault_latch);
     RUN_TEST(test_atomic_enable_starts_hold_and_confirms_both_sides);
     RUN_TEST(test_atomic_enable_retries_one_disabled_motor_once);
@@ -3338,6 +3418,7 @@ int main() {
     RUN_TEST(test_raw_mit_targets_remain_direct_after_ordinary_position_control);
     RUN_TEST(test_ordinary_mit_position_reinitializes_after_reenable);
     RUN_TEST(test_deadline_skips_missed_periods_and_reenable_seeds_feedback);
+    RUN_TEST(test_gravity_compensation_is_an_exclusive_hand_guiding_mode);
 #undef RUN_TEST
     std::cout << "Articore runtime tests passed\n";
     return 0;

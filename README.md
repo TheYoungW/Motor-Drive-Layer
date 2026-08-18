@@ -513,6 +513,21 @@ existing protective fault-hold path. Per-cycle limiter diagnostics are exposed w
 Python feedback reads on the raw submission hot path. This change is covered by simulated native
 and binding tests; hardware validation is intentionally separate.
 
+Runtime ABI 2.7 adds a product-owned whole-arm model boundary. `NativeRobotModel` exposes FK, IK,
+Jacobian, gravity, mass/Coriolis terms, RNEA and ABA without exposing Pinocchio, Eigen, the source
+URDF, or calibrated inertial parameters through the ABI. Pinocchio remains the private C++
+numerical engine inside `libarticore_runtime`; Linux wheels bundle the exact native dependencies in
+an isolated `robotics/` directory. The embedded Yunyi left/right reduced models are numerically
+checked against the migration URDF implementation before the public SDK switches implementations.
+
+Runtime ABI 2.8 adds a Runtime-owned gravity-compensation mode for manual hand guiding. Product
+SDKs bind each seven-axis runtime side to `yunyi_v1_0` before connect, enable the Runtime in MIT
+mode, and then start gravity compensation. The native worker smoothly removes MIT stiffness and
+damping while ramping in posture-dependent gravity feedforward; while active it exclusively owns
+arm output and continues to apply the existing per-cycle torque limits. Stopping performs the
+inverse transition into a current-position MIT hold. This initial controller intentionally does
+not add friction or Coriolis compensation.
+
 ## Contributing and security
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes. Report safety or security-sensitive motor-control issues according to [SECURITY.md](SECURITY.md) rather than publishing exploit details first.

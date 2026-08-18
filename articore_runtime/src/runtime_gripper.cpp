@@ -291,7 +291,7 @@ void SafetyRuntime::submit_gripper_mit(const ArticoreMitCommand* commands,
   validate_motor_set(commands, count, true);
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
-    require_state_for_command();
+    require_state_for_command(true);
   }
   std::string error;
   bool send_failed = false;
@@ -299,7 +299,7 @@ void SafetyRuntime::submit_gripper_mit(const ArticoreMitCommand* commands,
     std::lock_guard<std::mutex> command_lock(command_mutex_);
     {
       std::lock_guard<std::mutex> state_lock(state_mutex_);
-      require_state_for_command();
+      require_state_for_command(true);
     }
     if (api_.group_send_mit(controller_group_, commands, count) != 0) {
       error = motor_error("gripper group send failed");
@@ -440,11 +440,11 @@ void SafetyRuntime::set_gripper_commands(
 
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
-    require_state_for_command();
+    require_state_for_command(true);
   }
   std::lock_guard<std::mutex> command_lock(command_mutex_);
   std::lock_guard<std::mutex> state_lock(state_mutex_);
-  require_state_for_command();
+  require_state_for_command(true);
   for (const auto& value : validated) {
     auto& motor = *value.motor;
     const bool target_changed = !motor.has_gripper_target ||

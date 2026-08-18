@@ -35,13 +35,17 @@ def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
     assert hasattr(library, "articore_runtime_get_last_connect_report")
     assert hasattr(library, "articore_runtime_get_mit_torque_limit_stats")
     assert hasattr(library, "articore_runtime_configure_gripper_products")
+    assert hasattr(library, "articore_runtime_configure_gravity_products")
+    assert hasattr(library, "articore_runtime_start_gravity_compensation")
+    assert hasattr(library, "articore_runtime_stop_gravity_compensation")
+    assert hasattr(library, "articore_runtime_get_gravity_compensation_status")
     assert hasattr(library, "articore_runtime_configure_joint_safety_limits")
     assert hasattr(library, "articore_runtime_configure_gripper_force_profiles")
     assert hasattr(library, "articore_runtime_set_gripper_commands")
     assert not hasattr(library, "articore_runtime_start_joint_trajectory")
     assert not hasattr(library, "articore_runtime_cancel_trajectory")
-    assert library.articore_runtime_abi_version() == 0x00020006
-    assert abi.articore_runtime_abi_version() == "2.6"
+    assert library.articore_runtime_abi_version() == 0x00020008
+    assert abi.articore_runtime_abi_version() == "2.8"
     assert abi.articore_runtime_capabilities()["connect_feedback_barrier"] is True
     assert abi.articore_runtime_capabilities()["structured_connect_report"] is True
     assert abi.articore_runtime_capabilities()["gripper_protection"] is True
@@ -59,6 +63,8 @@ def test_articore_runtime_library_exposes_versioned_capabilities() -> None:
     assert abi.articore_runtime_capabilities()["effective_control_rate"] is True
     assert abi.articore_runtime_capabilities()["transport_aware_control_rate"] is True
     assert abi.articore_runtime_capabilities()["per_cycle_mit_torque_limit"] is True
+    assert abi.articore_runtime_capabilities()["native_robot_model"] is True
+    assert abi.articore_runtime_capabilities()["native_gravity_compensation"] is True
     assert abi.articore_runtime_capabilities()["builtin_gripper_product_profiles"] is True
 
 

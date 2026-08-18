@@ -247,6 +247,15 @@ class Runtime final {
                   "configure_gripper_products");
   }
 
+  void configure_gravity_products(
+      const std::vector<ArticoreGravityProductBinding>& bindings) {
+    auto native = bindings;
+    for (auto& value : native) value.struct_size = sizeof(value);
+    detail::check(articore_runtime_configure_gravity_products(
+                      checked(), native.data(), size(native)),
+                  "configure_gravity_products");
+  }
+
   void declare_motor_presence(const std::string& role,
                               ArticorePresenceState state) {
     detail::check(articore_runtime_declare_motor_presence(
@@ -304,6 +313,29 @@ class Runtime final {
         articore_runtime_get_last_enable_report(checked(), &report),
         "get_last_enable_report");
     return report;
+  }
+
+  void start_gravity_compensation(uint32_t transition_ms = 0) {
+    ArticoreGravityCompensationConfig config{};
+    config.struct_size = sizeof(config);
+    config.transition_ms = transition_ms;
+    detail::check(articore_runtime_start_gravity_compensation(
+                      checked(), &config),
+                  "start_gravity_compensation");
+  }
+
+  void stop_gravity_compensation() {
+    detail::check(articore_runtime_stop_gravity_compensation(checked()),
+                  "stop_gravity_compensation");
+  }
+
+  ArticoreGravityCompensationStatus gravity_compensation_status() const {
+    ArticoreGravityCompensationStatus result{};
+    result.struct_size = sizeof(result);
+    detail::check(articore_runtime_get_gravity_compensation_status(
+                      checked(), &result),
+                  "get_gravity_compensation_status");
+    return result;
   }
 
   void set_joint_mit(const std::vector<ArticoreJointMitTarget>& targets,

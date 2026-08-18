@@ -221,10 +221,15 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
   arm_mailbox_ = std::move(initialized);
 }
 
-void SafetyRuntime::require_state_for_command() const {
+void SafetyRuntime::require_state_for_command(bool allow_gravity) const {
   if (fault_latched_ || hardware_transition_ || enable_transaction_ ||
       (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING)) {
     throw std::runtime_error("Articore runtime is not accepting motion commands");
+  }
+  if (!allow_gravity &&
+      gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE) {
+    throw std::runtime_error(
+        "arm commands are owned by active gravity compensation");
   }
 }
 
@@ -495,8 +500,6 @@ bool SafetyRuntime::prepare_mit_torque_limited_commands(
 
   std::array<ArticoreMotorState,
              ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS> feedback{};
-  const uint64_t maximum_age_ns =
-      static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL;
   for (std::size_t index = 0; index < requested.size(); ++index) {
     const auto& command = requested[index];
     const auto configured = joint_configs_.find(command.motor);
@@ -508,20 +511,6 @@ bool SafetyRuntime::prepare_mit_torque_limited_commands(
       return false;
     }
 
-    ArticoreFeedbackStats stats{};
-    if (api_.motor_get_feedback_stats(command.motor, &stats) != 0 ||
-        !stats.has_feedback) {
-      error = name +
-          ": MIT torque limit requires available native feedback";
-      return false;
-    }
-    if (stats.age_ns > maximum_age_ns) {
-      error = name +
-          ": MIT torque limit feedback exceeds maximum age; actual_age_ns=" +
-          std::to_string(stats.age_ns) + ", threshold_age_ns<=" +
-          std::to_string(maximum_age_ns);
-      return false;
-    }
     auto& state = feedback[index];
     if (api_.motor_get_state(command.motor, &state) != 0 ||
         !state.has_value || !finite(state.pos) || !finite(state.vel)) {
@@ -580,6 +569,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
                                           std::string& error) {
   std::lock_guard<std::mutex> command_lock(command_mutex_);
   ArticoreControlMode mode;
+  bool gravity_active = false;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     if (hardware_transition_ ||
@@ -587,6 +577,12 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
       return true;
     }
     mode = mode_;
+    gravity_active =
+        gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE;
+  }
+
+  if (gravity_active) {
+    return run_gravity_control_cycle(now, include_grippers, error);
   }
 
   // Consume only the newest accepted raw command. Physical sends may take

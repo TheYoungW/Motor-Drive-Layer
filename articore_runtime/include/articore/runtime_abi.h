@@ -18,6 +18,7 @@ extern "C" {
 #endif
 
 typedef struct ArticoreRuntime ArticoreRuntime;
+typedef struct ArticoreRobotModel ArticoreRobotModel;
 
 enum ArticoreRuntimeCapability {
   ARTICORE_CAP_COMMAND_WATCHDOG = 1ULL << 0,
@@ -79,7 +80,72 @@ enum ArticoreRuntimeCapability {
   // that repeat the latest mailbox target. Per-joint output is bounded to
   // its configured torque limit by scaling Kp, Kd and feedforward together.
   ARTICORE_CAP_PER_CYCLE_MIT_TORQUE_LIMIT = 1ULL << 28,
+  // ABI 2.7 exposes product-owned whole-arm kinematics and rigid-body
+  // dynamics through a Pinocchio-independent C ABI. Exact model parameters
+  // and the numerical implementation remain private to the Runtime library.
+  ARTICORE_CAP_NATIVE_ROBOT_MODEL = 1ULL << 29,
+  // ABI 2.8 adds a Runtime-owned fixed-rate gravity-compensation controller.
+  // It exclusively owns arm MIT output while active and provides a manual
+  // hand-guiding mode with zero stiffness and product gravity feedforward.
+  ARTICORE_CAP_NATIVE_GRAVITY_COMPENSATION = 1ULL << 30,
 };
+
+enum ArticoreRobotSide {
+  ARTICORE_ROBOT_LEFT = 0,
+  ARTICORE_ROBOT_RIGHT = 1,
+};
+
+enum ArticoreJacobianReference {
+  ARTICORE_JACOBIAN_LOCAL = 0,
+  ARTICORE_JACOBIAN_WORLD = 1,
+  ARTICORE_JACOBIAN_LOCAL_WORLD_ALIGNED = 2,
+};
+
+enum { ARTICORE_MAX_ROBOT_DOF = 16 };
+
+typedef struct ArticoreRobotModelInfo {
+  // Caller initializes this to sizeof(ArticoreRobotModelInfo).
+  uint32_t struct_size;
+  uint32_t dof;
+  uint32_t side;
+  char product_id[64];
+  char end_effector_frame[64];
+  char joint_names[ARTICORE_MAX_ROBOT_DOF][64];
+  double lower_limits[ARTICORE_MAX_ROBOT_DOF];
+  double upper_limits[ARTICORE_MAX_ROBOT_DOF];
+} ArticoreRobotModelInfo;
+
+typedef struct ArticoreRobotPose {
+  // Caller initializes this to sizeof(ArticoreRobotPose).
+  uint32_t struct_size;
+  double position[3];
+  // Row-major 3x3 rotation matrix.
+  double rotation[9];
+  // Row-major 4x4 homogeneous transform.
+  double homogeneous[16];
+} ArticoreRobotPose;
+
+typedef struct ArticoreIkOptions {
+  // Caller initializes this to sizeof(ArticoreIkOptions). A zero-valued field
+  // selects the documented Runtime default for that field.
+  uint32_t struct_size;
+  uint32_t max_iterations;
+  uint32_t max_retries;
+  double tolerance;
+  double step_size;
+  double damping;
+  uint64_t random_seed;
+} ArticoreIkOptions;
+
+typedef struct ArticoreIkResult {
+  // Caller initializes this to sizeof(ArticoreIkResult).
+  uint32_t struct_size;
+  int32_t success;
+  uint32_t iterations;
+  uint32_t dof;
+  double error_norm;
+  double q[ARTICORE_MAX_ROBOT_DOF];
+} ArticoreIkResult;
 
 enum ArticoreConnectErrorCode {
   ARTICORE_CONNECT_OK = 0,
@@ -116,6 +182,45 @@ enum ArticoreControlMode {
   ARTICORE_MODE_PV = 1,
   ARTICORE_MODE_MIT = 2,
 };
+
+enum ArticoreGravityCompensationPhase {
+  ARTICORE_GRAVITY_INACTIVE = 0,
+  ARTICORE_GRAVITY_ENTERING = 1,
+  ARTICORE_GRAVITY_ACTIVE = 2,
+  ARTICORE_GRAVITY_EXITING = 3,
+};
+
+enum { ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS = 32 };
+
+typedef struct ArticoreGravityProductBinding {
+  // Caller initializes this to sizeof(ArticoreGravityProductBinding).
+  uint32_t struct_size;
+  // Runtime transport side whose seven arm joints use this model.
+  uint32_t runtime_side;
+  // Physical product side: ARTICORE_ROBOT_LEFT or ARTICORE_ROBOT_RIGHT.
+  uint32_t robot_side;
+  char product_id[64];
+} ArticoreGravityProductBinding;
+
+typedef struct ArticoreGravityCompensationConfig {
+  // Caller initializes this to sizeof(ArticoreGravityCompensationConfig).
+  uint32_t struct_size;
+  // Zero selects the product default of 500 ms.
+  uint32_t transition_ms;
+} ArticoreGravityCompensationConfig;
+
+typedef struct ArticoreGravityCompensationStatus {
+  // Caller initializes this to sizeof(ArticoreGravityCompensationStatus).
+  uint32_t struct_size;
+  int32_t phase;
+  int32_t active;
+  float transition_progress;
+  uint64_t control_cycles;
+  uint32_t joint_count;
+  void* joints[ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS];
+  // Final motor-domain gravity feedforward from the latest sent cycle.
+  float gravity_feedforward_torque[ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS];
+} ArticoreGravityCompensationStatus;
 
 // A persistent setpoint is retransmitted at the control rate until another
 // command, disable, or fault replaces it. A streaming command
@@ -526,8 +631,6 @@ typedef struct ArticoreSafetyHealth {
   char fault_reason[512];
 } ArticoreSafetyHealth;
 
-enum { ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS = 32 };
-
 typedef struct ArticoreMitTorqueLimitStats {
   // Caller initializes this to sizeof(ArticoreMitTorqueLimitStats).
   uint32_t struct_size;
@@ -549,6 +652,48 @@ typedef struct ArticoreMitTorqueLimitStats {
 // Packed as 0xMMMMmmmm: major in the high 16 bits, minor in the low 16 bits.
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void);
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void);
+
+// Product-owned whole-arm model API. No Pinocchio or Eigen types cross this
+// boundary. product_id currently accepts "yunyi_v1_0"; side selects the
+// corresponding reduced seven-axis arm model. Returned matrix storage is
+// row-major and callers provide exact element counts.
+ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
+    const char* product_id, uint32_t side);
+ARTICORE_RUNTIME_API void articore_robot_model_free(ArticoreRobotModel* model);
+ARTICORE_RUNTIME_API int32_t articore_robot_model_get_info(
+    ArticoreRobotModel* model, ArticoreRobotModelInfo* info);
+ARTICORE_RUNTIME_API int32_t articore_robot_model_fk(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    ArticoreRobotPose* pose);
+ARTICORE_RUNTIME_API int32_t articore_robot_model_jacobian(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    uint32_t reference, double* jacobian, uint32_t jacobian_count);
+ARTICORE_RUNTIME_API int32_t articore_robot_model_gravity(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    double* torque, uint32_t torque_count);
+ARTICORE_RUNTIME_API int32_t articore_robot_model_mass_matrix(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    double* matrix, uint32_t matrix_count);
+ARTICORE_RUNTIME_API int32_t articore_robot_model_coriolis_matrix(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    const double* dq, uint32_t dq_count, double* matrix,
+    uint32_t matrix_count);
+ARTICORE_RUNTIME_API int32_t articore_robot_model_nonlinear_effects(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    const double* dq, uint32_t dq_count, double* torque,
+    uint32_t torque_count);
+ARTICORE_RUNTIME_API int32_t articore_robot_model_rnea(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    const double* dq, uint32_t dq_count, const double* ddq,
+    uint32_t ddq_count, double* torque, uint32_t torque_count);
+ARTICORE_RUNTIME_API int32_t articore_robot_model_aba(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    const double* dq, uint32_t dq_count, const double* torque,
+    uint32_t torque_count, double* ddq, uint32_t ddq_count);
+ARTICORE_RUNTIME_API int32_t articore_robot_model_ik(
+    ArticoreRobotModel* model, const ArticoreRobotPose* target,
+    const double* initial_q, uint32_t initial_q_count,
+    const ArticoreIkOptions* options, ArticoreIkResult* result);
 // Returns the immutable rate actually used by the native worker. This can be
 // lower than the requested config rate when a dual-arm runtime is capped to
 // its transport-specific verified limit.
@@ -628,6 +773,24 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joint_safety_limits(
     ArticoreRuntime* runtime,
     const ArticoreJointSafetyLimits* limits,
     uint32_t limit_count);
+// Binds each active seven-axis arm transport side to its built-in rigid-body
+// model. Bindings are immutable after connect and must cover every arm side.
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_gravity_products(
+    ArticoreRuntime* runtime,
+    const ArticoreGravityProductBinding* bindings,
+    uint32_t binding_count);
+// Starts a Runtime-owned MIT hand-guiding mode. While active, ordinary arm
+// commands are rejected and every native control cycle sends zero-stiffness,
+// zero-damping gravity feedforward. A null config selects the 500 ms default.
+ARTICORE_RUNTIME_API int32_t articore_runtime_start_gravity_compensation(
+    ArticoreRuntime* runtime,
+    const ArticoreGravityCompensationConfig* config);
+// Smoothly hands gravity feedforward back to a current-position MIT hold.
+ARTICORE_RUNTIME_API int32_t articore_runtime_stop_gravity_compensation(
+    ArticoreRuntime* runtime);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_gravity_compensation_status(
+    ArticoreRuntime* runtime,
+    ArticoreGravityCompensationStatus* status);
 // Direct arm commands are validated and atomically overwrite a capacity-one
 // mailbox. Success means accepted; the persistent control thread transmits the
 // latest accepted value on the next control tick. These ABI 1.0 entry points

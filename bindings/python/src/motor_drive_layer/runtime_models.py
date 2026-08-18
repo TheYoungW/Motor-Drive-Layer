@@ -23,6 +23,13 @@ class RuntimeControlMode(IntEnum):
     MIT = 2
 
 
+class GravityCompensationPhase(IntEnum):
+    INACTIVE = 0
+    ENTERING = 1
+    ACTIVE = 2
+    EXITING = 3
+
+
 class CommandLifetime(IntEnum):
     STREAMING = 1
     HOLD_UNTIL_REPLACED = 2
@@ -153,6 +160,31 @@ class MitTorqueLimitStats:
 class GripperProductBinding:
     motor: Motor
     profile_id: str
+
+
+@dataclass(frozen=True)
+class GravityProductBinding:
+    runtime_side: int
+    robot_side: int
+    product_id: str = "yunyi_v1_0"
+
+    def __post_init__(self) -> None:
+        if self.runtime_side not in (0, 1):
+            raise ValueError("runtime_side must be 0 or 1")
+        if self.robot_side not in (0, 1):
+            raise ValueError("robot_side must be 0 or 1")
+        if not self.product_id:
+            raise ValueError("product_id must not be empty")
+
+
+@dataclass(frozen=True)
+class GravityCompensationStatus:
+    phase: GravityCompensationPhase
+    active: bool
+    transition_progress: float
+    control_cycles: int
+    joints: tuple[Motor, ...]
+    gravity_feedforward_torque: tuple[float, ...]
 
 
 @dataclass(frozen=True)

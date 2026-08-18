@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include "articore/runtime_abi.h"
+#include "robot_model.hpp"
 
 namespace articore {
 
@@ -83,6 +85,12 @@ class SafetyRuntime {
       const ArticoreGripperForceProfile* profiles, uint32_t count);
   void configure_gripper_products(
       const ArticoreGripperProductBinding* bindings, uint32_t count);
+  void configure_gravity_products(
+      const ArticoreGravityProductBinding* bindings, uint32_t count);
+  void start_gravity_compensation(
+      const ArticoreGravityCompensationConfig* config);
+  void stop_gravity_compensation();
+  ArticoreGravityCompensationStatus gravity_compensation_status() const;
   void set_gripper_commands(const ArticoreGripperCommand* commands,
                             uint32_t count);
   void report_feedback_failure(uint8_t side, const std::string& reason);
@@ -211,9 +219,30 @@ class SafetyRuntime {
     std::vector<float> final_positions;
   };
 
+  struct GravityArm {
+    uint32_t runtime_side = 0;
+    uint32_t robot_side = 0;
+    std::string product_id;
+    std::unique_ptr<RobotModel> model;
+    std::array<void*, 7> joints{};
+  };
+
+  struct GravityControl {
+    ArticoreGravityCompensationPhase phase = ARTICORE_GRAVITY_INACTIVE;
+    Clock::time_point transition_started{};
+    std::chrono::milliseconds transition_duration{500};
+    float transition_start_gravity_scale = 0.0f;
+    std::vector<float> hold_positions;
+    uint64_t control_cycles = 0;
+    ArticoreGravityCompensationStatus status{};
+  };
+
   void worker_loop();
   bool run_arm_control_cycle(Clock::time_point now, bool include_grippers,
                              std::string& error);
+  bool run_gravity_control_cycle(Clock::time_point now,
+                                 bool include_grippers,
+                                 std::string& error);
   bool prepare_mit_torque_limited_commands(
       const std::vector<ArticoreMitCommand>& requested,
       std::vector<ArticoreMitCommand>& applied,
@@ -244,7 +273,7 @@ class SafetyRuntime {
   const JointControlConfig& joint_config(void* motor) const;
   void validate_position_velocity_torque(void* motor, float position,
                                          float velocity, float torque) const;
-  void require_state_for_command() const;
+  void require_state_for_command(bool allow_gravity = false) const;
   void validate_motor_set(const ArticorePosVelCommand* commands,
                           uint32_t count, bool grippers_only) const;
   void validate_motor_set(const ArticoreMitCommand* commands,
@@ -280,7 +309,8 @@ class SafetyRuntime {
                              const std::string& error);
   void stop_worker();
   bool refresh_feedback_health(bool recovery_check, bool allow_held_grippers,
-                               std::string& error);
+                               std::string& error,
+                               bool* diagnostic_only = nullptr);
   bool refresh_transport_health(std::string& error);
   void seed_gripper_targets_from_feedback(bool activate);
   std::string motor_error(const std::string& fallback) const;
@@ -304,6 +334,8 @@ class SafetyRuntime {
   std::map<std::string, ArticorePresenceState> presence_;
   std::map<void*, std::string> motor_roles_;
   std::unordered_map<void*, JointControlConfig> joint_configs_;
+  std::vector<GravityArm> gravity_arms_;
+  GravityControl gravity_control_;
   mutable std::mutex state_mutex_;
   mutable std::mutex command_mutex_;
   // Raw arm submissions use a capacity-one pending mailbox so callers never

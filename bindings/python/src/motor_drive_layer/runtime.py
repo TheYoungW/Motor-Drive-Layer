@@ -10,6 +10,9 @@ from ._runtime_abi import (
     CEnableReport,
     CGripperCommand,
     CGripperProductBinding,
+    CGravityCompensationConfig,
+    CGravityCompensationStatus,
+    CGravityProductBinding,
     CJointControlConfig,
     CJointSafetyLimits,
     CJointTarget,
@@ -42,6 +45,9 @@ from .runtime_models import (
     GripperControlState,
     GripperHealth,
     GripperProductBinding,
+    GravityCompensationPhase,
+    GravityCompensationStatus,
+    GravityProductBinding,
     JointControlConfig,
     JointPositionTarget,
     JointSafetyLimits,
@@ -356,6 +362,66 @@ class ArticoreRuntime:
         self._call(
             self._runtime_abi.lib.articore_runtime_configure_gripper_products,
             "configure_gripper_products", native if values else None, len(values),
+        )
+
+    def configure_gravity_products(
+        self, bindings: Sequence[GravityProductBinding]
+    ) -> None:
+        values = tuple(bindings)
+        native = (CGravityProductBinding * len(values))()
+        for output, item in zip(native, values):
+            output.struct_size = ctypes.sizeof(CGravityProductBinding)
+            output.runtime_side = item.runtime_side
+            output.robot_side = item.robot_side
+            output.product_id = _fixed_text(item.product_id, "product_id")
+        self._call(
+            self._runtime_abi.lib.articore_runtime_configure_gravity_products,
+            "configure_gravity_products", native if values else None, len(values),
+        )
+
+    def start_gravity_compensation(self, transition_ms: int = 0) -> None:
+        if not isinstance(transition_ms, int) or not 0 <= transition_ms <= 60_000:
+            raise ValueError("transition_ms must be an integer in 0..60000")
+        native = CGravityCompensationConfig()
+        native.struct_size = ctypes.sizeof(native)
+        native.transition_ms = transition_ms
+        self._call(
+            self._runtime_abi.lib.articore_runtime_start_gravity_compensation,
+            "start_gravity_compensation", ctypes.byref(native),
+        )
+
+    def stop_gravity_compensation(self) -> None:
+        self._call(
+            self._runtime_abi.lib.articore_runtime_stop_gravity_compensation,
+            "stop_gravity_compensation",
+        )
+
+    @property
+    def gravity_compensation_status(self) -> GravityCompensationStatus:
+        native = CGravityCompensationStatus()
+        native.struct_size = ctypes.sizeof(native)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_gravity_compensation_status,
+            "get_gravity_compensation_status", ctypes.byref(native),
+        )
+        motors_by_pointer = {
+            self._motor_pointer(item.motor): item.motor for item in self._motors
+        }
+        count = min(int(native.joint_count), len(native.joints))
+        joints = tuple(
+            motors_by_pointer[int(native.joints[index] or 0)]
+            for index in range(count)
+        )
+        return GravityCompensationStatus(
+            phase=GravityCompensationPhase(native.phase),
+            active=bool(native.active),
+            transition_progress=float(native.transition_progress),
+            control_cycles=int(native.control_cycles),
+            joints=joints,
+            gravity_feedforward_torque=tuple(
+                float(native.gravity_feedforward_torque[index])
+                for index in range(count)
+            ),
         )
 
     def declare_motor_presence(self, role: str, state: PresenceState) -> None:

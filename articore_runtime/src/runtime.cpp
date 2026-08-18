@@ -119,6 +119,9 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
   }
   mit_torque_limit_stats_.struct_size =
       sizeof(ArticoreMitTorqueLimitStats);
+  gravity_control_.status.struct_size =
+      sizeof(ArticoreGravityCompensationStatus);
+  gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
   std::fill(std::begin(mit_torque_limit_stats_.applied_scale),
             std::end(mit_torque_limit_stats_.applied_scale), 1.0f);
   mit_torque_limited_commands_.reserve(static_cast<std::size_t>(std::count_if(
@@ -478,6 +481,9 @@ void SafetyRuntime::stop_worker() {
     stopping_ = true;
     clear_pending_arm_mailbox();
     arm_mailbox_ = ArmMailbox{};
+    gravity_control_.phase = ARTICORE_GRAVITY_INACTIVE;
+    gravity_control_.status.active = 0;
+    gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
     fault_hold_active_ = false;
   }
   wakeup_.notify_all();

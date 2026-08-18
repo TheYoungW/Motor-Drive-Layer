@@ -23,6 +23,16 @@ recomputes P + D + feedforward from the latest feedback, applies the configured 
 scaling Kp/Kd/feedforward together, and exposes `ArticoreRuntime.mit_torque_limit_stats` for
 low-rate diagnostics. Python raw-MIT publishers therefore do not need feedback reads or NumPy
 torque limiting in their submission hot path.
+Runtime ABI 2.7 adds `NativeRobotModel`, an opaque whole-arm model wrapper with FK, IK, Jacobian,
+gravity, mass/Coriolis terms, nonlinear effects, RNEA and ABA. Its stable Python values contain no
+Pinocchio or Eigen objects. The Linux wheel privately bundles the C++ numerical runtime, while
+exact calibrated model parameters stay inside `libarticore_runtime`.
+Runtime ABI 2.8 adds native gravity-compensation hand guiding. Configure one
+`GravityProductBinding` per installed seven-axis side before `connect()`, enable
+`RuntimeControlMode.MIT`, and call `start_gravity_compensation()`. While active, the Runtime owns
+arm output and rejects ordinary arm commands; `stop_gravity_compensation()` blends back to a
+current-position hold. `gravity_compensation_status` exposes phase, progress, cycles, joints, and
+the final limited feedforward torque.
 Runtime ABI 2.2 adds built-in gripper product profiles. SDKs bind every installed gripper to
 `yunyi_gripper_v1` with `articore_runtime_configure_gripper_products()` before `connect()`; Python
 no longer supplies motor-position mapping, MIT gains, contact/stall/overload timing, retreat values,
@@ -46,9 +56,8 @@ mailbox in addition to `current_position_hold`. Runtime ABI 1.5 also advertises
 still-controllable motor/channel without automatically torque-disabling unrelated hardware.
 SDK bindings use `articore_runtime_create_ex2()` and pass motor enable callbacks plus immutable
 per-side transport capabilities explicitly;
-the two packaged native libraries remain independently loadable on Linux, Windows, and macOS.
-Published wheels cover Linux x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x64. The serial
-transport is cross-platform; SocketCAN transports remain Linux-only.
+the two packaged native libraries remain independently loadable. Published wheels cover Linux
+x86_64 and ARM64; SocketCAN and SocketCAN-FD remain Linux transports.
 
 The product adapter constructs the native Runtime from the already-created motor objects without
 touching ctypes:

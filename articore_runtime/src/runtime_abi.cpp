@@ -4,12 +4,19 @@
 #include <vector>
 
 #include "articore/runtime_abi.h"
+#include "robot_model.hpp"
 #include "runtime.hpp"
 
 struct ArticoreRuntime {
   explicit ArticoreRuntime(std::unique_ptr<articore::SafetyRuntime> value)
       : runtime(std::move(value)) {}
   std::unique_ptr<articore::SafetyRuntime> runtime;
+};
+
+struct ArticoreRobotModel {
+  explicit ArticoreRobotModel(std::unique_ptr<articore::RobotModel> value)
+      : model(std::move(value)) {}
+  std::unique_ptr<articore::RobotModel> model;
 };
 
 namespace {
@@ -36,12 +43,17 @@ articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
   return *runtime->runtime;
 }
 
+articore::RobotModel& checked(ArticoreRobotModel* model) {
+  if (!model || !model->model) throw std::invalid_argument("robot model is null");
+  return *model->model;
+}
+
 }  // namespace
 
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 6U;
+  return (2U << 16) | 8U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -68,7 +80,110 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_CONNECT_FEEDBACK_BARRIER |
          ARTICORE_CAP_STRUCTURED_CONNECT_REPORT |
          ARTICORE_CAP_TRANSPORT_AWARE_CONTROL_RATE |
-         ARTICORE_CAP_PER_CYCLE_MIT_TORQUE_LIMIT;
+         ARTICORE_CAP_PER_CYCLE_MIT_TORQUE_LIMIT |
+         ARTICORE_CAP_NATIVE_ROBOT_MODEL |
+         ARTICORE_CAP_NATIVE_GRAVITY_COMPENSATION;
+}
+
+ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
+    const char* product_id, uint32_t side) {
+  if (!product_id) {
+    g_last_error = "robot product_id is null";
+    return nullptr;
+  }
+  try {
+    auto value = std::make_unique<articore::RobotModel>(product_id, side);
+    g_last_error = "ok";
+    return new ArticoreRobotModel(std::move(value));
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return nullptr;
+  } catch (...) {
+    g_last_error = "unknown robot model creation error";
+    return nullptr;
+  }
+}
+
+ARTICORE_RUNTIME_API void articore_robot_model_free(ArticoreRobotModel* model) {
+  delete model;
+}
+
+ARTICORE_RUNTIME_API int32_t articore_robot_model_get_info(
+    ArticoreRobotModel* model, ArticoreRobotModelInfo* info) {
+  return call([&] { checked(model).get_info(info); });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_robot_model_fk(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    ArticoreRobotPose* pose) {
+  return call([&] { checked(model).fk(q, q_count, pose); });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_robot_model_jacobian(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    uint32_t reference, double* output, uint32_t output_count) {
+  return call([&] {
+    checked(model).jacobian(q, q_count, reference, output, output_count);
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_robot_model_gravity(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    double* output, uint32_t output_count) {
+  return call([&] { checked(model).gravity(q, q_count, output, output_count); });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_robot_model_mass_matrix(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    double* output, uint32_t output_count) {
+  return call([&] { checked(model).mass_matrix(q, q_count, output, output_count); });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_robot_model_coriolis_matrix(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    const double* dq, uint32_t dq_count, double* output,
+    uint32_t output_count) {
+  return call([&] {
+    checked(model).coriolis_matrix(q, q_count, dq, dq_count, output, output_count);
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_robot_model_nonlinear_effects(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    const double* dq, uint32_t dq_count, double* output,
+    uint32_t output_count) {
+  return call([&] {
+    checked(model).nonlinear_effects(q, q_count, dq, dq_count, output, output_count);
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_robot_model_rnea(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    const double* dq, uint32_t dq_count, const double* ddq,
+    uint32_t ddq_count, double* output, uint32_t output_count) {
+  return call([&] {
+    checked(model).rnea(q, q_count, dq, dq_count, ddq, ddq_count, output,
+                        output_count);
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_robot_model_aba(
+    ArticoreRobotModel* model, const double* q, uint32_t q_count,
+    const double* dq, uint32_t dq_count, const double* torque,
+    uint32_t torque_count, double* output, uint32_t output_count) {
+  return call([&] {
+    checked(model).aba(q, q_count, dq, dq_count, torque, torque_count, output,
+                       output_count);
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_robot_model_ik(
+    ArticoreRobotModel* model, const ArticoreRobotPose* target,
+    const double* initial_q, uint32_t initial_q_count,
+    const ArticoreIkOptions* options, ArticoreIkResult* result) {
+  return call([&] {
+    checked(model).ik(target, initial_q, initial_q_count, options, result);
+  });
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_hz(
@@ -293,6 +408,41 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_configure_gripper_products(
     uint32_t binding_count) {
   return call([&] {
     checked(runtime).configure_gripper_products(bindings, binding_count);
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_gravity_products(
+    ArticoreRuntime* runtime,
+    const ArticoreGravityProductBinding* bindings,
+    uint32_t binding_count) {
+  return call([&] {
+    checked(runtime).configure_gravity_products(bindings, binding_count);
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_start_gravity_compensation(
+    ArticoreRuntime* runtime,
+    const ArticoreGravityCompensationConfig* config) {
+  return call([&] { checked(runtime).start_gravity_compensation(config); });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_stop_gravity_compensation(
+    ArticoreRuntime* runtime) {
+  return call([&] { checked(runtime).stop_gravity_compensation(); });
+}
+
+ARTICORE_RUNTIME_API int32_t
+articore_runtime_get_gravity_compensation_status(
+    ArticoreRuntime* runtime,
+    ArticoreGravityCompensationStatus* status) {
+  return call([&] {
+    if (!status || status->struct_size < sizeof(*status)) {
+      throw std::invalid_argument(
+          "gravity compensation status is null or too small");
+    }
+    const auto size = status->struct_size;
+    *status = checked(runtime).gravity_compensation_status();
+    status->struct_size = size;
   });
 }
 

@@ -13,6 +13,15 @@ from .core import (
     PreparedPosVelBatch as PreparedPosVelBatch,
 )
 from .runtime import ArticoreRuntime as ArticoreRuntime
+from .robot_model import (
+    IkOptions as IkOptions,
+    IkResult as IkResult,
+    JacobianReference as JacobianReference,
+    NativeRobotModel as NativeRobotModel,
+    RobotModelInfo as RobotModelInfo,
+    RobotPose as RobotPose,
+    RobotSide as RobotSide,
+)
 from .runtime_models import (
     ActiveCapability as ActiveCapability,
     CommandLifetime as CommandLifetime,
@@ -29,6 +38,9 @@ from .runtime_models import (
     GripperFaultAction as GripperFaultAction,
     GripperHealth as GripperHealth,
     GripperProductBinding as GripperProductBinding,
+    GravityCompensationPhase as GravityCompensationPhase,
+    GravityCompensationStatus as GravityCompensationStatus,
+    GravityProductBinding as GravityProductBinding,
     JointControlConfig as JointControlConfig,
     JointPositionTarget as JointPositionTarget,
     JointSafetyLimits as JointSafetyLimits,

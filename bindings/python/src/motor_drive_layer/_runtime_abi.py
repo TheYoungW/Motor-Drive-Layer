@@ -138,6 +138,19 @@ class CGripperProductBinding(Structure):
     _fields_ = [("struct_size", c_uint32), ("motor", c_void_p), ("profile_id", c_char * 64)]
 
 
+class CGravityProductBinding(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32),
+        ("runtime_side", c_uint32),
+        ("robot_side", c_uint32),
+        ("product_id", c_char * 64),
+    ]
+
+
+class CGravityCompensationConfig(Structure):
+    _fields_ = [("struct_size", c_uint32), ("transition_ms", c_uint32)]
+
+
 class CMotorIdentity(Structure):
     _fields_ = [("struct_size", c_uint32), ("motor", c_void_p), ("can_id", c_uint32)]
 
@@ -257,6 +270,19 @@ class CSafetyHealth(Structure):
 _MAX_MIT_TORQUE_LIMIT_JOINTS = 32
 
 
+class CGravityCompensationStatus(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32),
+        ("phase", c_int32),
+        ("active", c_int32),
+        ("transition_progress", c_float),
+        ("control_cycles", c_uint64),
+        ("joint_count", c_uint32),
+        ("joints", c_void_p * _MAX_MIT_TORQUE_LIMIT_JOINTS),
+        ("gravity_feedforward_torque", c_float * _MAX_MIT_TORQUE_LIMIT_JOINTS),
+    ]
+
+
 class CMitTorqueLimitStats(Structure):
     _fields_ = [
         ("struct_size", c_uint32),
@@ -283,9 +309,9 @@ class RuntimeAbi:
         self.lib = ctypes.CDLL(articore_runtime_library_path())
         self.lib.articore_runtime_abi_version.restype = c_uint32
         version = int(self.lib.articore_runtime_abi_version())
-        if version < 0x00020006:
+        if version < 0x00020008:
             raise AbiLoadError(
-                "official ArticoreRuntime binding requires Runtime ABI >= 2.6; "
+                "official ArticoreRuntime binding requires Runtime ABI >= 2.8; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self._bind()
@@ -354,6 +380,14 @@ class RuntimeAbi:
         lib.articore_runtime_configure_joint_safety_limits.restype = c_int32
         lib.articore_runtime_configure_gripper_products.argtypes = [c_void_p, POINTER(CGripperProductBinding), c_uint32]
         lib.articore_runtime_configure_gripper_products.restype = c_int32
+        lib.articore_runtime_configure_gravity_products.argtypes = [c_void_p, POINTER(CGravityProductBinding), c_uint32]
+        lib.articore_runtime_configure_gravity_products.restype = c_int32
+        lib.articore_runtime_start_gravity_compensation.argtypes = [c_void_p, POINTER(CGravityCompensationConfig)]
+        lib.articore_runtime_start_gravity_compensation.restype = c_int32
+        lib.articore_runtime_stop_gravity_compensation.argtypes = [c_void_p]
+        lib.articore_runtime_stop_gravity_compensation.restype = c_int32
+        lib.articore_runtime_get_gravity_compensation_status.argtypes = [c_void_p, POINTER(CGravityCompensationStatus)]
+        lib.articore_runtime_get_gravity_compensation_status.restype = c_int32
         lib.articore_runtime_set_gripper_commands.argtypes = [c_void_p, POINTER(CGripperCommand), c_uint32]
         lib.articore_runtime_set_gripper_commands.restype = c_int32
         for name in ("set_joint_pv", "set_joint_mit"):

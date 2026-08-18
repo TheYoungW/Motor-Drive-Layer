@@ -26,6 +26,14 @@ int main() {
   const auto connect_report = &articore_runtime_get_last_connect_report;
   const auto mit_torque_limit_stats =
       &articore_runtime_get_mit_torque_limit_stats;
+  const auto robot_model_create = &articore_robot_model_create;
+  const auto robot_model_fk = &articore_robot_model_fk;
+  const auto configure_gravity_products =
+      &articore_runtime_configure_gravity_products;
+  const auto start_gravity = &articore_runtime_start_gravity_compensation;
+  const auto stop_gravity = &articore_runtime_stop_gravity_compensation;
+  const auto gravity_status =
+      &articore_runtime_get_gravity_compensation_status;
   const auto version = articore_runtime_abi_version();
   const auto capabilities = articore_runtime_capabilities();
   const uint64_t required = ARTICORE_CAP_COMMAND_WATCHDOG |
@@ -50,7 +58,9 @@ int main() {
                             ARTICORE_CAP_CONNECT_FEEDBACK_BARRIER |
                             ARTICORE_CAP_STRUCTURED_CONNECT_REPORT |
                             ARTICORE_CAP_TRANSPORT_AWARE_CONTROL_RATE |
-                            ARTICORE_CAP_PER_CYCLE_MIT_TORQUE_LIMIT;
+                            ARTICORE_CAP_PER_CYCLE_MIT_TORQUE_LIMIT |
+                            ARTICORE_CAP_NATIVE_ROBOT_MODEL |
+                            ARTICORE_CAP_NATIVE_GRAVITY_COMPENSATION;
   const uint64_t removed_trajectory_bits =
       (1ULL << 9) | (1ULL << 12) | (1ULL << 15) |
       (1ULL << 16) | (1ULL << 17);
@@ -58,10 +68,12 @@ int main() {
       !set_joint_mit || !set_joint_pv || !disable_report ||
       !effective_control_hz ||
       !configure_motor_identities || !connect_report ||
-      !mit_torque_limit_stats ||
+      !mit_torque_limit_stats || !robot_model_create || !robot_model_fk ||
+      !configure_gravity_products || !start_gravity || !stop_gravity ||
+      !gravity_status ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x00020006U ||
+      version != 0x00020008U ||
       (capabilities & required) != required ||
       (capabilities & removed_trajectory_bits) != 0) {
     std::cerr << "Articore runtime ABI metadata is incomplete\n";

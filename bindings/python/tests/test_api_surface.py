@@ -77,7 +77,7 @@ def test_runtime_metadata_and_docs_follow_the_canonical_surface() -> None:
         encoding="utf-8"
     )
     declared_symbols = set(re.findall(
-        r"ARTICORE_RUNTIME_API\s+(?:[^;]*?\s)?(articore_runtime_[a-z0-9_]+)\s*\(",
+        r"ARTICORE_RUNTIME_API\s+(?:[^;]*?\s)?(articore_(?:runtime|robot_model)_[a-z0-9_]+)\s*\(",
         header,
         re.DOTALL,
     ))

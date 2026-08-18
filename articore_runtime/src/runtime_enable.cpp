@@ -490,6 +490,12 @@ void SafetyRuntime::initialize_enabled_state(ArticoreControlMode mode) {
   next_ready_feedback_ = {};
   next_gripper_control_ = enabled_at_;
   next_control_tick_ = enabled_at_;
+  gravity_control_.phase = ARTICORE_GRAVITY_INACTIVE;
+  gravity_control_.hold_positions.clear();
+  gravity_control_.control_cycles = 0;
+  gravity_control_.status = {};
+  gravity_control_.status.struct_size = sizeof(gravity_control_.status);
+  gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
 }
 
 bool SafetyRuntime::send_initial_hold(ArticoreControlMode mode,
@@ -956,6 +962,10 @@ void SafetyRuntime::disable() {
     fault_hold_active_ = false;
     clear_pending_arm_mailbox();
     arm_mailbox_ = ArmMailbox{};
+    gravity_control_.phase = ARTICORE_GRAVITY_INACTIVE;
+    gravity_control_.hold_positions.clear();
+    gravity_control_.status.active = 0;
+    gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
     has_successful_command_ = false;
     gripper_command_generation_ = 0;
     gripper_sent_generation_ = 0;

@@ -212,6 +212,23 @@ class BuildPyWithAbi(_build_py):
         shutil.copy2(abi_src, dst_dir / abi_src.name)
         articore_src = _resolve_articore_runtime_path()
         shutil.copy2(articore_src, dst_dir / articore_src.name)
+        robotics_src = articore_src.parent / "robotics"
+        if sys.platform.startswith("linux"):
+            required = ("libpinocchio_default.so",)
+            missing = [name for name in required if not (robotics_src / name).exists()]
+            boost = next(robotics_src.glob("libboost_serialization.so.*"), None)
+            if missing or boost is None:
+                raise RuntimeError(
+                    "The Linux Articore Runtime build is missing its private "
+                    "Pinocchio/Boost libraries under " + str(robotics_src)
+                )
+            robotics_dst = dst_dir / "robotics"
+            robotics_dst.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(robotics_src / "libpinocchio_default.so", robotics_dst)
+            shutil.copy2(boost, robotics_dst)
+            private_stdcxx = robotics_src / "libstdc++.so.6"
+            if private_stdcxx.exists():
+                shutil.copy2(private_stdcxx, robotics_dst)
 
         dm_sources = _find_dm_device_paths()
         if dm_sources:

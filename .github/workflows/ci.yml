@@ -21,14 +21,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install Python test tools
-        run: python -m pip install --upgrade build pytest
+      - name: Install Python test tools and native Pinocchio
+        run: python -m pip install --upgrade build pytest pin
 
       - name: Build private libusb runtime
         run: bash scripts/build_private_libusb.sh "$RUNNER_TEMP/libusb-1.0.27"
 
       - name: Configure C++ ABI
-        run: cmake -S . -B build
+        run: cmake -S . -B build -DCMAKE_PREFIX_PATH="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"] + "/cmeel.prefix")')"
 
       - name: Build C++ ABI
         run: cmake --build build
@@ -66,6 +66,9 @@ jobs:
               assert any(name.endswith("/licenses/LICENSE") for name in names)
               assert any(name.endswith("motor_drive_layer/lib/libmotor_abi.so") for name in names)
               assert any(name.endswith("motor_drive_layer/lib/libarticore_runtime.so") for name in names)
+              assert any(name.endswith("motor_drive_layer/lib/robotics/libpinocchio_default.so") for name in names)
+              assert any("motor_drive_layer/lib/robotics/libboost_serialization.so." in name for name in names)
+              assert any(name.endswith("motor_drive_layer/lib/robotics/libstdc++.so.6") for name in names)
               assert any(name.endswith("motor_drive_layer/lib/dm_device/v1.0.0/libdm_device.so") for name in names)
               assert any(name.endswith("motor_drive_layer/lib/dm_device/v1.1.0/libdm_device.so") for name in names)
               assert any(name.endswith("motor_drive_layer/lib/dm_device/libstdc++.so.6") for name in names)
@@ -86,7 +89,10 @@ jobs:
           assert motor_drive_layer.abi_capabilities()["features"]["register_metadata"] is True
           runtime_path = motor_drive_layer.articore_runtime_library_path()
           assert runtime_path.endswith("libarticore_runtime.so")
-          assert motor_drive_layer.articore_runtime_abi_version() == "2.6"
+          assert motor_drive_layer.articore_runtime_abi_version() == "2.8"
+          assert motor_drive_layer.articore_runtime_capabilities()["native_robot_model"] is True
+          assert motor_drive_layer.articore_runtime_capabilities()["native_gravity_compensation"] is True
+          assert motor_drive_layer.NativeRobotModel().info.dof == 7
           assert motor_drive_layer.articore_runtime_capabilities()["connect_feedback_barrier"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["structured_connect_report"] is True
           assert motor_drive_layer.articore_runtime_capabilities()["transport_aware_control_rate"] is True

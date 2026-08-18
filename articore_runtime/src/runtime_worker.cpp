@@ -179,6 +179,7 @@ void SafetyRuntime::worker_loop() {
     if (run_feedback_check) {
       std::string error;
       bool healthy = false;
+      bool diagnostic_only = false;
       bool still_active = false;
       {
         std::lock_guard<std::mutex> command_lock(command_mutex_);
@@ -188,11 +189,17 @@ void SafetyRuntime::worker_loop() {
               (state_ == ARTICORE_RUNNING || state_ == ARTICORE_SAFE_HOLD);
         }
         if (still_active) {
-          healthy = refresh_feedback_health(false, false, error);
+          healthy = refresh_feedback_health(
+              false, false, error, &diagnostic_only);
         }
       }
       if (!still_active) continue;
       if (!healthy) {
+        if (diagnostic_only) {
+          std::lock_guard<std::mutex> lock(state_mutex_);
+          ++consecutive_feedback_failures_;
+          continue;
+        }
         const bool severe =
             error.find("motor fault status") != std::string::npos ||
             error.find("unexpectedly disabled") != std::string::npos ||

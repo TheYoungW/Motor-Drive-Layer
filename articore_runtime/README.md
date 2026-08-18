@@ -51,9 +51,11 @@ user commands before transmission, but are not applied to measured
 position, velocity, or torque. Feedback monitoring checks finite values, freshness, transport
 health, motor status, and unexpected disable; mechanical feedback protection requires separately
 defined thresholds, tolerance, and persistence rather than reusing URDF command limits.
-Transient missing or stale feedback is counted until the configured consecutive-failure threshold is reached. Motor fault status, unexpected disable, and
-transport disconnect remain immediate hard faults, but a hard fault does not automatically torque
-off unrelated healthy motors.
+Missing or stale feedback remains visible through per-motor age, side health, error text, and
+consecutive-failure counters, but it is diagnostic-only and does not transition a running Runtime
+to `SAFE_HOLD` or `FAULT`. Motor fault status, unexpected disable, non-finite feedback, and
+transport disconnect remain actionable faults, but a hard fault does not automatically torque off
+unrelated healthy motors.
 
 Runtime ABI 1.5 separates command update lifetime from physical motion duration. The legacy direct
 submission entry points remain `STREAMING`: callers must refresh them before `command_timeout_ms`.
@@ -232,11 +234,28 @@ newest native position and velocity feedback and computes
 `Kp * (q_target - q_feedback) + Kd * (dq_target - dq_feedback) + tau_ff`. Each joint is bounded to
 its configured `torque_limit`; when limiting is necessary, Kp, Kd, and feedforward torque
 are multiplied by the same scale so their relative contributions are preserved. The complete arm
-batch is rejected before transmission if any required feedback is missing, stale, disabled, or
-non-finite, which then enters the existing protective fault-hold path. This keeps the protection at
+batch is rejected before transmission if the cached feedback is disabled, unavailable, or
+non-finite, which then enters the existing protective fault-hold path. A stale-but-valid cached
+sample remains usable while its age is reported diagnostically, so feedback timeout alone does not
+stop the native sender. This keeps the protection at
 the actual native control rate even when a publisher updates at only 100--500 Hz. The cumulative
 activation count and latest per-joint requested torque, applied scale, and applied torque are
 available through `articore_runtime_get_mit_torque_limit_stats()`.
+
+Runtime ABI 2.7 advertises `ARTICORE_CAP_NATIVE_ROBOT_MODEL`. The opaque
+`ArticoreRobotModel` handle owns the exact product model and provides FK, IK, three Jacobian
+reference conventions, gravity, mass and Coriolis matrices, nonlinear effects, RNEA and ABA. The C
+ABI contains only fixed-size metadata and caller-owned row-major `double` arrays; Pinocchio and
+Eigen types never cross the boundary. The Yunyi model is constructed from private calibrated
+parameters in the shared library, while the Python SDK receives only results and joint limits.
+
+Runtime ABI 2.8 advertises `ARTICORE_CAP_NATIVE_GRAVITY_COMPENSATION`. Before `connect()`, bind
+every active seven-axis arm side with `articore_runtime_configure_gravity_products()`. After
+enabling MIT mode, `articore_runtime_start_gravity_compensation()` transfers exclusive arm output
+ownership to the native worker. Each control cycle reads q, evaluates the product gravity model,
+and sends MIT gravity feedforward; the ACTIVE phase uses `kp=kd=0`. Entry and exit use a 500 ms
+default blend, and exit lands in a current-position MIT hold. The normal per-cycle resultant-torque
+limiter remains the final gate before transmission.
 
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations

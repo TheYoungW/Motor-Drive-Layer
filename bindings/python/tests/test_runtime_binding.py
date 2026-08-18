@@ -12,6 +12,7 @@ from motor_drive_layer import (
     Controller,
     ControllerGroup,
     GripperProductBinding,
+    GravityCompensationPhase,
     JointControlConfig,
     JointSafetyLimits,
     Motor,
@@ -121,6 +122,10 @@ def test_runtime_binding_owns_handles_and_converts_health() -> None:
         assert torque_stats.torque_limit_activation_count == 0
         assert torque_stats.torque_limited_joint_mask == 0
         assert torque_stats.joints == ()
+        gravity_status = runtime.gravity_compensation_status
+        assert gravity_status.phase is GravityCompensationPhase.INACTIVE
+        assert gravity_status.active is False
+        assert gravity_status.joints == ()
         assert runtime.active_capabilities == ActiveCapability.ARM_SIDE_0
         assert runtime.last_enable_report().expected_count == 0
         assert runtime.last_disable_report().expected_count == 0

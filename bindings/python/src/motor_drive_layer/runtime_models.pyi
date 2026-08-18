@@ -11,6 +11,11 @@ class SafetyState(IntEnum):
 class RuntimeControlMode(IntEnum):
     PV: int
     MIT: int
+class GravityCompensationPhase(IntEnum):
+    INACTIVE: int
+    ENTERING: int
+    ACTIVE: int
+    EXITING: int
 class CommandLifetime(IntEnum):
     STREAMING: int
     HOLD_UNTIL_REPLACED: int
@@ -95,6 +100,18 @@ class GripperProductBinding:
     motor: Motor
     profile_id: str
     def __init__(self, motor: Motor, profile_id: str) -> None: ...
+class GravityProductBinding:
+    runtime_side: int
+    robot_side: int
+    product_id: str
+    def __init__(self, runtime_side: int, robot_side: int, product_id: str = ...) -> None: ...
+class GravityCompensationStatus:
+    phase: GravityCompensationPhase
+    active: bool
+    transition_progress: float
+    control_cycles: int
+    joints: tuple[Motor, ...]
+    gravity_feedforward_torque: tuple[float, ...]
 class GripperCommand:
     motor: Motor
     opening: float

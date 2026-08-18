@@ -20,32 +20,11 @@ void SafetyRuntime::report_feedback_failure(uint8_t side,
   if (side > 1 || !active_sides_[side]) {
     throw std::invalid_argument("feedback side is not active");
   }
-  bool should_hold = false;
-  bool should_fault = false;
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    ++consecutive_feedback_failures_;
-    ++sides_[side].feedback_failures;
-    sides_[side].healthy = false;
-    sides_[side].last_error = reason;
-    if (state_ == ARTICORE_SAFE_HOLD) {
-      should_fault = true;
-    } else if (state_ == ARTICORE_RUNNING &&
-               consecutive_feedback_failures_ >= config_.feedback_failure_threshold) {
-      should_hold = true;
-    }
-  }
-  if (should_fault) enter_fault("feedback failed during safe hold: " + reason);
-  if (should_hold) {
-    std::string hold_error;
-    if (!enter_safe_hold_from_feedback(
-            "consecutive feedback failures: " + reason, hold_error)) {
-      enter_fault("consecutive feedback failures: " + reason +
-                  "; current-position hold unavailable: " + hold_error);
-    } else {
-      wakeup_.notify_all();
-    }
-  }
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  ++consecutive_feedback_failures_;
+  ++sides_[side].feedback_failures;
+  sides_[side].healthy = false;
+  sides_[side].last_error = reason;
 }
 
 std::string SafetyRuntime::motor_error(const std::string& fallback) const {
@@ -291,8 +270,11 @@ bool SafetyRuntime::send_safe_hold_once(std::string& error) {
 
 bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
                                             bool allow_held_grippers,
-                                            std::string& error) {
+                                            std::string& error,
+                                            bool* diagnostic_only) {
+  if (diagnostic_only) *diagnostic_only = false;
   const bool transports_ok = refresh_transport_health(error);
+  bool actionable_failure = !transports_ok;
   uint64_t maximum_age[2] = {0, 0};
   std::vector<std::string> motor_faults;
   std::vector<std::string> unconfirmed;
@@ -350,6 +332,7 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
       continue;
     }
     if (!finite(state.pos) || !finite(state.vel) || !finite(state.torq)) {
+      actionable_failure = true;
       side_ok[motor.descriptor.side] = false;
       std::ostringstream detail;
       detail << identity() << ": motor feedback is not finite; actual={position="
@@ -360,6 +343,7 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
       continue;
     }
     if (state.status_code > 1) {
+      actionable_failure = true;
       motor_faults.push_back(name);
       faulted_presence.push_back(motor.descriptor.motor);
       side_ok[motor.descriptor.side] = false;
@@ -376,6 +360,7 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
           std::to_string(state.status_code) + ", threshold_status=0";
     }
     if (!recovery_check && state.status_code == 0) {
+      actionable_failure = true;
       error = identity() +
           ": motor unexpectedly disabled; actual_status=0, threshold_status=1";
       motor_faults.push_back(name);
@@ -429,6 +414,9 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
       consecutive_feedback_failures_ = 0;
       return true;
     }
+  }
+  if (diagnostic_only) {
+    *diagnostic_only = !recovery_check && !actionable_failure;
   }
   if (error.empty()) {
     if (active_sides_[0] && !side_ok[0]) {
@@ -505,6 +493,10 @@ void SafetyRuntime::enter_fault(const std::string& reason, bool torque_off) {
     if (!hold_error.empty()) fault_reason_ += "; protective hold: " + hold_error;
     clear_pending_arm_mailbox();
     arm_mailbox_ = ArmMailbox{};
+    gravity_control_.phase = ARTICORE_GRAVITY_INACTIVE;
+    gravity_control_.hold_positions.clear();
+    gravity_control_.status.active = 0;
+    gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
     next_safe_hold_ = Clock::now();
     fault_hold_active_ = arm_hold_available || !safe_grippers_.empty();
     for (auto& motor : motors_) {
