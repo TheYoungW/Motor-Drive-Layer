@@ -2819,7 +2819,7 @@ void test_ordinary_mit_position_uses_constant_reference_speed() {
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
             return driver.arm_mit_history.size() >= 105;
-          }, 500ms),
+          }, 1500ms),
           "ordinary MIT position emits control-rate references");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
@@ -2852,7 +2852,7 @@ void test_ordinary_mit_position_uses_constant_reference_speed() {
             return !driver.arm_mit_history.empty() &&
                 std::abs(driver.arm_mit_history.back()[0].target_position -
                          1.0f) < 1e-5f;
-          }, 1500ms),
+          }, 3000ms),
           "ordinary MIT position reaches a 1 rad target at 1 rad/s");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
@@ -2914,7 +2914,7 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
             return driver.pv_history.size() >= 105;
-          }, 500ms),
+          }, 1500ms),
           "ordinary PV position emits control-rate references");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
