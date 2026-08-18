@@ -230,7 +230,7 @@ Runtime ABI 2.6 advertises `ARTICORE_CAP_PER_CYCLE_MIT_TORQUE_LIMIT`. Before eve
 send—including cycles that repeat the latest capacity-one mailbox target—the worker reads the
 newest native position and velocity feedback and computes
 `Kp * (q_target - q_feedback) + Kd * (dq_target - dq_feedback) + tau_ff`. Each joint is bounded to
-80% of its configured `torque_limit`; when limiting is necessary, Kp, Kd, and feedforward torque
+its configured `torque_limit`; when limiting is necessary, Kp, Kd, and feedforward torque
 are multiplied by the same scale so their relative contributions are preserved. The complete arm
 batch is rejected before transmission if any required feedback is missing, stale, disabled, or
 non-finite, which then enters the existing protective fault-hold path. This keeps the protection at

@@ -19,7 +19,7 @@ legacy, mixed, and DM Device dual runtimes retain the 400 Hz envelope. Raw Runti
 a non-blocking latest-value mailbox, and Motor cached-state/statistics reads rely on their internal
 snapshot locks instead of contending with the Runtime transport worker.
 Runtime ABI 2.6 moves complete MIT resultant-torque protection into every native send cycle. It
-recomputes P + D + feedforward from the latest feedback, applies the per-joint 80% torque bound by
+recomputes P + D + feedforward from the latest feedback, applies the configured per-joint torque bound by
 scaling Kp/Kd/feedforward together, and exposes `ArticoreRuntime.mit_torque_limit_stats` for
 low-rate diagnostics. Python raw-MIT publishers therefore do not need feedback reads or NumPy
 torque limiting in their submission hot path.

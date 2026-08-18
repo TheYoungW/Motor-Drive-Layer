@@ -77,8 +77,7 @@ enum ArticoreRuntimeCapability {
   // ABI 2.6 recomputes complete raw-MIT P + D + feedforward output from the
   // newest native feedback on every actual control tick, including ticks
   // that repeat the latest mailbox target. Per-joint output is bounded to
-  // 80% of its configured torque limit by scaling Kp, Kd and feedforward
-  // together.
+  // its configured torque limit by scaling Kp, Kd and feedforward together.
   ARTICORE_CAP_PER_CYCLE_MIT_TORQUE_LIMIT = 1ULL << 28,
 };
 

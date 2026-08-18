@@ -1948,7 +1948,7 @@ void test_raw_mit_torque_limit_recomputes_on_every_native_cycle() {
   runtime.enable(ARTICORE_MODE_MIT);
 
   // Left requested output is 10*(1-0) + 4*(1-(-1)) + 3 = 21. The
-  // configured torque limit is 10, so the native 80% bound is 8.
+  // configured torque limit is 10, which is also the native bound.
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     driver.motors[motors[0].motor].position = 0.0f;
@@ -1971,7 +1971,7 @@ void test_raw_mit_torque_limit_recomputes_on_every_native_cycle() {
     std::lock_guard<std::mutex> lock(driver.mutex);
     limited = driver.last_arm_mit[0];
   }
-  const float expected_scale = 8.0f / 21.0f;
+  const float expected_scale = 10.0f / 21.0f;
   require(std::abs(limited.stiffness - 10.0f * expected_scale) < 1e-5f &&
               std::abs(limited.damping - 4.0f * expected_scale) < 1e-5f &&
               std::abs(limited.feedforward_torque -
@@ -1984,16 +1984,16 @@ void test_raw_mit_torque_limit_recomputes_on_every_native_cycle() {
               stats.joints[0] == motors[0].motor &&
               std::abs(stats.requested_resultant_torque[0] - 21.0f) < 1e-5f &&
               std::abs(stats.applied_scale[0] - expected_scale) < 1e-5f &&
-              std::abs(stats.applied_resultant_torque[0] - 8.0f) < 1e-5f,
+              std::abs(stats.applied_resultant_torque[0] - 10.0f) < 1e-5f,
           "MIT limiter statistics describe the actual native send cycle");
 
   std::size_t history_before = 0;
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     history_before = driver.arm_mit_history.size();
-    // With no new submit, the same target now requests
-    // 10*(1-.8) + 4*(1-.5) + 3 = 7, below the 8-unit bound.
-    driver.motors[motors[0].motor].position = 0.8f;
+    // With no new submit, the same target now requests exactly the complete
+    // configured range: 10*(1-.5) + 4*(1-.5) + 3 = 10.
+    driver.motors[motors[0].motor].position = 0.5f;
     driver.motors[motors[0].motor].velocity = 0.5f;
   }
   require(wait_for([&] {
@@ -2005,10 +2005,10 @@ void test_raw_mit_torque_limit_recomputes_on_every_native_cycle() {
           "repeated mailbox target is recomputed from newer feedback");
   stats = runtime.mit_torque_limit_stats();
   require(stats.torque_limited_joint_mask == 0 &&
-              std::abs(stats.requested_resultant_torque[0] - 7.0f) < 1e-5f &&
+              std::abs(stats.requested_resultant_torque[0] - 10.0f) < 1e-5f &&
               stats.applied_scale[0] == 1.0f &&
-              std::abs(stats.applied_resultant_torque[0] - 7.0f) < 1e-5f,
-          "latest unbounded repeated cycle replaces per-cycle limiter stats");
+              std::abs(stats.applied_resultant_torque[0] - 10.0f) < 1e-5f,
+          "complete configured range remains available without scaling");
   runtime.disable();
 }
 
@@ -3128,7 +3128,7 @@ void test_raw_mit_targets_remain_direct_after_ordinary_position_control() {
           "ordinary MIT position starts before raw MIT replacement");
 
   ArticoreMitCommand raw[] = {
-      {motors[0].motor, 0.75f, 0.3f, 11.0f, 1.0f, 0.2f},
+      {motors[0].motor, 1.0f, 0.3f, 11.0f, 1.0f, 0.2f},
       {motors[1].motor, 1.25f, -0.4f, 12.0f, 1.5f, -0.3f},
   };
   runtime.submit_mit_ex(raw, 2, ARTICORE_COMMAND_STREAMING);

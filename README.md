@@ -507,7 +507,7 @@ through `articore_runtime_get_control_hz()`.
 
 Runtime ABI 2.6 moves complete MIT resultant-torque protection into the native worker. Every
 actual MIT send cycle—including a repeated latest-mailbox target—uses fresh native q/dq feedback,
-limits each joint to 80% of its configured torque limit, and scales Kp, Kd, and feedforward torque
+limits each joint to its configured torque limit, and scales Kp, Kd, and feedforward torque
 together when necessary. Missing or stale feedback rejects the complete arm batch and enters the
 existing protective fault-hold path. Per-cycle limiter diagnostics are exposed without requiring
 Python feedback reads on the raw submission hot path. This change is covered by simulated native

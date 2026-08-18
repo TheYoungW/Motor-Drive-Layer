@@ -559,7 +559,7 @@ bool SafetyRuntime::prepare_mit_torque_limited_commands(
           ": MIT resultant torque exceeds the native command range";
       return false;
     }
-    const float torque_limit = 0.8f * limits.torque_limit;
+    const float torque_limit = limits.torque_limit;
     float scale = 1.0f;
     if (std::abs(requested_torque) > torque_limit) {
       scale = torque_limit / std::abs(requested_torque);
