@@ -22,7 +22,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install Python test tools and native Pinocchio
-        run: python -m pip install --upgrade build pytest pin
+        run: python -m pip install --upgrade build pytest pin cmeel-eigen
 
       - name: Build private libusb runtime
         run: bash scripts/build_private_libusb.sh "$RUNNER_TEMP/libusb-1.0.27"
