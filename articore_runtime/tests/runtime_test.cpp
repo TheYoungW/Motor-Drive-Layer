@@ -511,6 +511,13 @@ std::vector<ArticoreJointSafetyLimits> layered_joint_limits(
 
 template <typename Predicate>
 bool wait_for(Predicate predicate, std::chrono::milliseconds timeout = 300ms) {
+#if defined(__APPLE__) || defined(_WIN32)
+  // Hosted macOS and Windows runners have substantially coarser scheduling
+  // under load. The assertions below validate generated cycle counts and
+  // per-cycle values, so allow wall-clock jitter without weakening those
+  // deterministic checks.
+  timeout *= 4;
+#endif
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline) {
     if (predicate()) return true;
