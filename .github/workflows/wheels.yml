@@ -37,7 +37,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install build tools and native Pinocchio
-        run: python -m pip install --upgrade build pytest pin cmeel-eigen
+        run: python -m pip install --upgrade build pytest pin cmeel-eigen cmeel-urdfdom-headers
 
       - name: Build private Linux libusb runtime
         run: bash scripts/build_private_libusb.sh "$RUNNER_TEMP/libusb-1.0.27"
