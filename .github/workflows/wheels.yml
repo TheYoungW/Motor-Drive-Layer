@@ -19,10 +19,6 @@ jobs:
         include:
           - name: linux-x86_64
             runner: ubuntu-22.04
-            # The bundled v1.0 vendor runtime needs two newer GLIBCXX symbols,
-            # which are supplied by the wheel's private libstdc++.  Auditwheel
-            # treats libstdc++ as a system library and would therefore
-            # over-tag this Ubuntu 22.04-compatible wheel as manylinux_2_39.
             wheel_platform: "manylinux_2_34_x86_64"
           - name: linux-aarch64
             runner: ubuntu-22.04-arm
@@ -31,70 +27,125 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup Python
+      - name: Setup Python packaging tool
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - name: Install build tools and native Pinocchio
-        run: python -m pip install --upgrade build pytest pin cmeel-eigen cmeel-urdfdom-headers
+      - name: Install build tools and pinned Pinocchio C++ headers
+        run: python -m pip install --upgrade build 'libpinocchio==3.8.0' cmeel-eigen cmeel-urdfdom-headers
 
       - name: Build private Linux libusb runtime
         run: bash scripts/build_private_libusb.sh "$RUNNER_TEMP/libusb-1.0.27"
 
-      - name: Configure C++ ABI
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"] + "/cmeel.prefix")')"
-
-      - name: Build C++ ABI
-        run: cmake --build build --config Release
-
-      - name: Run C++ tests
-        run: ctest --test-dir build --build-config Release --output-on-failure --timeout 180
+      - name: Configure and build native libraries
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"] + "/cmeel.prefix")'"
+          cmake --build build --config Release
+          ctest --test-dir build --build-config Release --output-on-failure --timeout 180
 
       - name: Install native SDK artifact
-        run: cmake --install build --config Release --prefix "${{ runner.temp }}/motor-drive-layer-native"
-
-      - name: Add private libusb to Linux native SDK artifact
         run: |
+          cmake --install build --config Release \
+            --prefix "${{ runner.temp }}/motor-drive-layer-native"
           mkdir -p "${{ runner.temp }}/motor-drive-layer-native/lib/dm_device"
-          cp "${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0" "${{ runner.temp }}/motor-drive-layer-native/lib/dm_device/libusb-1.0.so.0"
+          cp "${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0" \
+            "${{ runner.temp }}/motor-drive-layer-native/lib/dm_device/libusb-1.0.so.0"
 
-      - name: Run Python tests
+      - name: Build ARM64 binary-only wheel
+        if: matrix.name == 'linux-aarch64'
         env:
-          PYTHONPATH: bindings/python/src
-        run: python -m pytest -q bindings/python/tests
+          MOTOR_PRIVATE_LIBUSB_LIB: ${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0
+        run: python -m build --wheel packaging/pypi
 
-      - name: Build platform wheel
-        if: matrix.name != 'linux-x86_64'
-        run: python -m build --wheel bindings/python
-
-      - name: Build self-contained Linux x86_64 wheel
+      - name: Build x86_64 binary-only wheel
         if: matrix.name == 'linux-x86_64'
         env:
           _PYTHON_HOST_PLATFORM: ${{ matrix.wheel_platform }}
           MOTOR_PRIVATE_LIBUSB_LIB: ${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0
-        run: python -m build --wheel bindings/python
+        run: python -m build --wheel packaging/pypi
 
-      - name: Repair Linux wheel
-        if: matrix.name != 'linux-x86_64'
+      - name: Repair ARM64 wheel
+        if: matrix.name == 'linux-aarch64'
         env:
           LD_LIBRARY_PATH: ${{ runner.temp }}/libusb-1.0.27/lib
         run: |
           python -m pip install --upgrade auditwheel patchelf
-          python -m auditwheel repair bindings/python/dist/*.whl --wheel-dir wheelhouse
+          python -m auditwheel repair packaging/pypi/dist/*.whl --wheel-dir wheelhouse
 
-      - name: Collect self-contained Linux x86_64 wheel
+      - name: Collect x86_64 wheel
         if: matrix.name == 'linux-x86_64'
         run: |
           mkdir -p wheelhouse
-          cp bindings/python/dist/*.whl wheelhouse/
+          cp packaging/pypi/dist/*.whl wheelhouse/
 
-      - name: Install and verify wheel
+      - name: Install and verify binary-only wheel
         run: |
           python -c "from pathlib import Path; import subprocess, sys; wheel = next(Path('wheelhouse').glob('*.whl')); subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-deps', str(wheel)])"
-          python -c "from importlib.metadata import version; import motor_drive_layer as mdl; assert mdl.get_version() == version('motor-drive-layer'); assert mdl.ArticoreRuntime; assert mdl.RuntimeConfig; assert mdl.abi_version() == '0.5.0-cpp'; assert mdl.abi_capabilities()['features']['register_metadata'] is True; assert mdl.abi_capabilities()['features']['feedback_integrity_stats'] is True; assert mdl.abi_capabilities()['features']['dm_device_callback_frame_snapshot'] is True; assert mdl.abi_capabilities()['features']['strict_feedback_identity'] is True; assert mdl.abi_capabilities()['features']['implausible_feedback_jump_rejection'] is True; assert mdl.articore_runtime_library_path(); assert mdl.articore_runtime_abi_version() == '2.8'; assert mdl.articore_runtime_capabilities()['gripper_protection'] is True; assert mdl.articore_runtime_capabilities()['current_position_hold'] is True; assert mdl.articore_runtime_capabilities()['motor_presence'] is True; assert mdl.articore_runtime_capabilities()['realtime_joint_mailbox'] is True; assert mdl.articore_runtime_capabilities()['atomic_enable'] is True; assert mdl.articore_runtime_capabilities()['command_lifetime'] is True; assert mdl.articore_runtime_capabilities()['protective_fault_hold'] is True; assert mdl.articore_runtime_capabilities()['deterministic_disable'] is True; assert mdl.articore_runtime_capabilities()['layered_joint_limits'] is True; assert mdl.articore_runtime_capabilities()['gripper_command_profiles'] is True; assert mdl.articore_runtime_capabilities()['gripper_force_10_levels'] is True; assert mdl.articore_runtime_capabilities()['joint_mit_position'] is True; assert mdl.articore_runtime_capabilities()['joint_pv_position'] is True; assert mdl.articore_runtime_capabilities()['effective_control_rate'] is True; assert mdl.articore_runtime_capabilities()['builtin_gripper_product_profiles'] is True; assert mdl.articore_runtime_capabilities()['connect_feedback_barrier'] is True; assert mdl.articore_runtime_capabilities()['structured_connect_report'] is True; assert mdl.articore_runtime_capabilities()['transport_aware_control_rate'] is True; assert mdl.articore_runtime_capabilities()['per_cycle_mit_torque_limit'] is True; assert mdl.articore_runtime_capabilities()['native_robot_model'] is True; assert mdl.articore_runtime_capabilities()['native_gravity_compensation'] is True; assert mdl.NativeRobotModel().info.dof == 7; vendor = mdl.ensure_dm_device_runtime(auto_download=False); assert vendor.is_file()"
+          cd /tmp
+          python - <<'PY'
+          import ctypes
+          import importlib.util
+          import subprocess
+          from importlib.metadata import distribution, version
+          from pathlib import Path
 
-      - name: Verify bundled Linux x86_64 vendor dependencies
+          assert version("motor-drive-layer") == "0.10.14"
+          assert importlib.util.find_spec("motor_drive_layer") is None
+          dist = distribution("motor-drive-layer")
+          entries = {str(item): item for item in dist.files or ()}
+          assert not any(name.endswith((".py", ".pyi")) for name in entries)
+          motor = Path(dist.locate_file(entries["motor_drive_layer_native/lib/libmotor_abi.so"]))
+          runtime = Path(dist.locate_file(entries["motor_drive_layer_native/lib/libarticore_runtime.so"]))
+          motor_lib = ctypes.CDLL(str(motor))
+          motor_lib.motor_abi_version.restype = ctypes.c_char_p
+          assert motor_lib.motor_abi_version() == b"0.5.0-cpp"
+          runtime_lib = ctypes.CDLL(str(runtime))
+          runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
+          assert runtime_lib.articore_runtime_abi_version() == 0x00020008
+          dynamic = subprocess.check_output(["readelf", "-d", runtime], text=True)
+          exports = subprocess.check_output(["nm", "-D", "--defined-only", runtime], text=True)
+          assert "libpinocchio" not in dynamic
+          assert "libboost_serialization" not in dynamic
+          assert "_ZN9pinocchio" not in exports
+          assert not (runtime.parent / "robotics").exists()
+          PY
+
+      - name: Verify robot model under a poisoned ROS library path
+        run: |
+          mkdir -p "$RUNNER_TEMP/ros-collision"
+          cp /bin/false "$RUNNER_TEMP/ros-collision/libpinocchio_default.so.3.8.0"
+          cp /bin/false "$RUNNER_TEMP/ros-collision/libboost_serialization.so.1.89.0"
+          c++ -shared -fPIC \
+            "$GITHUB_WORKSPACE/articore_runtime/tests/pinocchio_interposer.cpp" \
+            -Wl,-soname,libpinocchio_default.so.3.8.0 \
+            -o "$RUNNER_TEMP/ros-collision/libpinocchio_interposer.so"
+          cd /tmp
+          PINOCCHIO_INTERPOSER="$RUNNER_TEMP/ros-collision/libpinocchio_interposer.so" \
+          LD_LIBRARY_PATH="$RUNNER_TEMP/ros-collision" python - <<'PY'
+          import ctypes
+          import os
+          from importlib.metadata import distribution
+          from pathlib import Path
+
+          dist = distribution("motor-drive-layer")
+          entry = next(
+              item for item in dist.files or ()
+              if str(item) == "motor_drive_layer_native/lib/libarticore_runtime.so"
+          )
+          runtime = Path(dist.locate_file(entry))
+          ctypes.CDLL(os.environ["PINOCCHIO_INTERPOSER"], mode=ctypes.RTLD_GLOBAL)
+          library = ctypes.CDLL(str(runtime))
+          library.articore_robot_model_create.argtypes = [ctypes.c_char_p, ctypes.c_uint32]
+          library.articore_robot_model_create.restype = ctypes.c_void_p
+          library.articore_robot_model_free.argtypes = [ctypes.c_void_p]
+          model = library.articore_robot_model_create(b"yunyi_v1_0", 0)
+          assert model
+          library.articore_robot_model_free(model)
+          PY
+
+      - name: Verify x86_64 private vendor dependencies
         if: matrix.name == 'linux-x86_64'
         run: |
           cd /tmp
@@ -102,71 +153,44 @@ jobs:
           import ctypes
           import re
           import subprocess
+          from importlib.metadata import distribution
           from pathlib import Path
-          import motor_drive_layer as mdl
 
-          # Loading motor_abi first resolves libstdc++ from its private RPATH.
-          assert mdl.abi_version() == "0.5.0-cpp"
-          vendor = mdl.ensure_dm_device_runtime(auto_download=False)
-          package_lib = Path(mdl.__file__).resolve().parent / "lib"
+          dist = distribution("motor-drive-layer")
+          entries = {str(item): item for item in dist.files or ()}
+          root = Path(dist.locate_file(entries["motor_drive_layer_native/PAYLOAD"])).parent
+          package_lib = root / "lib"
           package_dm = package_lib / "dm_device"
-          assert vendor.parent.name == "v1.0.0", vendor
-          modern_vendor = package_dm / "v1.1.0" / "libdm_device.so"
-          private_libusb = package_dm / "libusb-1.0.so.0"
-          assert private_libusb.is_file(), private_libusb
-          linkage = subprocess.check_output(
-              ["ldd", str(package_lib / "libmotor_abi.so")], text=True
-          )
+          linkage = subprocess.check_output(["ldd", str(package_lib / "libmotor_abi.so")], text=True)
           assert "/dm_device/libstdc++.so.6" in linkage, linkage
-
-          # We intentionally supply the newer GLIBCXX definitions privately;
-          # all ELF files must still stay within the claimed glibc baseline.
           for library in package_lib.rglob("*.so*"):
               versions = re.findall(
                   r"GLIBC_(\d+)\.(\d+)",
-                  subprocess.check_output(
-                      ["readelf", "--version-info", str(library)], text=True
-                  ),
+                  subprocess.check_output(["readelf", "--version-info", str(library)], text=True),
               )
-              assert not versions or max(
-                  (int(major), int(minor)) for major, minor in versions
-              ) <= (2, 34), library
-
-          ctypes.CDLL(
-              str(package_dm / "libstdc++.so.6"),
-              mode=ctypes.RTLD_GLOBAL,
-          )
-          support = ctypes.CDLL(str(private_libusb), mode=ctypes.RTLD_GLOBAL)
+              assert not versions or max((int(a), int(b)) for a, b in versions) <= (2, 34)
+          ctypes.CDLL(str(package_dm / "libstdc++.so.6"), mode=ctypes.RTLD_GLOBAL)
+          support = ctypes.CDLL(str(package_dm / "libusb-1.0.so.0"), mode=ctypes.RTLD_GLOBAL)
           assert support.libusb_init_context
-          vendor_library = ctypes.CDLL(str(modern_vendor))
-          assert vendor_library.dmcan_context_create
+          vendor = ctypes.CDLL(str(package_dm / "v1.1.0" / "libdm_device.so"))
+          assert vendor.dmcan_context_create
           PY
 
-      - name: Verify bundled Linux ARM64 vendor dependencies
+      - name: Verify ARM64 vendor library resolves
         if: matrix.name == 'linux-aarch64'
         run: |
           cd /tmp
           env -u LD_LIBRARY_PATH -u MOTOR_DM_DEVICE_LIB python - <<'PY'
           import ctypes
-          import subprocess
+          from importlib.metadata import distribution
           from pathlib import Path
-          import motor_drive_layer as mdl
 
-          assert mdl.abi_version() == "0.5.0-cpp"
-          vendor = mdl.ensure_dm_device_runtime(auto_download=False)
-          linkage = subprocess.check_output(["ldd", str(vendor)], text=True)
-          assert "motor_drive_layer.libs/libusb" in linkage, linkage
-
-          package_root = Path(mdl.__file__).resolve().parent.parent
-          support_libraries = list(
-              package_root.glob("motor_drive_layer.libs/libusb*.so*")
+          dist = distribution("motor-drive-layer")
+          vendor_entry = next(
+              item for item in dist.files or ()
+              if str(item).endswith("motor_drive_layer_native/lib/dm_device/v1.1.0/libdm_device.so")
           )
-          assert len(support_libraries) == 1, support_libraries
-          support = ctypes.CDLL(str(support_libraries[0]))
-          assert support.libusb_init_context
-
-          # This is the check missing from 0.7.4: resolve every symbol in the
-          # actual ARM64 vendor v1.1 library, not merely confirm its filename.
+          vendor = Path(dist.locate_file(vendor_entry))
           ctypes.CDLL(str(vendor))
           PY
 

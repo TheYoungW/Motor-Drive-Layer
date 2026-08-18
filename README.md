@@ -2,543 +2,183 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Motor-Drive-Layer is the native C++ control foundation shared by Python, C++ and ROS 2 SDKs. Its generic motor layer owns Damiao protocol and transport behavior; the separately built Articore product runtime owns watchdog, safe-hold, fault and gripper policy without contaminating the generic API.
-
-## Features
-
-- Damiao MIT, position/velocity, velocity, and force/position control modes.
-- Linux SocketCAN and SocketCAN-FD, cross-platform Damiao serial bridge, and optional DM_Device SDK transports.
-- Damiao serial rates through 1,000,000 baud where supported by the host.
-- Background feedback reception and per-motor state cache.
-- Multi-motor controllers default to a configurable 200 µs minimum interval between outgoing frames.
-- Register read/write helpers with acknowledgement and timeout handling.
-- C ABI shared library and Python 3.10+ bindings.
-- A separate Articore runtime ABI with a persistent safety and gripper worker.
-- Official thin bindings over the same native Runtime: a typed Python
-  `ArticoreRuntime`, an installed C++17 RAII API, and the stable C ABI used by ROS 2 and other
-  languages. No binding reimplements control or safety behavior.
-- Explicit streaming and hold-until-replaced command lifetimes, so a slow physical move is not
-  mistaken for a stalled real-time command producer.
-- Independent mechanical hard limits, product soft limits, and per-joint dynamic braking zones for
-  outgoing commands in the native Runtime.
-- Atomic per-call gripper commands carry only opening, normalized speed, and a calibrated force
-  level. The Runtime ramps both opening and closing directions and keeps stall/retreat timing as
-  private product safety configuration.
-- Runtime ABI 2.2 provides the built-in `yunyi_gripper_v1` product profile, so SDKs bind a profile
-  ID before connect instead of copying gripper mapping, gains, thresholds, timing, retreat, force
-  tables, and fault policy into Python configuration.
-- Runtime ABI 2.4 makes `connect()` a structured feedback barrier: success guarantees a fresh cache
-  entry for every configured joint and installed gripper. Failure returns a stable classification,
-  per-channel counts, and per-motor configured CAN identity without parsing log text.
-- Ordinary PV/MIT position commands use one latest-value slot and native fixed-rate reference
-  stepping; a newer target atomically replaces the old endpoint without building a FIFO queue.
-- Protective fault hold: one missed feedback sample keeps the current arm and gripper outputs;
-  persistent loss stops ordinary motion while healthy motors/channels keep holding instead of being
-  automatically torque-disabled.
-- Deterministic Runtime disable/close: prior control traffic is drained, active channels are
-  disabled and confirmed in parallel, and only unconfirmed motors receive one directed retry.
+Motor-Drive-Layer is the native C++ control foundation for Damiao motors and the Articore product
+Runtime. Runtime behavior is implemented in C++ and exposed through stable C ABIs. This repository
+does not ship a Python module or a Python implementation of control, safety, robot dynamics, or
+gravity compensation.
 
 ## Architecture
 
 ```text
-Python SDK / C++ SDK / ROS 2
-              │
-              ▼
-    libarticore_runtime
-    product watchdog, safety and gripper policy
-              │ stable function-table ABI
-              ▼
-         libmotor_abi
-    generic controller and motor API
-              │
-              ▼
-     C++ transport/protocol core
-              │
-              ▼
-serial / SocketCAN / DM_Device / motors
+Articore-SDK / C++ SDK / ROS 2
+          │ stable C ABI
+          ▼
+  libarticore_runtime.so
+  watchdog, safety, robot model,
+  gripper and gravity compensation
+          │ stable motor ABI
+          ▼
+      libmotor_abi.so
+  controller, motor and transport API
+          │
+          ▼
+ C++ protocol and transport core
+          │
+          ▼
+SocketCAN / SocketCAN-FD / serial / DM Device
 ```
 
-The generic `motor/` layer does not contain robot-specific policy. Product concepts remain isolated
-under `articore_runtime/`, with a one-way dependency on the stable motor ABI.
+The ownership boundary is deliberate:
 
-The native libraries are the source of truth. Product SDKs define robot names, motor/channel
-mapping, directions, limits, URDF, IK, and dynamics; they do not duplicate ctypes declarations,
-watchdogs, safety state machines, fixed-rate loops, gripper state machines, or native-handle
-lifecycle rules.
+- `cpp_damiao/` contains generic transport, protocol, Controller and Motor behavior.
+- `articore_runtime/` contains product Runtime, robot-model and gravity-compensation behavior.
+- Articore-SDK owns its Python `ctypes` declarations, value objects and user-facing API.
+- The PyPI `motor-drive-layer` wheel is a binary payload only. It contains no `.py` or `.pyi`
+  files and cannot be imported as `motor_drive_layer`.
 
-### Official language bindings
+The public native outputs are:
 
-Python imports `ArticoreRuntime` and typed configuration/report objects directly from
-`motor_drive_layer`. The private `_runtime_abi` module owns ctypes details, and the public wrapper
-keeps ControllerGroup, Controller, and Motor handles alive until the Runtime has stopped and freed.
+- `libmotor_abi.so`, declared by the motor C ABI headers.
+- `libarticore_runtime.so`, declared by
+  [`articore/runtime_abi.h`](articore_runtime/include/articore/runtime_abi.h).
+- The C++17 RAII target `motorbridge::articore_runtime_cpp`.
 
-C++17 consumers install and discover the package normally:
+## Native features
+
+- Damiao MIT, position/velocity, velocity and force/position modes.
+- Linux SocketCAN and SocketCAN-FD+BRS, Damiao serial bridge and DM Device transports.
+- Background feedback reception, integrity checks and per-motor cached state.
+- Structured feedback, transport and Runtime faults.
+- Bounded non-blocking SocketCAN transmission so a full kernel queue cannot permanently block
+  shutdown.
+- Atomic Runtime enable/disable, watchdog, safe hold and deterministic fault handling.
+- Product gripper profiles, joint limits and per-cycle MIT resultant-torque protection.
+- Native seven-axis robot model: FK, IK, Jacobian, gravity, mass/Coriolis, RNEA and ABA.
+- Native gravity-compensation hand-guiding mode.
+
+## Pinocchio and ROS 2 isolation
+
+Pinocchio is used as a C++ build dependency for the product robot model. Required template
+implementations are compiled directly into `libarticore_runtime.so` with hidden visibility. The
+installed Runtime has no dynamic dependency on `libpinocchio_default.so` or Boost.Serialization.
+
+Consequently, a ROS 2 `LD_LIBRARY_PATH=/opt/ros/...` cannot replace the model implementation used
+inside the Runtime. CI verifies both the ELF dependency table and model creation under a poisoned
+Pinocchio library path.
+
+## Build
+
+Requirements are CMake 3.16+, a C++17 compiler and Pinocchio C++ development headers.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+Install the native SDK and CMake package with:
+
+```bash
+cmake --install build --prefix /desired/prefix
+```
+
+C++ consumers can use:
 
 ```cmake
 find_package(MotorDriveLayer CONFIG REQUIRED)
 target_link_libraries(robot_driver PRIVATE motorbridge::articore_runtime_cpp)
 ```
 
-Include `<articore/runtime.hpp>` and use the move-only `articore::Runtime` RAII wrapper. The C ABI
-in `articore/runtime_abi.h` remains the language-neutral boundary for ROS 2 and future bindings.
+For RK3588, `scripts/build_aarch64_runtime.sh` cross-builds the native libraries, headers and
+CMake package. Set `MOTOR_AARCH64_SYSROOT` when a board sysroot is required.
 
-For RK3588, `scripts/build_aarch64_runtime.sh` cross-builds and installs the aarch64 shared
-libraries, headers, and CMake package. Set `MOTOR_AARCH64_SYSROOT` when using a board sysroot.
-Release CI also builds a native Linux aarch64 artifact and an optional aarch64 Python wheel.
-See [the native binding contract](docs/language-bindings.md) for the product-adapter boundary and
-required lifecycle order.
+## PyPI binary payload
+
+The PyPI wheel is built from `packaging/pypi/` only to distribute platform libraries. It installs:
+
+```text
+motor_drive_layer_native/
+└── lib/
+    ├── libmotor_abi.so
+    ├── libarticore_runtime.so
+    └── dm_device/
+```
+
+It intentionally provides no Python import surface. Articore-SDK locates these files with package
+metadata and maintains its own ABI declarations. This keeps the low-level project C/C++-only while
+preserving the existing high-level SDK interaction.
+
+Build a local payload after compiling the native libraries:
+
+```bash
+python3 -m build --wheel packaging/pypi
+```
+
+The packaging command uses Python because PyPI's wheel tooling is Python-based; no Python runtime
+code is installed by the resulting wheel.
+
+## Transport behavior
+
+A Controller uses no artificial TX delay for one motor. Adding a second motor enables a default
+200 µs minimum interval between outgoing frames. Set `MOTOR_DRIVE_LAYER_TX_GAP_US` or use the
+native configuration API to change it.
+
+Linux SocketCAN and SocketCAN-FD sockets are non-blocking. When the kernel TX queue stays full, a
+send fails after 20 ms by default, is recorded in transport health and propagates into Runtime
+fault handling. Set `MOTOR_DRIVE_LAYER_SOCKETCAN_SEND_TIMEOUT_MS` to a value from 1 to 60000 ms to
+change the bound.
+
+`motor_controller_request_feedback_all_ex()` provides stable feedback failure codes and a
+structured missing-motor report. Runtime integrations must use structured results rather than
+parsing diagnostic strings.
+
+## Runtime and gravity compensation
+
+`libarticore_runtime.so` owns the fixed-rate worker, command mailbox, motor leases, watchdog,
+enable/disable transactions, fault hold, gripper policy, torque limits and gravity-compensation
+state machine. A language binding may submit configuration and commands, but it must not recreate
+these algorithms.
+
+Runtime ABI 2.8 provides the initial gravity-compensation mode. The SDK binds an installed
+seven-axis side to `yunyi_v1_0`, enables MIT mode and starts gravity compensation. The native worker
+ramps out stiffness/damping while ramping in posture-dependent gravity torque. Stopping performs
+the inverse transition into a current-position MIT hold. Friction and Coriolis compensation are
+not part of this initial mode.
 
 ## Safety
 
-Motor control can cause unexpected motion and injury. Support the mechanism, keep an independent emergency stop available, begin with conservative limits, and verify IDs and control modes before enabling a motor.
+Motor control can cause unexpected motion and injury. Support the mechanism, keep an independent
+emergency stop available, verify channel/IDs/model/mode before enable, and begin with conservative
+limits. Register writes can permanently change motor configuration.
 
-## Build the C++ library
+## Tests
 
-Requirements: a C++17 compiler and CMake 3.16+. SocketCAN additionally requires Linux development
-headers.
+The repository's default tests do not enable physical motors:
 
 ```bash
-cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-The build produces two public shared libraries: `libmotor_abi` for generic motor communication and
-`libarticore_runtime` for product safety policy. Static core targets are internal build details.
-Python exposes separate `abi_capabilities()` and `articore_runtime_capabilities()` queries so the
-generic and product ABI surfaces cannot be confused.
-
-## Supported platforms
-
-PyPI release wheels are built for Linux x86_64 and ARM64. SocketCAN and SocketCAN-FD are Linux-only,
-and the direct `dm-device` transport includes its matching redistributable vendor runtime in each
-Linux wheel. Other platforms may still be built from source, but are not part of the official PyPI
-wheel matrix.
-
-Typical serial device names are `/dev/ttyACM0` on Linux.
-
-## Install the Python package from source
-
-Build the C++ ABI first, then install the Python package:
-
-```bash
-python3 -m pip install --upgrade pip
-python3 -m pip install -e ./bindings/python
-```
-
-Install test dependencies with:
-
-```bash
-python3 -m pip install -e './bindings/python[test]'
-```
-
-Minimal Python usage:
-
-```python
-from motor_drive_layer import Controller
-
-with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
-    motor = controller.add_damiao_motor(
-        motor_id=0x01,
-        feedback_id=0x201,
-        model="4340P",
-    )
-    motor.request_feedback()
-```
-
-All values are supplied by the caller; the C++ driver does not assume these example IDs.
-
-Models with replaceable end effectors can discover one fixed motor set per connection:
-
-```python
-from motor_drive_layer import Controller, MotorCandidate, PresencePolicy
-
-controller = Controller.from_dm_serial("/dev/ttyACM0", 1_000_000)
-try:
-    discovered = controller.discover_damiao_motors(
-        (
-            MotorCandidate("joint1", 0x09, 0x19, "4310"),
-            MotorCandidate(
-                "gripper", 0x01, 0x11, "4340P", PresencePolicy.OPTIONAL
-            ),
-        ),
-        timeout_ms=50,
-        retries=1,
-    )
-finally:
-    controller.close()  # close without sending enable, motion, or disable frames
-```
-
-`REQUIRED` absence fails with endpoint, role and CAN IDs. `OPTIONAL` absence returns
-`NOT_INSTALLED`; `DISABLED` is not registered or probed. Only identity-matched fresh feedback can
-produce `PRESENT`. A successful discovery freezes the active motor set until the Controller is
-closed, so a motor that later drops offline cannot silently become `NOT_INSTALLED`.
-
-## TX pacing
-
-A controller starts without an artificial TX delay while it has one motor. When a second motor
-is added, the runtime applies a minimum 200 µs interval between all outgoing frames. Configure a
-different value after adding the motors with `Controller.set_tx_gap_us()` in Python or
-`Controller::set_tx_gap()` in C++; zero disables the delay. Setting
-`MOTOR_DRIVE_LAYER_TX_GAP_US` before creating the controller overrides the automatic multi-motor
-default.
-
-`enable_all()` and `disable_all()` additionally wait 2 ms between motors by default. Set
-`MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS` before creating the controller to change that bulk-operation
-interval. These are host-side minimum submission intervals, not hard real-time guarantees for
-physical CAN bus timing.
-
-Linux SocketCAN and SocketCAN-FD sockets are non-blocking. If the kernel transmit queue remains
-full, a send fails after 20 ms instead of leaving the controller worker blocked indefinitely. The
-failure is recorded in `TransportHealth` and propagates through batch and Runtime fault handling;
-shutdown waits at most for the in-progress bounded send. Set
-`MOTOR_DRIVE_LAYER_SOCKETCAN_SEND_TIMEOUT_MS` before opening the transport to choose a timeout from
-1 to 60000 ms.
-
-## Parallel controller batches
-
-`ControllerGroup` keeps one native worker per Controller and reuses those workers on every
-dispatch. One call wakes all member controllers from the same dispatch generation, preserves the
-command order within each controller, waits for every controller, and then returns. This avoids
-creating or scheduling Python threads in a control loop and lets independent per-controller TX
-pacing waits overlap.
-
-```python
-from motor_drive_layer import Controller, ControllerGroup
-
-ch0 = Controller.from_dm_device(device="usb2canfd-dual", channel=0)
-ch1 = Controller.from_dm_device(device="usb2canfd-dual", channel=1)
-motors_ch0 = [ch0.add_damiao_motor(i, 0x200 + i, "4340P") for i in range(1, 8)]
-motors_ch1 = [ch1.add_damiao_motor(i, 0x200 + i, "4340P") for i in range(9, 16)]
-targets = [0.0] * (len(motors_ch0) + len(motors_ch1))
-velocity_limit = 2.0
-
-with ControllerGroup([ch0, ch1]) as group:
-    batch = group.prepare_pos_vel(motors_ch0 + motors_ch1)
-    batch.send(targets, velocity_limit)
-```
-
-`send_mit()` accepts `MitCommand` in the same way. A failed dispatch still waits for all member
-controllers and raises `CallError` with the controller index, endpoint/channel, motor ID, and
-underlying send error. Controllers and motors must remain open until the group is closed. Do not
-mix individual motor sends with a group dispatch concurrently because their relative frame order
-is unspecified. The shared DM_Device vendor call remains mutex-protected; only independent pacing
-waits and other per-controller work overlap, so this is synchronized host dispatch rather than a
-hard real-time simultaneous bus transmission guarantee.
-
-For a fixed motor layout in a high-rate loop, `prepare_pos_vel()` and `prepare_mit()` retain the
-validated motor pointers and reuse one preallocated Python/ctypes command array. This removes
-per-cycle command dataclass and ctypes-array construction. The native ABI still validates and
-partitions each call, so this is a reduced-allocation path rather than a zero-allocation or
-hard-real-time guarantee.
-
-## Fresh feedback
-
-`Motor.request_feedback()` is asynchronous, `Motor.get_state()` reads the current cache, and
-`Controller.poll_feedback_once()` only drains frames that have already arrived. None of those
-methods waits for a newly requested frame. Use the synchronous helper when fresh data is required:
-
-```python
-state = motor.request_fresh_state(timeout_ms=50)
-```
-
-For multiple motors, request all feedback first and wait against one shared deadline:
-
-```python
-controller.request_feedback_all(timeout_ms=50)
-states = [motor.get_state() for motor in motors]
-```
-
-The batch call records each motor's feedback counter, sends every request with the configured TX
-pacing, and returns as soon as every counter advances. On timeout it raises `CallError` whose
-message lists the missing motor IDs; it does not apply a separate full timeout to every motor.
-
-## Python API reference
-
-The wheel includes `py.typed` and complete `.pyi` declarations, so VS Code/Pylance, Pyright, and
-Mypy can expose signatures, return types, and completion. Import the public objects from the
-top-level `motor_drive_layer` package.
-
-### Controller
-
-| API | Behavior |
-| --- | --- |
-| `Controller(channel="can0")` | Open classic Linux SocketCAN. |
-| `Controller.from_socketcanfd(channel="can0", enable_brs=True)` | Open Linux SocketCAN-FD and set `CANFD_BRS` on transmitted frames by default. Pass `False` only for compatibility with devices that do not switch the data-phase rate. |
-| `Controller.from_dm_serial(serial_port="/dev/ttyACM0", baud=1_000_000)` | Open a Damiao serial bridge. |
-| `Controller.from_dm_device(device="usb2canfd-dual", channel=0, bitrate=1_000_000, data_bitrate=5_000_000)` | Open original DM-USB2FDCAN firmware with CH0/CH1 support. The default sends CAN-FD+BRS frames at 1 Mbps arbitration and 5 Mbps data; motors must use the matching CAN-FD setting. Equal arbitration/data rates explicitly select classic CAN. |
-| `add_damiao_motor(motor_id, feedback_id, model)` | Register a motor on the bus and return `Motor`. |
-| `discover_damiao_motors(candidates, timeout_ms=50, retries=1)` | Probe Required/Optional/Disabled model candidates without enabling or moving them and freeze the present motor set for this connection. |
-| `enable_all()` / `disable_all()` | Enable or disable every registered motor; these send hardware commands. |
-| `request_feedback_all(timeout_ms=50)` | Request and wait for one fresh frame per motor against one shared timeout. Python internally uses the structured ABI and raises typed errors carrying the stable code, counts, and missing motor IDs. |
-| `poll_feedback_once()` | Non-blocking drain of frames that have already arrived. |
-| `set_tx_gap_us(gap_us)` | Configure the minimum host-side interval between outgoing frames. |
-| `transport_capabilities()` | Query the active transport's CAN-FD, active BRS, channel-count, parallel-batch, reconnect, process-session reuse, and hardware RX timestamp capabilities. |
-| `transport_health()` | Read live connection/health flags, TX/RX frame and error counters, last activity ages, and the latest transport error. |
-| `shutdown()` | Attempt to disable every motor, stop polling, and close the bus. |
-| `close_bus()` | Stop polling and close the bus without sending disable commands. |
-| `close()` / `closed` | Free the native Controller handle; `close()` does not actively send disable commands. |
-
-Native callers that need stable feedback failure classification should use
-`motor_controller_request_feedback_all_ex()`. It returns `MOTOR_OK`,
-`MOTOR_ERROR_FEEDBACK_TIMEOUT`, `MOTOR_ERROR_FEEDBACK_INCOMPLETE`,
-`MOTOR_ERROR_TRANSPORT`, or `MOTOR_ERROR_INVALID_ARGUMENT` and fills
-`MotorFeedbackReport` plus a caller-owned missing-motor-ID buffer. A zero-capacity null ID buffer
-is valid for count-only queries; `missing_count` always reports the complete number of missing
-motors. The legacy `motor_controller_request_feedback_all()` remains 0/-1 compatible, and
-`motor_last_error_message()` remains diagnostic text rather than a classification API. Check the
-`structured_feedback_report` capability before resolving the additive entry point from an older
-shared library.
-
-Python intentionally exposes only `Controller.request_feedback_all()`, not an `_ex` method. It
-uses the structured entry point internally and maps its result to `FeedbackTimeoutError`,
-`IncompleteFeedbackError`, `FeedbackTransportError`, or `FeedbackMotorFaultError`. These remain
-`CallError` subclasses for compatibility and expose `error_code`, `missing_motor_ids`, and the full
-`FeedbackReport`. The Articore runtime callback uses the same structured signature, so safety
-decisions never depend on parsing `motor_last_error_message()`.
-
-DM-USB2FDCAN Dual receive callbacks are copied into immutable motor-owned frames before any shared
-registry lookup. Each frame keeps its physical channel, and MotorHandle acceptance requires the
-protocol-defined arbitration ID together with the decoded motor ID. The Linux DM_Device v1.0
-runtime can still occasionally deliver a frame whose header and payload came from different
-channels; a single position sample that is incompatible with elapsed time and reported/model
-velocity is therefore discarded before it replaces the cache. This records
-`FeedbackIntegrityStats` (identity mismatch, short frame, or implausible jump) and does not enter a
-global fault or disable motors. Use `Motor.get_feedback_integrity_stats()` for diagnostics.
-
-The DM_Device backend does not require flashing SocketCAN firmware. Platform wheels include the
-matching vendor runtime, so installing `motor-drive-layer` is sufficient. `MOTOR_DM_DEVICE_LIB`
-can still override the packaged library for development, and the motor-layer installer/downloader
-remains a recovery fallback. The loader probes both the
-v1.0 (`damiao_*`/`device_*`) and v1.1 (`dmcan_*`) ABIs and reports missing symbols and dynamic
-loader dependency errors explicitly. Linux x86_64 wheels contain both v1.0 and the complete v1.1
-environment (private compatible C++ runtime plus libusb 1.0.27). x86_64 defaults to v1.0 because
-the official v1.1 runtime delivers receive callbacks in roughly 100 ms batches with
-`dual_app v1.0.0.3`; set `MOTOR_DM_DEVICE_ABI=v1.1` to opt in without installing host libraries.
-Linux ARM64 uses v1.1 with a private libusb 1.0.27 runtime because Ubuntu 22.04's libusb 1.0.25
-does not export `libusb_init_context`; Windows and macOS use v1.1. Each Controller
-owns only its selected channel. v1.1 releases the shared physical USB handle after the last
-Controller closes. Because the
-official Linux v1.0 runtime cannot reliably reopen device index 0 in the same process after a full
-device teardown, retained v1.0 sessions instead close each channel and all motor-layer threads/clients but retain
-its legacy context, device handle, callbacks, and loaded library for reuse until process exit. The
-operating system reclaims those retained vendor objects; calling the vendor destructor during
-static process teardown can race libusb thread cleanup.
-
-### Motor
-
-| API | Behavior |
-| --- | --- |
-| `enable()` / `disable()` | Enable or disable this motor. |
-| `clear_error()` | Send the clear-error command. |
-| `set_zero_position()` | Set zero while the SDK believes the motor is disabled. |
-| `ensure_mode(mode, timeout_ms=1000)` | Check, switch if needed, and verify the control mode. |
-| `send_mit(pos, vel, kp, kd, tau)` | Send an MIT command. |
-| `send_pos_vel(pos, vlim)` | Send a position/velocity command. |
-| `send_vel(vel)` | Send a velocity command. |
-| `send_force_pos(pos, vlim, ratio)` | Send a force/position command. |
-| `request_feedback()` | Send a feedback request without waiting. |
-| `request_fresh_state(timeout_ms=50)` | Request and wait for a fresh state from this motor. |
-| `get_state()` | Read the C++ cache, returning `None` before the first feedback. |
-| `get_feedback_stats()` | Return availability, update count, and cached-sample age. |
-| `set_can_timeout_ms(timeout_ms)` | Write the Damiao CAN-timeout register. |
-| `get_register_f32/u32(rid, timeout_ms=1000)` | Read a register using its declared type. |
-| `write_register_f32/u32(rid, value)` | Write a register; the canonical C++ table rejects read-only or wrong-type operations. |
-| `damiao_get_param_f32/u32(...)` / `damiao_write_param_f32/u32(...)` | Compatibility aliases using parameter-ID terminology. |
-| `store_parameters()` | Persist parameters to the motor and potentially disable it first. |
-| `close()` / `closed` | Free the native Motor handle without sending a disable command. |
-
-### ControllerGroup
-
-| API | Behavior |
-| --- | --- |
-| `ControllerGroup(controllers)` | Create and retain one persistent native send worker per Controller. |
-| `send_pos_vel(commands)` | Dispatch `PosVelCommand` values across their owning controllers and wait for all. |
-| `send_mit(commands)` | Dispatch `MitCommand` values across their owning controllers and wait for all. |
-| `prepare_pos_vel(motors)` | Create a reusable fixed-layout POS_VEL batch; scalar velocity limits are broadcast. |
-| `prepare_mit(motors)` | Create a reusable fixed-layout MIT batch; all fields except position accept scalars or vectors. |
-| `close()` / `closed` | Stop and join the native workers; does not close member controllers. |
-
-### Feedback/reconnect stress diagnostic
-
-`motor-drive-layer-stress` repeatedly opens the requested DM_Device channels, requests feedback,
-closes them, and reopens them in the same process. It records latency, failures, file-descriptor
-counts, and thread counts. The tool never enables a motor and never sends a control command:
-
-```bash
-motor-drive-layer-stress \
-  --motor 0:0x09:0x19:4310 \
-  --motor 1:0x0f:0x1f:4310 \
-  --iterations 1000 --reconnect-cycles 10 --output stress.json
-```
-
-Repeat `--motor` for the real channel/motor/feedback/model mapping. The example IDs are illustrative.
-
-The `scan` command opens one Controller for the complete ID range and calls
-`discover_damiao_motors()` once with all candidates. It is strictly read-only: after discovery it
-releases motor handles, calls `close_bus()`, and then `close()`; it never uses `shutdown()` because
-that lifecycle method intentionally sends disable frames.
-
-For USB-handle lifecycle validation, `scripts/test_dm_device_scan_lifecycle.py` alternates a scanner
-subprocess with a fresh CH0/CH1 reader subprocess. It defaults to 100 cycles and DM_Device v1.1:
-
-```bash
-python scripts/test_dm_device_scan_lifecycle.py \
-  --motor 0:0x09:0x19:8009 \
-  --motor 1:0x01:0x11:8009
-```
-
-Repeat `--motor` for every installed motor. The test only requests feedback and never enables,
-disables, or commands a motor.
-
-Position, velocity, and torque use rad, rad/s, and Nm. `MotorState`, `FeedbackStats`, `Mode`,
-`CallError`, and the register constants are also exported at package level.
-
-### Lifetime
-
-A `Motor` is a logical child of the `Controller` that created it and keeps that Python Controller
-alive. Motor operations raise `CallError("motor controller is closed")` after the parent closes;
-`motor.close()` remains available to free the handle. Prefer nested context managers:
-
-```python
-from motor_drive_layer import Controller
-
-with Controller.from_dm_serial("/dev/ttyACM0", 1_000_000) as controller:
-    with controller.add_damiao_motor(0x01, 0x201, "4340P") as motor:
-        state = motor.request_fresh_state(timeout_ms=50)
-```
-
-Leaving the Motor context only frees its handle and does not disable hardware. Leaving the
-Controller context calls `shutdown()`, which attempts to disable every motor before closing the bus.
-
-## Python examples
-
-The focused examples in `bindings/python/examples/` cover the common workflows:
-
-| File | Purpose |
-| --- | --- |
-| `connection_test.py` | Disable one motor and verify fresh feedback over any supported transport. |
-| `socketcan_control.py` | Control one motor over Linux SocketCAN in MIT mode. |
-| `dm_serial_control.py` | Control one motor through a Damiao serial bridge in any supported control mode. |
-| `dm_serial_pos_vel.py` | Send periodic position-velocity (PV) frames to seven motors through a Damiao serial bridge. |
-| `multi_motor_control.py` | Control multiple motors over Linux SocketCAN. |
-| `maintenance.py` | Clear errors, set the CAN timeout, optionally set zero, and read state. |
-| `register_access.py` | Read registers; writes and persistent storage occur only when explicitly requested. |
-
-Install the project first, then inspect a command before running it:
-
-```bash
-python3 bindings/python/examples/connection_test.py --help
-python3 bindings/python/examples/socketcan_control.py --help
-python3 bindings/python/examples/dm_serial_control.py --help
-python3 bindings/python/examples/dm_serial_pos_vel.py --help
-```
-
-Motor control can cause sudden motion. Support the mechanism, prepare an independent emergency stop, and verify the channel, IDs, model, mode, and targets before enabling a motor. Maintenance and register writes can permanently change device settings; stay in read-only mode unless you know the register semantics.
-
-## Linux SocketCAN setup
-
-Source checkouts include three optional helpers. They configure Linux CAN network interfaces
-and never enable or control a motor:
-
-```bash
-scripts/can_restart.sh can0        # classic CAN
-scripts/canfd_restart.sh can0      # CAN-FD
-scripts/canable_restart.sh can0    # CANable/candleLight (gs_usb)
-```
-
-They are not needed for `dm-serial` or `dm-device`. Pip-installed users can follow the
-self-contained `ip link` commands printed by the CLI when an interface is not ready.
-
-For Damiao motors configured with `CAN_BR=9`, configure both Linux bitrates and leave BRS enabled:
-
-```bash
-ip link set can0 type can bitrate 1000000 sample-point 0.75 \
-  dbitrate 5000000 dsample-point 0.875 fd on
-ip link set can0 up
-```
-
-Setting `dbitrate` only prepares the interface; the transmitted `canfd_frame.flags` must also
-contain `CANFD_BRS`. `Controller.from_socketcanfd("can0")` now does this by default, and
-`transport_capabilities().can_fd_brs` reports the active choice. The additive C entry point is
-`motor_controller_new_socketcanfd_ex(channel, enable_brs)`; the legacy one-argument entry point
-also defaults to BRS.
-
-## Tests
-
-No-hardware tests:
-
-```bash
-cmake --build cpp_damiao/build -j
-ctest --test-dir cpp_damiao/build --output-on-failure
-PYTHONPATH=bindings/python/src python3 -m pytest -q bindings/python/tests
-```
-
-Default CI does not open serial devices or enable motors.
-
-The opt-in hardware acceptance script checks two SocketCAN-FD interfaces, eight motors per
-interface, 400 Hz initial-position MIT hold with zero feed-forward torque, per-motor feedback rates, Linux CAN error
-counters, and 16/16 post-test disable feedback. It requires 16 explicit `--motor` mappings and the
-`--i-understand-motors-will-be-enabled` acknowledgement:
-
-```bash
-python3 scripts/test_socketcanfd_brs_dual_channel.py --help
-```
+CI additionally checks that the PyPI wheel contains no Python source, that both native ABI
+libraries load, that the robot model works without a Pinocchio runtime dependency, and that the
+DM Device vendor libraries resolve on each release architecture.
+
+Hardware acceptance remains opt-in. Inspect the scripts under `scripts/` and provide explicit
+motor mappings and acknowledgement flags before running them.
 
 ## Repository layout
 
 ```text
-cpp_damiao/                 C++ protocol, runtime, transports, C ABI, tests
-bindings/python/            Python package, tests, and examples
-third_party/dm_device/      Optional vendor runtime headers/libraries
-scripts/                    Linux SocketCAN/CAN-FD interface setup helpers
-.github/                    CI and issue templates
+cpp_damiao/              Generic C++ protocol, transports and motor C ABI
+articore_runtime/         Native product Runtime, robot model and C/C++ ABI
+packaging/pypi/           Binary-only wheel assembly; no Python runtime module
+third_party/dm_device/    Optional vendor headers and redistributable libraries
+scripts/                  Build, diagnostic and hardware-acceptance helpers
+tests/                    Native CMake package consumer tests
 ```
-
-## Performance scope
-
-The current hardware has demonstrated complete feedback counts at 500 Hz per motor on seven-motor serial buses. That establishes throughput, not a hard real-time deadline. USB scheduling, the host kernel, adapter firmware, and application scheduling can still produce millisecond-scale latency outliers.
-
-The default DM_Device 1 Mbps/5 Mbps configuration now configures the channel and sends CAN-FD+BRS
-frames, using an 87.5% sample point for the 5 Mbps data phase. Hardware validation demonstrated
-complete 500 Hz feedback with eight motors on one channel. With eight motors on each of CH0 and CH1,
-the native C++ Runtime sustained 498.53--498.93 Hz feedback for all 16 motors during a 30-second
-500 Hz streaming raw-MIT test with all cached states read continuously. Both interfaces remained
-ERROR-ACTIVE with zero errors and all motors disabled cleanly afterward. Runtime ABI 2.5 therefore
-allows up to 500 Hz when both transports report SocketCAN-FD with active BRS, while DM Device and
-legacy dual transports retain the 400 Hz ceiling. The non-blocking capacity-one raw mailbox and
-internally synchronized cache reads were also validated through the Articore SDK public raw-MIT
-path: 500.02 Hz submissions for 30 seconds, 497.36--499.36 Hz feedback across all 16 motors, zero
-native transport errors, and a confirmed 16/16 disable. The effective control value is exposed
-through `articore_runtime_get_control_hz()`.
-
-Runtime ABI 2.6 moves complete MIT resultant-torque protection into the native worker. Every
-actual MIT send cycle—including a repeated latest-mailbox target—uses fresh native q/dq feedback,
-limits each joint to its configured torque limit, and scales Kp, Kd, and feedforward torque
-together when necessary. Missing or stale feedback rejects the complete arm batch and enters the
-existing protective fault-hold path. Per-cycle limiter diagnostics are exposed without requiring
-Python feedback reads on the raw submission hot path. This change is covered by simulated native
-and binding tests; hardware validation is intentionally separate.
-
-Runtime ABI 2.7 adds a product-owned whole-arm model boundary. `NativeRobotModel` exposes FK, IK,
-Jacobian, gravity, mass/Coriolis terms, RNEA and ABA without exposing Pinocchio, Eigen, the source
-URDF, or calibrated inertial parameters through the ABI. Pinocchio remains the private C++
-numerical engine inside `libarticore_runtime`; Linux wheels bundle the exact native dependencies in
-an isolated `robotics/` directory. The embedded Yunyi left/right reduced models are numerically
-checked against the migration URDF implementation before the public SDK switches implementations.
-
-Runtime ABI 2.8 adds a Runtime-owned gravity-compensation mode for manual hand guiding. Product
-SDKs bind each seven-axis runtime side to `yunyi_v1_0` before connect, enable the Runtime in MIT
-mode, and then start gravity compensation. The native worker smoothly removes MIT stiffness and
-damping while ramping in posture-dependent gravity feedforward; while active it exclusively owns
-arm output and continues to apply the existing per-cycle torque limits. Stopping performs the
-inverse transition into a current-position MIT hold. This initial controller intentionally does
-not add friction or Coriolis compensation.
-
-## Contributing and security
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes. Report safety or security-sensitive motor-control issues according to [SECURITY.md](SECURITY.md) rather than publishing exploit details first.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Motor-Drive-Layer is MIT licensed. Bundled DM Device, libusb and libstdc++ runtime components retain
+their respective notices under `packaging/pypi/LICENSES/`.

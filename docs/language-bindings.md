@@ -12,16 +12,16 @@ A robot SDK supplies only product information:
 - motor roles, channels, IDs, directions, and joint ordering;
 - joint command limits and product hold gains;
 - built-in native product profile IDs such as `yunyi_gripper_v1`;
-- URDF, kinematics, inverse kinematics, and dynamics.
+- native product profile IDs for the built-in robot model and gravity controller.
 
 It creates Controllers and Motors, performs pre-Runtime device/mode configuration, creates one
 ControllerGroup, then creates `ArticoreRuntime`. From that point until Runtime close, normal motor
 output and feedback scheduling go only through Runtime.
 
-## Python
+## Python ownership
 
-The public API is `motor_drive_layer.ArticoreRuntime`. `_runtime_abi.py` is private and is the only
-Python module that declares native structures and signatures. The wrapper:
+This repository does not publish a Python module. Articore-SDK owns its private ctypes binding to
+both native libraries. That SDK binding:
 
 - retains and leases ControllerGroup, Controller, and Motor objects;
 - rejects direct sends, device configuration, fresh-feedback traffic, or premature close while
@@ -30,7 +30,9 @@ Python module that declares native structures and signatures. The wrapper:
 - preserves structured native failure reports on exceptions;
 - calls native close before releasing dependent handles.
 
-SDKs must not import `_runtime_abi` or call `ctypes.CDLL` themselves.
+Applications use Articore-SDK's public API and must not call its private binding or `ctypes.CDLL`
+directly. The PyPI `motor-drive-layer` distribution is only the native payload that Articore-SDK
+locates through package metadata.
 
 ## C++ and ROS 2
 

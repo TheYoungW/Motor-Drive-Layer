@@ -1,25 +1,26 @@
 # Contributing
 
-Contributions are welcome for the Damiao C++ core, C ABI, Python binding, tests, and documentation.
+Contributions are welcome for the Damiao C++ core, product Runtime, native ABIs, tests, packaging,
+and documentation. Python product bindings belong in Articore-SDK, not this repository.
 
 ## Development setup
 
 ```bash
-cmake -S cpp_damiao -B cpp_damiao/build
-cmake --build cpp_damiao/build -j
-python3 -m pip install -e './bindings/python[test]'
+cmake -S . -B build
+cmake --build build -j
 ```
 
 ## Required checks
 
 ```bash
-ctest --test-dir cpp_damiao/build --output-on-failure
-PYTHONPATH=bindings/python/src python3 -m pytest -q bindings/python/tests
+ctest --test-dir build --output-on-failure
 ```
 
 Default automated tests must not require external repositories, attached hardware, root privileges, or motor power.
 
-Changes to the C ABI must be additive unless a breaking release is explicitly planned. Update `bindings/api_surface.json`, C++ tests, Python ctypes declarations, Python tests, and user documentation together.
+Changes to a C ABI must be additive unless a breaking release is explicitly planned. Update
+`bindings/api_surface.json`, native tests and documentation together, then coordinate the matching
+ctypes declaration and tests in Articore-SDK.
 
 ## Hardware changes
 

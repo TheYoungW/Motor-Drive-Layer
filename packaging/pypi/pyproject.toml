@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel>=0.43"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "motor-drive-layer"
+version = "0.10.14"
+description = "Native C/C++ libraries for the Motor-Drive-Layer ABI"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "LICENSES/**/*"]
+authors = [{ name = "Motor-Drive-Layer contributors" }]
+classifiers = [
+  "Programming Language :: C++",
+  "Operating System :: POSIX :: Linux",
+]
+
+[project.urls]
+Homepage = "https://github.com/TheYoungW/Motor-Drive-Layer"
+Repository = "https://github.com/TheYoungW/Motor-Drive-Layer"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["motor_drive_layer_native"]
+
+[tool.setuptools.package-data]
+motor_drive_layer_native = ["PAYLOAD", "lib/*", "lib/dm_device/*", "lib/dm_device/**/*"]

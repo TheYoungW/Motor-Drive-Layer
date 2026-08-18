@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "package": "motor_drive_layer",
-  "version": "0.10.13",
-  "purpose": "Canonical API surface used to keep ABI, Python, C++ and docs aligned.",
+  "package": "motor_drive_layer_native",
+  "version": "0.10.14",
+  "purpose": "Canonical native ABI surface and external SDK binding contract.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",
     "articore_runtime": "product watchdog, safety state machine and gripper ABI"
@@ -225,16 +225,10 @@
       "MotorDiscoveryResult"
     ],
     "python": {
-      "module_metadata": [
-        "motor_drive_layer.get_version()",
-        "motor_drive_layer.abi_version()",
-        "motor_drive_layer.abi_capabilities()",
-        "motor_drive_layer.articore_runtime_library_path()",
-        "motor_drive_layer.articore_runtime_abi_version()",
-        "motor_drive_layer.articore_runtime_capabilities()",
-        "motor_drive_layer.NativeRobotModel"
-      ],
-      "status": "aligned"
+      "owner": "Articore-SDK",
+      "distribution_payload": "motor-drive-layer",
+      "module_metadata": [],
+      "status": "external"
     },
     "cpp_damiao": {
       "abi_metadata": [

@@ -17,9 +17,10 @@ __pycache__/
 *.pyc
 .vscode/
 docs/superpowers/
-bindings/python/build/
-bindings/python/dist/
-bindings/python/*.egg-info/
+/bindings/python/
+/packaging/pypi/build/
+/packaging/pypi/dist/
+/packaging/pypi/*.egg-info/
 
 # Node / Mintlify local artifacts
 node_modules/

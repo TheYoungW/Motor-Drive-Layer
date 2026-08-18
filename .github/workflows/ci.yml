@@ -6,129 +6,135 @@ on:
   pull_request:
 
 jobs:
-  cpp-python:
+  native:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Python
+      - name: Setup Python packaging tool
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
-      - name: Install Python test tools and native Pinocchio
-        run: python -m pip install --upgrade build pytest pin cmeel-eigen cmeel-urdfdom-headers
+      - name: Install build tools and pinned Pinocchio C++ headers
+        run: python -m pip install --upgrade build 'libpinocchio==3.8.0' cmeel-eigen cmeel-urdfdom-headers
 
       - name: Build private libusb runtime
         run: bash scripts/build_private_libusb.sh "$RUNNER_TEMP/libusb-1.0.27"
 
-      - name: Configure C++ ABI
-        run: cmake -S . -B build -DCMAKE_PREFIX_PATH="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"] + "/cmeel.prefix")')"
+      - name: Configure and build native libraries
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_PREFIX_PATH="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"] + "/cmeel.prefix")'"
+          cmake --build build
 
-      - name: Build C++ ABI
-        run: cmake --build build
-
-      - name: Run C++ tests
+      - name: Run native tests
         run: ctest --test-dir build --output-on-failure --timeout 180
 
       - name: Verify installed C++ RAII package
         run: |
           cmake --install build --prefix "$RUNNER_TEMP/motor-drive-layer"
-          cmake -S tests/cmake_package -B build/cmake-consumer -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/motor-drive-layer"
+          cmake -S tests/cmake_package -B build/cmake-consumer \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/motor-drive-layer"
           cmake --build build/cmake-consumer
           "$PWD/build/cmake-consumer/motor_drive_layer_consumer"
 
-      - name: Run Python tests
-        env:
-          PYTHONPATH: bindings/python/src
-        run: python -m pytest -q bindings/python/tests
-
-      - name: Build Python wheel with C++ ABI
+      - name: Build binary-only PyPI payload
         env:
           MOTOR_PRIVATE_LIBUSB_LIB: ${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0
-        run: python -m build --wheel bindings/python
+        run: python -m build --wheel packaging/pypi
 
-      - name: Verify and install built wheel
+      - name: Verify binary-only wheel
         run: |
           python - <<'PY'
           from pathlib import Path
           from zipfile import ZipFile
 
-          wheel = next(Path("bindings/python/dist").glob("*.whl"))
+          wheel = next(Path("packaging/pypi/dist").glob("*.whl"))
           assert "-py3-none-" in wheel.name, wheel.name
           with ZipFile(wheel) as archive:
               names = archive.namelist()
-              assert any(name.endswith("/licenses/LICENSE") for name in names)
-              assert any(name.endswith("motor_drive_layer/lib/libmotor_abi.so") for name in names)
-              assert any(name.endswith("motor_drive_layer/lib/libarticore_runtime.so") for name in names)
-              assert any(name.endswith("motor_drive_layer/lib/robotics/libpinocchio_default.so") for name in names)
-              assert any("motor_drive_layer/lib/robotics/libboost_serialization.so." in name for name in names)
-              assert any(name.endswith("motor_drive_layer/lib/robotics/libstdc++.so.6") for name in names)
-              assert any(name.endswith("motor_drive_layer/lib/dm_device/v1.0.0/libdm_device.so") for name in names)
-              assert any(name.endswith("motor_drive_layer/lib/dm_device/v1.1.0/libdm_device.so") for name in names)
-              assert any(name.endswith("motor_drive_layer/lib/dm_device/libstdc++.so.6") for name in names)
-              assert any(name.endswith("motor_drive_layer/lib/dm_device/libusb-1.0.so.0") for name in names)
+          assert not any(name.endswith((".py", ".pyi")) for name in names)
+          assert "motor_drive_layer_native/lib/libmotor_abi.so" in names
+          assert "motor_drive_layer_native/lib/libarticore_runtime.so" in names
+          assert not any("/robotics/" in name for name in names)
+          assert "motor_drive_layer_native/lib/dm_device/v1.0.0/libdm_device.so" in names
+          assert "motor_drive_layer_native/lib/dm_device/v1.1.0/libdm_device.so" in names
           PY
-          python -m pip install --force-reinstall --no-deps bindings/python/dist/*.whl
+          python -m pip install --force-reinstall --no-deps packaging/pypi/dist/*.whl
           cd /tmp
           python - <<'PY'
-          import motor_drive_layer
           import ctypes
-          from importlib.metadata import version
+          import importlib.util
+          from importlib.metadata import distribution, version
 
-          assert motor_drive_layer.get_version() == version("motor-drive-layer")
-          assert motor_drive_layer.ArticoreRuntime
-          assert motor_drive_layer.RuntimeConfig
-          assert motor_drive_layer.abi_version() == "0.5.0-cpp"
-          assert motor_drive_layer.abi_capabilities()["features"]["feedback_stats"] is True
-          assert motor_drive_layer.abi_capabilities()["features"]["register_metadata"] is True
-          runtime_path = motor_drive_layer.articore_runtime_library_path()
-          assert runtime_path.endswith("libarticore_runtime.so")
-          assert motor_drive_layer.articore_runtime_abi_version() == "2.8"
-          assert motor_drive_layer.articore_runtime_capabilities()["native_robot_model"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["native_gravity_compensation"] is True
-          assert motor_drive_layer.NativeRobotModel().info.dof == 7
-          assert motor_drive_layer.articore_runtime_capabilities()["connect_feedback_barrier"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["structured_connect_report"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["transport_aware_control_rate"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["per_cycle_mit_torque_limit"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["safe_hold"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["current_position_hold"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["realtime_joint_mailbox"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["atomic_enable"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["command_lifetime"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["protective_fault_hold"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["deterministic_disable"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["layered_joint_limits"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["gripper_command_profiles"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["gripper_force_10_levels"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["joint_mit_position"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["joint_pv_position"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["effective_control_rate"] is True
-          assert motor_drive_layer.articore_runtime_capabilities()["builtin_gripper_product_profiles"] is True
-          vendor_path = motor_drive_layer.ensure_dm_device_runtime(auto_download=False)
-          assert vendor_path.parent.name == "v1.0.0"
-          assert vendor_path.is_file()
-          package_dm = vendor_path.parent.parent
-          private_libusb = package_dm / "libusb-1.0.so.0"
-          assert private_libusb.is_file()
-          support = ctypes.CDLL(str(private_libusb), mode=ctypes.RTLD_GLOBAL)
-          assert support.libusb_init_context
-          private_stdcxx = package_dm / "libstdc++.so.6"
-          ctypes.CDLL(str(private_stdcxx), mode=ctypes.RTLD_GLOBAL)
-          vendor = ctypes.CDLL(str(package_dm / "v1.1.0" / "libdm_device.so"))
-          assert vendor.dmcan_context_create
+          assert version("motor-drive-layer") == "0.10.14"
+          assert importlib.util.find_spec("motor_drive_layer") is None
+          dist = distribution("motor-drive-layer")
+          files = {str(item): dist.locate_file(item) for item in dist.files or ()}
+          motor = files["motor_drive_layer_native/lib/libmotor_abi.so"]
+          runtime = files["motor_drive_layer_native/lib/libarticore_runtime.so"]
+          motor_lib = ctypes.CDLL(str(motor))
+          motor_lib.motor_abi_version.restype = ctypes.c_char_p
+          assert motor_lib.motor_abi_version() == b"0.5.0-cpp"
+          runtime_lib = ctypes.CDLL(str(runtime))
+          runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
+          assert runtime_lib.articore_runtime_abi_version() == 0x00020008
+          runtime_lib.articore_robot_model_create.argtypes = [ctypes.c_char_p, ctypes.c_uint32]
+          runtime_lib.articore_robot_model_create.restype = ctypes.c_void_p
+          runtime_lib.articore_robot_model_free.argtypes = [ctypes.c_void_p]
+          model = runtime_lib.articore_robot_model_create(b"yunyi_v1_0", 0)
+          assert model
+          runtime_lib.articore_robot_model_free(model)
+          PY
+
+      - name: Verify ROS library-path isolation
+        run: |
+          mkdir -p "$RUNNER_TEMP/ros-collision"
+          cp /bin/false "$RUNNER_TEMP/ros-collision/libpinocchio_default.so.3.8.0"
+          cp /bin/false "$RUNNER_TEMP/ros-collision/libboost_serialization.so.1.89.0"
+          c++ -shared -fPIC \
+            "$GITHUB_WORKSPACE/articore_runtime/tests/pinocchio_interposer.cpp" \
+            -Wl,-soname,libpinocchio_default.so.3.8.0 \
+            -o "$RUNNER_TEMP/ros-collision/libpinocchio_interposer.so"
+          cd /tmp
+          PINOCCHIO_INTERPOSER="$RUNNER_TEMP/ros-collision/libpinocchio_interposer.so" \
+          LD_LIBRARY_PATH="$RUNNER_TEMP/ros-collision" python - <<'PY'
+          import ctypes
+          import os
+          import subprocess
+          from importlib.metadata import distribution
+          from pathlib import Path
+
+          dist = distribution("motor-drive-layer")
+          runtime_entry = next(
+              item for item in dist.files or ()
+              if str(item) == "motor_drive_layer_native/lib/libarticore_runtime.so"
+          )
+          runtime = Path(dist.locate_file(runtime_entry))
+          ctypes.CDLL(os.environ["PINOCCHIO_INTERPOSER"], mode=ctypes.RTLD_GLOBAL)
+          library = ctypes.CDLL(str(runtime))
+          library.articore_robot_model_create.argtypes = [ctypes.c_char_p, ctypes.c_uint32]
+          library.articore_robot_model_create.restype = ctypes.c_void_p
+          library.articore_robot_model_free.argtypes = [ctypes.c_void_p]
+          model = library.articore_robot_model_create(b"yunyi_v1_0", 0)
+          assert model
+          library.articore_robot_model_free(model)
+          dynamic = subprocess.check_output(["readelf", "-d", runtime], text=True)
+          exports = subprocess.check_output(["nm", "-D", "--defined-only", runtime], text=True)
+          assert "libpinocchio" not in dynamic
+          assert "libboost_serialization" not in dynamic
+          assert "_ZN9pinocchio" not in exports
+          assert not (runtime.parent / "robotics").exists()
           PY
 
       - name: Check shell helper syntax
         run: bash -n scripts/*.sh
 
-      - name: No obsolete source workspace remains
+      - name: Check repository boundary
         run: |
+          test ! -d bindings/python
+          test -z "$(find packaging/pypi/src -name '*.py' -o -name '*.pyi')"
           test -z "$(find . -path ./.git -prune -o -name '*.rs' -print)"
           test ! -d integrations/ros2_bridge

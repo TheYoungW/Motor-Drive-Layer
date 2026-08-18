@@ -1,0 +1,2 @@
+This directory contains only native Motor-Drive-Layer runtime libraries.
+Python ABI declarations and product wrappers are owned by Articore-SDK.

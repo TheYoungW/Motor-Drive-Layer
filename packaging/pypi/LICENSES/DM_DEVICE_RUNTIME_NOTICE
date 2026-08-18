@@ -9,4 +9,4 @@ https://gitee.com/kit-miao/dm-device-sdk
 
 The runtime remains the property of its respective copyright holder. It is
 kept separate from motor-drive-layer's MIT-licensed source code under
-motor_drive_layer/lib/dm_device/ in installed wheels.
+motor_drive_layer_native/lib/dm_device/ in installed wheels.

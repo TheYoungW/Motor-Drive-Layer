@@ -2,29 +2,19 @@ cmake_minimum_required(VERSION 3.16)
 project(articore_runtime LANGUAGES CXX)
 
 find_package(pinocchio REQUIRED)
+if(NOT TARGET pinocchio::pinocchio_headers)
+  message(FATAL_ERROR "Pinocchio's native C++ headers target was not found")
+endif()
 get_target_property(
-  ARTICORE_BOOST_SERIALIZATION_LIBRARY
-  Boost::serialization IMPORTED_LOCATION_RELEASE
+  ARTICORE_PINOCCHIO_INCLUDE_DIRS
+  pinocchio::pinocchio_headers
+  INTERFACE_INCLUDE_DIRECTORIES
 )
-if(NOT ARTICORE_BOOST_SERIALIZATION_LIBRARY)
-  get_target_property(
-    ARTICORE_BOOST_SERIALIZATION_LIBRARY
-    Boost::serialization IMPORTED_LOCATION
-  )
-endif()
-get_filename_component(
-  ARTICORE_BOOST_LIBRARY_DIR "${ARTICORE_BOOST_SERIALIZATION_LIBRARY}" DIRECTORY
+get_target_property(
+  ARTICORE_PINOCCHIO_COMPILE_DEFINITIONS
+  pinocchio::pinocchio_headers
+  INTERFACE_COMPILE_DEFINITIONS
 )
-file(GLOB ARTICORE_BOOST_SERIALIZATION_SONAMES
-  "${ARTICORE_BOOST_LIBRARY_DIR}/libboost_serialization.so.*"
-)
-list(LENGTH ARTICORE_BOOST_SERIALIZATION_SONAMES ARTICORE_BOOST_SONAME_COUNT)
-if(UNIX AND NOT APPLE AND ARTICORE_BOOST_SONAME_COUNT EQUAL 0)
-  message(FATAL_ERROR "Pinocchio's versioned Boost.Serialization runtime was not found")
-endif()
-if(ARTICORE_BOOST_SONAME_COUNT GREATER 0)
-  list(GET ARTICORE_BOOST_SERIALIZATION_SONAMES 0 ARTICORE_BOOST_SERIALIZATION_SONAME)
-endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -46,7 +36,15 @@ add_library(
 add_library(articore::runtime_core ALIAS articore_runtime_core)
 target_include_directories(articore_runtime_core PUBLIC include src)
 target_compile_features(articore_runtime_core PUBLIC cxx_std_17)
-target_link_libraries(articore_runtime_core PUBLIC pinocchio::pinocchio_default)
+target_include_directories(
+  articore_runtime_core SYSTEM PRIVATE ${ARTICORE_PINOCCHIO_INCLUDE_DIRS}
+)
+target_link_libraries(articore_runtime_core PRIVATE Eigen3::Eigen Boost::boost)
+target_compile_definitions(
+  articore_runtime_core
+  PRIVATE
+    ${ARTICORE_PINOCCHIO_COMPILE_DEFINITIONS}
+)
 set_target_properties(
   articore_runtime_core PROPERTIES
   POSITION_INDEPENDENT_CODE ON
@@ -56,9 +54,7 @@ set_target_properties(
 
 add_library(articore_runtime SHARED src/runtime_abi.cpp)
 add_library(articore::runtime ALIAS articore_runtime)
-target_link_libraries(
-  articore_runtime PRIVATE articore::runtime_core pinocchio::pinocchio_default
-)
+target_link_libraries(articore_runtime PRIVATE articore::runtime_core)
 target_include_directories(
   articore_runtime
   PUBLIC
@@ -71,37 +67,19 @@ target_compile_definitions(
   articore_runtime PRIVATE ARTICORE_RUNTIME_BUILDING_LIBRARY
 )
 if(UNIX AND NOT APPLE)
-  target_link_options(articore_runtime PRIVATE "-Wl,--exclude-libs,ALL")
+  target_link_options(
+    articore_runtime
+    PRIVATE
+      "-Wl,--exclude-libs,ALL"
+      "-Wl,--as-needed"
+      "-Wl,-z,defs"
+  )
   set_target_properties(
     articore_runtime PROPERTIES
-    BUILD_RPATH "\$ORIGIN:\$ORIGIN/dm_device:\$ORIGIN/robotics"
-    INSTALL_RPATH "\$ORIGIN:\$ORIGIN/dm_device:\$ORIGIN/robotics"
+    BUILD_RPATH "\$ORIGIN:\$ORIGIN/dm_device"
+    INSTALL_RPATH "\$ORIGIN:\$ORIGIN/dm_device"
     BUILD_WITH_INSTALL_RPATH YES
   )
-  add_custom_command(
-    TARGET articore_runtime POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:articore_runtime>/robotics"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:pinocchio::pinocchio_default>"
-            "$<TARGET_FILE_DIR:articore_runtime>/robotics/"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ARTICORE_BOOST_SERIALIZATION_SONAME}"
-            "$<TARGET_FILE_DIR:articore_runtime>/robotics/"
-    VERBATIM
-  )
-  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
-    set(ARTICORE_PRIVATE_LIBSTDCXX
-      "${CMAKE_SOURCE_DIR}/third_party/libstdcxx/linux/x86_64/libstdc++.so.6"
-    )
-    add_custom_command(
-      TARGET articore_runtime POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-              "${ARTICORE_PRIVATE_LIBSTDCXX}"
-              "$<TARGET_FILE_DIR:articore_runtime>/robotics/"
-      VERBATIM
-    )
-  endif()
 elseif(APPLE)
   set_target_properties(
     articore_runtime PROPERTIES
@@ -145,21 +123,6 @@ install(
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-if(UNIX AND NOT APPLE)
-  install(
-    FILES
-      "$<TARGET_FILE:pinocchio::pinocchio_default>"
-      "${ARTICORE_BOOST_SERIALIZATION_SONAME}"
-    DESTINATION "${CMAKE_INSTALL_LIBDIR}/robotics"
-  )
-  if(ARTICORE_PRIVATE_LIBSTDCXX)
-    install(
-      FILES "${ARTICORE_PRIVATE_LIBSTDCXX}"
-      DESTINATION "${CMAKE_INSTALL_LIBDIR}/robotics"
-    )
-  endif()
-endif()
-
 include(CTest)
 if(BUILD_TESTING)
   add_executable(articore_runtime_test tests/runtime_test.cpp)

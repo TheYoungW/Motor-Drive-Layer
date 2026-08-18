@@ -199,14 +199,13 @@ feedback and transport health are confirmed. `estop()` currently applies the exp
 policy: arm joints are torque-disabled, while `gripper_fault_action` selects low-gain gripper hold
 or gripper disable. A later explicit `disable()` always disables held grippers as well.
 
-`runtime_abi.h` is the stable boundary used by `arx_d_can.sdk.native_safety`. The optional generic
+`runtime_abi.h` is the stable boundary used by Articore-SDK's private native binding. The optional generic
 motor-drive-layer transport-health callback is used when available; the wrapper remains compatible
 with the motor function-table ABI and falls back to motor feedback health when that callback is not
 present. ABI version and capability functions make mismatches fail during runtime creation rather
 than during motion.
 
-Language bindings live in this repository rather than product SDKs. Python users import the typed
-`motor_drive_layer.ArticoreRuntime` wrapper; ctypes definitions stay private. C++17 users include
+Python language bindings live in Articore-SDK rather than this native repository. C++17 users include
 `articore/runtime.hpp` and link the installed `motorbridge::articore_runtime_cpp` CMake target.
 The move-only `articore::Runtime` RAII object delegates every operation to this C ABI and never
 duplicates worker, watchdog, safety, or gripper behavior.

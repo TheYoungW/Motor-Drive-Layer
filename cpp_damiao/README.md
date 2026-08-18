@@ -1,6 +1,6 @@
 # cpp_damiao
 
-`cpp_damiao` is the configuration-agnostic C++17 Damiao driver and C ABI used by the Python package.
+`cpp_damiao` is the configuration-agnostic C++17 Damiao driver and stable C ABI used by external SDKs.
 
 ## Scope
 
@@ -9,10 +9,11 @@
 - Runtime with background RX polling, per-motor state cache, feedback counters, configurable TX pacing, register acknowledgements, and lifecycle cleanup.
 - Persistent multi-controller workers for parallel MIT and POS_VEL batch dispatch.
 - Linux Damiao serial, SocketCAN, SocketCAN-FD, and optional DM_Device transports.
-- Shared C ABI library for Python and other language bindings.
+- Shared C ABI library for C++, ROS 2 and external language bindings.
 - Unit, codec, runtime, and ABI smoke tests without hardware.
 
-The C++ library does not parse Python YAML and does not contain robot-specific ports, joint lists, IDs, models, or loop rates. C++ callers pass those values directly through constructors and methods.
+The C++ library does not parse product configuration and does not contain robot-specific ports,
+joint lists, IDs, models, or loop rates. Callers pass those values through the ABI or C++ API.
 
 ## Build and test
 

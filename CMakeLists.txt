@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(motorbridge_native VERSION 0.10.13 LANGUAGES CXX)
+project(motorbridge_native VERSION 0.10.14 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -67,7 +67,7 @@ elseif(WIN32)
   )
 endif()
 install(
-  FILES LICENSE bindings/python/LICENSES/DM_DEVICE_RUNTIME_NOTICE
+  FILES LICENSE packaging/pypi/LICENSES/DM_DEVICE_RUNTIME_NOTICE
   DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/MotorDriveLayer"
 )
 install(
