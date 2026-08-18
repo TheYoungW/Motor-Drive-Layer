@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -172,6 +173,24 @@ class FakeBus final : public damiao::CanBus {
   int receive_failures_ = 0;
   int send_failures_ = 0;
   bool always_fail_receive_ = false;
+};
+
+class ImmediateWriteAckBus final : public damiao::CanBus {
+ public:
+  void send(const damiao::CanFrame& frame) override {
+    sent.push_back(frame);
+    if (on_write && frame.id == 0x7FF && frame.data[2] == 0x55) {
+      on_write(damiao::CanFrame{0x11, frame.data});
+    }
+  }
+
+  std::optional<damiao::CanFrame> receive_for(
+      std::chrono::milliseconds) override {
+    return std::nullopt;
+  }
+
+  std::function<void(const damiao::CanFrame&)> on_write;
+  std::vector<damiao::CanFrame> sent;
 };
 
 class DispatchBarrier {
@@ -938,6 +957,20 @@ int main() {
   bulk_gap_controller.close_bus();
   unset_test_env("MOTOR_DRIVE_LAYER_TX_GAP_US");
   unset_test_env("MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS");
+
+  auto immediate_ack_bus = std::make_shared<ImmediateWriteAckBus>();
+  damiao::Controller immediate_ack_controller(immediate_ack_bus);
+  auto immediate_ack_motor =
+      immediate_ack_controller.add_damiao_motor(0x01, 0x11, "4340P");
+  immediate_ack_bus->on_write =
+      [immediate_ack_motor](const damiao::CanFrame& frame) {
+        immediate_ack_motor->process_feedback_frame(frame);
+      };
+  immediate_ack_motor->write_register_u32(35, 1);
+  immediate_ack_motor->write_register_f32(21, 1.25f);
+  require(immediate_ack_bus->sent.size() == 2,
+          "register writes accept ACKs received before send returns");
+  immediate_ack_controller.close_bus();
 
   auto failing_drain_bus = std::make_shared<FakeBus>();
   damiao::Controller failing_drain_controller(failing_drain_bus);

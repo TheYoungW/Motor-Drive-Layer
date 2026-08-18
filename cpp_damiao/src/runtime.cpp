@@ -260,8 +260,15 @@ bool MotorHandle::wait_for_feedback_after(
       lock, deadline, [&] { return feedback_update_count_ > previous_count; });
 }
 
-void MotorHandle::write_register_raw(uint8_t rid, std::array<uint8_t, 4> data) {
+uint64_t MotorHandle::write_register_raw(uint8_t rid,
+                                         std::array<uint8_t, 4> data) {
+  uint64_t previous_update_count = 0;
+  {
+    std::lock_guard<std::mutex> lock(register_mutex_);
+    previous_update_count = register_ack_update_counts_[rid];
+  }
   send_raw(0x7FF, encode_register_write_command(motor_id_, rid, data));
+  return previous_update_count;
 }
 
 void MotorHandle::write_register_f32(uint8_t rid, float value) {
@@ -270,9 +277,10 @@ void MotorHandle::write_register_f32(uint8_t rid, float value) {
   std::memcpy(data.data(), &value, sizeof(value));
   std::runtime_error last_error("register write ack not received");
   for (int attempt = 0; attempt < 3; ++attempt) {
-    write_register_raw(rid, data);
+    const auto previous_update_count = write_register_raw(rid, data);
     try {
-      wait_for_write_ack(rid, data, kRegisterWriteAckTimeout);
+      wait_for_write_ack(
+          rid, data, previous_update_count, kRegisterWriteAckTimeout);
       return;
     } catch (const std::runtime_error& err) {
       last_error = err;
@@ -292,9 +300,10 @@ void MotorHandle::write_register_u32(uint8_t rid, uint32_t value) {
   };
   std::runtime_error last_error("register write ack not received");
   for (int attempt = 0; attempt < 3; ++attempt) {
-    write_register_raw(rid, data);
+    const auto previous_update_count = write_register_raw(rid, data);
     try {
-      wait_for_write_ack(rid, data, kRegisterWriteAckTimeout);
+      wait_for_write_ack(
+          rid, data, previous_update_count, kRegisterWriteAckTimeout);
       return;
     } catch (const std::runtime_error& err) {
       last_error = err;
@@ -326,14 +335,17 @@ std::array<uint8_t, 4> MotorHandle::wait_for_register(uint8_t rid,
 
 void MotorHandle::wait_for_write_ack(uint8_t rid,
                                      std::array<uint8_t, 4> expected,
+                                     uint64_t previous_update_count,
                                      std::chrono::milliseconds timeout) {
-  const auto request_at = std::chrono::steady_clock::now();
-  const auto deadline = request_at + timeout;
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
   for (;;) {
     {
       std::lock_guard<std::mutex> lock(register_mutex_);
+      const auto update = register_ack_update_counts_.find(rid);
       const auto found = register_acks_.find(rid);
-      if (found != register_acks_.end() && found->second.second >= request_at) {
+      if (update != register_ack_update_counts_.end() &&
+          update->second > previous_update_count &&
+          found != register_acks_.end()) {
         if (found->second.first == expected) {
           return;
         }
@@ -534,6 +546,7 @@ void MotorHandle::process_feedback_frame(const CanFrame& frame) {
     std::array<uint8_t, 4> data{frame.data[4], frame.data[5], frame.data[6], frame.data[7]};
     std::lock_guard<std::mutex> lock(register_mutex_);
     register_acks_[rid] = {data, std::chrono::steady_clock::now()};
+    ++register_ack_update_counts_[rid];
     return;
   }
 

@@ -163,11 +163,12 @@ class MotorHandle {
   void send_raw(uint32_t arbitration_id, std::array<uint8_t, 8> data);
   void send_to_motor(std::array<uint8_t, 8> data);
   void send_mode_frame(uint32_t base_id, std::array<uint8_t, 8> data);
-  void write_register_raw(uint8_t rid, std::array<uint8_t, 4> data);
+  uint64_t write_register_raw(uint8_t rid, std::array<uint8_t, 4> data);
   bool wait_for_feedback_after(uint64_t previous_count,
                                std::chrono::steady_clock::time_point deadline);
   std::array<uint8_t, 4> wait_for_register(uint8_t rid, std::chrono::milliseconds timeout);
   void wait_for_write_ack(uint8_t rid, std::array<uint8_t, 4> expected,
+                          uint64_t previous_update_count,
                           std::chrono::milliseconds timeout);
   void record_feedback_rejection(FeedbackRejectionReason reason,
                                  const CanFrame& frame,
@@ -195,6 +196,7 @@ class MotorHandle {
       register_replies_;
   std::map<uint8_t, std::pair<std::array<uint8_t, 4>, std::chrono::steady_clock::time_point>>
       register_acks_;
+  std::map<uint8_t, uint64_t> register_ack_update_counts_;
 };
 
 class Controller {
