@@ -26,7 +26,7 @@ jobs:
       - name: Configure and build native libraries
         run: |
           cmake -S . -B build \
-            -DCMAKE_PREFIX_PATH="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"] + "/cmeel.prefix")'"
+            -DCMAKE_PREFIX_PATH="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"] + "/cmeel.prefix")')"
           cmake --build build
 
       - name: Run native tests
