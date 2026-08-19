@@ -30,6 +30,7 @@ add_library(
   src/runtime_gripper.cpp
   src/runtime_gravity.cpp
   src/runtime_joint_position.cpp
+  src/runtime_maintenance.cpp
   src/runtime_safety.cpp
   src/runtime_worker.cpp
 )
@@ -54,7 +55,10 @@ set_target_properties(
 
 add_library(articore_runtime SHARED src/runtime_abi.cpp)
 add_library(articore::runtime ALIAS articore_runtime)
-target_link_libraries(articore_runtime PRIVATE articore::runtime_core)
+target_link_libraries(
+  articore_runtime PRIVATE articore::runtime_core motorbridge::motor_abi
+)
+target_include_directories(articore_runtime PRIVATE ../cpp_damiao/include)
 target_include_directories(
   articore_runtime
   PUBLIC
@@ -94,6 +98,16 @@ set_target_properties(
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN YES
 )
+if(UNIX AND NOT APPLE)
+  # ABI tests execute from the Runtime build directory while release payloads
+  # place both libraries side-by-side. Mirror that layout without embedding an
+  # absolute build-tree RUNPATH in the wheel artifact.
+  add_custom_command(
+    TARGET articore_runtime POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:motor_abi> $<TARGET_FILE_DIR:articore_runtime>
+  )
+endif()
 
 add_library(articore_runtime_cpp INTERFACE)
 add_library(articore::runtime_cpp ALIAS articore_runtime_cpp)

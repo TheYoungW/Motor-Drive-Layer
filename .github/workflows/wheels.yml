@@ -91,7 +91,7 @@ jobs:
           from importlib.metadata import distribution, version
           from pathlib import Path
 
-          assert version("motor-drive-layer") == "0.10.14"
+          assert version("motor-drive-layer") == "0.10.21"
           assert importlib.util.find_spec("motor_drive_layer") is None
           dist = distribution("motor-drive-layer")
           entries = {str(item): item for item in dist.files or ()}
@@ -103,7 +103,7 @@ jobs:
           assert motor_lib.motor_abi_version() == b"0.5.0-cpp"
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00020008
+          assert runtime_lib.articore_runtime_abi_version() == 0x0002000F
           dynamic = subprocess.check_output(["readelf", "-d", runtime], text=True)
           exports = subprocess.check_output(["nm", "-D", "--defined-only", runtime], text=True)
           assert "libpinocchio" not in dynamic

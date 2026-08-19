@@ -191,7 +191,8 @@ void SafetyRuntime::stop_gravity_compensation() {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     if (gravity_control_.phase == ARTICORE_GRAVITY_INACTIVE) return;
     if (hardware_transition_ || fault_latched_ ||
-        (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING)) {
+        (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING &&
+         state_ != ARTICORE_DEGRADED)) {
       throw std::runtime_error(
           "gravity compensation cannot stop in the current Runtime state");
     }
@@ -247,8 +248,10 @@ bool SafetyRuntime::run_gravity_control_cycle(Clock::time_point now,
   std::chrono::milliseconds transition_duration;
   float transition_start_gravity_scale = 0.0f;
   std::vector<float> hold_positions;
+  bool degraded = false;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
+    degraded = state_ == ARTICORE_DEGRADED;
     phase = gravity_control_.phase;
     transition_started = gravity_control_.transition_started;
     transition_duration = gravity_control_.transition_duration;
@@ -305,7 +308,8 @@ bool SafetyRuntime::run_gravity_control_cycle(Clock::time_point now,
 
   ArticoreMitTorqueLimitStats cycle_stats{};
   if (!prepare_mit_torque_limited_commands(
-          requested, mit_torque_limited_commands_, cycle_stats, error)) {
+          requested, mit_torque_limited_commands_, cycle_stats, error,
+          degraded ? 0.25f : 1.0f)) {
     return false;
   }
 

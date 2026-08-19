@@ -26,20 +26,23 @@ void SafetyRuntime::worker_loop() {
   const auto hold_period = std::chrono::nanoseconds(
       1'000'000'000ULL / config_.safe_hold_hz);
   // Product grippers are part of the normal control surface. While ENABLED
-  // or RUNNING they use the same cycle as the arm; only SAFE_HOLD/FAULT uses
-  // the separately configured safe-hold rate.
+  // RUNNING or DEGRADED they use the same cycle as the arm; protective stop
+  // states use the separately configured safe-hold rate.
   const auto gripper_period = control_period;
   for (;;) {
     {
       std::unique_lock<std::mutex> lock(state_mutex_);
       const auto now = Clock::now();
       auto deadline = now + idle_poll_period;
-      if (!hardware_transition_ && state_ == ARTICORE_READY &&
+      if (!hardware_transition_ &&
+          (state_ == ARTICORE_READY ||
+           state_ == ARTICORE_PARTIALLY_ENABLED) &&
           next_ready_feedback_ != Clock::time_point{}) {
         deadline = std::min(deadline, next_ready_feedback_);
       } else if (!hardware_transition_ &&
                  (state_ == ARTICORE_ENABLED ||
-                  state_ == ARTICORE_RUNNING) &&
+                  state_ == ARTICORE_RUNNING ||
+                  state_ == ARTICORE_DEGRADED) &&
                  next_control_tick_ != Clock::time_point{}) {
         deadline = std::min(deadline, next_control_tick_);
       }
@@ -64,36 +67,45 @@ void SafetyRuntime::worker_loop() {
           now - enabled_at_ >= std::chrono::milliseconds(config_.enable_grace_ms) &&
           !has_successful_command_) {
         grace_fault = true;
-      } else if (state_ == ARTICORE_RUNNING && has_successful_command_ &&
+      } else if ((state_ == ARTICORE_RUNNING ||
+                  state_ == ARTICORE_DEGRADED) &&
+                 has_successful_command_ &&
                  arm_mailbox_.user_command &&
                  arm_mailbox_.lifetime == ARTICORE_COMMAND_STREAMING &&
                  now - last_successful_command_ >=
                      std::chrono::milliseconds(config_.command_timeout_ms)) {
         command_timeout = true;
       }
-      if ((state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING) &&
+      if ((state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING ||
+           state_ == ARTICORE_DEGRADED) &&
           now >= next_control_tick_) {
         run_arm_control = true;
         detail::advance_periodic_deadline(
             next_control_tick_, control_period, now);
       }
-      if (state_ == ARTICORE_READY && now >= next_ready_feedback_) {
+      if ((state_ == ARTICORE_READY ||
+           state_ == ARTICORE_PARTIALLY_ENABLED) &&
+          now >= next_ready_feedback_) {
         run_ready_feedback = true;
         detail::advance_periodic_deadline(
             next_ready_feedback_, ready_feedback_period, now);
       }
-      if ((state_ == ARTICORE_RUNNING || state_ == ARTICORE_SAFE_HOLD) &&
+      if ((state_ == ARTICORE_RUNNING || state_ == ARTICORE_DEGRADED ||
+           state_ == ARTICORE_SAFE_HOLD ||
+           state_ == ARTICORE_SAFE_STOP) &&
           now >= next_feedback_check_) {
         run_feedback_check = true;
         detail::advance_periodic_deadline(
             next_feedback_check_, feedback_period, now);
       }
-      if (state_ == ARTICORE_SAFE_HOLD && now >= next_safe_hold_) {
+      if ((state_ == ARTICORE_SAFE_HOLD ||
+           state_ == ARTICORE_SAFE_STOP) && now >= next_safe_hold_) {
         run_hold = true;
         detail::advance_periodic_deadline(next_safe_hold_, hold_period, now);
       }
       if (!enable_transaction_ &&
-          (state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING) &&
+          (state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING ||
+           state_ == ARTICORE_DEGRADED) &&
           now >= next_gripper_control_ &&
           std::any_of(motors_.begin(), motors_.end(),
                       [](const MotorRecord& motor) {
@@ -115,15 +127,20 @@ void SafetyRuntime::worker_loop() {
     }
 
     if (grace_fault) {
-      enter_fault("enable grace expired before the first successful command");
+      std::string stop_error;
+      if (!enter_safe_stop(
+              "enable grace expired before the first successful command",
+              stop_error)) {
+        enter_fault("enable grace expired and protective hold is unavailable: " +
+                    stop_error);
+      }
       continue;
     }
     if (command_timeout) {
-      std::string hold_error;
-      if (!enter_safe_hold_from_feedback("command watchdog timed out",
-                                         hold_error)) {
-        enter_fault("command watchdog timed out; current-position hold "
-                    "unavailable: " + hold_error);
+      std::string stop_error;
+      if (!enter_safe_stop("command watchdog timed out", stop_error)) {
+        enter_fault("command watchdog timed out; protective hold unavailable: " +
+                    stop_error);
       }
       continue;
     }
@@ -136,7 +153,9 @@ void SafetyRuntime::worker_loop() {
         std::lock_guard<std::mutex> command_lock(command_mutex_);
         {
           std::lock_guard<std::mutex> state_lock(state_mutex_);
-          still_ready = !hardware_transition_ && state_ == ARTICORE_READY;
+          still_ready = !hardware_transition_ &&
+              (state_ == ARTICORE_READY ||
+               state_ == ARTICORE_PARTIALLY_ENABLED);
         }
         if (still_ready) {
           complete = request_feedback_parallel(
@@ -167,11 +186,11 @@ void SafetyRuntime::worker_loop() {
     if (run_arm_control) {
       std::string error;
       if (!run_arm_control_cycle(now, combine_mit_arm_and_gripper, error)) {
-        std::string hold_error;
-        if (!enter_safe_hold_from_feedback(
-                "arm control cycle failed: " + error, hold_error)) {
+        std::string stop_error;
+        if (!enter_safe_stop(
+                "arm control cycle failed: " + error, stop_error)) {
           enter_fault("arm control cycle failed: " + error +
-                      "; current-position hold unavailable: " + hold_error);
+                      "; protective hold unavailable: " + stop_error);
         }
         continue;
       }
@@ -179,55 +198,57 @@ void SafetyRuntime::worker_loop() {
     if (run_feedback_check) {
       std::string error;
       bool healthy = false;
-      bool diagnostic_only = false;
       bool still_active = false;
       {
         std::lock_guard<std::mutex> command_lock(command_mutex_);
         {
           std::lock_guard<std::mutex> state_lock(state_mutex_);
           still_active = !hardware_transition_ &&
-              (state_ == ARTICORE_RUNNING || state_ == ARTICORE_SAFE_HOLD);
+              (state_ == ARTICORE_RUNNING || state_ == ARTICORE_DEGRADED ||
+               state_ == ARTICORE_SAFE_HOLD ||
+               state_ == ARTICORE_SAFE_STOP);
         }
         if (still_active) {
           healthy = refresh_feedback_health(
-              false, false, error, &diagnostic_only);
+              false, false, error, nullptr);
         }
       }
       if (!still_active) continue;
       if (!healthy) {
-        if (diagnostic_only) {
-          std::lock_guard<std::mutex> lock(state_mutex_);
-          ++consecutive_feedback_failures_;
-          continue;
-        }
         const bool severe =
             error.find("motor fault status") != std::string::npos ||
             error.find("unexpectedly disabled") != std::string::npos ||
-            error.find("transport disconnected") != std::string::npos;
-        bool fault = severe;
-        bool enter_hold = false;
+            error.find("transport disconnected") != std::string::npos ||
+            error.find("not finite") != std::string::npos;
+        bool enter_degraded_state = false;
+        bool enter_safe_stop_state = false;
         {
           std::lock_guard<std::mutex> lock(state_mutex_);
           ++consecutive_feedback_failures_;
-          const bool threshold_reached =
-              consecutive_feedback_failures_ >=
+          const uint64_t degraded_threshold =
               config_.feedback_failure_threshold;
-          if (state_ == ARTICORE_SAFE_HOLD || severe) {
-            fault = true;
-          } else if (state_ == ARTICORE_RUNNING &&
-                     threshold_reached) {
-            enter_hold = true;
+          const uint64_t safe_stop_threshold = degraded_threshold * 3ULL;
+          if (!severe && state_ == ARTICORE_RUNNING &&
+              consecutive_feedback_failures_ >= degraded_threshold) {
+            enter_degraded_state = true;
+          }
+          if (!severe && state_ == ARTICORE_DEGRADED &&
+              consecutive_feedback_failures_ >= safe_stop_threshold) {
+            enter_safe_stop_state = true;
           }
         }
-        if (enter_hold) {
-          std::string hold_error;
-          if (!enter_safe_hold_from_feedback(
-                  "consecutive feedback failures: " + error, hold_error)) {
-            error += "; current-position hold unavailable: " + hold_error;
-            fault = true;
+        if (severe) {
+          enter_fault(error);
+        } else if (enter_safe_stop_state) {
+          std::string stop_error;
+          if (!enter_safe_stop(
+                  "feedback safety timeout: " + error, stop_error)) {
+            enter_fault("feedback safety timeout; protective hold unavailable: " +
+                        stop_error);
           }
+        } else if (enter_degraded_state) {
+          enter_degraded("sustained feedback delay: " + error);
         }
-        if (fault) enter_fault(error);
         continue;
       }
     }
@@ -241,11 +262,11 @@ void SafetyRuntime::worker_loop() {
             std::lock_guard<std::mutex> lock(state_mutex_);
             ++consecutive_send_failures_;
           }
-          std::string hold_error;
-          if (!enter_safe_hold_from_feedback(
-                  "gripper control send failed: " + error, hold_error)) {
+          std::string stop_error;
+          if (!enter_safe_stop(
+                  "gripper control send failed: " + error, stop_error)) {
             enter_fault("gripper control send failed: " + error +
-                        "; current-position hold unavailable: " + hold_error);
+                        "; protective hold unavailable: " + stop_error);
           }
         } else {
           enter_fault("gripper control fault: " + error);

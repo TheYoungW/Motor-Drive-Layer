@@ -136,6 +136,52 @@ Runtime ABI 2.8 提供第一版重力补偿模式。SDK 将已安装的七轴侧
 MIT 模式使能后启动重力补偿。原生 worker 平滑移除刚度和阻尼，同时逐步加入随姿态变化的
 重力力矩；停止时反向过渡到当前位置 MIT 保持。第一版暂不包含摩擦和科氏补偿。
 
+Runtime ABI 2.9 将整机维护操作收归 C++ Runtime。`configure_mode`、`clear_faults` 和
+`set_zero` 复用 Runtime 已持有的 Motor lease，在同一 worker/发送屏障内并行处理左右通道，
+不会释放 ControllerGroup、关闭 Runtime 或重建资源。调零固定检查 READY、双 transport、
+反馈新鲜、物理失能和静止速度，操作后逐电机验证失能、零位和零速；任何部分失败都以稳定
+错误码写入统一 `SafetyHealthV2`，不会伪装为成功。产品工厂
+`articore_runtime_create_product("yunyi_v1_0", ...)` 内部拥有 can-left/can-right、
+SocketCAN-FD+BRS、14 个关节和两个夹爪。协议仍是逐电机写入，真正 all-or-none 需要固件增加
+prepare/commit。
+
+Runtime ABI 2.10 将 `yunyi_v1_0` 从“由语言绑定组装的通用容器”升级为完整产品
+Runtime。产品工厂固定拥有双通道、16 个 Motor、方向/量程/限位、默认 MIT 参数、夹爪与
+重力模型；新增固定 14 关节 MIT/PV/普通位置帧、双夹爪帧和一次性整机状态快照。SDK 只传
+逻辑关节数组，不再传 Controller、ControllerGroup、Motor 或产品配置。产品 Runtime 对象
+保持存在，`disconnect()` 只把状态切回 DISCONNECTED，不释放 lease 或重建 worker。普通
+位置命令的速度传 0 时，由原生产品配置选择当前模式默认值。
+
+Runtime ABI 2.11 为整机工厂增加固定拓扑参数 `with_grippers`。值为 true 时创建并验证
+14 个关节和左右两个夹爪；值为 false 时只创建 14 个关节 Motor，不发送夹爪反馈请求，
+也不把缺少夹爪写入 health。新的 `articore_runtime_set_grippers()` 只接收左右 0～1000
+开合度和 1～5 力度等级；无夹爪产品调用它会安全返回成功。整机状态只公开夹爪是否可用、
+开合度和力度等级，不再向普通 SDK 暴露夹爪 Motor 坐标、速度、力矩或句柄。
+
+Runtime ABI 2.12 将通信质量与电机硬故障分离。少于
+`feedback_failure_threshold` 的偶发反馈缺口只计数；持续延迟进入 `DEGRADED`，原生层将
+速度参考和 MIT 力矩上限缩放到 25%；延迟达到三倍阈值后进入 `SAFE_STOP`，停止接受新轨迹
+并持续发送当前位置保护保持，不主动失能，也不写入 `fault_reason`。只有确认的电机故障码、
+意外失能、非有限反馈或 transport 断开才进入 `FAULT`。通信恢复不会自动重放旧目标；调用
+`recover()` 后 Runtime 重新读取全部电机、同步当前位置，并回到 `ENABLED` 等待新命令。
+
+Runtime ABI 2.13 将普通 MIT/PV 位置接口的统一速度参数改为 `0～100`。`0` 暂停位置
+reference 推进，`100` 对应产品为当前模式配置的最大普通速度；百分比到 rad/s、逐周期
+步长和关节绝对速度上限均在 C++ Runtime 内处理。Raw MIT/PV 帧继续使用物理量，不受影响。
+
+Runtime ABI 2.14 增加 Runtime 所有的整机/单电机使能与失能接口。稳定角色名采用
+`left/joint1`～`left/joint7`、`right/joint1`～`right/joint7`，夹爪为
+`left/gripper`、`right/gripper`；空角色表示全部已安装电机。设置操作必须通过新反馈确认，
+查询返回 `DISABLED`、`ENABLED`、`MIXED` 或 `UNKNOWN`。单电机切换仅允许在非运动状态，
+并进入不可下发运动命令的 `PARTIALLY_ENABLED`；只有整机原子 `enable()` 建立当前位置保持后
+才进入正常 `ENABLED`。
+
+Runtime ABI 2.15 增加 `articore_runtime_get_pose()`。接口从原生反馈缓存读取指定左/右臂
+完整七关节快照，并使用底层内置 Pinocchio 产品模型计算法兰位姿，固定输出
+`[x, y, z, roll, pitch, yaw]`（米、弧度）以及参与计算的最旧反馈时间戳和序列号。
+调用本身不发送 CAN 帧；当前产品没有 TCP 偏移配置，因此不提供虚构的 TCP 位姿，也不增加
+驱动无法可靠提供的电压/相电流字段。
+
 ## 安全
 
 电机控制可能造成意外运动和人身伤害。测试时必须支撑机构、准备独立急停、确认通道/ID/型号/

@@ -223,7 +223,8 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
 
 void SafetyRuntime::require_state_for_command(bool allow_gravity) const {
   if (fault_latched_ || hardware_transition_ || enable_transaction_ ||
-      (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING)) {
+      (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING &&
+       state_ != ARTICORE_DEGRADED)) {
     throw std::runtime_error("Articore runtime is not accepting motion commands");
   }
   if (!allow_gravity &&
@@ -370,10 +371,50 @@ bool SafetyRuntime::enter_safe_hold_from_feedback(const std::string& reason,
   arm_mailbox_ = ArmMailbox{};
   last_fresh_feedback_ = now - std::chrono::nanoseconds(maximum_age_ns);
   state_ = ARTICORE_SAFE_HOLD;
-  fault_reason_ = reason;
+  fault_reason_.clear();
+  safety_reason_ = reason;
   next_safe_hold_ = now;
   consecutive_hold_failures_ = 0;
   return true;
+}
+
+void SafetyRuntime::enter_degraded(const std::string& reason) {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (state_ != ARTICORE_RUNNING) return;
+  state_ = ARTICORE_DEGRADED;
+  safety_reason_ = reason;
+  // This is deliberately not a motor fault. Existing targets continue at a
+  // conservative scale while the Runtime decides whether feedback recovers or
+  // a protective stop is required.
+  fault_reason_.clear();
+}
+
+bool SafetyRuntime::enter_safe_stop(const std::string& reason,
+                                    std::string& error) {
+  if (!prepare_protective_hold(error)) return false;
+  const auto now = Clock::now();
+  std::lock_guard<std::mutex> command_lock(command_mutex_);
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (state_ == ARTICORE_DISCONNECTED || state_ == ARTICORE_READY ||
+      state_ == ARTICORE_FAULT) {
+    error = "runtime state changed before safe stop";
+    return false;
+  }
+  state_ = ARTICORE_SAFE_STOP;
+  fault_latched_ = false;
+  fault_reason_.clear();
+  safety_reason_ = reason;
+  clear_pending_arm_mailbox();
+  arm_mailbox_ = ArmMailbox{};
+  gravity_control_.phase = ARTICORE_GRAVITY_INACTIVE;
+  gravity_control_.hold_positions.clear();
+  gravity_control_.status.active = 0;
+  gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
+  next_safe_hold_ = now;
+  consecutive_hold_failures_ = 0;
+  fault_hold_active_ = !safe_pv_.empty() || !safe_mit_.empty() ||
+                       !safe_grippers_.empty();
+  return fault_hold_active_;
 }
 
 void SafetyRuntime::submit_pos_vel(const ArticorePosVelCommand* commands,
@@ -477,7 +518,8 @@ bool SafetyRuntime::prepare_mit_torque_limited_commands(
     const std::vector<ArticoreMitCommand>& requested,
     std::vector<ArticoreMitCommand>& applied,
     ArticoreMitTorqueLimitStats& cycle_stats,
-    std::string& error) const {
+    std::string& error,
+    float torque_limit_scale) const {
   cycle_stats = {};
   cycle_stats.struct_size = sizeof(cycle_stats);
   std::fill(std::begin(cycle_stats.applied_scale),
@@ -548,7 +590,7 @@ bool SafetyRuntime::prepare_mit_torque_limited_commands(
           ": MIT resultant torque exceeds the native command range";
       return false;
     }
-    const float torque_limit = limits.torque_limit;
+    const float torque_limit = limits.torque_limit * torque_limit_scale;
     float scale = 1.0f;
     if (std::abs(requested_torque) > torque_limit) {
       scale = torque_limit / std::abs(requested_torque);
@@ -570,13 +612,16 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
   std::lock_guard<std::mutex> command_lock(command_mutex_);
   ArticoreControlMode mode;
   bool gravity_active = false;
+  bool degraded = false;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     if (hardware_transition_ ||
-        (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING)) {
+        (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING &&
+         state_ != ARTICORE_DEGRADED)) {
       return true;
     }
     mode = mode_;
+    degraded = state_ == ARTICORE_DEGRADED;
     gravity_active =
         gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE;
   }
@@ -598,11 +643,12 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
         ? arm_mailbox_.pv.size() : arm_mailbox_.mit.size();
     if (command_size != arm_mailbox_.final_positions.size() ||
         !finite(arm_mailbox_.max_reference_velocity) ||
-        arm_mailbox_.max_reference_velocity <= 0.0f) {
+        arm_mailbox_.max_reference_velocity < 0.0f) {
       throw std::runtime_error(
           "ordinary joint position state is internally inconsistent");
     }
-    const float max_delta = arm_mailbox_.max_reference_velocity /
+    const float command_scale = degraded ? 0.25f : 1.0f;
+    const float max_delta = arm_mailbox_.max_reference_velocity * command_scale /
                             static_cast<float>(config_.control_hz);
     if (mode == ARTICORE_MODE_PV) {
       for (std::size_t i = 0; i < arm_mailbox_.pv.size(); ++i) {
@@ -611,7 +657,9 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
             arm_mailbox_.final_positions[i] - command.target_position;
         command.target_position += std::clamp(
             error_to_target, -max_delta, max_delta);
-        command.velocity_limit = arm_mailbox_.max_reference_velocity;
+        command.velocity_limit = std::max(
+            config_.safe_pv_velocity_limit,
+            arm_mailbox_.max_reference_velocity);
       }
     } else {
       for (std::size_t i = 0; i < arm_mailbox_.mit.size(); ++i) {
@@ -627,12 +675,27 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
   }
 
   const auto* pv_data = arm_mailbox_.pv.data();
+  if (degraded && mode == ARTICORE_MODE_PV) {
+    degraded_pv_commands_ = arm_mailbox_.pv;
+    for (auto& command : degraded_pv_commands_) {
+      command.velocity_limit *= 0.25f;
+    }
+    pv_data = degraded_pv_commands_.data();
+  }
   ArticoreMitTorqueLimitStats torque_limit_cycle{};
   const auto* mit_data = arm_mailbox_.mit.data();
   if (mode == ARTICORE_MODE_MIT) {
+    const auto* requested = &arm_mailbox_.mit;
+    if (degraded) {
+      degraded_mit_commands_ = arm_mailbox_.mit;
+      for (auto& command : degraded_mit_commands_) {
+        command.target_velocity *= 0.25f;
+      }
+      requested = &degraded_mit_commands_;
+    }
     if (!prepare_mit_torque_limited_commands(
-            arm_mailbox_.mit, mit_torque_limited_commands_,
-            torque_limit_cycle, error)) {
+            *requested, mit_torque_limited_commands_,
+            torque_limit_cycle, error, degraded ? 0.25f : 1.0f)) {
       return false;
     }
     mit_data = mit_torque_limited_commands_.data();
@@ -706,7 +769,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     }
     if (mailbox_user_command) {
       has_successful_command_ = true;
-      state_ = ARTICORE_RUNNING;
+      if (state_ == ARTICORE_ENABLED) state_ = ARTICORE_RUNNING;
       if (mailbox_generation > arm_mailbox_.sent_generation) {
         arm_mailbox_.sent_generation = mailbox_generation;
         last_successful_command_ = now;

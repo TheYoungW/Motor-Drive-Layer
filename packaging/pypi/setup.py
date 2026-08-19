@@ -25,8 +25,13 @@ def _articore_platform_lib_name() -> str:
     return "libarticore_runtime.so"
 
 
+def _target_machine() -> str:
+    """Return the wheel target architecture for native or cross assembly."""
+    return os.getenv("MOTOR_WHEEL_ARCH", platform.machine()).strip().lower()
+
+
 def _dm_device_platform_sources() -> list[tuple[str, Path]]:
-    machine = platform.machine().lower()
+    machine = _target_machine()
     if sys.platform.startswith("linux"):
         if machine in {"x86_64", "amd64"}:
             return [
@@ -102,26 +107,31 @@ def _find_dm_device_paths() -> list[tuple[str, Path]]:
 def _find_dm_device_support_libraries() -> list[Path]:
     if not _bundle_dm_device_runtime():
         return []
-    machine = platform.machine().lower()
-    if not sys.platform.startswith("linux") or machine not in {"x86_64", "amd64"}:
+    machine = _target_machine()
+    if not sys.platform.startswith("linux") or machine not in {
+        "x86_64", "amd64", "aarch64", "arm64"
+    }:
         return []
     here = Path(__file__).resolve()
     repo_root = here.parents[2]
-    stdcxx_candidates = [
-        repo_root / "third_party" / "libstdcxx" / "linux" / "x86_64" / "libstdc++.so.6"
-    ]
-    stdcxx = next((path for path in stdcxx_candidates if path.exists()), None)
-    if stdcxx is None:
-        tried = "\n".join(f"- {path}" for path in stdcxx_candidates)
-        raise RuntimeError(
-            "The bundled Linux x86_64 DM_Device runtime requires its compatible "
-            f"libstdc++.so.6, but it was not found.\nTried:\n{tried}"
-        )
+    support: list[Path] = []
+    if machine in {"x86_64", "amd64"}:
+        stdcxx_candidates = [
+            repo_root / "third_party" / "libstdcxx" / "linux" / "x86_64" / "libstdc++.so.6"
+        ]
+        stdcxx = next((path for path in stdcxx_candidates if path.exists()), None)
+        if stdcxx is None:
+            tried = "\n".join(f"- {path}" for path in stdcxx_candidates)
+            raise RuntimeError(
+                "The bundled Linux x86_64 DM_Device runtime requires its compatible "
+                f"libstdc++.so.6, but it was not found.\nTried:\n{tried}"
+            )
+        support.append(stdcxx)
 
     private_libusb = os.getenv("MOTOR_PRIVATE_LIBUSB_LIB")
     if not private_libusb:
         raise RuntimeError(
-            "The bundled Linux x86_64 DM_Device v1.1 runtime requires private "
+            "The bundled Linux DM_Device v1.1 runtime requires private "
             "libusb 1.0.27 or newer. Build it with "
             "scripts/build_private_libusb.sh and set "
             "MOTOR_PRIVATE_LIBUSB_LIB=/path/to/libusb-1.0.so.0."
@@ -129,7 +139,8 @@ def _find_dm_device_support_libraries() -> list[Path]:
     libusb = Path(private_libusb).expanduser()
     if not libusb.exists():
         raise RuntimeError(f"MOTOR_PRIVATE_LIBUSB_LIB points to a missing file: {libusb}")
-    return [stdcxx, libusb]
+    support.append(libusb)
+    return support
 
 
 def _candidate_abi_paths() -> list[Path]:

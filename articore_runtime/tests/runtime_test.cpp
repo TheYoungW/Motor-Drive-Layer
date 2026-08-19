@@ -62,6 +62,11 @@ struct FakeDriver {
   uint32_t disable_calls[2]{};
   uint32_t enable_calls[2]{};
   uint32_t motor_enable_calls = 0;
+  uint32_t clear_fault_calls = 0;
+  uint32_t set_zero_calls = 0;
+  uint32_t configure_mode_calls = 0;
+  uint32_t configure_timeout_calls = 0;
+  void* fail_maintenance_motor = nullptr;
   uint32_t feedback_requests = 0;
   uint32_t feedback_stats_calls = 0;
   int32_t feedback_code = 0;
@@ -251,6 +256,41 @@ int32_t disable_motor(void* handle) {
   return 0;
 }
 
+int32_t clear_motor_error(void* handle) {
+  std::lock_guard<std::mutex> lock(g_driver->mutex);
+  if (handle == g_driver->fail_maintenance_motor) return -1;
+  ++g_driver->clear_fault_calls;
+  const auto found = g_driver->motors.find(handle);
+  if (found == g_driver->motors.end()) return -1;
+  found->second.status = 0;
+  return 0;
+}
+
+int32_t set_motor_zero(void* handle) {
+  std::lock_guard<std::mutex> lock(g_driver->mutex);
+  if (handle == g_driver->fail_maintenance_motor) return -1;
+  ++g_driver->set_zero_calls;
+  const auto found = g_driver->motors.find(handle);
+  if (found == g_driver->motors.end()) return -1;
+  found->second.position = 0.0f;
+  found->second.velocity = 0.0f;
+  return 0;
+}
+
+int32_t ensure_motor_mode(void* handle, uint32_t, uint32_t) {
+  std::lock_guard<std::mutex> lock(g_driver->mutex);
+  if (handle == g_driver->fail_maintenance_motor) return -1;
+  ++g_driver->configure_mode_calls;
+  return g_driver->motors.count(handle) ? 0 : -1;
+}
+
+int32_t set_motor_can_timeout(void* handle, uint32_t timeout_ms) {
+  std::lock_guard<std::mutex> lock(g_driver->mutex);
+  if (handle == g_driver->fail_maintenance_motor || timeout_ms != 500) return -1;
+  ++g_driver->configure_timeout_calls;
+  return g_driver->motors.count(handle) ? 0 : -1;
+}
+
 int32_t request_feedback(void* controller, uint32_t timeout_ms,
                          ArticoreFeedbackReport* report,
                          uint32_t* missing_ids, uint32_t missing_capacity) {
@@ -394,6 +434,13 @@ ArticoreMotorApi api() {
   return ArticoreMotorApi{send_pv, send_mit, disable_all, request_feedback,
                           get_state, get_feedback_stats, last_error,
                           get_transport_health, disable_motor};
+}
+
+ArticoreMotorMaintenanceApi maintenance_api() {
+  return ArticoreMotorMaintenanceApi{sizeof(ArticoreMotorMaintenanceApi),
+                                     clear_motor_error, set_motor_zero,
+                                     ensure_motor_mode,
+                                     set_motor_can_timeout, 500};
 }
 
 std::vector<ArticoreMotorDescriptor> descriptors(FakeDriver& driver) {
@@ -557,6 +604,148 @@ void test_connect_is_a_complete_feedback_barrier_and_ready_refreshes_cache() {
           "READY performs a bounded low-rate full-cache refresh");
 }
 
+void test_runtime_motor_power_supports_single_and_whole_product_queries() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, enable_all, enable_motor);
+  runtime.connect();
+
+  require(runtime.motor_power_state("") == ARTICORE_MOTOR_POWER_DISABLED &&
+              runtime.motor_power_state("left/joint1") ==
+                  ARTICORE_MOTOR_POWER_DISABLED,
+          "whole-product and single-motor power queries report disabled");
+  require(runtime.set_motor_power("left/joint1", true) ==
+              ARTICORE_MOTOR_POWER_ENABLED &&
+              runtime.health().state == ARTICORE_PARTIALLY_ENABLED &&
+              runtime.motor_power_state("") == ARTICORE_MOTOR_POWER_MIXED,
+          "single-motor enable is confirmed and enters PARTIALLY_ENABLED");
+
+  ArticorePosVelCommand commands[] = {
+      {motors[0].motor, 0.1f, 1.0f},
+      {motors[1].motor, 0.1f, 1.0f},
+  };
+  require_throws([&] { runtime.submit_pos_vel(commands, 2); },
+                 "not accepting motion commands",
+                 "normal control is rejected while partially enabled");
+
+  require(runtime.set_motor_power("left/joint1", false) ==
+              ARTICORE_MOTOR_POWER_DISABLED &&
+              runtime.health().state == ARTICORE_READY &&
+              runtime.motor_power_state("") == ARTICORE_MOTOR_POWER_DISABLED,
+          "single-motor disable is confirmed and restores READY");
+  require_throws([&] { runtime.set_motor_power("left/not-a-motor", true); },
+                 "unknown motor role",
+                 "unknown product motor selectors are rejected");
+
+  runtime.set_motor_power("left/joint1", true);
+  runtime.enable(ARTICORE_MODE_PV);
+  require(runtime.health().state == ARTICORE_ENABLED &&
+              runtime.motor_power_state("") == ARTICORE_MOTOR_POWER_ENABLED,
+          "whole-product enable can safely complete from PARTIALLY_ENABLED");
+  runtime.disable();
+  require(runtime.motor_power_state("") == ARTICORE_MOTOR_POWER_DISABLED,
+          "whole-product disable returns a confirmed disabled query result");
+}
+
+void test_runtime_maintenance_keeps_ready_and_reports_partial_failure() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {},
+      maintenance_api());
+  runtime.connect();
+
+  require(runtime.set_zero() == ARTICORE_OPERATION_OK,
+          "whole-runtime zero succeeds");
+  auto health = runtime.health_v2();
+  require(health.health.state == ARTICORE_READY &&
+              health.last_operation == ARTICORE_OPERATION_SET_ZERO &&
+              health.last_operation_code == ARTICORE_OPERATION_OK &&
+              health.operation_failed_motor_count == 0 &&
+              health.health.fault_reason[0] == '\0',
+          "successful zero remains READY and clears operation diagnostics");
+  require(driver.set_zero_calls == motors.size(),
+          "zero covers every installed arm and gripper motor");
+
+  require(runtime.configure_mode(ARTICORE_MODE_MIT) == ARTICORE_OPERATION_OK,
+          "Runtime-owned mode configuration succeeds");
+  require(driver.configure_mode_calls == motors.size(),
+          "mode configuration covers both channels");
+  require(driver.configure_timeout_calls == motors.size(),
+          "mode configuration also owns the product communication watchdog");
+  require(runtime.configure_mode(static_cast<ArticoreControlMode>(99)) ==
+              ARTICORE_OPERATION_INVALID_ARGUMENT &&
+              runtime.health_v2().last_operation_code ==
+                  ARTICORE_OPERATION_INVALID_ARGUMENT,
+          "invalid mode is reported without entering a hardware transaction");
+  require(runtime.clear_faults() == ARTICORE_OPERATION_OK,
+          "Runtime-owned fault clear succeeds");
+
+  runtime.record_operation_result(
+      ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_INVALID_ARGUMENT,
+      "joint 4 exceeds product position limits");
+  health = runtime.health_v2();
+  require(health.health.state == ARTICORE_READY &&
+              health.health.fault_reason[0] == '\0' &&
+              health.last_operation == ARTICORE_OPERATION_COMMAND &&
+              health.last_operation_code == ARTICORE_OPERATION_INVALID_ARGUMENT &&
+              std::string(health.last_operation_error).find("joint 4") !=
+                  std::string::npos,
+          "rejected product command is diagnostic without inventing a fault");
+  runtime.record_operation_result(
+      ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
+
+  runtime.estop("injected Runtime fault");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].status = 8;
+  }
+  require(runtime.clear_faults() == ARTICORE_OPERATION_OK,
+          "fault clear is available while a disabled Runtime is FAULT");
+  health = runtime.health_v2();
+  require(health.health.state == ARTICORE_READY &&
+              health.health.fault_reason[0] == '\0' &&
+              health.health.motor_fault_count == 0,
+          "successful fault clear removes the latch and returns READY");
+
+  driver.fail_maintenance_motor = motors[1].motor;
+  require(runtime.set_zero() == ARTICORE_OPERATION_MOTOR_COMMAND,
+          "partial zero returns a stable motor-command error");
+  health = runtime.health_v2();
+  require(health.health.state == ARTICORE_FAULT &&
+              health.last_operation_code == ARTICORE_OPERATION_MOTOR_COMMAND &&
+              health.operation_failed_motor_count == 1 &&
+              std::string(health.operation_failed_motors[0]) ==
+                  motors[1].name &&
+              health.health.fault_reason[0] != '\0',
+          "partial zero is never reported as success and is visible in health");
+}
+
+void test_disconnect_keeps_runtime_worker_and_resources_reconnectable() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {},
+      maintenance_api());
+  runtime.connect();
+  runtime.disconnect();
+  require(runtime.health().state == ARTICORE_DISCONNECTED,
+          "disconnect returns to DISCONNECTED without destroying Runtime");
+  runtime.connect();
+  require(runtime.health().state == ARTICORE_READY,
+          "the same Runtime worker and Motor ownership can reconnect");
+}
+
 void test_connect_failure_names_missing_installed_motor_and_can_id() {
   FakeDriver driver;
   g_driver = &driver;
@@ -679,8 +868,8 @@ void test_pv_watchdog_safe_hold_and_fault() {
     driver.motors[motors[0].motor].position = 0.2f;
     driver.motors[motors[1].motor].position = 0.8f;
   }
-  require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
-          "command timeout enters SAFE_HOLD");
+  require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_STOP; }),
+          "command timeout enters recoverable SAFE_STOP");
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
             return driver.last_pv.size() == 2 &&
@@ -738,8 +927,8 @@ void test_mit_hold_removes_motion_and_feedforward() {
     driver.motors[motors[0].motor].position = -0.1f;
     driver.motors[motors[1].motor].position = 0.7f;
   }
-  require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
-          "MIT watchdog enters SAFE_HOLD");
+  require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_STOP; }),
+          "MIT watchdog enters recoverable SAFE_STOP");
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
             return driver.last_arm_mit.size() == 2 &&
@@ -801,9 +990,9 @@ void test_safe_hold_rejects_stale_current_position() {
   const auto health = runtime.health();
   require(health.state == ARTICORE_FAULT,
           "stale current-position feedback faults instead of holding an old target");
-  require(std::string(health.fault_reason).find("current-position hold unavailable") !=
+  require(std::string(health.fault_reason).find("safe hold failed") !=
               std::string::npos,
-          "stale current-position fault explains why safe hold was rejected");
+          "confirmed protective-hold send failure remains diagnosable");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     require(driver.pv_sends == sends_before_failure,
@@ -835,8 +1024,11 @@ void test_gripper_hold_retreats_once_on_overload() {
     driver.motors[motors[2].motor].position = 1.5f;
     driver.motors[motors[2].motor].torque = 2.0f;
   }
-  require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
-          "gripper overload test reaches SAFE_HOLD");
+  require(wait_for([&] {
+            const auto state = runtime.health().state;
+            return state == ARTICORE_SAFE_HOLD || state == ARTICORE_SAFE_STOP;
+          }),
+          "gripper overload test reaches a protective hold state");
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
             return driver.last_mit.size() == 1 &&
@@ -1094,7 +1286,7 @@ void test_gripper_only_command_satisfies_enable_grace_without_masking_arm_watchd
   };
   runtime.submit_mit_ex(streaming, 2, ARTICORE_COMMAND_STREAMING);
   require(wait_for([&] {
-            return runtime.health().state == ARTICORE_SAFE_HOLD;
+            return runtime.health().state == ARTICORE_SAFE_STOP;
           }),
           "persistent gripper retransmission cannot mask an arm streaming timeout");
 }
@@ -1360,7 +1552,7 @@ void test_estop_can_disable_gripper_by_product_policy() {
           "disable-policy estop disables arms and gripper");
 }
 
-void test_missing_feedback_is_diagnostic_only() {
+void test_missing_feedback_degrades_then_safe_stops_and_resynchronizes() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
@@ -1379,10 +1571,29 @@ void test_missing_feedback_is_diagnostic_only() {
     driver.motors[motors[0].motor].has_feedback = false;
   }
   require(wait_for([&] {
-            return runtime.health().consecutive_feedback_failures >=
-                   cfg.feedback_failure_threshold;
+            return runtime.health().state == ARTICORE_DEGRADED;
           }),
-          "continuous missing feedback remains visible in diagnostics");
+          "sustained missing feedback enters DEGRADED");
+  {
+    const auto health = runtime.health_v2();
+    require(health.degraded == 1 && health.safe_stopped == 0 &&
+                health.requires_resynchronization == 1 &&
+                std::abs(health.command_scale - 0.25f) < 1e-6f &&
+                health.health.fault_reason[0] == '\0' &&
+                health.safety_reason[0] != '\0',
+            "DEGRADED is derated and is not reported as a motor fault");
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return std::any_of(
+                driver.pv_history.rbegin(), driver.pv_history.rend(),
+                [](const auto& batch) {
+                  return batch.size() == 2 &&
+                         std::abs(batch[0].velocity_limit - 0.25f) < 1e-6f &&
+                         std::abs(batch[1].velocity_limit - 0.25f) < 1e-6f;
+                });
+          }),
+          "DEGRADED scales PV velocity limits to 25 percent");
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
             return std::any_of(
@@ -1397,10 +1608,32 @@ void test_missing_feedback_is_diagnostic_only() {
     require(driver.disable_calls[0] == 0 && driver.disable_calls[1] == 0,
             "missing feedback does not automatically disable either side");
   }
-  const auto health = runtime.health();
-  require(health.state == ARTICORE_RUNNING && health.safe_holding == 0 &&
-              health.disable_confirmed == 0 && health.left_transport.healthy == 0,
-          "missing feedback leaves Runtime RUNNING and marks side health unhealthy");
+  require(wait_for([&] {
+            return runtime.health().state == ARTICORE_SAFE_STOP;
+          }),
+          "continued missing feedback enters SAFE_STOP");
+  const auto stopped = runtime.health_v2();
+  require(stopped.health.safe_holding == 1 &&
+              stopped.health.disable_confirmed == 0 &&
+              stopped.health.left_transport.healthy == 0 &&
+              stopped.health.fault_reason[0] == '\0' &&
+              stopped.safe_stopped == 1 && stopped.command_scale == 0.0f,
+          "SAFE_STOP holds without disabling or reporting motor FAULT");
+  require(runtime.motor_presence("left/joint1") == ARTICORE_PRESENT,
+          "feedback delay never relabels the physical motor as faulted");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].has_feedback = true;
+  }
+  require(wait_for([&] {
+            return runtime.health().consecutive_feedback_failures == 0;
+          }),
+          "feedback recovery is observed while remaining stopped");
+  require(runtime.health().state == ARTICORE_SAFE_STOP,
+          "feedback recovery never resumes an old trajectory automatically");
+  runtime.recover();
+  require(runtime.health().state == ARTICORE_ENABLED,
+          "explicit recover resynchronizes and waits for a new target");
   runtime.disable();
 }
 
@@ -2188,7 +2421,7 @@ void test_reported_feedback_failure_is_diagnostic_only() {
   runtime.disable();
 }
 
-void test_enable_grace_and_fault_latch() {
+void test_enable_grace_enters_safe_stop() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
@@ -2208,8 +2441,8 @@ void test_enable_grace_and_fault_latch() {
   }
   require(invalid_rejected && runtime.health().state == ARTICORE_ENABLED,
           "invalid command is rejected without refreshing the enable grace");
-  require(wait_for([&] { return runtime.health().state == ARTICORE_FAULT; }),
-          "missing first command faults after enable grace");
+  require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_STOP; }),
+          "missing first command safely stops after enable grace");
   ArticorePosVelCommand commands[] = {
       {motors[0].motor, 0.0f, 1.0f}, {motors[1].motor, 0.0f, 1.0f}};
   bool rejected = false;
@@ -2218,8 +2451,9 @@ void test_enable_grace_and_fault_latch() {
   } catch (const std::exception&) {
     rejected = true;
   }
-  require(rejected && runtime.health().state == ARTICORE_FAULT,
-          "ordinary command cannot clear latched FAULT");
+  require(rejected && runtime.health().state == ARTICORE_SAFE_STOP &&
+              runtime.health().fault_reason[0] == '\0',
+          "ordinary command cannot bypass SAFE_STOP or create a motor fault");
 }
 
 void test_atomic_enable_starts_hold_and_confirms_both_sides() {
@@ -2711,7 +2945,7 @@ void test_persistent_setpoints_outlive_watchdog_but_streaming_still_times_out() 
     }
 
     runtime.submit_mit_ex(persistent, 2, ARTICORE_COMMAND_STREAMING);
-    require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
+    require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_STOP; }),
             "explicit streaming MIT still times out when updates stop");
   }
 
@@ -2744,7 +2978,7 @@ void test_persistent_setpoints_outlive_watchdog_but_streaming_still_times_out() 
             "slow PV motion may outlive the command watchdog");
 
     runtime.submit_pos_vel_ex(persistent, 2, ARTICORE_COMMAND_STREAMING);
-    require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_HOLD; }),
+    require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_STOP; }),
             "explicit streaming PV still times out when updates stop");
   }
 }
@@ -2881,6 +3115,54 @@ void test_ordinary_mit_position_uses_constant_reference_speed() {
     require(moving_cycles >= 399 && moving_cycles <= 401,
             "1 rad at 1 rad/s takes approximately 400 native 400 Hz cycles");
   }
+}
+
+void test_ordinary_speed_percent_scales_and_zero_pauses() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100),
+      g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  ArticoreJointPvTarget targets[] = {
+      {sizeof(ArticoreJointPvTarget), motors[0].motor, 1.0f},
+      {sizeof(ArticoreJointPvTarget), motors[1].motor, 2.0f},
+  };
+
+  runtime.set_joint_pv_speed(targets, 2, 0.0f);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_pv.size() == 2;
+          }),
+          "zero ordinary speed still transmits a safe current-position hold");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(std::abs(driver.last_pv[0].target_position) < 1e-6f &&
+                std::abs(driver.last_pv[1].target_position - 1.0f) < 1e-6f,
+            "zero ordinary speed pauses reference advancement");
+  }
+
+  runtime.set_joint_pv_speed(targets, 2, 50.0f);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_pv.size() == 2 &&
+                   driver.last_pv[0].target_position > 0.0f &&
+                   std::abs(driver.last_pv[0].velocity_limit - 2.5f) < 1e-6f;
+          }),
+          "fifty percent maps to half the shared physical velocity limit");
+
+  bool invalid_rejected = false;
+  try {
+    runtime.set_joint_pv_speed(targets, 2, 100.1f);
+  } catch (const std::invalid_argument&) {
+    invalid_rejected = true;
+  }
+  require(invalid_rejected, "ordinary speed above 100 is rejected natively");
 }
 
 void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
@@ -3362,6 +3644,9 @@ int main() {
     current_test = #test; \
     test()
     RUN_TEST(test_connect_is_a_complete_feedback_barrier_and_ready_refreshes_cache);
+    RUN_TEST(test_runtime_motor_power_supports_single_and_whole_product_queries);
+    RUN_TEST(test_runtime_maintenance_keeps_ready_and_reports_partial_failure);
+    RUN_TEST(test_disconnect_keeps_runtime_worker_and_resources_reconnectable);
     RUN_TEST(test_connect_failure_names_missing_installed_motor_and_can_id);
     RUN_TEST(test_connect_report_classifies_zero_feedback_and_transport_failures);
     RUN_TEST(test_pv_watchdog_safe_hold_and_fault);
@@ -3378,7 +3663,7 @@ int main() {
     RUN_TEST(test_legacy_three_level_gripper_profiles_expand_to_ten_levels);
     RUN_TEST(test_estop_obeys_configured_gripper_hold_policy);
     RUN_TEST(test_estop_can_disable_gripper_by_product_policy);
-    RUN_TEST(test_missing_feedback_is_diagnostic_only);
+    RUN_TEST(test_missing_feedback_degrades_then_safe_stops_and_resynchronizes);
     RUN_TEST(test_single_gripper_feedback_miss_reuses_current_output);
     RUN_TEST(test_feedback_measurements_do_not_reuse_command_limits);
     RUN_TEST(test_feedback_seed_ignores_command_limits);
@@ -3397,7 +3682,7 @@ int main() {
     RUN_TEST(test_close_refuses_to_disconnect_after_unconfirmed_disable);
     RUN_TEST(test_transport_disconnect_holds_the_connected_side);
     RUN_TEST(test_reported_feedback_failure_is_diagnostic_only);
-    RUN_TEST(test_enable_grace_and_fault_latch);
+    RUN_TEST(test_enable_grace_enters_safe_stop);
     RUN_TEST(test_atomic_enable_starts_hold_and_confirms_both_sides);
     RUN_TEST(test_atomic_enable_retries_one_disabled_motor_once);
     RUN_TEST(test_gripper_control_waits_for_atomic_enable_confirmation);
@@ -3413,6 +3698,7 @@ int main() {
     RUN_TEST(test_persistent_setpoints_outlive_watchdog_but_streaming_still_times_out);
     RUN_TEST(test_persistent_mit_rejects_unbounded_motion_terms);
     RUN_TEST(test_ordinary_mit_position_uses_constant_reference_speed);
+    RUN_TEST(test_ordinary_speed_percent_scales_and_zero_pauses);
     RUN_TEST(test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct);
     RUN_TEST(test_ordinary_mit_position_reversal_and_speed_update_are_continuous);
     RUN_TEST(test_raw_mit_targets_remain_direct_after_ordinary_position_control);

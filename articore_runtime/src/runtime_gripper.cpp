@@ -512,6 +512,11 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
     std::string& error) {
   commands.clear();
   commands.reserve(motors_.size());
+  float command_scale = 1.0f;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    if (state_ == ARTICORE_DEGRADED) command_scale = 0.25f;
+  }
   for (auto& motor : motors_) {
     if (!motor.descriptor.is_gripper || !motor.has_gripper_target) continue;
     ArticoreFeedbackStats stats{};
@@ -521,16 +526,9 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
         api_.motor_get_state(motor.descriptor.motor, &state) != 0 ||
         !state.has_value) {
       ++motor.consecutive_feedback_failures;
-      if (motor.consecutive_feedback_failures >=
-          config_.feedback_failure_threshold) {
-        motor.gripper_state = ARTICORE_GRIPPER_FAULT;
-        motor.gripper_fault_reason =
-            motor_error("gripper feedback unavailable");
-        mark_motor_faulted(motor.descriptor.motor);
-        error = std::string(motor.descriptor.name) + ": " +
-                motor.gripper_fault_reason;
-        return false;
-      }
+      // Missing feedback follows the Runtime-wide graded policy. Keep the
+      // last safe output here; the feedback monitor decides DEGRADED versus
+      // SAFE_STOP. Only an explicit motor status code below is a gripper fault.
       {
         std::lock_guard<std::mutex> state_lock(state_mutex_);
         const auto previous = std::find_if(
@@ -538,7 +536,19 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
             [&](const ArticoreMitCommand& command) {
               return command.motor == motor.descriptor.motor;
             });
-        if (previous != safe_grippers_.end()) commands.push_back(*previous);
+        if (previous != safe_grippers_.end()) {
+          auto degraded_hold = *previous;
+          if (command_scale < 1.0f) {
+            const auto& force = active_gripper_profile(motor);
+            degraded_hold.stiffness = std::min(
+                degraded_hold.stiffness,
+                std::max(force.moving_kp, force.hold_kp) * command_scale);
+            degraded_hold.damping = std::min(
+                degraded_hold.damping,
+                std::max(force.moving_kd, force.hold_kd) * command_scale);
+          }
+          commands.push_back(degraded_hold);
+        }
       }
       continue;
     }
@@ -621,7 +631,7 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
       const bool closing =
           (motor.requested_position - state.pos) *
               descriptor.closing_direction > 1e-6f;
-      const auto step = motor.command_speed * dt.count();
+      const auto step = motor.command_speed * command_scale * dt.count();
       const auto delta = motor.requested_position - motor.command_position;
       motor.command_position += std::copysign(
           std::min(std::abs(delta), step), delta);
@@ -682,8 +692,8 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
         motor.gripper_state == ARTICORE_GRIPPER_OVERLOAD_RETREAT;
     commands.push_back(ArticoreMitCommand{
         descriptor.motor, motor.command_position, 0.0f,
-        low_gain ? force.hold_kp : force.moving_kp,
-        low_gain ? force.hold_kd : force.moving_kd, 0.0f});
+        (low_gain ? force.hold_kp : force.moving_kp) * command_scale,
+        (low_gain ? force.hold_kd : force.moving_kd) * command_scale, 0.0f});
   }
   return true;
 }
@@ -710,7 +720,8 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     if (hardware_transition_ ||
-        (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING)) {
+        (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING &&
+         state_ != ARTICORE_DEGRADED)) {
       return true;
     }
   }

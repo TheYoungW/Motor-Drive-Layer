@@ -29,8 +29,10 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
                              ArticoreControllerCallFn motor_enable,
                              bool require_gripper_product_profiles,
                              std::vector<ArticoreRuntimeTransportCapabilities>
-                                 transport_capabilities)
-    : config_(config), api_(api), controller_group_(controller_group),
+                                 transport_capabilities,
+                             ArticoreMotorMaintenanceApi maintenance_api)
+    : config_(config), api_(api), maintenance_api_(maintenance_api),
+      controller_group_(controller_group),
       controller_enable_all_(controller_enable_all), motor_enable_(motor_enable),
       require_gripper_product_profiles_(require_gripper_product_profiles) {
   controllers_[0] = left_controller;
@@ -128,6 +130,8 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
       motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
         return motor.descriptor.is_gripper == 0;
       })));
+  degraded_pv_commands_.reserve(mit_torque_limited_commands_.capacity());
+  degraded_mit_commands_.reserve(mit_torque_limited_commands_.capacity());
   const bool has_gripper = std::any_of(
       motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
         return motor.descriptor.is_gripper != 0;
@@ -386,6 +390,7 @@ void SafetyRuntime::connect() {
     fault_latched_ = false;
     disable_confirmed_ = true;
     fault_reason_.clear();
+    safety_reason_.clear();
     motor_faults_.clear();
     unconfirmed_disable_.clear();
     hardware_transition_ = false;
@@ -439,6 +444,11 @@ ArticorePresenceState SafetyRuntime::motor_presence(
   return found->second;
 }
 
+ArticoreControlMode SafetyRuntime::control_mode() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return mode_;
+}
+
 uint64_t SafetyRuntime::active_capabilities() const {
   std::lock_guard<std::mutex> lock(state_mutex_);
   uint64_t capabilities = 0;
@@ -490,6 +500,7 @@ void SafetyRuntime::stop_worker() {
   if (worker_.joinable()) worker_.join();
   std::lock_guard<std::mutex> lock(state_mutex_);
   state_ = ARTICORE_DISCONNECTED;
+  safety_reason_.clear();
   for (auto& side : sides_) {
     side.connected = false;
     side.healthy = false;
@@ -507,11 +518,51 @@ void SafetyRuntime::close() {
     } else {
       needs_disable = !disable_confirmed_ || state_ == ARTICORE_ENABLED ||
                       state_ == ARTICORE_RUNNING ||
-                      state_ == ARTICORE_SAFE_HOLD;
+                      state_ == ARTICORE_DEGRADED ||
+                      state_ == ARTICORE_SAFE_HOLD ||
+                      state_ == ARTICORE_SAFE_STOP ||
+                      state_ == ARTICORE_PARTIALLY_ENABLED;
     }
   }
   if (needs_disable) disable();
   stop_worker();
+}
+
+void SafetyRuntime::disconnect() {
+  std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+  bool needs_disable = false;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (stopping_) {
+      throw std::runtime_error("cannot disconnect a closed runtime");
+    }
+    if (state_ == ARTICORE_DISCONNECTED) return;
+    needs_disable = !disable_confirmed_ || state_ == ARTICORE_ENABLED ||
+                    state_ == ARTICORE_RUNNING ||
+                    state_ == ARTICORE_DEGRADED ||
+                    state_ == ARTICORE_SAFE_HOLD ||
+                    state_ == ARTICORE_SAFE_STOP ||
+                    state_ == ARTICORE_PARTIALLY_ENABLED;
+  }
+  if (needs_disable) disable();
+  {
+    std::lock_guard<std::mutex> command_lock(command_mutex_);
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    clear_pending_arm_mailbox();
+    arm_mailbox_ = ArmMailbox{};
+    gravity_control_.phase = ARTICORE_GRAVITY_INACTIVE;
+    gravity_control_.status.active = 0;
+    gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
+    state_ = ARTICORE_DISCONNECTED;
+    safety_reason_.clear();
+    disable_confirmed_ = true;
+    hardware_transition_ = false;
+    for (auto& side : sides_) {
+      side.connected = false;
+      side.healthy = false;
+    }
+  }
+  wakeup_.notify_all();
 }
 
 }  // namespace articore

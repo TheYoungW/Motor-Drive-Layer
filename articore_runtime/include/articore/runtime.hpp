@@ -306,6 +306,28 @@ class Runtime final {
     return report;
   }
 
+  ArticoreMotorPowerState set_motor_power(const std::string& motor_name,
+                                           bool enabled) {
+    int32_t state = ARTICORE_MOTOR_POWER_UNKNOWN;
+    detail::check(articore_runtime_set_motor_power(
+                      checked(), motor_name.empty() ? nullptr
+                                                    : motor_name.c_str(),
+                      enabled ? 1 : 0, &state),
+                  enabled ? "enable motor" : "disable motor");
+    return static_cast<ArticoreMotorPowerState>(state);
+  }
+
+  ArticoreMotorPowerState motor_power_state(
+      const std::string& motor_name = {}) const {
+    int32_t state = ARTICORE_MOTOR_POWER_UNKNOWN;
+    detail::check(articore_runtime_get_motor_power(
+                      checked(), motor_name.empty() ? nullptr
+                                                    : motor_name.c_str(),
+                      &state),
+                  "get motor power");
+    return static_cast<ArticoreMotorPowerState>(state);
+  }
+
   ArticoreEnableReport last_enable_report() const {
     ArticoreEnableReport report{};
     report.struct_size = sizeof(report);

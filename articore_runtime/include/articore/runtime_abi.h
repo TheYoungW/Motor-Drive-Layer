@@ -88,6 +88,47 @@ enum ArticoreRuntimeCapability {
   // It exclusively owns arm MIT output while active and provides a manual
   // hand-guiding mode with zero stiffness and product gravity feedforward.
   ARTICORE_CAP_NATIVE_GRAVITY_COMPENSATION = 1ULL << 30,
+  // ABI 2.9 adds owner-safe whole-runtime mode configuration, fault clear,
+  // and product-profile zeroing transactions. They reuse the Runtime's
+  // existing Motor lease and publish one unified operation result in health.
+  ARTICORE_CAP_RUNTIME_MAINTENANCE = 1ULL << 31,
+  // ABI 2.9 can construct the complete yunyi_v1_0 dual-arm product, including
+  // transports, controllers, group, motors, mappings, and their lifetimes.
+  ARTICORE_CAP_PRODUCT_RUNTIME_FACTORY = 1ULL << 32,
+  ARTICORE_CAP_UNIFIED_OPERATION_HEALTH = 1ULL << 33,
+  // ABI 2.10 exposes fixed-layout whole-product command frames. Callers no
+  // longer resolve or pass Motor handles for normal dual-arm control.
+  ARTICORE_CAP_PRODUCT_COMMAND_FRAMES = 1ULL << 34,
+  // ABI 2.10 exposes one coherent logical-coordinate product state and a
+  // reconnectable disconnect operation while the Runtime object remains alive.
+  ARTICORE_CAP_PRODUCT_STATE = 1ULL << 35,
+  // ABI 2.11 lets a built-in product Runtime select its installed gripper
+  // topology at creation. A gripperless product owns only the 14 arm Motors;
+  // whole-product gripper commands are then successful no-ops.
+  ARTICORE_CAP_OPTIONAL_PRODUCT_GRIPPERS = 1ULL << 36,
+  // ABI 2.12 separates communication quality from confirmed hardware faults.
+  // Brief feedback jitter is tolerated, sustained delay is derated, and a
+  // longer outage enters a recoverable position-holding SAFE_STOP. FAULT is
+  // reserved for confirmed motor/transport faults and never changes a motor's
+  // protocol mode by itself.
+  ARTICORE_CAP_GRADED_FEEDBACK_SAFETY = 1ULL << 37,
+  // ABI 2.13 expresses the ordinary MIT/PV position-control pace as an
+  // intuitive 0..100 product percentage. Raw MIT/PV frames keep physical
+  // velocity units.
+  ARTICORE_CAP_NORMALIZED_ORDINARY_SPEED = 1ULL << 38,
+  // ABI 2.14 adds Runtime-owned whole-product and single-motor power control.
+  // Every operation confirms the resulting state from fresh feedback; a
+  // Runtime with only some motors enabled is explicitly non-commandable.
+  ARTICORE_CAP_RUNTIME_MOTOR_POWER = 1ULL << 39,
+  // ABI 2.15 exposes a coherent product-arm flange pose computed in C++ from
+  // the latest native feedback cache. No Python-side URDF/FK is involved.
+  ARTICORE_CAP_PRODUCT_POSE = 1ULL << 40,
+};
+
+enum {
+  ARTICORE_PRODUCT_ARM_DOF = 7,
+  ARTICORE_PRODUCT_DUAL_ARM_DOF = 14,
+  ARTICORE_PRODUCT_POSE_DOF = 6,
 };
 
 enum ArticoreRobotSide {
@@ -176,11 +217,49 @@ enum ArticoreSafetyState {
   ARTICORE_RUNNING = 3,
   ARTICORE_SAFE_HOLD = 4,
   ARTICORE_FAULT = 5,
+  ARTICORE_DEGRADED = 6,
+  ARTICORE_SAFE_STOP = 7,
+  ARTICORE_PARTIALLY_ENABLED = 8,
+};
+
+enum ArticoreMotorPowerState {
+  ARTICORE_MOTOR_POWER_UNKNOWN = 0,
+  ARTICORE_MOTOR_POWER_DISABLED = 1,
+  ARTICORE_MOTOR_POWER_ENABLED = 2,
+  // Returned only for a whole-product query.
+  ARTICORE_MOTOR_POWER_MIXED = 3,
 };
 
 enum ArticoreControlMode {
   ARTICORE_MODE_PV = 1,
   ARTICORE_MODE_MIT = 2,
+};
+
+enum ArticoreRuntimeOperation {
+  ARTICORE_OPERATION_NONE = 0,
+  ARTICORE_OPERATION_CONNECT = 1,
+  ARTICORE_OPERATION_ENABLE = 2,
+  ARTICORE_OPERATION_DISABLE = 3,
+  ARTICORE_OPERATION_CONFIGURE_MODE = 4,
+  ARTICORE_OPERATION_CLEAR_FAULTS = 5,
+  ARTICORE_OPERATION_SET_ZERO = 6,
+  ARTICORE_OPERATION_CLOSE = 7,
+  ARTICORE_OPERATION_DISCONNECT = 8,
+  ARTICORE_OPERATION_COMMAND = 9,
+};
+
+// Stable result codes returned by the ABI 2.9 maintenance entry points.
+enum ArticoreOperationError {
+  ARTICORE_OPERATION_OK = 0,
+  ARTICORE_OPERATION_INVALID_ARGUMENT = 1,
+  ARTICORE_OPERATION_INVALID_STATE = 2,
+  ARTICORE_OPERATION_TRANSPORT = 3,
+  ARTICORE_OPERATION_FEEDBACK = 4,
+  ARTICORE_OPERATION_NOT_DISABLED = 5,
+  ARTICORE_OPERATION_NOT_STATIONARY = 6,
+  ARTICORE_OPERATION_MOTOR_COMMAND = 7,
+  ARTICORE_OPERATION_VERIFICATION = 8,
+  ARTICORE_OPERATION_UNSUPPORTED = 9,
 };
 
 enum ArticoreGravityCompensationPhase {
@@ -279,6 +358,44 @@ typedef struct ArticoreMitCommand {
   float damping;
   float feedforward_torque;
 } ArticoreMitCommand;
+
+typedef struct ArticoreProductArmState {
+  float positions[ARTICORE_PRODUCT_ARM_DOF];
+  float velocities[ARTICORE_PRODUCT_ARM_DOF];
+  float torques[ARTICORE_PRODUCT_ARM_DOF];
+} ArticoreProductArmState;
+
+typedef struct ArticoreProductState {
+  // Caller initializes this to sizeof(ArticoreProductState).
+  uint32_t struct_size;
+  int32_t has_grippers;
+  ArticoreProductArmState left;
+  ArticoreProductArmState right;
+  int32_t left_gripper_available;
+  int32_t right_gripper_available;
+  float left_gripper_opening;
+  float right_gripper_opening;
+  int32_t left_gripper_level;
+  int32_t right_gripper_level;
+  // CLOCK_MONOTONIC-compatible timestamp of the oldest feedback represented
+  // by this complete snapshot. sequence advances with the slowest installed
+  // Motor, so it cannot hide one frozen side behind updates from the other.
+  uint64_t timestamp_ns;
+  uint64_t sequence;
+} ArticoreProductState;
+
+typedef struct ArticoreProductPose {
+  // Caller initializes this to sizeof(ArticoreProductPose).
+  uint32_t struct_size;
+  uint32_t side;
+  // [x, y, z, roll, pitch, yaw], using metres and radians. RPY follows the
+  // conventional Rz(yaw) * Ry(pitch) * Rx(roll) decomposition.
+  float values[ARTICORE_PRODUCT_POSE_DOF];
+  // Timestamp and sequence describe the oldest joint feedback used by this
+  // coherent seven-joint pose sample.
+  uint64_t timestamp_ns;
+  uint64_t sequence;
+} ArticoreProductPose;
 
 typedef struct ArticoreJointMitTarget {
   // Caller initializes this to sizeof(ArticoreJointMitTarget).
@@ -513,6 +630,8 @@ typedef int32_t (*ArticoreMotorGetFeedbackStatsFn)(void*, ArticoreFeedbackStats*
 typedef int32_t (*ArticoreControllerTransportHealthFn)(
     void*, ArticoreDriverTransportHealth*);
 typedef const char* (*ArticoreLastErrorFn)(void);
+typedef int32_t (*ArticoreMotorEnsureModeFn)(void*, uint32_t, uint32_t);
+typedef int32_t (*ArticoreMotorSetCanTimeoutFn)(void*, uint32_t);
 
 typedef struct ArticoreMotorApi {
   ArticoreGroupSendPosVelFn group_send_pos_vel;
@@ -525,6 +644,16 @@ typedef struct ArticoreMotorApi {
   ArticoreControllerTransportHealthFn controller_get_transport_health;
   ArticoreControllerCallFn motor_disable;
 } ArticoreMotorApi;
+
+typedef struct ArticoreMotorMaintenanceApi {
+  // Caller initializes this to sizeof(ArticoreMotorMaintenanceApi).
+  uint32_t struct_size;
+  ArticoreControllerCallFn motor_clear_error;
+  ArticoreControllerCallFn motor_set_zero_position;
+  ArticoreMotorEnsureModeFn motor_ensure_mode;
+  ArticoreMotorSetCanTimeoutFn motor_set_can_timeout_ms;
+  uint32_t communication_timeout_ms;
+} ArticoreMotorMaintenanceApi;
 
 typedef struct ArticoreRuntimeTransportCapabilities {
   // Caller initializes this to sizeof(ArticoreRuntimeTransportCapabilities).
@@ -631,6 +760,30 @@ typedef struct ArticoreSafetyHealth {
   char fault_reason[512];
 } ArticoreSafetyHealth;
 
+typedef struct ArticoreSafetyHealthV2 {
+  // Caller initializes this to sizeof(ArticoreSafetyHealthV2). The embedded
+  // ABI 1.x health layout remains byte-for-byte stable for legacy callers.
+  uint32_t struct_size;
+  ArticoreSafetyHealth health;
+  // One generic diagnostic surface for every Runtime lifecycle or maintenance
+  // operation. Native code may retain richer private transaction data, but
+  // language SDKs should expose these fields instead of adding per-operation
+  // report APIs.
+  int32_t last_operation;
+  int32_t last_operation_code;
+  uint32_t operation_failed_motor_count;
+  char operation_failed_motors[32][64];
+  char last_operation_error[512];
+  // ABI 2.12 graded-safety diagnostics. fault_reason remains reserved for a
+  // confirmed ARTICORE_FAULT; transient communication quality is described
+  // here instead.
+  int32_t degraded;
+  int32_t safe_stopped;
+  int32_t requires_resynchronization;
+  float command_scale;
+  char safety_reason[512];
+} ArticoreSafetyHealthV2;
+
 typedef struct ArticoreMitTorqueLimitStats {
   // Caller initializes this to sizeof(ArticoreMitTorqueLimitStats).
   uint32_t struct_size;
@@ -699,6 +852,8 @@ ARTICORE_RUNTIME_API int32_t articore_robot_model_ik(
 // its transport-specific verified limit.
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_hz(
     ArticoreRuntime* runtime, uint32_t* control_hz);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_mode(
+    ArticoreRuntime* runtime, int32_t* mode);
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
     const ArticoreRuntimeConfig* config,
@@ -736,6 +891,29 @@ ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex2(
     ArticoreControllerCallFn motor_enable,
     const ArticoreRuntimeTransportCapabilities* transport_capabilities,
     uint32_t transport_capability_count);
+// ABI 2.9 advanced embedding entry point. It keeps the legacy caller-owned
+// resource construction path but lets the Runtime execute maintenance through
+// the same already-leased Motor handles.
+ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex3(
+    const ArticoreRuntimeConfig* config,
+    const ArticoreMotorApi* motor_api,
+    const ArticoreMotorMaintenanceApi* maintenance_api,
+    void* controller_group,
+    void* left_controller,
+    void* right_controller,
+    const ArticoreMotorDescriptor* motors,
+    uint32_t motor_count,
+    ArticoreControllerCallFn controller_enable_all,
+    ArticoreControllerCallFn motor_enable,
+    const ArticoreRuntimeTransportCapabilities* transport_capabilities,
+    uint32_t transport_capability_count);
+// Creates the complete built-in product. yunyi_v1_0 owns can-left/can-right,
+// SocketCAN-FD+BRS, both Controllers, the ControllerGroup, and every product
+// mapping. with_grippers=1 creates 16 Motors and requires both grippers;
+// with_grippers=0 creates only the 14 arm Motors. The returned Runtime starts
+// DISCONNECTED; connect() performs the normal complete feedback barrier.
+ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_product(
+    const char* product_id, int32_t mode, int32_t with_grippers);
 ARTICORE_RUNTIME_API void articore_runtime_free(ArticoreRuntime* runtime);
 
 // Configures the immutable CAN identity of every Runtime motor. The complete
@@ -747,6 +925,47 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_configure_motor_identities(
     const ArticoreMotorIdentity* identities,
     uint32_t identity_count);
 ARTICORE_RUNTIME_API int32_t articore_runtime_connect(ArticoreRuntime* runtime);
+// Disconnects the product and returns to DISCONNECTED without destroying the
+// Runtime, its Motor lease, ControllerGroup, transports, or worker thread.
+ARTICORE_RUNTIME_API int32_t articore_runtime_disconnect(
+    ArticoreRuntime* runtime);
+ARTICORE_RUNTIME_API int32_t articore_runtime_configure_mode(
+    ArticoreRuntime* runtime, int32_t mode);
+ARTICORE_RUNTIME_API int32_t articore_runtime_clear_faults(
+    ArticoreRuntime* runtime);
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(
+    ArticoreRuntime* runtime);
+// ABI 2.10 whole-product logical-coordinate APIs. All arrays use fixed product
+// order: left joint1..7, then right joint1..7. Direction conversion, product
+// limits, Motor mapping, and per-Motor command construction remain native.
+// speed_percent is inclusive 0..100. 0 pauses reference advancement and 100
+// selects the product's maximum ordinary speed for the active control mode.
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions(
+    ArticoreRuntime* runtime, const float* positions, uint32_t count,
+    float speed_percent);
+ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
+    ArticoreRuntime* runtime, const float* positions,
+    const float* velocities, const float* feedforward_torques,
+    const float* kp, const float* kd, uint32_t count);
+ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pv_frame(
+    ArticoreRuntime* runtime, const float* positions,
+    const float* velocity_limits, uint32_t count);
+// Whole-product gripper command. Openings use 0=closed and 1000=open and are
+// clamped when finite. gripper_level is the built-in 1..5 product force scale;
+// its mapping to the private calibration profile is fixed by the product.
+// For a Runtime created without grippers, valid commands return success without
+// sending traffic or changing safety state.
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_grippers(
+    ArticoreRuntime* runtime, float left_opening, float right_opening,
+    int32_t gripper_level);
+ARTICORE_RUNTIME_API int32_t articore_runtime_has_grippers(
+    ArticoreRuntime* runtime, int32_t* has_grippers);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_state(
+    ArticoreRuntime* runtime, ArticoreProductState* state);
+// Computes one arm's flange pose from the latest complete native feedback
+// cache. This call performs no CAN I/O and is suitable for high-rate reads.
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_pose(
+    ArticoreRuntime* runtime, uint32_t side, ArticoreProductPose* pose);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_last_connect_report(
     ArticoreRuntime* runtime, ArticoreConnectReport* report);
 // With ARTICORE_CAP_ATOMIC_ENABLE this owns the complete native transaction:
@@ -755,6 +974,16 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_last_connect_report(
 // disable rollback on every failure. SDKs must not enable motors beforehand.
 ARTICORE_RUNTIME_API int32_t articore_runtime_enable(
     ArticoreRuntime* runtime, int32_t mode);
+// ABI 2.14 Runtime-owned motor power API. motor_name accepts a stable product
+// role such as "left/joint1" or "right/gripper". A null or empty name selects
+// the complete product. Single-motor writes are valid only in READY or
+// PARTIALLY_ENABLED; normal control is rejected while partially enabled.
+// confirmed_state is optional for writes and required for queries.
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_motor_power(
+    ArticoreRuntime* runtime, const char* motor_name, int32_t enabled,
+    int32_t* confirmed_state);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_motor_power(
+    ArticoreRuntime* runtime, const char* motor_name, int32_t* state);
 // Returns the stable result of the most recent native enable transaction.
 // This remains available after enable fails and rolls every motor back to the
 // disabled state.
@@ -818,18 +1047,18 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_ex(
     uint32_t command_count,
     int32_t lifetime);
 // ABI 1.13 ordinary PV position setting. Semantics match set_joint_mit(): one
-// complete arm batch, one shared rad/s reference speed, capacity-one latest
+// complete arm batch, one shared 0..100 speed percentage, capacity-one latest
 // value replacement, and feedback initialization only for the first ordinary
 // PV command after enable/reconnect/recover. The generated PV position advances
-// by at most max_reference_velocity/control_hz per native cycle.
+// by the corresponding scaled product reference step per native cycle.
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
     ArticoreRuntime* runtime,
     const ArticoreJointPvTarget* targets,
     uint32_t target_count,
-    float max_reference_velocity);
+    float speed_percent);
 // ABI 1.12 ordinary MIT position setting. The target array must contain every
-// active arm joint in one atomic batch. max_reference_velocity is one shared
-// positive rad/s limit used only to advance q; transmitted dq and tau are zero
+// active arm joint in one atomic batch. speed_percent is one shared inclusive
+// 0..100 pace used only to advance q; transmitted dq and tau are zero
 // and kp/kd come from the configured product joint parameters. The Runtime
 // keeps transmitting the final position until an explicit control transaction
 // replaces it. Raw submit_mit[_ex]() remains unmodified and un-ramped.
@@ -837,7 +1066,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
     ArticoreRuntime* runtime,
     const ArticoreJointMitTarget* targets,
     uint32_t target_count,
-    float max_reference_velocity);
+    float speed_percent);
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_gripper_mit(
     ArticoreRuntime* runtime,
     const ArticoreMitCommand* commands,
@@ -887,6 +1116,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_estop(
 ARTICORE_RUNTIME_API int32_t articore_runtime_recover(ArticoreRuntime* runtime);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_health(
     ArticoreRuntime* runtime, ArticoreSafetyHealth* health);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_health_v2(
+    ArticoreRuntime* runtime, ArticoreSafetyHealthV2* health);
 // Returns the cumulative activation counter and the latest successfully sent
 // MIT arm cycle. Statistics are updated for both newly consumed mailbox
 // targets and native cycles that repeat the previous target.

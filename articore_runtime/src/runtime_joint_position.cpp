@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -55,14 +56,53 @@ void SafetyRuntime::set_joint_pv(
       max_reference_velocity);
 }
 
+float SafetyRuntime::ordinary_velocity_from_percent(
+    ArticoreControlMode mode, float speed_percent) const {
+  if (!finite(speed_percent) || speed_percent < 0.0f ||
+      speed_percent > 100.0f) {
+    throw std::invalid_argument(
+        "ordinary speed must be finite and within 0..100");
+  }
+  if (joint_configs_.empty()) {
+    throw std::runtime_error(
+        "ordinary speed scaling requires joint velocity configuration");
+  }
+  float maximum = std::numeric_limits<float>::infinity();
+  for (const auto& [motor, limits] : joint_configs_) {
+    (void)motor;
+    maximum = std::min(maximum, limits.velocity_limit);
+  }
+  if (mode == ARTICORE_MODE_MIT) {
+    constexpr float kMitMaximumRadiansPerSecond = 3.4906585f;
+    maximum = std::min(maximum, kMitMaximumRadiansPerSecond);
+  }
+  return maximum * speed_percent / 100.0f;
+}
+
+void SafetyRuntime::set_joint_mit_speed(
+    const ArticoreJointMitTarget* targets, uint32_t count,
+    float speed_percent) {
+  set_joint_mit(targets, count,
+                ordinary_velocity_from_percent(
+                    ARTICORE_MODE_MIT, speed_percent));
+}
+
+void SafetyRuntime::set_joint_pv_speed(
+    const ArticoreJointPvTarget* targets, uint32_t count,
+    float speed_percent) {
+  set_joint_pv(targets, count,
+               ordinary_velocity_from_percent(
+                   ARTICORE_MODE_PV, speed_percent));
+}
+
 void SafetyRuntime::install_joint_position(
     ArticoreControlMode requested_mode,
     const std::vector<std::pair<void*, float>>& targets,
     float max_reference_velocity) {
   const char* const label = mode_name(requested_mode);
-  if (!finite(max_reference_velocity) || max_reference_velocity <= 0.0f) {
+  if (!finite(max_reference_velocity) || max_reference_velocity < 0.0f) {
     throw std::invalid_argument(
-        "max_reference_velocity must be finite and greater than zero");
+        "max_reference_velocity must be finite and non-negative");
   }
 
   const auto expected = static_cast<std::size_t>(std::count_if(
@@ -187,7 +227,9 @@ void SafetyRuntime::install_joint_position(
 
     if (requested_mode == ARTICORE_MODE_PV) {
       next.pv.push_back(ArticorePosVelCommand{
-          motor_handle, current_position, max_reference_velocity});
+          motor_handle, current_position,
+          std::max(config_.safe_pv_velocity_limit,
+                   max_reference_velocity)});
     } else {
       const auto& config = joint_config(motor_handle);
       next.mit.push_back(ArticoreMitCommand{

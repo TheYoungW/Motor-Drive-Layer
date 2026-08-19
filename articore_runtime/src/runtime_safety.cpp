@@ -111,13 +111,10 @@ bool SafetyRuntime::prepare_protective_hold(std::string& error) {
       if (fresh_position) {
         position = state.pos;
       } else if (!fallback_position(motor.descriptor.motor, position)) {
-        faulted.push_back(motor.descriptor.motor);
         if (!error.empty()) error += "; ";
         error += std::string(motor.descriptor.name) +
                  ": no feedback or last successful output for protective hold";
         continue;
-      } else {
-        faulted.push_back(motor.descriptor.motor);
       }
 
       if (mode == ARTICORE_MODE_PV) {
@@ -147,14 +144,9 @@ bool SafetyRuntime::prepare_protective_hold(std::string& error) {
         faulted.push_back(command.motor);
         continue;
       }
-      ArticoreFeedbackStats stats{};
-      const bool has_fresh_feedback =
-          api_.motor_get_feedback_stats(command.motor, &stats) == 0 &&
-          stats.has_feedback &&
-          stats.age_ns <=
-              static_cast<uint64_t>(config_.feedback_max_age_ms) *
-                  1'000'000ULL;
-      if (!has_state || !has_fresh_feedback) faulted.push_back(command.motor);
+      // Missing/stale feedback is a communication-quality condition, not a
+      // declaration that the physical gripper itself is faulted. The last
+      // successfully transmitted target remains the conservative fallback.
       auto safe = command;
       const auto& profile = active_gripper_profile(*motor);
       safe.target_velocity = 0.0f;
@@ -185,7 +177,8 @@ bool SafetyRuntime::send_safe_hold_once(std::string& error) {
   ArticoreSafetyState hold_state;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (state_ != ARTICORE_SAFE_HOLD && state_ != ARTICORE_FAULT) return true;
+    if (state_ != ARTICORE_SAFE_HOLD && state_ != ARTICORE_SAFE_STOP &&
+        state_ != ARTICORE_FAULT) return true;
     hold_state = state_;
     mode = mode_;
     pv = safe_pv_;
@@ -490,6 +483,7 @@ void SafetyRuntime::enter_fault(const std::string& reason, bool torque_off) {
     hardware_transition_ = torque_off;
     disable_confirmed_ = false;
     fault_reason_ = reason;
+    safety_reason_.clear();
     if (!hold_error.empty()) fault_reason_ += "; protective hold: " + hold_error;
     clear_pending_arm_mailbox();
     arm_mailbox_ = ArmMailbox{};
@@ -544,6 +538,7 @@ ArticoreSafetyHealth SafetyRuntime::health() const {
   std::lock_guard<std::mutex> lock(state_mutex_);
   result.state = state_;
   result.safe_holding = state_ == ARTICORE_SAFE_HOLD ||
+      state_ == ARTICORE_SAFE_STOP ||
       (state_ == ARTICORE_FAULT && fault_hold_active_);
   result.disable_confirmed = disable_confirmed_ ? 1 : 0;
   result.last_successful_command_age_ns = age_ns(
@@ -609,6 +604,31 @@ ArticoreSafetyHealth SafetyRuntime::health() const {
     copy_text(result.unconfirmed_disable[i], unconfirmed_disable_[i]);
   }
   copy_text(result.fault_reason, fault_reason_);
+  return result;
+}
+
+ArticoreSafetyHealthV2 SafetyRuntime::health_v2() const {
+  ArticoreSafetyHealthV2 result{};
+  result.struct_size = sizeof(result);
+  result.health = health();
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  result.last_operation = last_operation_;
+  result.last_operation_code = last_operation_code_;
+  result.operation_failed_motor_count = static_cast<uint32_t>(
+      std::min<std::size_t>(operation_failed_motors_.size(), 32));
+  for (uint32_t i = 0; i < result.operation_failed_motor_count; ++i) {
+    copy_text(result.operation_failed_motors[i], operation_failed_motors_[i]);
+  }
+  copy_text(result.last_operation_error, last_operation_error_);
+  result.degraded = result.health.state == ARTICORE_DEGRADED;
+  result.safe_stopped = result.health.state == ARTICORE_SAFE_STOP;
+  result.requires_resynchronization =
+      result.health.state == ARTICORE_DEGRADED ||
+      result.health.state == ARTICORE_SAFE_STOP;
+  result.command_scale = result.health.state == ARTICORE_DEGRADED
+      ? 0.25f
+      : (result.health.state == ARTICORE_SAFE_STOP ? 0.0f : 1.0f);
+  copy_text(result.safety_reason, safety_reason_);
   return result;
 }
 
