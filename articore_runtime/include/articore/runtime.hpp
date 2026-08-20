@@ -188,6 +188,15 @@ class Runtime final {
         "set_grippers");
   }
 
+  void set_grippers(float left_opening, float right_opening,
+                    int32_t strength, ArticoreGripperMode mode) {
+    detail::check(
+        articore_runtime_set_grippers_v2(
+            checked(), left_opening, right_opening, strength,
+            static_cast<int32_t>(mode)),
+        "set_grippers_v2");
+  }
+
   ArticoreProductState state() const {
     ArticoreProductState result{};
     result.struct_size = sizeof(result);

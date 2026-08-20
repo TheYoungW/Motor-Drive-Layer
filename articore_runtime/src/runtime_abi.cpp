@@ -182,12 +182,60 @@ int32_t motor_power_batch(ArticoreRuntime* runtime,
   }
 }
 
+int32_t set_product_grippers_impl(
+    ArticoreRuntime* runtime, float left_opening, float right_opening,
+    int32_t strength, int32_t minimum_strength, int32_t mode,
+    const char* strength_error) {
+  try {
+    if (!std::isfinite(left_opening) || !std::isfinite(right_opening)) {
+      throw std::invalid_argument("gripper opening contains NaN or Inf");
+    }
+    if (strength < minimum_strength ||
+        strength > ARTICORE_GRIPPER_STRENGTH_MAX) {
+      throw std::invalid_argument(strength_error);
+    }
+    if (mode != ARTICORE_GRIPPER_MODE_PROTECTED &&
+        mode != ARTICORE_GRIPPER_MODE_DIRECT) {
+      throw std::invalid_argument("gripper mode must be PROTECTED or DIRECT");
+    }
+    auto& product = checked_yunyi(runtime);
+    if (!product.with_grippers) {
+      checked(runtime).record_operation_result(
+          ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
+      g_last_error = "ok";
+      return 0;
+    }
+    const float openings[2] = {
+        std::clamp(left_opening, 0.0f, 1000.0f),
+        std::clamp(right_opening, 0.0f, 1000.0f)};
+    ArticoreGripperCommand commands[2]{};
+    for (uint32_t side = 0; side < 2; ++side) {
+      commands[side].struct_size = sizeof(ArticoreGripperCommand);
+      commands[side].motor = product.grippers[side];
+      commands[side].opening = openings[side];
+      commands[side].speed = 1000.0f;
+      commands[side].force_level = strength;
+    }
+    checked(runtime).set_gripper_commands(commands, 2, mode);
+    checked(runtime).record_operation_result(
+        ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
+    g_last_error = "ok";
+    return 0;
+  } catch (const std::invalid_argument& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
+  } catch (const std::exception& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_STATE, error.what());
+  }
+}
+
 }  // namespace
 
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 24U;
+  return (2U << 16) | 25U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -231,7 +279,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_ATOMIC_MOTOR_POWER_BATCH |
          ARTICORE_CAP_PRODUCT_POWER_STATE_SNAPSHOT |
          ARTICORE_CAP_PRODUCT_QUINTIC_TRAJECTORY |
-         ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS;
+         ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS |
+         ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE;
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -1170,44 +1219,19 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_pose(
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_grippers(
     ArticoreRuntime* runtime, float left_opening, float right_opening,
     int32_t gripper_level) {
-  try {
-    if (!std::isfinite(left_opening) || !std::isfinite(right_opening)) {
-      throw std::invalid_argument("gripper opening contains NaN or Inf");
-    }
-    if (gripper_level < ARTICORE_GRIPPER_FORCE_MIN ||
-        gripper_level > ARTICORE_GRIPPER_FORCE_MAX) {
-      throw std::invalid_argument("gripper_level must be in the range 1..10");
-    }
-    auto& product = checked_yunyi(runtime);
-    if (!product.with_grippers) {
-      checked(runtime).record_operation_result(
-          ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
-      g_last_error = "ok";
-      return 0;
-    }
-    const float openings[2] = {
-        std::clamp(left_opening, 0.0f, 1000.0f),
-        std::clamp(right_opening, 0.0f, 1000.0f)};
-    ArticoreGripperCommand commands[2]{};
-    for (uint32_t side = 0; side < 2; ++side) {
-      commands[side].struct_size = sizeof(ArticoreGripperCommand);
-      commands[side].motor = product.grippers[side];
-      commands[side].opening = openings[side];
-      commands[side].speed = 1000.0f;
-      commands[side].force_level = gripper_level;
-    }
-    checked(runtime).set_gripper_commands(commands, 2);
-    checked(runtime).record_operation_result(
-        ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
-    g_last_error = "ok";
-    return 0;
-  } catch (const std::invalid_argument& error) {
-    return record_product_command_error(
-        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
-  } catch (const std::exception& error) {
-    return record_product_command_error(
-        runtime, ARTICORE_OPERATION_INVALID_STATE, error.what());
-  }
+  return set_product_grippers_impl(
+      runtime, left_opening, right_opening, gripper_level,
+      ARTICORE_GRIPPER_FORCE_MIN, ARTICORE_GRIPPER_MODE_PROTECTED,
+      "gripper_level must be in the range 1..10");
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_grippers_v2(
+    ArticoreRuntime* runtime, float left_opening, float right_opening,
+    int32_t strength, int32_t mode) {
+  return set_product_grippers_impl(
+      runtime, left_opening, right_opening, strength,
+      ARTICORE_GRIPPER_STRENGTH_MIN, mode,
+      "gripper strength must be in the range 0..10");
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_has_grippers(

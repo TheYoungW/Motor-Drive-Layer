@@ -150,6 +150,11 @@ enum ArticoreRuntimeCapability {
   // reject older product runtimes that still expose only the compressed
   // 1..5 selector.
   ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS = 1ULL << 48,
+  // ABI 2.25 adds a product gripper command mode that bypasses contact/stall
+  // detection and overload retreat while retaining Runtime feedback, motor
+  // fault, transport, estop, and disconnect safety. The v2 command accepts
+  // strength 0..10; zero produces no active gripper stiffness.
+  ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE = 1ULL << 49,
 };
 
 enum {
@@ -368,6 +373,15 @@ enum ArticoreGripperFaultAction {
   ARTICORE_GRIPPER_FAULT_DISABLE = 2,
 };
 
+enum ArticoreGripperMode {
+  // Default behavior: detect sustained contact/stall, switch to calibrated
+  // holding gains, and retreat after sustained overload.
+  ARTICORE_GRIPPER_MODE_PROTECTED = 0,
+  // Direct behavior: continue tracking the requested opening with the
+  // selected strength and do not run contact/stall or overload-retreat logic.
+  ARTICORE_GRIPPER_MODE_DIRECT = 1,
+};
+
 enum ArticoreGripperForceLevel {
   ARTICORE_GRIPPER_FORCE_LEVEL_1 = 1,
   ARTICORE_GRIPPER_FORCE_LEVEL_2 = 2,
@@ -386,6 +400,11 @@ enum ArticoreGripperForceLevel {
   ARTICORE_GRIPPER_FORCE_LOW = ARTICORE_GRIPPER_FORCE_MIN,
   ARTICORE_GRIPPER_FORCE_NORMAL = ARTICORE_GRIPPER_FORCE_DEFAULT,
   ARTICORE_GRIPPER_FORCE_HIGH = ARTICORE_GRIPPER_FORCE_MAX,
+};
+
+enum {
+  ARTICORE_GRIPPER_STRENGTH_MIN = 0,
+  ARTICORE_GRIPPER_STRENGTH_MAX = 10,
 };
 
 typedef struct ArticorePosVelCommand {
@@ -1127,6 +1146,15 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_trajectory(
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_grippers(
     ArticoreRuntime* runtime, float left_opening, float right_opening,
     int32_t gripper_level);
+// ABI 2.25 product gripper command. strength uses 0..10: zero sends no active
+// stiffness and levels 1..10 select the existing calibrated force profiles.
+// DIRECT mode bypasses only gripper contact/stall and overload-retreat logic;
+// Runtime feedback checks, hard motor faults, transport safety, estop, and
+// disconnect remain active. The legacy function above is equivalent to this
+// function with mode=PROTECTED and continues to require level 1..10.
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_grippers_v2(
+    ArticoreRuntime* runtime, float left_opening, float right_opening,
+    int32_t strength, int32_t mode);
 ARTICORE_RUNTIME_API int32_t articore_runtime_has_grippers(
     ArticoreRuntime* runtime, int32_t* has_grippers);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_state(

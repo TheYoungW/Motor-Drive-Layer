@@ -387,6 +387,16 @@ calibrations. Moving/holding stiffness and contact/overload torque thresholds
 are doubled; damping, motion speed, opening conversion, stall timing, retreat
 distance, public APIs, and Runtime ABI remain unchanged.
 
+Runtime ABI 2.25 adds `articore_runtime_set_grippers_v2()` and
+`ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE`. The default `PROTECTED` mode keeps
+contact/stall detection, calibrated low-gain holding, and sustained-overload
+retreat. `DIRECT` continuously tracks the requested opening with the selected
+moving gains and bypasses those three behaviors. The v2 strength scale is
+0..10: zero applies no active gripper stiffness and 1..10 reuse the immutable
+calibrations. Motor fault, feedback/transport safety, estop, and disconnect
+remain active in both modes. The legacy product function remains protected and
+retains its 1..10 contract.
+
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations
 are rejected after connect, and a present motor that loses fresh feedback, reports a motor fault,

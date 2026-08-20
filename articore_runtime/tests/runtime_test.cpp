@@ -1343,6 +1343,55 @@ void test_gripper_torque_spike_does_not_trigger_contact() {
           "short torque spike does not satisfy sustained contact detection");
 }
 
+void test_gripper_direct_mode_bypasses_stall_and_overload_retreat() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  motors[2].contact_torque = 0.5f;
+  motors[2].overload_torque = 0.75f;
+  motors[2].motion_window_ms = 10;
+  motors[2].stall_movement = 0.01f;
+  motors[2].min_position_error = 0.05f;
+  motors[2].contact_hold_ms = 5;
+  motors[2].overload_hold_ms = 5;
+  motors[2].retreat_retry_ms = 10;
+  auto cfg = config();
+  cfg.command_timeout_ms = 1000;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100),
+      g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+  ArticoreMitCommand arm_commands[] = {
+      {motors[0].motor, 0.0f, 0.0f, 5.0f, 1.0f, 0.0f},
+      {motors[1].motor, 0.0f, 0.0f, 5.0f, 1.0f, 0.0f},
+  };
+  runtime.submit_mit(arm_commands, 2);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[2].motor].position = 1.5f;
+    driver.motors[motors[2].motor].torque = 5.0f;
+  }
+  ArticoreGripperCommand command{
+      sizeof(ArticoreGripperCommand), motors[2].motor,
+      0.0f, 1000.0f, ARTICORE_GRIPPER_FORCE_DEFAULT};
+  runtime.set_gripper_commands(
+      &command, 1, ARTICORE_GRIPPER_MODE_DIRECT);
+  std::this_thread::sleep_for(80ms);
+  const auto health = runtime.health();
+  require(health.grippers[0].control_state == ARTICORE_GRIPPER_MOVING &&
+              health.grippers[0].contact_detected == 0 &&
+              health.grippers[0].stalled == 0 &&
+              health.grippers[0].overload == 0,
+          "direct gripper mode ignores sustained stall and overload evidence");
+  std::lock_guard<std::mutex> lock(driver.mutex);
+  require(driver.last_mit.size() == 1 &&
+              std::abs(driver.last_mit[0].target_position - 2.0f) < 1e-6f &&
+              std::abs(driver.last_mit[0].stiffness - 4.0f) < 1e-6f &&
+              std::abs(driver.last_mit[0].damping - 0.5f) < 1e-6f,
+          "direct mode keeps the requested target and selected moving gains");
+}
+
 void test_gripper_command_profiles_and_bidirectional_ramp() {
   FakeDriver driver;
   g_driver = &driver;
@@ -1619,6 +1668,20 @@ void test_builtin_yunyi_gripper_profile_owns_product_calibration() {
           "speed=1000 maps to 10 rad/s and force level 10 calibration");
   require(runtime.gripper_force_level(source_gripper.side) == 10,
           "Runtime state reports the executed force level 10");
+
+  command.force_level = ARTICORE_GRIPPER_STRENGTH_MIN;
+  runtime.set_gripper_commands(
+      &command, 1, ARTICORE_GRIPPER_MODE_DIRECT);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_mit.size() == 1 &&
+                   driver.last_mit[0].motor == source_gripper.motor &&
+                   driver.last_mit[0].stiffness == 0.0f &&
+                   driver.last_mit[0].damping == 0.0f;
+          }),
+          "direct strength zero sends no active gripper stiffness");
+  require(runtime.gripper_force_level(source_gripper.side) == 0,
+          "Runtime state reports the executed zero strength");
 
   runtime.estop();
   {
@@ -4081,6 +4144,7 @@ int main() {
     RUN_TEST(test_gripper_hold_retreats_once_on_overload);
     RUN_TEST(test_gripper_stall_switches_to_contact_hold_target);
     RUN_TEST(test_gripper_torque_spike_does_not_trigger_contact);
+    RUN_TEST(test_gripper_direct_mode_bypasses_stall_and_overload_retreat);
     RUN_TEST(test_gripper_command_profiles_and_bidirectional_ramp);
     RUN_TEST(test_gripper_only_command_satisfies_enable_grace_without_masking_arm_watchdog);
     RUN_TEST(test_gripper_force_profiles_are_product_configuration);

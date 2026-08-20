@@ -146,7 +146,8 @@ class SafetyRuntime {
   void stop_gravity_compensation();
   ArticoreGravityCompensationStatus gravity_compensation_status() const;
   void set_gripper_commands(const ArticoreGripperCommand* commands,
-                            uint32_t count);
+                            uint32_t count,
+                            int32_t mode = ARTICORE_GRIPPER_MODE_PROTECTED);
   int32_t gripper_force_level(uint8_t side) const;
   void report_feedback_failure(uint8_t side, const std::string& reason);
   void disable();
@@ -200,6 +201,7 @@ class SafetyRuntime {
     float requested_speed = 1000.0f;
     float command_speed = 0.0f;
     ArticoreGripperForceLevel force_level = ARTICORE_GRIPPER_FORCE_DEFAULT;
+    ArticoreGripperMode gripper_mode = ARTICORE_GRIPPER_MODE_PROTECTED;
     std::unordered_map<int32_t, GripperForceProfile> force_profiles;
     std::string gripper_product_profile_id;
     bool gripper_product_profile_bound = false;

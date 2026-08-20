@@ -137,6 +137,11 @@ void SafetyRuntime::configure_gripper_products(
         std::max(profile.closed_position, profile.open_position);
 
     motor.force_profiles.clear();
+    motor.force_profiles.emplace(
+        ARTICORE_GRIPPER_STRENGTH_MIN,
+        MotorRecord::GripperForceProfile{
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::max(), 0.0f, 0.0f, 0.0f, 0.0f});
     for (std::size_t level = 0; level < profile.force_levels.size(); ++level) {
       const auto& calibrated = profile.force_levels[level];
       motor.force_profiles.emplace(
@@ -272,6 +277,11 @@ void SafetyRuntime::configure_gripper_force_profiles(
       motor.force_profiles = values->second;
       motor.legacy_force_level_mapping = false;
     }
+    motor.force_profiles.emplace(
+        ARTICORE_GRIPPER_STRENGTH_MIN,
+        MotorRecord::GripperForceProfile{
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::max(), 0.0f, 0.0f, 0.0f, 0.0f});
     motor.force_level = ARTICORE_GRIPPER_FORCE_DEFAULT;
   }
 }
@@ -382,9 +392,13 @@ void SafetyRuntime::set_gripper_openings(const ArticoreGripperTarget* targets,
 }
 
 void SafetyRuntime::set_gripper_commands(
-    const ArticoreGripperCommand* commands, uint32_t count) {
+    const ArticoreGripperCommand* commands, uint32_t count, int32_t mode) {
   if (!commands || count == 0) {
     throw std::invalid_argument("gripper command is empty");
+  }
+  if (mode != ARTICORE_GRIPPER_MODE_PROTECTED &&
+      mode != ARTICORE_GRIPPER_MODE_DIRECT) {
+    throw std::invalid_argument("invalid gripper mode");
   }
   const auto expected = static_cast<uint32_t>(std::count_if(
       motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
@@ -451,15 +465,17 @@ void SafetyRuntime::set_gripper_commands(
         std::abs(value.position - motor.requested_position) > 1e-6f;
     const bool force_changed =
         motor.force_level != value.force_level;
+    const bool mode_changed = static_cast<int32_t>(motor.gripper_mode) != mode;
     motor.requested_opening = value.opening;
     motor.requested_position = value.position;
     motor.requested_speed = value.normalized_speed;
     motor.command_speed = value.speed;
     motor.force_level = static_cast<ArticoreGripperForceLevel>(
         value.force_level);
+    motor.gripper_mode = static_cast<ArticoreGripperMode>(mode);
     motor.has_gripper_target = true;
     motor.gripper_fault_reason.clear();
-    if (target_changed) {
+    if (target_changed || mode_changed) {
       motor.gripper_state = ARTICORE_GRIPPER_MOVING;
       motor.contact_detected = false;
       motor.stalled = false;
@@ -584,6 +600,10 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
 
     const auto& descriptor = motor.descriptor;
     const auto& force = active_gripper_profile(motor);
+    const bool protection_enabled =
+        motor.gripper_mode == ARTICORE_GRIPPER_MODE_PROTECTED &&
+        static_cast<int32_t>(motor.force_level) !=
+            ARTICORE_GRIPPER_STRENGTH_MIN;
     motor.last_position = state.pos;
     motor.has_position = true;
     motor.last_torque = state.torq;
@@ -594,11 +614,27 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
         : std::min(std::chrono::duration<float>(now - motor.last_gripper_update),
                    std::chrono::duration<float>(max_dt));
     motor.last_gripper_update = now;
-    motor.motion_samples.emplace_back(now, state.pos);
     const auto motion_window = std::chrono::milliseconds(descriptor.motion_window_ms);
-    while (motor.motion_samples.size() > 1 &&
-           motor.motion_samples[1].first <= now - motion_window) {
-      motor.motion_samples.pop_front();
+    if (protection_enabled) {
+      motor.motion_samples.emplace_back(now, state.pos);
+      while (motor.motion_samples.size() > 1 &&
+             motor.motion_samples[1].first <= now - motion_window) {
+        motor.motion_samples.pop_front();
+      }
+    } else {
+      motor.contact_detected = false;
+      motor.stalled = false;
+      motor.overload = false;
+      motor.protective_target_active = false;
+      motor.retreat_active = false;
+      motor.contact_started_at = {};
+      motor.overload_started_at = {};
+      motor.motion_samples.clear();
+      if (motor.gripper_state == ARTICORE_GRIPPER_CONTACT ||
+          motor.gripper_state == ARTICORE_GRIPPER_HOLDING ||
+          motor.gripper_state == ARTICORE_GRIPPER_OVERLOAD_RETREAT) {
+        motor.gripper_state = ARTICORE_GRIPPER_MOVING;
+      }
     }
 
     const auto update_overload = [&]() {
@@ -631,10 +667,12 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
       return true;
     };
 
-    if (motor.gripper_state == ARTICORE_GRIPPER_CONTACT) {
+    if (protection_enabled &&
+        motor.gripper_state == ARTICORE_GRIPPER_CONTACT) {
       motor.gripper_state = ARTICORE_GRIPPER_HOLDING;
     }
-    if (motor.gripper_state == ARTICORE_GRIPPER_OVERLOAD_RETREAT) {
+    if (protection_enabled &&
+        motor.gripper_state == ARTICORE_GRIPPER_OVERLOAD_RETREAT) {
       const bool retreat_complete =
           std::abs(state.pos - motor.retreat_target) <= descriptor.min_position_error ||
           now - motor.last_retreat_at >=
@@ -658,9 +696,10 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
         motor.motion_samples.clear();
       }
 
-      motor.overload = torque >= force.overload_torque;
+      motor.overload =
+          protection_enabled && torque >= force.overload_torque;
       bool contact = false;
-      if (closing && torque >= force.contact_torque &&
+      if (protection_enabled && closing && torque >= force.contact_torque &&
           motor.motion_samples.size() >= 2 &&
           motor.motion_samples.back().first - motor.motion_samples.front().first >=
               motion_window &&
@@ -697,16 +736,17 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
               descriptor.min_position_error) {
         motor.gripper_state = ARTICORE_GRIPPER_IDLE;
       }
-    } else if (motor.gripper_state == ARTICORE_GRIPPER_HOLDING) {
+    } else if (protection_enabled &&
+               motor.gripper_state == ARTICORE_GRIPPER_HOLDING) {
       update_overload();
     } else if (motor.gripper_state == ARTICORE_GRIPPER_IDLE) {
       motor.command_position = motor.requested_position;
     }
 
-    const bool low_gain =
-        motor.gripper_state == ARTICORE_GRIPPER_CONTACT ||
-        motor.gripper_state == ARTICORE_GRIPPER_HOLDING ||
-        motor.gripper_state == ARTICORE_GRIPPER_OVERLOAD_RETREAT;
+    const bool low_gain = protection_enabled &&
+        (motor.gripper_state == ARTICORE_GRIPPER_CONTACT ||
+         motor.gripper_state == ARTICORE_GRIPPER_HOLDING ||
+         motor.gripper_state == ARTICORE_GRIPPER_OVERLOAD_RETREAT);
     commands.push_back(ArticoreMitCommand{
         descriptor.motor, motor.command_position, 0.0f,
         (low_gain ? force.hold_kp : force.moving_kp) * command_scale,
@@ -810,9 +850,14 @@ bool SafetyRuntime::send_gripper_hold_once(std::string& error) {
 
     const auto& descriptor = found->descriptor;
     const auto& force = active_gripper_profile(*found);
+    const bool protection_enabled =
+        found->gripper_mode == ARTICORE_GRIPPER_MODE_PROTECTED &&
+        static_cast<int32_t>(found->force_level) !=
+            ARTICORE_GRIPPER_STRENGTH_MIN;
     const auto torque = std::abs(state.torq);
-    found->overload = torque >= force.overload_torque;
-    if (found->overload) {
+    found->overload =
+        protection_enabled && torque >= force.overload_torque;
+    if (protection_enabled && found->overload) {
       if (found->overload_started_at == Clock::time_point{}) {
         found->overload_started_at = now;
       }
@@ -833,19 +878,20 @@ bool SafetyRuntime::send_gripper_hold_once(std::string& error) {
         found->contact_detected = true;
         found->stalled = true;
       }
-    } else {
+    } else if (protection_enabled) {
       found->overload_started_at = {};
       if (found->gripper_state == ARTICORE_GRIPPER_OVERLOAD_RETREAT) {
         found->gripper_state = ARTICORE_GRIPPER_HOLDING;
       }
     }
-    if (found->retreat_active) command.target_position = found->retreat_target;
-    else if (found->protective_target_active) {
+    if (protection_enabled && found->retreat_active) {
+      command.target_position = found->retreat_target;
+    } else if (protection_enabled && found->protective_target_active) {
       command.target_position = found->protective_target;
     }
     command.target_velocity = 0.0f;
-    command.stiffness = force.hold_kp;
-    command.damping = force.hold_kd;
+    command.stiffness = protection_enabled ? force.hold_kp : force.moving_kp;
+    command.damping = protection_enabled ? force.hold_kd : force.moving_kd;
     command.feedforward_torque = 0.0f;
     sendable.push_back(command);
   }

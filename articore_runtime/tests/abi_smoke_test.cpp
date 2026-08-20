@@ -30,6 +30,11 @@ int main() {
   static_assert(sizeof(ArticoreTrajectoryConfig) == 236);
   static_assert(sizeof(ArticoreTrajectoryStatus) == 560);
   const auto product_grippers = &articore_runtime_set_grippers;
+  const auto product_grippers_v2 = &articore_runtime_set_grippers_v2;
+  using ProductGrippersV2 = int32_t (*)(
+      ArticoreRuntime*, float, float, int32_t, int32_t);
+  static_assert(std::is_same_v<
+      std::remove_cv_t<decltype(product_grippers_v2)>, ProductGrippersV2>);
   const auto has_product_grippers = &articore_runtime_has_grippers;
   const auto product_state = &articore_runtime_get_state;
   const auto product_state_v2 = &articore_runtime_get_state_v2;
@@ -124,7 +129,8 @@ int main() {
       ARTICORE_CAP_ATOMIC_MOTOR_POWER_BATCH |
       ARTICORE_CAP_PRODUCT_POWER_STATE_SNAPSHOT |
       ARTICORE_CAP_PRODUCT_QUINTIC_TRAJECTORY |
-      ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS;
+      ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS |
+      ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE;
   bool product_gripper_levels_valid = true;
   for (const int32_t level : {1, 5, 10}) {
     product_gripper_levels_valid = product_gripper_levels_valid &&
@@ -139,6 +145,29 @@ int main() {
         std::strcmp(articore_runtime_last_error(),
                     "gripper_level must be in the range 1..10") == 0;
   }
+  bool product_gripper_direct_valid = true;
+  for (const int32_t strength : {0, 5, 10}) {
+    product_gripper_direct_valid = product_gripper_direct_valid &&
+        articore_runtime_set_grippers_v2(
+            nullptr, 0.0f, 1000.0f, strength,
+            ARTICORE_GRIPPER_MODE_DIRECT) ==
+            ARTICORE_OPERATION_INVALID_ARGUMENT &&
+        std::strcmp(articore_runtime_last_error(), "runtime is null") == 0;
+  }
+  for (const int32_t strength : {-1, 11}) {
+    product_gripper_direct_valid = product_gripper_direct_valid &&
+        articore_runtime_set_grippers_v2(
+            nullptr, 0.0f, 1000.0f, strength,
+            ARTICORE_GRIPPER_MODE_DIRECT) ==
+            ARTICORE_OPERATION_INVALID_ARGUMENT &&
+        std::strcmp(articore_runtime_last_error(),
+                    "gripper strength must be in the range 0..10") == 0;
+  }
+  product_gripper_direct_valid = product_gripper_direct_valid &&
+      articore_runtime_set_grippers_v2(nullptr, 0.0f, 1000.0f, 5, 99) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(),
+                  "gripper mode must be PROTECTED or DIRECT") == 0;
   const uint64_t removed_trajectory_bits =
       (1ULL << 9) | (1ULL << 12) | (1ULL << 15) |
       (1ULL << 16) | (1ULL << 17);
@@ -148,7 +177,8 @@ int main() {
       !configure_mode || !clear_faults || !set_zero || !disconnect ||
       !product_positions || !product_mit || !product_pv ||
       !start_trajectory || !trajectory_status || !cancel_trajectory ||
-      !product_grippers || !has_product_grippers || !product_state ||
+      !product_grippers || !product_grippers_v2 || !has_product_grippers ||
+      !product_state ||
       !product_state_v2 ||
       !product_pose ||
       !control_mode ||
@@ -162,10 +192,11 @@ int main() {
       !gravity_status || !health_v2 || !estop ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x00020018U ||
+      version != 0x00020019U ||
       (capabilities & required_with_pose_and_estop) !=
           required_with_pose_and_estop ||
       !product_gripper_levels_valid ||
+      !product_gripper_direct_valid ||
       (capabilities & removed_trajectory_bits) != 0 ||
       (capabilities & removed_public_rate_bits) != 0) {
     std::cerr << "Articore runtime ABI metadata is incomplete\n";

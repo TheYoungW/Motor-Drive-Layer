@@ -238,6 +238,13 @@ Runtime ABI 2.24 增加 `product_gripper_force_10_levels`。Yunyi 整机接口
 刚度以及接触、过载力矩阈值均调整为原来的两倍。阻尼、运动速度、开合度换算、防堵转时序
 和退让距离保持不变，因此用户接口、Runtime ABI 和 1..10 等级语义均不变。
 
+Runtime ABI 2.25 增加 `articore_runtime_set_grippers_v2()` 和产品级
+`product_gripper_direct_mode` 能力。默认 `PROTECTED` 模式保留接触/堵转检测、低刚度保持和
+持续过载退让；新的 `DIRECT` 模式持续追踪目标开合度，不执行上述防堵转逻辑。v2 力度范围为
+0..10：0 不施加主动夹持刚度，1..10 沿用现有十级标定。电机硬故障、反馈与 transport
+安全、急停和整机失能始终有效。旧 `articore_runtime_set_grippers()` 保持 1..10 和默认保护
+模式，现有 SDK 不受影响。
+
 ## 安全
 
 电机控制可能造成意外运动和人身伤害。测试时必须支撑机构、准备独立急停、确认通道/ID/型号/
