@@ -162,6 +162,18 @@ enum ArticoreRuntimeCapability {
   // ABI 2.27 applies a fixed 10x multiplier to both Kp and Kd in product
   // DIRECT gripper mode. PROTECTED calibration and strength zero are unchanged.
   ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10 = 1ULL << 51,
+  // ABI 2.28 adds native, non-blocking PV Cartesian point-to-point motion. A
+  // validated newer pose atomically supersedes the current point target and
+  // is replanned from the active quintic state by the private 500 Hz worker.
+  ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT = 1ULL << 52,
+  // ABI 2.29 adds PV Cartesian-linear translation with shortest-path quaternion
+  // SLERP orientation. The path is prevalidated by sequential native IK and
+  // executed from precomputed joint polynomials; no IK runs in the 500 Hz loop.
+  ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR = 1ULL << 53,
+  // ABI 2.30 adds a PV-only three-pose circular arc. XYZ start/via/end define the
+  // unique traversed arc; orientation passes through all three poses using
+  // piecewise shortest-path quaternion SLERP.
+  ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR = 1ULL << 54,
 };
 
 enum {
@@ -288,6 +300,10 @@ enum ArticoreRuntimeOperation {
   ARTICORE_OPERATION_RECOVER = 10,
   ARTICORE_OPERATION_START_TRAJECTORY = 11,
   ARTICORE_OPERATION_CANCEL_TRAJECTORY = 12,
+  ARTICORE_OPERATION_MOVE_POSE = 13,
+  ARTICORE_OPERATION_CANCEL_MOVE_POSE = 14,
+  ARTICORE_OPERATION_MOVE_LINEAR = 15,
+  ARTICORE_OPERATION_MOVE_CIRCULAR = 16,
 };
 
 enum ArticoreTrajectoryInterpolation {
@@ -297,9 +313,19 @@ enum ArticoreTrajectoryInterpolation {
 enum ArticoreTrajectoryState {
   ARTICORE_TRAJECTORY_IDLE = 0,
   ARTICORE_TRAJECTORY_RUNNING = 1,
+  // The planned clock has finished and fresh physical feedback has remained
+  // within the native product position/velocity arrival window. A progress
+  // value of 1.0 while state is still RUNNING means final-setpoint settling,
+  // not physical completion.
   ARTICORE_TRAJECTORY_COMPLETED = 2,
   ARTICORE_TRAJECTORY_CANCELLED = 3,
   ARTICORE_TRAJECTORY_FAULT = 4,
+};
+
+enum ArticoreCartesianInterpolation {
+  ARTICORE_CARTESIAN_POINT_TO_POINT = 1,
+  ARTICORE_CARTESIAN_LINEAR = 2,
+  ARTICORE_CARTESIAN_CIRCULAR = 3,
 };
 
 enum { ARTICORE_MAX_TRAJECTORY_WAYPOINTS = 10000 };
@@ -470,6 +496,40 @@ typedef struct ArticoreTrajectoryStatus {
   float progress;
   char error[512];
 } ArticoreTrajectoryStatus;
+
+typedef struct ArticoreMovePoseStatus {
+  // Caller initializes this to sizeof(ArticoreMovePoseStatus). state uses
+  // ArticoreTrajectoryState because point-to-point motion is executed by the
+  // same native quintic engine.
+  uint32_t struct_size;
+  int32_t state;
+  uint64_t motion_id;
+  // Non-zero after a newer valid pose replaced a running point target.
+  uint64_t superseded_motion_id;
+  uint32_t side;
+  float speed_percent;
+  double elapsed_s;
+  double duration_s;
+  float progress;
+  float target_pose[ARTICORE_PRODUCT_POSE_DOF];
+  char error[512];
+} ArticoreMovePoseStatus;
+
+typedef struct ArticoreCartesianMotionStatus {
+  // Caller initializes this to sizeof(ArticoreCartesianMotionStatus).
+  uint32_t struct_size;
+  int32_t state;
+  uint64_t motion_id;
+  uint64_t superseded_motion_id;
+  uint32_t side;
+  int32_t interpolation;
+  float speed_percent;
+  double elapsed_s;
+  double duration_s;
+  float progress;
+  float target_pose[ARTICORE_PRODUCT_POSE_DOF];
+  char error[512];
+} ArticoreCartesianMotionStatus;
 
 typedef struct ArticoreProductArmState {
   float positions[ARTICORE_PRODUCT_ARM_DOF];
@@ -1136,6 +1196,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pv_frame(
 // copied synchronously; no caller-owned pointer is retained. The fixed Yunyi
 // order is left joint1..7 followed by right joint1..7. Execution uses the same
 // native worker and Raw MIT/PV ControllerGroup path as direct product frames.
+// COMPLETED is reported only after the final reference has been sent and fresh
+// enabled feedback confirms position/velocity settling for consecutive native
+// samples. A native arrival timeout changes only the motion to FAULT, preserves
+// the final hold, and records the failed Motor and error in Runtime health.
 ARTICORE_RUNTIME_API int32_t articore_runtime_start_trajectory(
     ArticoreRuntime* runtime,
     const ArticoreTrajectoryWaypoint* waypoints,
@@ -1145,6 +1209,43 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_trajectory_status(
     ArticoreRuntime* runtime, ArticoreTrajectoryStatus* status);
 ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_trajectory(
     ArticoreRuntime* runtime);
+// ABI 2.28 asynchronous PV Cartesian point-to-point motion. target_pose is
+// [x,y,z,roll,pitch,yaw] in metres/radians. speed_percent is (0,100]. The
+// command returns after native IK, limit/extrema validation and plan install;
+// execution continues in the Runtime worker. A valid newer target atomically
+// replaces a running point target. A rejected target leaves the old motion
+// untouched. This is joint-space point-to-point motion, not a Cartesian line.
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(
+    ArticoreRuntime* runtime, uint32_t side, const float* target_pose,
+    float speed_percent, uint64_t* motion_id);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_move_pose_status(
+    ArticoreRuntime* runtime, ArticoreMovePoseStatus* status);
+ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_move_pose(
+    ArticoreRuntime* runtime);
+// ABI 2.29 unified PV Cartesian motion entry point. POINT_TO_POINT performs one
+// endpoint IK and follows a joint-space quintic. LINEAR interpolates XYZ on a
+// straight segment and orientation with shortest-path quaternion SLERP, solves
+// and validates sequential IK samples before installation, then executes the
+// precomputed joint path without running IK in the realtime worker.
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_cartesian(
+    ArticoreRuntime* runtime, uint32_t side, const float* target_pose,
+    float speed_percent, int32_t interpolation, uint64_t* motion_id);
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear(
+    ArticoreRuntime* runtime, uint32_t side, const float* target_pose,
+    float speed_percent, uint64_t* motion_id);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_cartesian_motion_status(
+    ArticoreRuntime* runtime, ArticoreCartesianMotionStatus* status);
+ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_cartesian_motion(
+    ArticoreRuntime* runtime);
+// ABI 2.30 PV-only three-pose circular motion. Every pose is
+// [x,y,z,roll,pitch,yaw]. XYZ defines the unique arc from start through via to
+// end. The declared start must match the current planned flange pose; it is
+// never used as a teleport target. Orientation uses shortest-path quaternion
+// SLERP from start to via and from via to end.
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular(
+    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+    const float* via_pose, const float* end_pose, float speed_percent,
+    uint64_t* motion_id);
 // Whole-product gripper command. Openings use 0=closed and 1000=open and are
 // clamped when finite. gripper_level directly selects one of the built-in
 // yunyi_gripper_v1 levels 1..10; 1 is lightest and 10 is strongest.

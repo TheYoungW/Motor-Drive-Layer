@@ -227,7 +227,11 @@ Runtime ABI 2.23 增加产品级原生双臂五次轨迹。`start_trajectory()` 
 显式携带目标速度、Kp、Kd 和前馈力矩；PV 每轴显式携带速度上限。部分使能时仍接收完整
 14 轴轨迹，但只发送已主动使能的 Motor。取消为幂等操作，并把当帧转换为零目标速度、零
 前馈的保持；disable、estop、disconnect、安全停机及 transport/send fault 都会终止轨迹。
-轨迹状态通过统一原生 status/health 返回，底层不保存任何 Python 内存指针。
+轨迹状态通过统一原生 status/health 返回，底层不保存任何 Python 内存指针。规划时长结束后
+Runtime 会继续发送最终保持目标，并使用新鲜的真实反馈检查位置误差与实际速度；只有连续
+多个底层反馈样本稳定到位才返回 `COMPLETED`。此时 `progress=1` 但状态仍为 `RUNNING`
+表示正在等待物理稳定，而不是已经到达。超过底层内部到位期限会将本次运动标记为 `FAULT`，
+保持最终目标且不把电机切入故障模式，失败电机和具体误差统一写入 health。
 
 Runtime ABI 2.24 增加 `product_gripper_force_10_levels`。Yunyi 整机接口
 `articore_runtime_set_grippers()` 的力度等级现在直接使用 1..10：1 最轻、10 最强、
@@ -254,6 +258,31 @@ Runtime ABI 2.27 增加 `direct_gripper_gain_x10`。仅在产品夹爪 `DIRECT` 
 将所选力度等级的 Kp 和 Kd 同时放大 10 倍；默认 5 级由 Kp=8、Kd=0.5 调整为
 Kp=80、Kd=5，10 级为 Kp=120、Kd=8。`PROTECTED` 模式的十级标定完全不变，力度 0 仍为
 Kp=Kd=0。通信降级时仍应用 Runtime 的 25% 增益缩放。
+
+Runtime ABI 2.28 增加 `product_cartesian_point_to_point` 与原生
+`articore_runtime_move_pose()`。目标格式为 `[x, y, z, roll, pitch, yaw]`（米、弧度），
+调用在底层完成 IK、产品限位及五次多项式段内极值校验后立即返回，实际运动由 Runtime
+内部控制线程异步执行。新的合法点目标会从当前多项式运动状态原子覆盖旧点目标；新目标
+校验失败时旧运动继续。显式多路点轨迹仍保持严格顺序且不会被此接口覆盖。该功能是关节
+空间点到点，不保证笛卡尔直线。
+全部产品笛卡尔运动接口仅支持 PV 产品模式；MIT 产品 Runtime 会在规划前拒绝调用，且不会
+改变当前运动。
+
+Runtime ABI 2.29 增加 `product_cartesian_linear`、统一的
+`articore_runtime_move_cartesian()` 以及便捷接口 `articore_runtime_move_linear()`。
+直线模式让 XYZ 始终位于起点到目标点的线段上，姿态采用最短路径四元数 SLERP。Runtime
+按不大于 5 mm / 0.035 rad 的间距生成路径样本并连续求 IK；路径不可达、IK 分支跳变或任一
+关节越界时会在安装前拒绝，新目标不会覆盖旧运动。实时控制线程只执行预先生成的关节
+多项式，不在 500 Hz 周期内求 IK。PTP 与直线单目标运动可以互相原子覆盖，显式多路点
+轨迹仍保持独立。
+
+Runtime ABI 2.30 增加 `product_cartesian_circular` 和
+`articore_runtime_move_circular()`。调用方传入三份完整的
+`[x,y,z,roll,pitch,yaw]`：三点 XYZ 唯一确定从起点经过中间点到终点的圆弧，重复点和共线
+点直接拒绝。声明起点必须在 5 mm / 0.035 rad 内匹配 Runtime 当前规划的法兰位姿，绝不会
+被当作可瞬移的目标。姿态在起点→中间点、中间点→终点两段分别使用最短路径四元数
+SLERP，并确保经过三份声明姿态。整条圆弧在原子覆盖旧的单目标笛卡尔运动之前，完成连续
+IK、IK 分支连续性、产品限位和多项式段内极值校验。
 
 ## 安全
 

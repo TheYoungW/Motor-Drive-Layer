@@ -49,8 +49,18 @@ struct NativeTrajectoryWaypoint {
 
 struct NativeTrajectoryRequest {
   ArticoreControlMode mode = ARTICORE_MODE_MIT;
+  ArticoreRuntimeOperation operation = ARTICORE_OPERATION_START_TRAJECTORY;
   std::vector<NativeTrajectoryJoint> joints;
   std::vector<NativeTrajectoryWaypoint> waypoints;
+};
+
+struct NativeTrajectorySample {
+  bool active = false;
+  uint64_t trajectory_id = 0;
+  ArticoreRuntimeOperation operation = ARTICORE_OPERATION_NONE;
+  std::vector<float> positions;
+  std::vector<float> velocities;
+  std::vector<float> accelerations;
 };
 
 namespace detail {
@@ -119,7 +129,12 @@ class SafetyRuntime {
   void submit_mit_ex(const ArticoreMitCommand* commands,
                      uint32_t count,
                      ArticoreCommandLifetime lifetime);
-  uint64_t start_trajectory(NativeTrajectoryRequest request);
+  // replace_trajectory_id=0 preserves strict trajectory semantics and rejects
+  // a concurrent plan. A non-zero value atomically replaces exactly that
+  // running plan after the new request has passed all validation.
+  uint64_t start_trajectory(NativeTrajectoryRequest request,
+                            uint64_t replace_trajectory_id = 0);
+  NativeTrajectorySample trajectory_sample() const;
   ArticoreTrajectoryStatus trajectory_status() const;
   void cancel_trajectory();
   void set_joint_mit(const ArticoreJointMitTarget* targets,
@@ -314,8 +329,13 @@ class SafetyRuntime {
     double elapsed_s = 0.0;
     double duration_s = 0.0;
     Clock::time_point started_at{};
+    Clock::time_point settling_started_at{};
+    ArticoreRuntimeOperation operation = ARTICORE_OPERATION_START_TRAJECTORY;
     std::vector<NativeTrajectoryJoint> joints;
     std::vector<TrajectorySegment> segments;
+    std::vector<uint64_t> settling_feedback_updates;
+    uint32_t settled_feedback_samples = 0;
+    bool settling_feedback_initialized = false;
     std::string error;
   };
 
@@ -328,7 +348,7 @@ class SafetyRuntime {
   bool prepare_trajectory_cycle(Clock::time_point now,
                                 bool& completing,
                                 std::string& error);
-  void complete_trajectory_cycle();
+  void update_trajectory_completion(Clock::time_point now);
   void terminate_trajectory_locked(ArticoreTrajectoryState state,
                                    const std::string& error);
   void fault_trajectory(const std::string& error);
@@ -363,7 +383,8 @@ class SafetyRuntime {
   const JointControlConfig& joint_config(void* motor) const;
   void validate_position_velocity_torque(void* motor, float position,
                                          float velocity, float torque) const;
-  void require_state_for_command(bool allow_gravity = false) const;
+  void require_state_for_command(bool allow_gravity = false,
+                                 bool allow_trajectory = false) const;
   void validate_motor_set(const ArticorePosVelCommand* commands,
                           uint32_t count, bool grippers_only) const;
   void validate_motor_set(const ArticoreMitCommand* commands,

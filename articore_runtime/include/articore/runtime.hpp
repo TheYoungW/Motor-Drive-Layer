@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -178,6 +179,84 @@ class Runtime final {
   void cancel_trajectory() {
     detail::check(
         articore_runtime_cancel_trajectory(checked()), "cancel_trajectory");
+  }
+
+  uint64_t move_pose(uint32_t side, const std::array<float, 6>& target_pose,
+                     float speed_percent = 100.0f) {
+    uint64_t motion_id = 0;
+    detail::check(
+        articore_runtime_move_pose(
+            checked(), side, target_pose.data(), speed_percent, &motion_id),
+        "move_pose");
+    return motion_id;
+  }
+
+  uint64_t move_cartesian(
+      uint32_t side, const std::array<float, 6>& target_pose,
+      ArticoreCartesianInterpolation interpolation,
+      float speed_percent = 100.0f) {
+    uint64_t motion_id = 0;
+    detail::check(
+        articore_runtime_move_cartesian(
+            checked(), side, target_pose.data(), speed_percent,
+            static_cast<int32_t>(interpolation), &motion_id),
+        "move_cartesian");
+    return motion_id;
+  }
+
+  uint64_t move_linear(uint32_t side,
+                       const std::array<float, 6>& target_pose,
+                       float speed_percent = 100.0f) {
+    uint64_t motion_id = 0;
+    detail::check(
+        articore_runtime_move_linear(
+            checked(), side, target_pose.data(), speed_percent, &motion_id),
+        "move_linear");
+    return motion_id;
+  }
+
+  uint64_t move_circular(
+      uint32_t side,
+      const std::array<float, 6>& start_pose,
+      const std::array<float, 6>& via_pose,
+      const std::array<float, 6>& end_pose,
+      float speed_percent = 100.0f) {
+    uint64_t motion_id = 0;
+    detail::check(
+        articore_runtime_move_circular(
+            checked(), side, start_pose.data(), via_pose.data(),
+            end_pose.data(), speed_percent, &motion_id),
+        "move_circular");
+    return motion_id;
+  }
+
+  ArticoreMovePoseStatus move_pose_status() const {
+    ArticoreMovePoseStatus result{};
+    result.struct_size = sizeof(result);
+    detail::check(
+        articore_runtime_get_move_pose_status(checked(), &result),
+        "get_move_pose_status");
+    return result;
+  }
+
+  void cancel_move_pose() {
+    detail::check(
+        articore_runtime_cancel_move_pose(checked()), "cancel_move_pose");
+  }
+
+  ArticoreCartesianMotionStatus cartesian_motion_status() const {
+    ArticoreCartesianMotionStatus result{};
+    result.struct_size = sizeof(result);
+    detail::check(
+        articore_runtime_get_cartesian_motion_status(checked(), &result),
+        "get_cartesian_motion_status");
+    return result;
+  }
+
+  void cancel_cartesian_motion() {
+    detail::check(
+        articore_runtime_cancel_cartesian_motion(checked()),
+        "cancel_cartesian_motion");
   }
 
   void set_grippers(float left_opening, float right_opening,

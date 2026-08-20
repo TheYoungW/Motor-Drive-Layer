@@ -16,6 +16,17 @@ constexpr double kPolynomialTolerance = 1e-10;
 constexpr double kLimitTolerance = 1e-6;
 constexpr float kStartPositionTolerance = 0.05f;
 constexpr float kStartVelocityTolerance = 0.10f;
+// Completion is based on physical feedback, not merely on the planned clock.
+// Cartesian product motion is PV-only, while the native trajectory engine also
+// supports explicit MIT trajectories, whose compliant control needs a wider
+// position/velocity window.
+constexpr float kPvArrivalPositionTolerance = 0.02f;
+constexpr float kPvArrivalVelocityTolerance = 0.05f;
+constexpr float kMitArrivalPositionTolerance = 0.05f;
+constexpr float kMitArrivalVelocityTolerance = 0.10f;
+constexpr uint32_t kArrivalStableFeedbackSamples = 5;
+constexpr double kMinimumArrivalTimeoutSeconds = 2.0;
+constexpr double kMaximumArrivalTimeoutSeconds = 10.0;
 
 using Polynomial = std::vector<double>;
 
@@ -215,9 +226,20 @@ double sample_velocity(const std::array<double, 6>& coefficients,
   return value / duration;
 }
 
+double sample_acceleration(const std::array<double, 6>& coefficients,
+                           double u, double duration) {
+  double value = 0.0;
+  for (int index = 5; index >= 2; --index) {
+    value = value * u + static_cast<double>(index * (index - 1)) *
+        coefficients[index];
+  }
+  return value / (duration * duration);
+}
+
 }  // namespace
 
-uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request) {
+uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
+                                         uint64_t replace_trajectory_id) {
   const std::size_t joint_count = request.joints.size();
   const std::size_t waypoint_count = request.waypoints.size();
   if (request.mode != ARTICORE_MODE_MIT && request.mode != ARTICORE_MODE_PV) {
@@ -412,7 +434,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request) {
   std::set<void*> intentionally_disabled;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
-    require_state_for_command();
+    require_state_for_command(false, replace_trajectory_id != 0);
     if (state_ == ARTICORE_DEGRADED) {
       throw std::runtime_error(
           "cannot start a trajectory while Runtime is degraded");
@@ -421,8 +443,16 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request) {
       throw std::runtime_error(
           "trajectory mode does not match the active Runtime mode");
     }
-    if (trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING) {
+    if (trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING &&
+        (replace_trajectory_id == 0 ||
+         trajectory_control_.id != replace_trajectory_id)) {
       throw std::runtime_error("a trajectory is already running");
+    }
+    if (replace_trajectory_id != 0 &&
+        (trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING ||
+         trajectory_control_.id != replace_trajectory_id)) {
+      throw std::runtime_error(
+          "trajectory changed while preparing its replacement");
     }
     intentionally_disabled = intentionally_disabled_motors_;
   }
@@ -446,22 +476,24 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request) {
           "trajectory start power feedback disagrees with Runtime at joint " +
           std::to_string(joint_index));
     }
-    const float requested_start =
-        joint.direction * request.waypoints.front().positions[joint_index];
-    if (std::abs(state.pos - requested_start) > kStartPositionTolerance) {
-      throw std::invalid_argument(
-          "trajectory first waypoint is not synchronized with current "
-          "feedback at joint " + std::to_string(joint_index));
-    }
-    const float actual_velocity =
-        joint.direction * state.vel * joint.velocity_feedback_scale;
-    const float requested_velocity =
-        request.waypoints.front().velocities[joint_index];
-    if (std::abs(actual_velocity - requested_velocity) >
-        kStartVelocityTolerance) {
-      throw std::invalid_argument(
-          "trajectory first waypoint velocity is not synchronized with "
-          "current feedback at joint " + std::to_string(joint_index));
+    if (replace_trajectory_id == 0) {
+      const float requested_start =
+          joint.direction * request.waypoints.front().positions[joint_index];
+      if (std::abs(state.pos - requested_start) > kStartPositionTolerance) {
+        throw std::invalid_argument(
+            "trajectory first waypoint is not synchronized with current "
+            "feedback at joint " + std::to_string(joint_index));
+      }
+      const float actual_velocity =
+          joint.direction * state.vel * joint.velocity_feedback_scale;
+      const float requested_velocity =
+          request.waypoints.front().velocities[joint_index];
+      if (std::abs(actual_velocity - requested_velocity) >
+          kStartVelocityTolerance) {
+        throw std::invalid_argument(
+            "trajectory first waypoint velocity is not synchronized with "
+            "current feedback at joint " + std::to_string(joint_index));
+      }
     }
   }
 
@@ -469,9 +501,14 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request) {
   uint64_t id = 0;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
-    require_state_for_command();
+    require_state_for_command(false, replace_trajectory_id != 0);
     if (mode_ != request.mode ||
-        trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING) {
+        (trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING &&
+         (replace_trajectory_id == 0 ||
+          trajectory_control_.id != replace_trajectory_id)) ||
+        (replace_trajectory_id != 0 &&
+         (trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING ||
+          trajectory_control_.id != replace_trajectory_id))) {
       throw std::runtime_error(
           "Runtime state changed while starting trajectory");
     }
@@ -484,6 +521,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request) {
         static_cast<uint32_t>(waypoint_count);
     trajectory_control_.duration_s = duration_s;
     trajectory_control_.started_at = now;
+    trajectory_control_.operation = request.operation;
     trajectory_control_.joints = std::move(request.joints);
     trajectory_control_.segments = std::move(segments);
     id = trajectory_control_.id;
@@ -491,6 +529,47 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request) {
   }
   wakeup_.notify_all();
   return id;
+}
+
+NativeTrajectorySample SafetyRuntime::trajectory_sample() const {
+  NativeTrajectorySample result;
+  const auto now = Clock::now();
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  if (trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING ||
+      trajectory_control_.segments.empty() ||
+      trajectory_control_.joints.empty()) {
+    return result;
+  }
+
+  double elapsed = std::chrono::duration<double>(
+      now - trajectory_control_.started_at).count();
+  elapsed = std::clamp(elapsed, 0.0, trajectory_control_.duration_s);
+  std::size_t segment_index = trajectory_control_.active_segment;
+  while (segment_index + 1 < trajectory_control_.segments.size() &&
+         elapsed >= trajectory_control_.segments[segment_index].start_s +
+                        trajectory_control_.segments[segment_index].duration_s) {
+    ++segment_index;
+  }
+  const auto& segment = trajectory_control_.segments[segment_index];
+  const double local = std::clamp(
+      elapsed - segment.start_s, 0.0, segment.duration_s);
+  const double u = local / segment.duration_s;
+
+  result.active = true;
+  result.trajectory_id = trajectory_control_.id;
+  result.operation = trajectory_control_.operation;
+  result.positions.reserve(segment.coefficients.size());
+  result.velocities.reserve(segment.coefficients.size());
+  result.accelerations.reserve(segment.coefficients.size());
+  for (const auto& coefficients : segment.coefficients) {
+    result.positions.push_back(static_cast<float>(
+        sample_polynomial(coefficients, u)));
+    result.velocities.push_back(static_cast<float>(
+        sample_velocity(coefficients, u, segment.duration_s)));
+    result.accelerations.push_back(static_cast<float>(
+        sample_acceleration(coefficients, u, segment.duration_s)));
+  }
+  return result;
 }
 
 bool SafetyRuntime::prepare_trajectory_cycle(
@@ -565,15 +644,184 @@ bool SafetyRuntime::prepare_trajectory_cycle(
   return true;
 }
 
-void SafetyRuntime::complete_trajectory_cycle() {
-  std::lock_guard<std::mutex> state_lock(state_mutex_);
-  if (trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING) return;
-  trajectory_control_.state = ARTICORE_TRAJECTORY_COMPLETED;
-  trajectory_control_.elapsed_s = trajectory_control_.duration_s;
-  trajectory_control_.active_segment = trajectory_control_.segments.empty()
-      ? 0U
-      : static_cast<uint32_t>(trajectory_control_.segments.size() - 1);
-  trajectory_control_.error.clear();
+void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
+  struct ArrivalJoint {
+    NativeTrajectoryJoint joint;
+    float target = 0.0f;
+    bool intentionally_disabled = false;
+    std::string role;
+  };
+
+  uint64_t trajectory_id = 0;
+  ArticoreControlMode mode = ARTICORE_MODE_PV;
+  Clock::time_point settling_started_at{};
+  std::vector<uint64_t> previous_updates;
+  bool feedback_initialized = false;
+  std::vector<ArrivalJoint> arrivals;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    if (trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING ||
+        trajectory_control_.segments.empty()) {
+      return;
+    }
+    if (trajectory_control_.settling_started_at == Clock::time_point{}) {
+      trajectory_control_.settling_started_at = now;
+      trajectory_control_.settling_feedback_updates.assign(
+          trajectory_control_.joints.size(), 0);
+      trajectory_control_.settled_feedback_samples = 0;
+      trajectory_control_.settling_feedback_initialized = false;
+    }
+    trajectory_id = trajectory_control_.id;
+    mode = mode_;
+    settling_started_at = trajectory_control_.settling_started_at;
+    previous_updates = trajectory_control_.settling_feedback_updates;
+    feedback_initialized =
+        trajectory_control_.settling_feedback_initialized;
+    const auto& final_coefficients =
+        trajectory_control_.segments.back().coefficients;
+    arrivals.reserve(trajectory_control_.joints.size());
+    for (std::size_t index = 0;
+         index < trajectory_control_.joints.size(); ++index) {
+      const auto& joint = trajectory_control_.joints[index];
+      ArrivalJoint arrival;
+      arrival.joint = joint;
+      arrival.target = static_cast<float>(
+          sample_polynomial(final_coefficients[index], 1.0));
+      arrival.intentionally_disabled =
+          intentionally_disabled_motors_.count(joint.motor) != 0;
+      const auto role = motor_roles_.find(joint.motor);
+      arrival.role = role == motor_roles_.end()
+          ? "joint " + std::to_string(index)
+          : role->second;
+      arrivals.push_back(std::move(arrival));
+    }
+  }
+
+  const float position_tolerance = mode == ARTICORE_MODE_PV
+      ? kPvArrivalPositionTolerance : kMitArrivalPositionTolerance;
+  const float velocity_tolerance = mode == ARTICORE_MODE_PV
+      ? kPvArrivalVelocityTolerance : kMitArrivalVelocityTolerance;
+  bool all_arrived = true;
+  bool all_feedback_new = true;
+  bool has_active_joint = false;
+  std::vector<uint64_t> current_updates(arrivals.size(), 0);
+  float worst_position_error = 0.0f;
+  float worst_velocity = 0.0f;
+  std::string worst_role;
+  float worst_target = 0.0f;
+  float worst_actual = 0.0f;
+  std::string unavailable_role;
+
+  for (std::size_t index = 0; index < arrivals.size(); ++index) {
+    const auto& arrival = arrivals[index];
+    if (arrival.intentionally_disabled) continue;
+    has_active_joint = true;
+    ArticoreFeedbackStats stats{};
+    ArticoreMotorState state{};
+    const bool available =
+        api_.motor_get_feedback_stats(arrival.joint.motor, &stats) == 0 &&
+        stats.has_feedback && stats.age_ns <= feedback_max_age_ns() &&
+        api_.motor_get_state(arrival.joint.motor, &state) == 0 &&
+        state.has_value && state.status_code == 1 && finite(state.pos) &&
+        finite(state.vel);
+    if (!available) {
+      all_arrived = false;
+      all_feedback_new = false;
+      if (unavailable_role.empty()) unavailable_role = arrival.role;
+      continue;
+    }
+    current_updates[index] = stats.update_count;
+    if (feedback_initialized &&
+        index < previous_updates.size() &&
+        stats.update_count == previous_updates[index]) {
+      all_feedback_new = false;
+    }
+    const float actual = arrival.joint.direction * state.pos;
+    const float velocity = arrival.joint.direction * state.vel *
+        arrival.joint.velocity_feedback_scale;
+    const float position_error = std::abs(actual - arrival.target);
+    const float speed = std::abs(velocity);
+    if (position_error > position_tolerance ||
+        speed > velocity_tolerance) {
+      all_arrived = false;
+    }
+    if (position_error > worst_position_error ||
+        (position_error == worst_position_error && speed > worst_velocity)) {
+      worst_position_error = position_error;
+      worst_velocity = speed;
+      worst_role = arrival.role;
+      worst_target = arrival.target;
+      worst_actual = actual;
+    }
+  }
+
+  bool completed = false;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    if (trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING ||
+        trajectory_control_.id != trajectory_id) {
+      return;
+    }
+    trajectory_control_.elapsed_s = trajectory_control_.duration_s;
+    trajectory_control_.active_segment =
+        static_cast<uint32_t>(trajectory_control_.segments.size() - 1);
+
+    if (!has_active_joint) {
+      completed = true;
+    } else {
+      if (!feedback_initialized || all_feedback_new) {
+        trajectory_control_.settling_feedback_updates = current_updates;
+        trajectory_control_.settling_feedback_initialized = true;
+      }
+      if (all_arrived && (!feedback_initialized || all_feedback_new)) {
+        ++trajectory_control_.settled_feedback_samples;
+      } else if (!all_arrived) {
+        trajectory_control_.settled_feedback_samples = 0;
+      }
+      completed = trajectory_control_.settled_feedback_samples >=
+          kArrivalStableFeedbackSamples;
+    }
+
+    if (completed) {
+      trajectory_control_.state = ARTICORE_TRAJECTORY_COMPLETED;
+      trajectory_control_.error.clear();
+      return;
+    }
+
+    const double arrival_timeout_s = std::clamp(
+        trajectory_control_.duration_s * 0.25,
+        kMinimumArrivalTimeoutSeconds, kMaximumArrivalTimeoutSeconds);
+    if (std::chrono::duration<double>(
+            now - settling_started_at).count() >= arrival_timeout_s) {
+      std::ostringstream stream;
+      stream << "trajectory arrival timed out after " << arrival_timeout_s
+             << " s";
+      if (!unavailable_role.empty()) {
+        stream << "; fresh enabled feedback unavailable for "
+               << unavailable_role;
+      } else if (!worst_role.empty()) {
+        stream << "; " << worst_role
+               << " target=" << worst_target
+               << " actual=" << worst_actual
+               << " position_error=" << worst_position_error
+               << " velocity=" << worst_velocity
+               << " tolerances=[position<=" << position_tolerance
+               << ", velocity<=" << velocity_tolerance << "]";
+      }
+      const auto timeout_error = stream.str();
+      terminate_trajectory_locked(
+          ARTICORE_TRAJECTORY_FAULT, timeout_error);
+      last_operation_ = trajectory_control_.operation;
+      last_operation_code_ = ARTICORE_OPERATION_FEEDBACK;
+      last_operation_error_ = timeout_error;
+      operation_failed_motors_.clear();
+      if (!unavailable_role.empty()) {
+        operation_failed_motors_.push_back(unavailable_role);
+      } else if (!worst_role.empty()) {
+        operation_failed_motors_.push_back(worst_role);
+      }
+    }
+  }
 }
 
 void SafetyRuntime::terminate_trajectory_locked(
@@ -582,7 +830,7 @@ void SafetyRuntime::terminate_trajectory_locked(
   trajectory_control_.state = state;
   trajectory_control_.error = error;
   if (state == ARTICORE_TRAJECTORY_FAULT) {
-    last_operation_ = ARTICORE_OPERATION_START_TRAJECTORY;
+    last_operation_ = trajectory_control_.operation;
     last_operation_code_ = ARTICORE_OPERATION_FEEDBACK;
     last_operation_error_ = error;
     operation_failed_motors_.clear();
@@ -603,7 +851,7 @@ void SafetyRuntime::terminate_trajectory_locked(
 void SafetyRuntime::fault_trajectory(const std::string& error) {
   std::lock_guard<std::mutex> state_lock(state_mutex_);
   terminate_trajectory_locked(ARTICORE_TRAJECTORY_FAULT, error);
-  last_operation_ = ARTICORE_OPERATION_START_TRAJECTORY;
+  last_operation_ = trajectory_control_.operation;
   last_operation_code_ = ARTICORE_OPERATION_MOTOR_COMMAND;
   last_operation_error_ = error;
   operation_failed_motors_.clear();

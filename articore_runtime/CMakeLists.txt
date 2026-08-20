@@ -56,6 +56,7 @@ set_target_properties(
 
 add_library(
   articore_runtime SHARED
+  src/product_cartesian.cpp
   src/runtime_abi.cpp
   src/yunyi_runtime.cpp
 )

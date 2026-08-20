@@ -372,7 +372,12 @@ target velocity, Kp, Kd and feedforward torque, while PV frames carry explicit p
 limits. Partial power filters intentionally disabled Motors. Cancellation is idempotent and turns
 the in-flight MIT sample into a stationary hold; disable, estop, disconnect, safe stop and
 transport/send faults terminate the active plan. Status and errors remain native and are mirrored
-into unified operation health.
+into unified operation health. Reaching the nominal plan duration does not by itself produce
+`COMPLETED`: the worker keeps transmitting the final hold and requires consecutive fresh Motor
+feedback samples inside native position and velocity arrival windows. `progress == 1` with
+`state == RUNNING` therefore means physical settling. An internal arrival deadline reports the
+motion as `FAULT`, preserves the final hold without putting Motors into a fault mode, and records
+the failed Motor plus measured error in unified health.
 
 Runtime ABI 2.24 adds `product_gripper_force_10_levels`. The public Yunyi
 `articore_runtime_set_grippers()` selector now addresses the ten immutable
@@ -409,6 +414,40 @@ Runtime ABI 2.27 adds `ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10`. Only product
 5 becomes Kp=80/Kd=5 and level 10 becomes Kp=120/Kd=8. `PROTECTED` calibration
 is unchanged, strength zero remains Kp=Kd=0, and Runtime DEGRADED scaling still
 reduces the resulting gains to 25 percent.
+
+Runtime ABI 2.28 adds
+`ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT` and the native
+`articore_runtime_move_pose()` transaction. The target is
+`[x, y, z, roll, pitch, yaw]` in metres/radians and execution is asynchronous.
+The C++ Runtime performs IK, product-limit and quintic-extrema validation, then
+executes at its private control rate. A valid newer point target atomically
+replaces the running point target from its current polynomial state; an invalid
+replacement leaves the old target running. Explicit multi-waypoint
+trajectories remain strict and are never replaced by this API. This is
+joint-space point-to-point motion, not Cartesian-linear interpolation.
+All product Cartesian motion entry points are PV-only; an MIT product Runtime
+rejects them before planning and leaves any active motion unchanged.
+
+Runtime ABI 2.29 adds `ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR`,
+`articore_runtime_move_cartesian()` and the `articore_runtime_move_linear()`
+convenience entry point. Linear mode keeps XYZ on the start-to-target segment
+and interpolates orientation using shortest-path quaternion SLERP. The Runtime
+solves sequential IK samples at no more than 5 mm / 0.035 rad spacing, rejects
+unreachable, discontinuous or over-limit paths before installation, and then
+executes only precomputed joint polynomials in the realtime worker. PTP and
+linear single-target motions may atomically replace each other; explicit
+multi-waypoint trajectories remain isolated.
+
+Runtime ABI 2.30 adds `ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR` and
+`articore_runtime_move_circular()`. Callers provide three complete
+`[x,y,z,roll,pitch,yaw]` poses. Their XYZ values define the unique arc from
+start through via to end; duplicate or collinear points are rejected. The
+declared start must match the current planned flange pose within 5 mm and
+0.035 rad and is never treated as a teleport target. Orientation passes through
+all three declared attitudes using shortest-path quaternion SLERP on the two
+arc portions. The complete sampled arc receives the same sequential IK,
+branch-continuity, product-limit and polynomial-extrema checks as linear motion
+before it may atomically replace another single-target Cartesian motion.
 
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations

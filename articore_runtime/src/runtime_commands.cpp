@@ -221,7 +221,8 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
   arm_mailbox_ = std::move(initialized);
 }
 
-void SafetyRuntime::require_state_for_command(bool allow_gravity) const {
+void SafetyRuntime::require_state_for_command(bool allow_gravity,
+                                              bool allow_trajectory) const {
   if (fault_latched_ || hardware_transition_ || enable_transaction_ ||
       (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING &&
        state_ != ARTICORE_DEGRADED &&
@@ -233,7 +234,8 @@ void SafetyRuntime::require_state_for_command(bool allow_gravity) const {
     throw std::runtime_error(
         "arm commands are owned by active gravity compensation");
   }
-  if (trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING) {
+  if (!allow_trajectory &&
+      trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING) {
     throw std::runtime_error(
         "arm commands are owned by an active native trajectory");
   }
@@ -816,7 +818,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     }
   }
   commit_gripper_commands_sent(gripper_commands, now);
-  if (trajectory_completing) complete_trajectory_cycle();
+  if (trajectory_completing) update_trajectory_completion(now);
   return true;
 }
 

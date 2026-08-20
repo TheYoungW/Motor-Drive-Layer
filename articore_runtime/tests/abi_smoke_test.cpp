@@ -21,6 +21,16 @@ int main() {
   const auto start_trajectory = &articore_runtime_start_trajectory;
   const auto trajectory_status = &articore_runtime_get_trajectory_status;
   const auto cancel_trajectory = &articore_runtime_cancel_trajectory;
+  const auto move_pose = &articore_runtime_move_pose;
+  const auto move_pose_status = &articore_runtime_get_move_pose_status;
+  const auto cancel_move_pose = &articore_runtime_cancel_move_pose;
+  const auto move_cartesian = &articore_runtime_move_cartesian;
+  const auto move_linear = &articore_runtime_move_linear;
+  const auto cartesian_motion_status =
+      &articore_runtime_get_cartesian_motion_status;
+  const auto cancel_cartesian_motion =
+      &articore_runtime_cancel_cartesian_motion;
+  const auto move_circular = &articore_runtime_move_circular;
   using StartTrajectory = int32_t (*)(
       ArticoreRuntime*, const ArticoreTrajectoryWaypoint*, uint32_t,
       const ArticoreTrajectoryConfig*);
@@ -29,6 +39,23 @@ int main() {
   static_assert(sizeof(ArticoreTrajectoryWaypoint) == 192);
   static_assert(sizeof(ArticoreTrajectoryConfig) == 236);
   static_assert(sizeof(ArticoreTrajectoryStatus) == 560);
+  using MovePose = int32_t (*)(
+      ArticoreRuntime*, uint32_t, const float*, float, uint64_t*);
+  static_assert(std::is_same_v<
+      std::remove_cv_t<decltype(move_pose)>, MovePose>);
+  static_assert(std::is_same_v<
+      std::remove_cv_t<decltype(move_linear)>, MovePose>);
+  static_assert(sizeof(ArticoreMovePoseStatus) == 592);
+  using MoveCartesian = int32_t (*)(
+      ArticoreRuntime*, uint32_t, const float*, float, int32_t, uint64_t*);
+  static_assert(std::is_same_v<
+      std::remove_cv_t<decltype(move_cartesian)>, MoveCartesian>);
+  static_assert(sizeof(ArticoreCartesianMotionStatus) == 600);
+  using MoveCircular = int32_t (*)(
+      ArticoreRuntime*, uint32_t, const float*, const float*, const float*,
+      float, uint64_t*);
+  static_assert(std::is_same_v<
+      std::remove_cv_t<decltype(move_circular)>, MoveCircular>);
   const auto product_grippers = &articore_runtime_set_grippers;
   const auto product_grippers_v2 = &articore_runtime_set_grippers_v2;
   using ProductGrippersV2 = int32_t (*)(
@@ -132,7 +159,11 @@ int main() {
       ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS |
       ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE |
       ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE |
-      ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10;
+      ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10 |
+      ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT |
+      ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR;
+  const uint64_t required_with_circular = required_with_pose_and_estop |
+      ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR;
   bool product_gripper_levels_valid = true;
   for (const int32_t level : {1, 5, 10}) {
     product_gripper_levels_valid = product_gripper_levels_valid &&
@@ -174,11 +205,24 @@ int main() {
       (1ULL << 9) | (1ULL << 12) | (1ULL << 15) |
       (1ULL << 16) | (1ULL << 17);
   const uint64_t removed_public_rate_bits = (1ULL << 23) | (1ULL << 27);
+  float invalid_pose[ARTICORE_PRODUCT_POSE_DOF]{};
+  uint64_t invalid_motion_id = 0;
+  const bool invalid_cartesian_interpolation_rejected =
+      articore_runtime_move_cartesian(
+          nullptr, ARTICORE_ROBOT_LEFT, invalid_pose, 50.0f, 99,
+          &invalid_motion_id) == ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(
+          articore_runtime_last_error(),
+          "Cartesian interpolation must be POINT_TO_POINT or LINEAR") == 0;
   if (!create_ex || !create_ex2 || !create_ex3 || !create_yunyi ||
       !create_product ||
       !configure_mode || !clear_faults || !set_zero || !disconnect ||
       !product_positions || !product_mit || !product_pv ||
       !start_trajectory || !trajectory_status || !cancel_trajectory ||
+      !move_pose || !move_pose_status || !cancel_move_pose ||
+      !move_cartesian || !move_linear || !cartesian_motion_status ||
+      !cancel_cartesian_motion ||
+      !move_circular ||
       !product_grippers || !product_grippers_v2 || !has_product_grippers ||
       !product_state ||
       !product_state_v2 ||
@@ -194,11 +238,11 @@ int main() {
       !gravity_status || !health_v2 || !estop ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x0002001BU ||
-      (capabilities & required_with_pose_and_estop) !=
-          required_with_pose_and_estop ||
+      version != 0x0002001EU ||
+      (capabilities & required_with_circular) != required_with_circular ||
       !product_gripper_levels_valid ||
       !product_gripper_direct_valid ||
+      !invalid_cartesian_interpolation_rejected ||
       (capabilities & removed_trajectory_bits) != 0 ||
       (capabilities & removed_public_rate_bits) != 0) {
     std::cerr << "Articore runtime ABI metadata is incomplete\n";
