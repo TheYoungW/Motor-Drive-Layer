@@ -382,6 +382,11 @@ Runtime ABI 2.24 adds `product_gripper_force_10_levels`. The public Yunyi
 capability instead of inferring support from the older generic ten-level
 gripper capability.
 
+Package 0.10.27 doubles the command strength of all ten `yunyi_gripper_v1`
+calibrations. Moving/holding stiffness and contact/overload torque thresholds
+are doubled; damping, motion speed, opening conversion, stall timing, retreat
+distance, public APIs, and Runtime ABI remain unchanged.
+
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations
 are rejected after connect, and a present motor that loses fresh feedback, reports a motor fault,

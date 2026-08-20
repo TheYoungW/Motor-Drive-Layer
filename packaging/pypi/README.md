@@ -19,6 +19,9 @@ Product trajectories are likewise planned and executed entirely by the C++
 Runtime through the stable trajectory C ABI; the wheel contains no Python
 interpolator or realtime playback loop.
 
+Version 0.10.27 doubles the built-in `yunyi_gripper_v1` command strength at
+every public force level (1 through 10), without changing the product C ABI.
+
 The required Pinocchio C++ template implementations are compiled into
 `libarticore_runtime.so` with hidden visibility. The installed runtime has no dynamic dependency
 on Pinocchio or Boost, so a ROS 2 `LD_LIBRARY_PATH` cannot substitute an incompatible robotics

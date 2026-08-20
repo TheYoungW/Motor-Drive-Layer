@@ -1584,7 +1584,7 @@ void test_builtin_yunyi_gripper_profile_owns_product_calibration() {
             }
             slow_position = driver.last_mit[0].target_position;
             return slow_position <= 2.00025f &&
-                   std::abs(driver.last_mit[0].stiffness - 3.0f) < 1e-6f &&
+                   std::abs(driver.last_mit[0].stiffness - 6.0f) < 1e-6f &&
                    std::abs(driver.last_mit[0].damping - 0.3f) < 1e-6f;
           }),
           "speed=1 maps to 0.01 rad/s and force level 1 calibration");
@@ -1598,7 +1598,7 @@ void test_builtin_yunyi_gripper_profile_owns_product_calibration() {
             std::lock_guard<std::mutex> lock(driver.mutex);
             return driver.last_mit.size() == 1 &&
                    driver.last_mit[0].motor == source_gripper.motor &&
-                   std::abs(driver.last_mit[0].stiffness - 4.0f) < 1e-6f &&
+                   std::abs(driver.last_mit[0].stiffness - 8.0f) < 1e-6f &&
                    std::abs(driver.last_mit[0].damping - 0.5f) < 1e-6f;
           }),
           "force level 5 selects the middle product calibration directly");
@@ -1613,7 +1613,7 @@ void test_builtin_yunyi_gripper_profile_owns_product_calibration() {
                    driver.last_mit[0].motor == source_gripper.motor &&
                    driver.last_mit[0].target_position > slow_position + 0.001f &&
                    driver.last_mit[0].target_position <= 2.64f &&
-                   std::abs(driver.last_mit[0].stiffness - 6.0f) < 1e-6f &&
+                   std::abs(driver.last_mit[0].stiffness - 12.0f) < 1e-6f &&
                    std::abs(driver.last_mit[0].damping - 0.8f) < 1e-6f;
           }),
           "speed=1000 maps to 10 rad/s and force level 10 calibration");
