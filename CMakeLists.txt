@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(motorbridge_native VERSION 0.10.31 LANGUAGES CXX)
+project(motorbridge_native VERSION 0.10.32 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

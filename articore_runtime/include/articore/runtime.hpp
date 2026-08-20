@@ -230,6 +230,20 @@ class Runtime final {
     return motion_id;
   }
 
+  uint64_t move_circular(
+      uint32_t side,
+      const std::array<float, 6>& via_pose,
+      const std::array<float, 6>& end_pose,
+      float speed_percent = 100.0f) {
+    uint64_t motion_id = 0;
+    detail::check(
+        articore_runtime_move_circular_v2(
+            checked(), side, via_pose.data(), end_pose.data(),
+            speed_percent, &motion_id),
+        "move_circular_v2");
+    return motion_id;
+  }
+
   ArticoreMovePoseStatus move_pose_status() const {
     ArticoreMovePoseStatus result{};
     result.struct_size = sizeof(result);

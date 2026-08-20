@@ -132,9 +132,15 @@ class SafetyRuntime {
   // replace_trajectory_id=0 preserves strict trajectory semantics and rejects
   // a concurrent plan. A non-zero value atomically replaces exactly that
   // running plan after the new request has passed all validation.
+  using CommandTransaction = std::unique_lock<std::mutex>;
+  CommandTransaction begin_command_transaction();
   uint64_t start_trajectory(NativeTrajectoryRequest request,
-                            uint64_t replace_trajectory_id = 0);
+                            uint64_t replace_trajectory_id = 0,
+                            CommandTransaction* transaction = nullptr);
   NativeTrajectorySample trajectory_sample() const;
+  NativeTrajectorySample planned_arm_sample(
+      const std::vector<NativeTrajectoryJoint>& joints,
+      const CommandTransaction& transaction) const;
   ArticoreTrajectoryStatus trajectory_status() const;
   void cancel_trajectory();
   void set_joint_mit(const ArticoreJointMitTarget* targets,
@@ -351,6 +357,7 @@ class SafetyRuntime {
   void update_trajectory_completion(Clock::time_point now);
   void terminate_trajectory_locked(ArticoreTrajectoryState state,
                                    const std::string& error);
+  NativeTrajectorySample trajectory_sample_locked(Clock::time_point now) const;
   void fault_trajectory(const std::string& error);
   bool prepare_mit_torque_limited_commands(
       const std::vector<ArticoreMitCommand>& requested,

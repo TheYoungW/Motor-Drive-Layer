@@ -54,6 +54,13 @@ final setpoint while it requires consecutive fresh position/velocity samples;
 an internal arrival timeout marks the motion failed and writes diagnostics to
 health without switching the Motors into a fault mode.
 
+Version 0.10.32 adds `articore_runtime_move_circular_v2()`. The caller supplies
+only via and end poses; Runtime reads the start from its current planned
+reference and installs the replacement in one native command transaction.
+It never uses a lagging feedback pose or requires an SDK `get_pose()` round
+trip. The legacy three-pose symbol remains available, and MIT Runtime instances
+reject v2 before replacing an active motion.
+
 The required Pinocchio C++ template implementations are compiled into
 `libarticore_runtime.so` with hidden visibility. The installed runtime has no dynamic dependency
 on Pinocchio or Boost, so a ROS 2 `LD_LIBRARY_PATH` cannot substitute an incompatible robotics

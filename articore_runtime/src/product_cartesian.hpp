@@ -13,6 +13,9 @@ struct NativeCartesianPlan {
   uint64_t replace_trajectory_id = 0;
 };
 
+std::vector<NativeTrajectoryJoint> product_cartesian_joints(
+    const YunyiRuntimeResources& product);
+
 NativeCartesianPlan build_cartesian_plan(
     SafetyRuntime& safety,
     YunyiRuntimeResources& product,
@@ -28,6 +31,15 @@ NativeCartesianPlan build_circular_plan(
     ArticoreControlMode mode,
     uint32_t side,
     const float* start_pose,
+    const float* via_pose,
+    const float* end_pose,
+    float speed_percent);
+
+NativeCartesianPlan build_circular_plan_from_reference(
+    YunyiRuntimeResources& product,
+    ArticoreControlMode mode,
+    uint32_t side,
+    const NativeTrajectorySample& reference,
     const float* via_pose,
     const float* end_pose,
     float speed_percent);

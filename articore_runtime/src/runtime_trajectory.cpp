@@ -239,7 +239,9 @@ double sample_acceleration(const std::array<double, 6>& coefficients,
 }  // namespace
 
 uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
-                                         uint64_t replace_trajectory_id) {
+                                         uint64_t replace_trajectory_id,
+                                         CommandTransaction* transaction) {
+  const bool planned_reference_transaction = transaction != nullptr;
   const std::size_t joint_count = request.joints.size();
   const std::size_t waypoint_count = request.waypoints.size();
   if (request.mode != ARTICORE_MODE_MIT && request.mode != ARTICORE_MODE_PV) {
@@ -430,7 +432,14 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
     segments.push_back(std::move(segment));
   }
 
-  std::lock_guard<std::mutex> command_lock(command_mutex_);
+  CommandTransaction owned_transaction;
+  if (transaction) {
+    if (!transaction->owns_lock() || transaction->mutex() != &command_mutex_) {
+      throw std::logic_error("invalid Runtime command transaction");
+    }
+  } else {
+    owned_transaction = begin_command_transaction();
+  }
   std::set<void*> intentionally_disabled;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
@@ -476,7 +485,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
           "trajectory start power feedback disagrees with Runtime at joint " +
           std::to_string(joint_index));
     }
-    if (replace_trajectory_id == 0) {
+    if (replace_trajectory_id == 0 && !planned_reference_transaction) {
       const float requested_start =
           joint.direction * request.waypoints.front().positions[joint_index];
       if (std::abs(state.pos - requested_start) > kStartPositionTolerance) {
@@ -532,9 +541,18 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
 }
 
 NativeTrajectorySample SafetyRuntime::trajectory_sample() const {
-  NativeTrajectorySample result;
   const auto now = Clock::now();
   std::lock_guard<std::mutex> state_lock(state_mutex_);
+  return trajectory_sample_locked(now);
+}
+
+SafetyRuntime::CommandTransaction SafetyRuntime::begin_command_transaction() {
+  return CommandTransaction(command_mutex_);
+}
+
+NativeTrajectorySample SafetyRuntime::trajectory_sample_locked(
+    Clock::time_point now) const {
+  NativeTrajectorySample result;
   if (trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING ||
       trajectory_control_.segments.empty() ||
       trajectory_control_.joints.empty()) {
@@ -568,6 +586,76 @@ NativeTrajectorySample SafetyRuntime::trajectory_sample() const {
         sample_velocity(coefficients, u, segment.duration_s)));
     result.accelerations.push_back(static_cast<float>(
         sample_acceleration(coefficients, u, segment.duration_s)));
+  }
+  return result;
+}
+
+NativeTrajectorySample SafetyRuntime::planned_arm_sample(
+    const std::vector<NativeTrajectoryJoint>& joints,
+    const CommandTransaction& transaction) const {
+  if (!transaction.owns_lock() || transaction.mutex() != &command_mutex_) {
+    throw std::logic_error(
+        "planned arm reference requires the Runtime command transaction");
+  }
+  if (joints.empty()) {
+    throw std::invalid_argument("planned arm reference has no joints");
+  }
+
+  {
+    const auto now = Clock::now();
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    auto active = trajectory_sample_locked(now);
+    if (active.active) return active;
+  }
+
+  if (!arm_mailbox_.valid) {
+    throw std::runtime_error(
+        "current planned arm reference is unavailable");
+  }
+
+  NativeTrajectorySample result;
+  result.positions.reserve(joints.size());
+  result.velocities.reserve(joints.size());
+  result.accelerations.assign(joints.size(), 0.0f);
+  for (std::size_t index = 0; index < joints.size(); ++index) {
+    const auto& joint = joints[index];
+    if (!joint.motor || !finite(joint.direction) ||
+        std::abs(joint.direction) != 1.0f) {
+      throw std::invalid_argument(
+          "planned arm reference contains an invalid joint at index " +
+          std::to_string(index));
+    }
+    if (!arm_mailbox_.pv.empty()) {
+      const auto found = std::find_if(
+          arm_mailbox_.pv.begin(), arm_mailbox_.pv.end(),
+          [&](const ArticorePosVelCommand& command) {
+            return command.motor == joint.motor;
+          });
+      if (found == arm_mailbox_.pv.end()) {
+        throw std::runtime_error(
+            "current planned PV reference is incomplete at joint " +
+            std::to_string(index));
+      }
+      result.positions.push_back(joint.direction * found->target_position);
+      result.velocities.push_back(0.0f);
+      continue;
+    }
+    const auto found = std::find_if(
+        arm_mailbox_.mit.begin(), arm_mailbox_.mit.end(),
+        [&](const ArticoreMitCommand& command) {
+          return command.motor == joint.motor;
+        });
+    if (found == arm_mailbox_.mit.end() ||
+        !finite(joint.velocity_command_scale) ||
+        joint.velocity_command_scale <= 0.0f) {
+      throw std::runtime_error(
+          "current planned MIT reference is incomplete at joint " +
+          std::to_string(index));
+    }
+    result.positions.push_back(joint.direction * found->target_position);
+    result.velocities.push_back(
+        joint.direction * found->target_velocity /
+        joint.velocity_command_scale);
   }
   return result;
 }

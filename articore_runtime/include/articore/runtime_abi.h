@@ -174,6 +174,10 @@ enum ArticoreRuntimeCapability {
   // unique traversed arc; orientation passes through all three poses using
   // piecewise shortest-path quaternion SLERP.
   ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR = 1ULL << 54,
+  // ABI 2.31 removes the public circular start pose. Runtime snapshots the
+  // current planned joint reference and installs the replacement under one
+  // native command transaction, avoiding feedback lag and SDK round trips.
+  ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START = 1ULL << 55,
 };
 
 enum {
@@ -1246,6 +1250,12 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* via_pose, const float* end_pose, float speed_percent,
     uint64_t* motion_id);
+// ABI 2.31 circular motion whose start is the Runtime-owned planned flange
+// pose. Reading that reference and installing the replacement are one native
+// command transaction. The old three-pose entry point remains ABI-compatible.
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular_v2(
+    ArticoreRuntime* runtime, uint32_t side, const float* via_pose,
+    const float* end_pose, float speed_percent, uint64_t* motion_id);
 // Whole-product gripper command. Openings use 0=closed and 1000=open and are
 // clamped when finite. gripper_level directly selects one of the built-in
 // yunyi_gripper_v1 levels 1..10; 1 is lightest and 10 is strongest.

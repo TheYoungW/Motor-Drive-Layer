@@ -252,6 +252,80 @@ int32_t move_circular_impl(
   }
 }
 
+int32_t move_circular_v2_impl(
+    ArticoreRuntime* runtime, uint32_t side, const float* via_pose,
+    const float* end_pose, float speed_percent, uint64_t* motion_id) {
+  try {
+    if (!runtime) throw std::invalid_argument("runtime is null");
+    if (!motion_id) throw std::invalid_argument("motion_id output is null");
+    std::lock_guard<std::mutex> motion_lock(runtime->move_pose_mutex);
+    auto& safety = checked(runtime);
+    auto& product = checked_yunyi(runtime);
+
+    // The command transaction is the same barrier used by the native control
+    // worker. The circular start is therefore sampled from the current
+    // trajectory/mailbox reference and the replacement is installed without
+    // allowing another control sample to advance between those two events.
+    auto transaction = safety.begin_command_transaction();
+    const auto reference = safety.planned_arm_sample(
+        articore::product_cartesian_joints(product), transaction);
+    auto plan = articore::build_circular_plan_from_reference(
+        product, runtime->product_mode, side, reference, via_pose, end_pose,
+        speed_percent);
+
+    uint64_t new_id = 0;
+    for (uint32_t attempt = 0; attempt < 12; ++attempt) {
+      try {
+        new_id = safety.start_trajectory(
+            plan.trajectory, plan.replace_trajectory_id, &transaction);
+        break;
+      } catch (const std::invalid_argument& error) {
+        const std::string message = error.what();
+        if (message.find("inside the segment") == std::string::npos ||
+            plan.trajectory.waypoints.back().time_s >= 60.0) {
+          throw;
+        }
+        for (auto& waypoint : plan.trajectory.waypoints) {
+          waypoint.time_s *= 1.35;
+        }
+      }
+    }
+    if (new_id == 0) {
+      throw std::invalid_argument(
+          "circular motion could not satisfy product limits at any safe duration");
+    }
+
+    runtime->superseded_move_pose_id = plan.replace_trajectory_id;
+    runtime->move_pose_id = new_id;
+    runtime->move_pose_side = side;
+    runtime->cartesian_interpolation = ARTICORE_CARTESIAN_CIRCULAR;
+    runtime->move_pose_speed_percent = speed_percent;
+    std::copy(end_pose, end_pose + ARTICORE_PRODUCT_POSE_DOF,
+              runtime->move_pose_target.begin());
+    *motion_id = new_id;
+    safety.record_operation_result(
+        ARTICORE_OPERATION_MOVE_CIRCULAR, ARTICORE_OPERATION_OK);
+    g_last_error = "ok";
+    return ARTICORE_OPERATION_OK;
+  } catch (const std::invalid_argument& error) {
+    if (runtime && runtime->runtime) {
+      runtime->runtime->record_operation_result(
+          ARTICORE_OPERATION_MOVE_CIRCULAR,
+          ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
+    }
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  } catch (const std::exception& error) {
+    if (runtime && runtime->runtime) {
+      runtime->runtime->record_operation_result(
+          ARTICORE_OPERATION_MOVE_CIRCULAR,
+          ARTICORE_OPERATION_INVALID_STATE, error.what());
+    }
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_STATE;
+  }
+}
+
 articore::RobotModel& checked(ArticoreRobotModel* model) {
   if (!model || !model->model) throw std::invalid_argument("robot model is null");
   return *model->model;
@@ -383,7 +457,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 30U;
+  return (2U << 16) | 31U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -433,7 +507,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10 |
          ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT |
          ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR |
-         ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR;
+         ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR |
+         ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START;
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -1126,6 +1201,13 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular(
   return move_circular_impl(
       runtime, side, start_pose, via_pose, end_pose, speed_percent,
       motion_id);
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular_v2(
+    ArticoreRuntime* runtime, uint32_t side, const float* via_pose,
+    const float* end_pose, float speed_percent, uint64_t* motion_id) {
+  return move_circular_v2_impl(
+      runtime, side, via_pose, end_pose, speed_percent, motion_id);
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_move_pose_status(

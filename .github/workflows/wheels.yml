@@ -91,7 +91,7 @@ jobs:
           from importlib.metadata import distribution, version
           from pathlib import Path
 
-          assert version("motor-drive-layer") == "0.10.26"
+          assert version("motor-drive-layer") == "0.10.32"
           assert importlib.util.find_spec("motor_drive_layer") is None
           dist = distribution("motor-drive-layer")
           entries = {str(item): item for item in dist.files or ()}
@@ -103,9 +103,11 @@ jobs:
           assert motor_lib.motor_abi_version() == b"0.5.0-cpp"
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00020017
+          assert runtime_lib.articore_runtime_abi_version() == 0x0002001F
           runtime_lib.articore_runtime_capabilities.restype = ctypes.c_uint64
           capabilities = runtime_lib.articore_runtime_capabilities()
+          assert capabilities & (1 << 55)
+          assert hasattr(runtime_lib, "articore_runtime_move_circular_v2")
           assert capabilities & ((1 << 23) | (1 << 27)) == 0
           assert not hasattr(runtime_lib, "articore_runtime_get_control_hz")
           dynamic = subprocess.check_output(["readelf", "-d", runtime], text=True)

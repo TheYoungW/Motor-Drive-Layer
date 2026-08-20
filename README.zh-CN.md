@@ -284,6 +284,12 @@ Runtime ABI 2.30 增加 `product_cartesian_circular` 和
 SLERP，并确保经过三份声明姿态。整条圆弧在原子覆盖旧的单目标笛卡尔运动之前，完成连续
 IK、IK 分支连续性、产品限位和多项式段内极值校验。
 
+Runtime ABI 2.31 增加 `product_cartesian_circular_auto_start` 和
+`articore_runtime_move_circular_v2()`。调用方只传中间点与终点；Runtime 从当前规划关节
+参考（不是滞后的电机反馈）计算圆弧起点，并在同一个底层命令事务内完成参考快照与新轨迹
+安装，消除 SDK 先 `get_pose()` 再回传产生的竞态。旧三点接口继续保留 ABI 兼容。非 PV
+模式会在覆盖现有运动之前拒绝调用。
+
 ## 安全
 
 电机控制可能造成意外运动和人身伤害。测试时必须支撑机构、准备独立急停、确认通道/ID/型号/

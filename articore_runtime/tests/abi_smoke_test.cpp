@@ -31,6 +31,7 @@ int main() {
   const auto cancel_cartesian_motion =
       &articore_runtime_cancel_cartesian_motion;
   const auto move_circular = &articore_runtime_move_circular;
+  const auto move_circular_v2 = &articore_runtime_move_circular_v2;
   using StartTrajectory = int32_t (*)(
       ArticoreRuntime*, const ArticoreTrajectoryWaypoint*, uint32_t,
       const ArticoreTrajectoryConfig*);
@@ -56,6 +57,11 @@ int main() {
       float, uint64_t*);
   static_assert(std::is_same_v<
       std::remove_cv_t<decltype(move_circular)>, MoveCircular>);
+  using MoveCircularV2 = int32_t (*)(
+      ArticoreRuntime*, uint32_t, const float*, const float*, float,
+      uint64_t*);
+  static_assert(std::is_same_v<
+      std::remove_cv_t<decltype(move_circular_v2)>, MoveCircularV2>);
   const auto product_grippers = &articore_runtime_set_grippers;
   const auto product_grippers_v2 = &articore_runtime_set_grippers_v2;
   using ProductGrippersV2 = int32_t (*)(
@@ -163,7 +169,8 @@ int main() {
       ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT |
       ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR;
   const uint64_t required_with_circular = required_with_pose_and_estop |
-      ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR;
+      ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR |
+      ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START;
   bool product_gripper_levels_valid = true;
   for (const int32_t level : {1, 5, 10}) {
     product_gripper_levels_valid = product_gripper_levels_valid &&
@@ -222,7 +229,7 @@ int main() {
       !move_pose || !move_pose_status || !cancel_move_pose ||
       !move_cartesian || !move_linear || !cartesian_motion_status ||
       !cancel_cartesian_motion ||
-      !move_circular ||
+      !move_circular || !move_circular_v2 ||
       !product_grippers || !product_grippers_v2 || !has_product_grippers ||
       !product_state ||
       !product_state_v2 ||
@@ -238,7 +245,7 @@ int main() {
       !gravity_status || !health_v2 || !estop ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x0002001EU ||
+      version != 0x0002001FU ||
       (capabilities & required_with_circular) != required_with_circular ||
       !product_gripper_levels_valid ||
       !product_gripper_direct_valid ||

@@ -449,6 +449,16 @@ arc portions. The complete sampled arc receives the same sequential IK,
 branch-continuity, product-limit and polynomial-extrema checks as linear motion
 before it may atomically replace another single-target Cartesian motion.
 
+Runtime ABI 2.31 adds
+`ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START` and
+`articore_runtime_move_circular_v2()`. Callers provide only via and end poses.
+Runtime derives the start from its current planned joint reference—not delayed
+motor feedback—and performs that snapshot plus trajectory installation inside
+one native command transaction. This removes the SDK `get_pose()` round trip
+and its race. The legacy three-pose function remains available for ABI
+compatibility. Non-PV Runtime instances reject the v2 call before any existing
+motion is replaced.
+
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations
 are rejected after connect, and a present motor that loses fresh feedback, reports a motor fault,

@@ -364,12 +364,24 @@ NativeCartesianPlan build_cartesian_plan(
       speed_percent, plan.replace_trajectory_id);
 }
 
-NativeCartesianPlan build_circular_plan(
-    SafetyRuntime& safety,
+std::vector<NativeTrajectoryJoint> product_cartesian_joints(
+    const YunyiRuntimeResources& product) {
+  std::vector<NativeTrajectoryJoint> joints;
+  joints.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
+  for (uint32_t index = 0; index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
+    joints.push_back(trajectory_joint(product.joints[index], 1.0f, 0.0f));
+  }
+  return joints;
+}
+
+namespace {
+
+NativeCartesianPlan build_circular_plan_common(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
-    const float* start_pose_values,
+    const NativeTrajectorySample& reference,
+    const ArticoreRobotPose* declared_start,
     const float* via_pose_values,
     const float* end_pose_values,
     float speed_percent) {
@@ -383,39 +395,30 @@ NativeCartesianPlan build_circular_plan(
     throw std::invalid_argument(
         "Cartesian motion speed_percent must be in (0,100]");
   }
-  const auto declared_start = robot_pose_from_rpy(start_pose_values);
   const auto via = robot_pose_from_rpy(via_pose_values);
   const auto end = robot_pose_from_rpy(end_pose_values);
-  const auto arc = cartesian::circular_arc_from_three_points(
-      declared_start.position, via.position, end.position);
+  if (reference.active &&
+      reference.operation != ARTICORE_OPERATION_MOVE_POSE &&
+      reference.operation != ARTICORE_OPERATION_MOVE_LINEAR &&
+      reference.operation != ARTICORE_OPERATION_MOVE_CIRCULAR) {
+    throw std::runtime_error(
+        "Cartesian motion cannot replace an explicit multi-waypoint trajectory");
+  }
+  if (reference.positions.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF ||
+      reference.velocities.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF ||
+      reference.accelerations.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF) {
+    throw std::runtime_error("current planned Cartesian reference is incomplete");
+  }
 
   std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> start_positions{};
   std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> start_velocities{};
-  read_product_arm_snapshot(
-      safety, product, start_positions, start_velocities);
   std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> start_accelerations{};
-  uint64_t replace_trajectory_id = 0;
-  const auto active = safety.trajectory_sample();
-  if (active.active) {
-    if (active.operation != ARTICORE_OPERATION_MOVE_POSE &&
-        active.operation != ARTICORE_OPERATION_MOVE_LINEAR &&
-        active.operation != ARTICORE_OPERATION_MOVE_CIRCULAR) {
-      throw std::runtime_error(
-          "Cartesian motion cannot replace an explicit multi-waypoint trajectory");
-    }
-    if (active.positions.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF ||
-        active.velocities.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF ||
-        active.accelerations.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF) {
-      throw std::runtime_error("active Cartesian plan is incomplete");
-    }
-    std::copy(active.positions.begin(), active.positions.end(),
-              start_positions.begin());
-    std::copy(active.velocities.begin(), active.velocities.end(),
-              start_velocities.begin());
-    std::copy(active.accelerations.begin(), active.accelerations.end(),
-              start_accelerations.begin());
-    replace_trajectory_id = active.trajectory_id;
-  }
+  std::copy(reference.positions.begin(), reference.positions.end(),
+            start_positions.begin());
+  std::copy(reference.velocities.begin(), reference.velocities.end(),
+            start_velocities.begin());
+  std::copy(reference.accelerations.begin(), reference.accelerations.end(),
+            start_accelerations.begin());
 
   const uint32_t side_offset = side * ARTICORE_PRODUCT_ARM_DOF;
   std::array<double, ARTICORE_PRODUCT_ARM_DOF> start_q{};
@@ -429,22 +432,27 @@ NativeCartesianPlan build_circular_plan(
     product.pose_models[side]->fk(
         start_q.data(), start_q.size(), &actual_start);
   }
-  const auto position_error = cartesian::norm(cartesian::subtract(
-      actual_start.position, declared_start.position));
   const auto actual_start_orientation =
       cartesian::quaternion_from_rotation(actual_start.rotation);
-  const auto declared_start_orientation =
-      cartesian::quaternion_from_rotation(declared_start.rotation);
+  if (declared_start) {
+    const auto position_error = cartesian::norm(cartesian::subtract(
+        actual_start.position, declared_start->position));
+    const auto declared_start_orientation =
+        cartesian::quaternion_from_rotation(declared_start->rotation);
+    const double orientation_error = cartesian::angular_distance(
+        actual_start_orientation, declared_start_orientation);
+    if (position_error > 0.005 || orientation_error > 0.035) {
+      throw std::invalid_argument(
+          "circular start pose does not match the current planned flange pose");
+    }
+  }
+  const auto& geometric_start = declared_start ? *declared_start : actual_start;
+  const auto arc = cartesian::circular_arc_from_three_points(
+      geometric_start.position, via.position, end.position);
   const auto via_orientation =
       cartesian::quaternion_from_rotation(via.rotation);
   const auto end_orientation =
       cartesian::quaternion_from_rotation(end.rotation);
-  const double orientation_error = cartesian::angular_distance(
-      actual_start_orientation, declared_start_orientation);
-  if (position_error > 0.005 || orientation_error > 0.035) {
-    throw std::invalid_argument(
-        "circular start pose does not match the current planned flange pose");
-  }
 
   const double first_arc_length = arc.radius * arc.via_angle;
   const double second_arc_length =
@@ -521,7 +529,46 @@ NativeCartesianPlan build_circular_plan(
   return assemble_cartesian_plan(
       path, start_velocities, start_accelerations, product, mode,
       ARTICORE_OPERATION_MOVE_CIRCULAR, speed_percent,
-      replace_trajectory_id);
+      reference.active ? reference.trajectory_id : 0);
+}
+
+}  // namespace
+
+NativeCartesianPlan build_circular_plan(
+    SafetyRuntime& safety,
+    YunyiRuntimeResources& product,
+    ArticoreControlMode mode,
+    uint32_t side,
+    const float* start_pose_values,
+    const float* via_pose_values,
+    const float* end_pose_values,
+    float speed_percent) {
+  const auto declared_start = robot_pose_from_rpy(start_pose_values);
+  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> positions{};
+  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> velocities{};
+  read_product_arm_snapshot(safety, product, positions, velocities);
+  NativeTrajectorySample reference;
+  reference.positions.assign(positions.begin(), positions.end());
+  reference.velocities.assign(velocities.begin(), velocities.end());
+  reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  const auto active = safety.trajectory_sample();
+  if (active.active) reference = active;
+  return build_circular_plan_common(
+      product, mode, side, reference, &declared_start, via_pose_values,
+      end_pose_values, speed_percent);
+}
+
+NativeCartesianPlan build_circular_plan_from_reference(
+    YunyiRuntimeResources& product,
+    ArticoreControlMode mode,
+    uint32_t side,
+    const NativeTrajectorySample& reference,
+    const float* via_pose_values,
+    const float* end_pose_values,
+    float speed_percent) {
+  return build_circular_plan_common(
+      product, mode, side, reference, nullptr, via_pose_values,
+      end_pose_values, speed_percent);
 }
 
 }  // namespace articore

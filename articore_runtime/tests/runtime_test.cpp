@@ -3976,6 +3976,59 @@ void test_native_quintic_trajectory_executes_at_worker_rate() {
   runtime.disable();
 }
 
+void test_planned_reference_transaction_does_not_use_lagging_feedback() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+  auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.3);
+  for (auto& joint : request.joints) {
+    joint.direction = 1.0f;
+    joint.velocity_command_scale = 1.0f;
+    joint.velocity_feedback_scale = 1.0f;
+  }
+
+  uint64_t id = 0;
+  {
+    auto transaction = runtime.begin_command_transaction();
+    const auto reference = runtime.planned_arm_sample(
+        request.joints, transaction);
+    require(!reference.active && reference.positions.size() == 2 &&
+                std::abs(reference.positions[0]) < 1e-6f &&
+                std::abs(reference.positions[1] - 1.0f) < 1e-6f,
+            "planned reference comes from the Runtime mailbox");
+
+    // Deliberately make feedback disagree while the transaction is open.
+    // A circular-v2 replacement must start from the planned reference and not
+    // reject it by re-reading this lagging physical sample.
+    {
+      std::lock_guard<std::mutex> lock(driver.mutex);
+      driver.motors[motors[0].motor].position = 0.8f;
+      driver.motors[motors[1].motor].position = 0.2f;
+    }
+    request.waypoints.front().positions = reference.positions;
+    id = runtime.start_trajectory(std::move(request), 0, &transaction);
+    {
+      std::lock_guard<std::mutex> lock(driver.mutex);
+      driver.motors[motors[0].motor].position = 0.0f;
+      driver.motors[motors[1].motor].position = 1.0f;
+    }
+  }
+  require(id != 0 &&
+              runtime.trajectory_status().state == ARTICORE_TRAJECTORY_RUNNING,
+          "planned reference and trajectory installation share one transaction");
+  runtime.disable();
+}
+
 void test_native_trajectory_completion_waits_for_physical_arrival() {
   FakeDriver driver;
   g_driver = &driver;
@@ -4613,6 +4666,7 @@ int main() {
     RUN_TEST(test_ordinary_mit_position_reinitializes_after_reenable);
     RUN_TEST(test_deadline_skips_missed_periods_and_reenable_seeds_feedback);
     RUN_TEST(test_native_quintic_trajectory_executes_at_worker_rate);
+    RUN_TEST(test_planned_reference_transaction_does_not_use_lagging_feedback);
     RUN_TEST(test_native_trajectory_completion_waits_for_physical_arrival);
     RUN_TEST(test_native_trajectory_arrival_timeout_is_reported_in_health);
     RUN_TEST(test_native_trajectory_uses_raw_mit_and_cancel_is_idempotent);

@@ -1,14 +1,14 @@
 {
   "schema": 1,
   "package": "motor_drive_layer_native",
-  "version": "0.10.31",
+  "version": "0.10.32",
   "purpose": "Canonical native ABI surface and external SDK binding contract.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",
     "articore_runtime": "product watchdog, safety state machine and gripper ABI"
   },
   "runtime_abi": {
-    "version": "2.30",
+    "version": "2.31",
     "capabilities": [
       "atomic_enable",
       "atomic_motor_power_batch",
@@ -48,6 +48,7 @@
       "product_cartesian_point_to_point",
       "product_cartesian_linear",
       "product_cartesian_circular",
+      "product_cartesian_circular_auto_start",
       "product_gripper_force_10_levels",
       "product_gripper_direct_mode",
       "unified_operation_health",
@@ -219,6 +220,7 @@
         "articore_runtime_get_cartesian_motion_status",
         "articore_runtime_cancel_cartesian_motion",
         "articore_runtime_move_circular",
+        "articore_runtime_move_circular_v2",
         "articore_runtime_get_state",
         "articore_runtime_get_state_v2",
         "articore_runtime_get_pose",
