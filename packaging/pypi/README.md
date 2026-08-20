@@ -26,6 +26,9 @@ Version 0.10.28 adds the ABI 2.25 product gripper v2 command with protected and
 direct (no contact/stall or overload-retreat) modes and a 0-through-10 strength
 scale. Runtime-wide safety remains active in both modes.
 
+Version 0.10.29 guarantees that Yunyi grippers remain in MIT mode regardless
+of whether the fourteen arm joints use PV or MIT control.
+
 The required Pinocchio C++ template implementations are compiled into
 `libarticore_runtime.so` with hidden visibility. The installed runtime has no dynamic dependency
 on Pinocchio or Boost, so a ROS 2 `LD_LIBRARY_PATH` cannot substitute an incompatible robotics

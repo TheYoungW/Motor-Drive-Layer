@@ -155,6 +155,10 @@ enum ArticoreRuntimeCapability {
   // fault, transport, estop, and disconnect safety. The v2 command accepts
   // strength 0..10; zero produces no active gripper stiffness.
   ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE = 1ULL << 49,
+  // ABI 2.26 guarantees that the selected product mode applies only to arm
+  // joints. Installed Yunyi grippers are configured and commanded as MIT in
+  // both PV-arm and MIT-arm products.
+  ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE = 1ULL << 50,
 };
 
 enum {

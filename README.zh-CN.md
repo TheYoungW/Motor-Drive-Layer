@@ -245,6 +245,11 @@ Runtime ABI 2.25 增加 `articore_runtime_set_grippers_v2()` 和产品级
 安全、急停和整机失能始终有效。旧 `articore_runtime_set_grippers()` 保持 1..10 和默认保护
 模式，现有 SDK 不受影响。
 
+Runtime ABI 2.26 增加 `fixed_gripper_mit_mode` 保证。产品 `control_mode` 只作用于左右
+14 个机械臂关节：PV 产品将关节配置为 PV，MIT 产品将关节配置为 MIT；左右夹爪在两种产品
+模式下都固定配置并使用 MIT。这样夹爪不会因跟随整机 PV 模式而持续顶住目标并堵转，且模式
+配置、使能当前位置保持、正常夹爪控制和恢复后的保持始终使用一致的 MIT 协议。
+
 ## 安全
 
 电机控制可能造成意外运动和人身伤害。测试时必须支撑机构、准备独立急停、确认通道/ID/型号/

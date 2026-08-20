@@ -66,6 +66,7 @@ struct FakeDriver {
   uint32_t clear_fault_calls = 0;
   uint32_t set_zero_calls = 0;
   uint32_t configure_mode_calls = 0;
+  std::map<void*, uint32_t> configured_modes;
   uint32_t configure_timeout_calls = 0;
   void* fail_maintenance_motor = nullptr;
   uint32_t feedback_requests = 0;
@@ -291,10 +292,11 @@ int32_t set_motor_zero(void* handle) {
   return 0;
 }
 
-int32_t ensure_motor_mode(void* handle, uint32_t, uint32_t) {
+int32_t ensure_motor_mode(void* handle, uint32_t mode, uint32_t) {
   std::lock_guard<std::mutex> lock(g_driver->mutex);
   if (handle == g_driver->fail_maintenance_motor) return -1;
   ++g_driver->configure_mode_calls;
+  g_driver->configured_modes[handle] = mode;
   return g_driver->motors.count(handle) ? 0 : -1;
 }
 
@@ -789,12 +791,16 @@ void test_runtime_maintenance_keeps_ready_and_reports_partial_failure() {
   require(driver.set_zero_calls == motors.size(),
           "zero covers every installed arm and gripper motor");
 
-  require(runtime.configure_mode(ARTICORE_MODE_MIT) == ARTICORE_OPERATION_OK,
+  require(runtime.configure_mode(ARTICORE_MODE_PV) == ARTICORE_OPERATION_OK,
           "Runtime-owned mode configuration succeeds");
   require(driver.configure_mode_calls == motors.size(),
           "mode configuration covers both channels");
   require(driver.configure_timeout_calls == motors.size(),
           "mode configuration also owns the product communication watchdog");
+  require(driver.configured_modes[motors[0].motor] == 2U &&
+              driver.configured_modes[motors[1].motor] == 2U &&
+              driver.configured_modes[motors[2].motor] == 1U,
+          "PV product mode configures arm joints as PV but keeps grippers MIT");
   require(runtime.configure_mode(static_cast<ArticoreControlMode>(99)) ==
               ARTICORE_OPERATION_INVALID_ARGUMENT &&
               runtime.health_v2().last_operation_code ==

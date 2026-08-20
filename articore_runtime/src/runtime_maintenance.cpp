@@ -201,9 +201,13 @@ int32_t SafetyRuntime::run_motor_maintenance(
         if (motor.descriptor.side != side) continue;
         int32_t rc = 0;
         if (configure) {
-          // libmotor_abi uses MIT=1 and POS_VEL=2.
+          // The product control mode applies only to the fourteen arm joints.
+          // Yunyi grippers always run MIT because a position/velocity gripper
+          // can keep driving into an obstructed target and stall. libmotor_abi
+          // uses MIT=1 and POS_VEL=2.
           const uint32_t native_mode =
-              mode == ARTICORE_MODE_MIT ? 1U : 2U;
+              motor.descriptor.is_gripper || mode == ARTICORE_MODE_MIT
+                  ? 1U : 2U;
           rc = maintenance_api_.motor_ensure_mode(
               motor.descriptor.motor, native_mode,
               config_.disable_feedback_timeout_ms);

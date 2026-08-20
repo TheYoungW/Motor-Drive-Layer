@@ -397,6 +397,13 @@ calibrations. Motor fault, feedback/transport safety, estop, and disconnect
 remain active in both modes. The legacy product function remains protected and
 retains its 1..10 contract.
 
+Runtime ABI 2.26 adds `ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE`. Product control
+mode now applies only to the fourteen arm joints: PV arms are configured as PV
+and MIT arms as MIT, while both installed grippers are always configured and
+commanded as MIT. Mode configuration, enable-time current-position hold,
+normal gripper control, and recovery holding therefore use one consistent
+gripper protocol and never place a Yunyi gripper in PV mode.
+
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations
 are rejected after connect, and a present motor that loses fresh feedback, reports a motor fault,
