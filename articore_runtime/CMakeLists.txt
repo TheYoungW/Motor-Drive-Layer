@@ -32,6 +32,7 @@ add_library(
   src/runtime_joint_position.cpp
   src/runtime_maintenance.cpp
   src/runtime_safety.cpp
+  src/runtime_trajectory.cpp
   src/runtime_worker.cpp
 )
 add_library(articore::runtime_core ALIAS articore_runtime_core)
@@ -53,7 +54,11 @@ set_target_properties(
   VISIBILITY_INLINES_HIDDEN YES
 )
 
-add_library(articore_runtime SHARED src/runtime_abi.cpp)
+add_library(
+  articore_runtime SHARED
+  src/runtime_abi.cpp
+  src/yunyi_runtime.cpp
+)
 add_library(articore::runtime ALIAS articore_runtime)
 target_link_libraries(
   articore_runtime PRIVATE articore::runtime_core motorbridge::motor_abi
@@ -162,4 +167,14 @@ if(BUILD_TESTING)
   add_executable(articore_robot_model_abi_test tests/robot_model_abi_test.cpp)
   target_link_libraries(articore_robot_model_abi_test PRIVATE articore_runtime)
   add_test(NAME articore_robot_model_abi_test COMMAND articore_robot_model_abi_test)
+
+  # Built explicitly for guarded real-hardware acceptance; never registered
+  # with CTest because it enables and moves both arms.
+  add_executable(
+    articore_runtime_hardware_trajectory_smoke EXCLUDE_FROM_ALL
+    tests/hardware_trajectory_smoke.cpp
+  )
+  target_link_libraries(
+    articore_runtime_hardware_trajectory_smoke PRIVATE articore_runtime
+  )
 endif()

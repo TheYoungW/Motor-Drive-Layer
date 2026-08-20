@@ -173,6 +173,7 @@ bool SafetyRuntime::prepare_protective_hold(std::string& error) {
 bool SafetyRuntime::send_safe_hold_once(std::string& error) {
   std::vector<ArticorePosVelCommand> pv;
   std::vector<ArticoreMitCommand> mit;
+  std::set<void*> intentionally_disabled;
   ArticoreControlMode mode;
   ArticoreSafetyState hold_state;
   {
@@ -183,7 +184,16 @@ bool SafetyRuntime::send_safe_hold_once(std::string& error) {
     mode = mode_;
     pv = safe_pv_;
     mit = safe_mit_;
+    intentionally_disabled = intentionally_disabled_motors_;
   }
+  const bool had_pv_hold = !pv.empty();
+  const bool had_mit_hold = !mit.empty();
+  pv.erase(std::remove_if(pv.begin(), pv.end(), [&](const auto& command) {
+             return intentionally_disabled.count(command.motor) != 0;
+           }), pv.end());
+  mit.erase(std::remove_if(mit.begin(), mit.end(), [&](const auto& command) {
+              return intentionally_disabled.count(command.motor) != 0;
+            }), mit.end());
   int32_t rc = 0;
   {
     std::lock_guard<std::mutex> command_lock(command_mutex_);
@@ -235,18 +245,28 @@ bool SafetyRuntime::send_safe_hold_once(std::string& error) {
       }
     } else if (mode == ARTICORE_MODE_PV) {
       if (pv.empty()) {
-        error = "no PV safe-hold target";
-        return false;
+        if (had_pv_hold) {
+          rc = 0;
+        } else {
+          error = "no PV safe-hold target";
+          return false;
+        }
+      } else {
+        rc = api_.group_send_pos_vel(controller_group_, pv.data(),
+                                      static_cast<uint32_t>(pv.size()));
       }
-      rc = api_.group_send_pos_vel(controller_group_, pv.data(),
-                                    static_cast<uint32_t>(pv.size()));
     } else {
       if (mit.empty()) {
-        error = "no MIT safe-hold target";
-        return false;
+        if (had_mit_hold) {
+          rc = 0;
+        } else {
+          error = "no MIT safe-hold target";
+          return false;
+        }
+      } else {
+        rc = api_.group_send_mit(controller_group_, mit.data(),
+                                static_cast<uint32_t>(mit.size()));
       }
-      rc = api_.group_send_mit(controller_group_, mit.data(),
-                              static_cast<uint32_t>(mit.size()));
     }
   }
   if (rc != 0 && error.empty()) {
@@ -272,6 +292,11 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
   std::vector<std::string> motor_faults;
   std::vector<std::string> unconfirmed;
   std::vector<void*> faulted_presence;
+  std::set<void*> intentionally_disabled;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    intentionally_disabled = intentionally_disabled_motors_;
+  }
   const auto mark_unconfirmed = [&](const std::string& name) {
     if (std::find(unconfirmed.begin(), unconfirmed.end(), name) ==
         unconfirmed.end()) {
@@ -352,7 +377,8 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
           identity() + ": motor is not disabled; actual_status=" +
           std::to_string(state.status_code) + ", threshold_status=0";
     }
-    if (!recovery_check && state.status_code == 0) {
+    if (!recovery_check && state.status_code == 0 &&
+        !intentionally_disabled.count(motor.descriptor.motor)) {
       actionable_failure = true;
       error = identity() +
           ": motor unexpectedly disabled; actual_status=0, threshold_status=1";
@@ -471,20 +497,29 @@ bool SafetyRuntime::refresh_transport_health(std::string& error) {
   return healthy;
 }
 
-void SafetyRuntime::enter_fault(const std::string& reason, bool torque_off) {
+void SafetyRuntime::enter_fault(const std::string& reason, bool torque_off,
+                                bool allow_protective_hold) {
   std::string hold_error;
-  const bool arm_hold_available = prepare_protective_hold(hold_error);
+  const bool arm_hold_available =
+      allow_protective_hold && prepare_protective_hold(hold_error);
   {
     std::lock_guard<std::mutex> command_lock(command_mutex_);
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (state_ == ARTICORE_DISCONNECTED) return;
     state_ = ARTICORE_FAULT;
+    terminate_trajectory_locked(
+        ARTICORE_TRAJECTORY_FAULT,
+        "trajectory terminated by Runtime fault: " + reason);
     fault_latched_ = true;
     hardware_transition_ = torque_off;
     disable_confirmed_ = false;
-    fault_reason_ = reason;
+    fault_reason_ = emergency_stop_latched_
+        ? "emergency stop requested"
+        : reason;
     safety_reason_.clear();
-    if (!hold_error.empty()) fault_reason_ += "; protective hold: " + hold_error;
+    if (allow_protective_hold && !hold_error.empty()) {
+      fault_reason_ += "; protective hold: " + hold_error;
+    }
     clear_pending_arm_mailbox();
     arm_mailbox_ = ArmMailbox{};
     gravity_control_.phase = ARTICORE_GRAVITY_INACTIVE;
@@ -492,7 +527,13 @@ void SafetyRuntime::enter_fault(const std::string& reason, bool torque_off) {
     gravity_control_.status.active = 0;
     gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
     next_safe_hold_ = Clock::now();
-    fault_hold_active_ = arm_hold_available || !safe_grippers_.empty();
+    if (!allow_protective_hold) {
+      safe_pv_.clear();
+      safe_mit_.clear();
+      safe_grippers_.clear();
+    }
+    fault_hold_active_ = allow_protective_hold &&
+        (arm_hold_available || !safe_grippers_.empty());
     for (auto& motor : motors_) {
       if (!motor.descriptor.is_gripper) continue;
       if (motor.gripper_fault_reason.empty() && motor.has_position &&
@@ -512,7 +553,7 @@ void SafetyRuntime::enter_fault(const std::string& reason, bool torque_off) {
     }
   }
   if (torque_off) {
-    const bool preserve_grippers =
+    const bool preserve_grippers = allow_protective_hold &&
         config_.gripper_fault_action == ARTICORE_GRIPPER_FAULT_HOLD &&
         !safe_grippers_.empty();
     std::string disable_error;

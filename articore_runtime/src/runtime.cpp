@@ -30,7 +30,8 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
                              bool require_gripper_product_profiles,
                              std::vector<ArticoreRuntimeTransportCapabilities>
                                  transport_capabilities,
-                             ArticoreMotorMaintenanceApi maintenance_api)
+                             ArticoreMotorMaintenanceApi maintenance_api,
+                             uint32_t internal_control_rate_override)
     : config_(config), api_(api), maintenance_api_(maintenance_api),
       controller_group_(controller_group),
       controller_enable_all_(controller_enable_all), motor_enable_(motor_enable),
@@ -46,13 +47,12 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
       !api_.last_error_message || !api_.motor_disable) {
     throw std::invalid_argument("Articore runtime motor API is incomplete");
   }
-  if (config_.control_hz == 0 || config_.command_timeout_ms == 0 ||
-      config_.enable_grace_ms == 0 || config_.safe_hold_hz == 0 ||
+  if (config_.command_timeout_ms == 0 || config_.enable_grace_ms == 0 ||
+      config_.safe_hold_hz == 0 ||
       config_.feedback_check_hz == 0 || config_.feedback_failure_threshold == 0 ||
       config_.feedback_max_age_ms == 0 ||
       config_.safe_hold_failure_threshold == 0 ||
       config_.disable_feedback_timeout_ms == 0 ||
-      config_.gripper_control_hz == 0 ||
       !finite(config_.safe_pv_velocity_limit) ||
       config_.safe_pv_velocity_limit <= 0.0f) {
     throw std::invalid_argument("Articore runtime configuration contains invalid values");
@@ -182,16 +182,17 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
       }
     }
   }
-  // A pure C++ Runtime streaming test at 500 Hz, including continuous raw-MIT
-  // mailbox updates and all 16 cached-state reads, sustained approximately
-  // 499 Hz feedback for 30 seconds over two SocketCAN-FD+BRS interfaces. A
-  // product SDK may still request a lower rate for an unverified workload.
+  // Scheduling belongs entirely to the native product implementation. The
+  // public ABI config placeholders never select or reveal this cadence.
+  control_hz_ = 400;
   if (active_sides_[0] && active_sides_[1]) {
     const bool dual_socketcanfd_brs =
         capability_present[0] && capability_present[1] &&
         socketcanfd_brs[0] && socketcanfd_brs[1];
-    config_.control_hz = std::min(
-        config_.control_hz, dual_socketcanfd_brs ? 500U : 400U);
+    control_hz_ = dual_socketcanfd_brs ? 500U : 400U;
+  }
+  if (internal_control_rate_override != 0) {
+    control_hz_ = internal_control_rate_override;
   }
   const auto arm_count = static_cast<std::size_t>(std::count_if(
       motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
@@ -286,6 +287,10 @@ void SafetyRuntime::connect() {
   }
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    if (stopping_) {
+      throw std::runtime_error(
+          "Runtime was terminally disconnected and cannot reconnect");
+    }
     if (state_ != ARTICORE_DISCONNECTED) {
       return;
     }
@@ -386,10 +391,14 @@ void SafetyRuntime::connect() {
     report.received_count = static_cast<uint32_t>(motors_.size());
     report.error[0] = '\0';
     last_connect_report_ = report;
-    state_ = ARTICORE_READY;
-    fault_latched_ = false;
+    state_ = emergency_stop_latched_ ? ARTICORE_FAULT : ARTICORE_READY;
+    fault_latched_ = emergency_stop_latched_;
     disable_confirmed_ = true;
-    fault_reason_.clear();
+    if (emergency_stop_latched_) {
+      fault_reason_ = "emergency stop requested";
+    } else {
+      fault_reason_.clear();
+    }
     safety_reason_.clear();
     motor_faults_.clear();
     unconfirmed_disable_.clear();
@@ -489,6 +498,9 @@ void SafetyRuntime::stop_worker() {
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (stopping_) return;
     stopping_ = true;
+    terminate_trajectory_locked(
+        ARTICORE_TRAJECTORY_CANCELLED,
+        "trajectory cancelled by Runtime disconnect");
     clear_pending_arm_mailbox();
     arm_mailbox_ = ArmMailbox{};
     gravity_control_.phase = ARTICORE_GRAVITY_INACTIVE;
@@ -524,45 +536,23 @@ void SafetyRuntime::close() {
                       state_ == ARTICORE_PARTIALLY_ENABLED;
     }
   }
-  if (needs_disable) disable();
+  std::string failure;
+  if (needs_disable) {
+    try {
+      disable();
+    } catch (const std::exception& error) {
+      failure = error.what();
+    }
+  }
+  // Shutdown is terminal even when physical-disable confirmation fails. The
+  // caller receives the failure after command production has stopped and the
+  // worker has been joined, so no orphan background sender can survive.
   stop_worker();
+  if (!failure.empty()) throw std::runtime_error(failure);
 }
 
 void SafetyRuntime::disconnect() {
-  std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
-  bool needs_disable = false;
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (stopping_) {
-      throw std::runtime_error("cannot disconnect a closed runtime");
-    }
-    if (state_ == ARTICORE_DISCONNECTED) return;
-    needs_disable = !disable_confirmed_ || state_ == ARTICORE_ENABLED ||
-                    state_ == ARTICORE_RUNNING ||
-                    state_ == ARTICORE_DEGRADED ||
-                    state_ == ARTICORE_SAFE_HOLD ||
-                    state_ == ARTICORE_SAFE_STOP ||
-                    state_ == ARTICORE_PARTIALLY_ENABLED;
-  }
-  if (needs_disable) disable();
-  {
-    std::lock_guard<std::mutex> command_lock(command_mutex_);
-    std::lock_guard<std::mutex> state_lock(state_mutex_);
-    clear_pending_arm_mailbox();
-    arm_mailbox_ = ArmMailbox{};
-    gravity_control_.phase = ARTICORE_GRAVITY_INACTIVE;
-    gravity_control_.status.active = 0;
-    gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
-    state_ = ARTICORE_DISCONNECTED;
-    safety_reason_.clear();
-    disable_confirmed_ = true;
-    hardware_transition_ = false;
-    for (auto& side : sides_) {
-      side.connected = false;
-      side.healthy = false;
-    }
-  }
-  wakeup_.notify_all();
+  close();
 }
 
 }  // namespace articore

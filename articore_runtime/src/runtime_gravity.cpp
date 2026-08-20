@@ -129,6 +129,10 @@ void SafetyRuntime::start_gravity_compensation(
     if (gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE) {
       throw std::runtime_error("gravity compensation is already active");
     }
+    if (trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING) {
+      throw std::runtime_error(
+          "gravity compensation cannot replace an active trajectory");
+    }
   }
   if (gravity_arms_.empty()) {
     throw std::runtime_error("gravity product models are not configured");

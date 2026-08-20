@@ -795,6 +795,26 @@ int32_t motor_handle_get_state(MotorHandle* handle, MotorState* out_state) {
   });
 }
 
+int32_t motor_handle_get_state_snapshot(
+    MotorHandle* handle, MotorState* out_state,
+    MotorFeedbackStats* out_stats) {
+  if (!handle || !out_state || !out_stats) {
+    return fail("motor, state or feedback stats output is null");
+  }
+  return ffi_call([&] {
+    std::memset(out_state, 0, sizeof(*out_state));
+    std::memset(out_stats, 0, sizeof(*out_stats));
+    const auto snapshot = handle->motor->state_snapshot();
+    if (snapshot.state.has_value()) {
+      copy_motor_state(*snapshot.state, out_state);
+    }
+    out_stats->has_feedback = snapshot.feedback.has_feedback ? 1 : 0;
+    out_stats->update_count = snapshot.feedback.update_count;
+    out_stats->age_ns = snapshot.feedback.age.count() < 0
+        ? 0 : static_cast<uint64_t>(snapshot.feedback.age.count());
+  });
+}
+
 int32_t motor_handle_get_feedback_stats(MotorHandle* handle,
                                         MotorFeedbackStats* out_stats) {
   if (handle == nullptr || out_stats == nullptr) return fail("motor or out_stats is null");

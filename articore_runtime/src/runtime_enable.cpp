@@ -465,6 +465,7 @@ void SafetyRuntime::initialize_enabled_state(ArticoreControlMode mode) {
   safe_pv_.clear();
   safe_mit_.clear();
   safe_grippers_.clear();
+  intentionally_disabled_motors_.clear();
   for (auto& motor : motors_) {
     motor.retreat_active = false;
     motor.protective_target_active = false;
@@ -533,18 +534,27 @@ SafetyRuntime::MotorRecord* SafetyRuntime::resolve_motor_role(
   for (auto& motor : motors_) {
     const std::string name = motor.descriptor.name;
     if (name == role) return &motor;
-    // The original product descriptors retain l-/r- in diagnostic names.
-    // Accept the shorter stable SDK selector without changing existing health
-    // report identities.
-    const std::string prefix = motor.descriptor.side == 0 ? "left/l-" : "right/r-";
-    const std::string alias_prefix =
-        motor.descriptor.side == 0 ? "left/" : "right/";
-    if (name.compare(0, prefix.size(), prefix) == 0 &&
-        alias_prefix + name.substr(prefix.size()) == role) {
-      return &motor;
-    }
+    const auto stable = stable_motor_role(motor);
+    if (stable == role) return &motor;
+    const std::string stable_prefix = motor.descriptor.side == 0 ? "l-" : "r-";
+    const std::string legacy_prefix = motor.descriptor.side == 0 ? "left/" : "right/";
+    if (stable.compare(0, stable_prefix.size(), stable_prefix) == 0 &&
+        legacy_prefix + stable.substr(stable_prefix.size()) == role) return &motor;
   }
   throw std::invalid_argument("unknown motor role: " + role);
+}
+
+std::string SafetyRuntime::stable_motor_role(const MotorRecord& motor) const {
+  const std::string name = motor.descriptor.name;
+  const std::string side_prefix =
+      motor.descriptor.side == 0 ? "left/" : "right/";
+  const std::string stable_prefix = motor.descriptor.side == 0 ? "l-" : "r-";
+  if (name.compare(0, side_prefix.size(), side_prefix) == 0) {
+    const auto suffix = name.substr(side_prefix.size());
+    return suffix.compare(0, stable_prefix.size(), stable_prefix) == 0
+        ? suffix : stable_prefix + suffix;
+  }
+  return name;
 }
 
 ArticoreMotorPowerState SafetyRuntime::cached_motor_power_state(
@@ -619,129 +629,375 @@ ArticoreMotorPowerState SafetyRuntime::motor_power_state(
   return result;
 }
 
-ArticoreMotorPowerState SafetyRuntime::set_motor_power(
-    const std::string& motor_name, bool enabled) {
+ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
+    const std::vector<std::string>& motor_names, bool enabled) {
   std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
-  if (motor_name.empty()) {
-    throw std::invalid_argument("single-motor power operation requires a role");
+  if (motor_names.empty()) {
+    throw std::invalid_argument("motor power batch requires at least one role");
   }
-  MotorRecord* motor = resolve_motor_role(motor_name);
+  if (motor_names.size() > 32) {
+    throw std::invalid_argument("motor power batch exceeds 32 roles");
+  }
+
+  std::vector<MotorRecord*> selected;
+  selected.reserve(motor_names.size());
+  for (const auto& role : motor_names) {
+    if (role.empty()) throw std::invalid_argument("motor role is empty");
+    auto* motor = resolve_motor_role(role);
+    if (std::find(selected.begin(), selected.end(), motor) != selected.end()) {
+      throw std::invalid_argument("duplicate motor role: " + role);
+    }
+    selected.push_back(motor);
+  }
+
+  ArticoreMotorPowerReport report{};
+  report.struct_size = sizeof(report);
+  report.requested_enabled = enabled ? 1 : 0;
+  report.requested_count = static_cast<uint32_t>(selected.size());
+  report.motor_count = report.requested_count;
+  for (uint32_t i = 0; i < report.motor_count; ++i) {
+    auto& output = report.motors[i];
+    output.side = selected[i]->descriptor.side;
+    output.requested_enabled = enabled ? 1 : 0;
+    output.can_id = selected[i]->motor_identity_configured
+        ? static_cast<uint8_t>(selected[i]->configured_can_id) : 0;
+    copy_text(output.role, stable_motor_role(*selected[i]));
+  }
+
+  bool started_ready = false;
+  ArticoreSafetyState started_state = ARTICORE_DISCONNECTED;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if ((state_ != ARTICORE_READY &&
-         state_ != ARTICORE_PARTIALLY_ENABLED) ||
-        hardware_transition_ || fault_latched_) {
+    if (state_ == ARTICORE_DISCONNECTED || stopping_) {
       throw std::runtime_error(
-          "single-motor power changes require READY or PARTIALLY_ENABLED");
+          "motor power batch requires a connected Runtime");
+    }
+    if (enabled &&
+        ((state_ != ARTICORE_READY &&
+          state_ != ARTICORE_PARTIALLY_ENABLED) || fault_latched_)) {
+      throw std::runtime_error(
+          "motor enable batch requires READY or PARTIALLY_ENABLED");
     }
     if (enabled && !motor_enable_) {
-      throw std::runtime_error("single-motor enable is unavailable");
+      throw std::runtime_error("motor enable batch is unavailable");
     }
+    if (hardware_transition_) {
+      throw std::runtime_error("another Runtime hardware transaction is active");
+    }
+    started_state = state_;
+    started_ready = started_state == ARTICORE_READY;
+    terminate_trajectory_locked(
+        ARTICORE_TRAJECTORY_CANCELLED,
+        enabled ? "trajectory cancelled by motor enable"
+                : "trajectory cancelled by motor disable");
     hardware_transition_ = true;
+    if (!enabled) {
+      for (auto* motor : selected) {
+        intentionally_disabled_motors_.insert(motor->descriptor.motor);
+      }
+      gravity_control_.phase = ARTICORE_GRAVITY_INACTIVE;
+      gravity_control_.status.active = 0;
+      gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
+    }
   }
   wakeup_.notify_all();
 
+  std::string error;
+  std::vector<ArticoreMotorState> initial(selected.size());
+  std::vector<MotorRecord*> newly_enabled;
+  std::set<void*> command_sent;
+  std::set<void*> rollback_sent;
+  bool rollback_confirmed = true;
+  bool transaction_ok = true;
+  const auto max_age =
+      static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL;
+
+  auto refresh = [&](std::string& detail) {
+    std::vector<MissingMotor> missing;
+    const bool requested = request_feedback_parallel(
+        config_.disable_feedback_timeout_ms, missing, detail);
+    const bool valid = validate_fresh_feedback_snapshot(missing, detail);
+    return requested && valid;
+  };
+
+  auto selected_confirmed = [&](bool expected_enabled) {
+    bool ok = true;
+    for (auto* motor : selected) {
+      ArticoreFeedbackStats stats{};
+      ArticoreMotorState state{};
+      const bool fresh =
+          api_.motor_get_feedback_stats(motor->descriptor.motor, &stats) == 0 &&
+          stats.has_feedback && stats.age_ns <= max_age;
+      const bool readable =
+          api_.motor_get_state(motor->descriptor.motor, &state) == 0 &&
+          state.has_value;
+      if (!fresh || !readable ||
+          state.status_code != (expected_enabled ? 1 : 0)) {
+        ok = false;
+      }
+    }
+    return ok;
+  };
+
+  std::unique_lock<std::mutex> command_lock(command_mutex_);
   try {
-    {
-      std::lock_guard<std::mutex> command_lock(command_mutex_);
-      ArticoreMotorState initial{};
-      if (enabled) {
-        std::string preflight_error;
-        std::vector<MissingMotor> preflight_missing;
-        if (!request_feedback_parallel(config_.disable_feedback_timeout_ms,
-                                       preflight_missing, preflight_error) ||
-            !validate_fresh_feedback_snapshot(preflight_missing,
-                                              preflight_error) ||
-            api_.motor_get_state(motor->descriptor.motor, &initial) != 0 ||
-            !initial.has_value) {
-          throw std::runtime_error(
-              preflight_error.empty()
-                  ? "current-position feedback is unavailable before enable"
-                  : preflight_error);
-        }
-      }
-      const int32_t rc = enabled
-          ? motor_enable_(motor->descriptor.motor)
-          : api_.motor_disable(motor->descriptor.motor);
-      if (rc != 0) {
-        throw std::runtime_error(motor_error(
-            enabled ? "motor enable failed" : "motor disable failed"));
-      }
-      if (enabled) {
-        int32_t hold_result = 0;
-        if (motor->descriptor.is_gripper || mode_ == ARTICORE_MODE_MIT) {
-          float kp = motor->descriptor.safe_kp;
-          float kd = motor->descriptor.safe_kd;
-          if (motor->descriptor.is_gripper) {
-            kp = motor->descriptor.normal_kp;
-            kd = motor->descriptor.normal_kd;
-          } else {
-            const auto configured = joint_configs_.find(
-                motor->descriptor.motor);
-            if (configured != joint_configs_.end()) {
-              kp = configured->second.mit_kp;
-              kd = configured->second.mit_kd;
-            }
-          }
-          const ArticoreMitCommand hold{
-              motor->descriptor.motor, initial.pos, 0.0f, kp, kd, 0.0f};
-          hold_result = api_.group_send_mit(controller_group_, &hold, 1);
-        } else {
-          const ArticorePosVelCommand hold{
-              motor->descriptor.motor, initial.pos,
-              config_.safe_pv_velocity_limit};
-          hold_result = api_.group_send_pos_vel(controller_group_, &hold, 1);
-        }
-        if (hold_result != 0) {
-          throw std::runtime_error(motor_error(
-              "single-motor current-position hold failed"));
-        }
-      }
-      std::string error;
-      std::vector<MissingMotor> missing;
-      if (!request_feedback_parallel(config_.disable_feedback_timeout_ms,
-                                     missing, error) ||
-          !validate_fresh_feedback_snapshot(missing, error)) {
+    std::string preflight_error;
+    if (!refresh(preflight_error)) {
+      throw std::runtime_error(
+          preflight_error.empty() ? "motor power preflight feedback failed"
+                                  : preflight_error);
+    }
+    for (std::size_t i = 0; i < selected.size(); ++i) {
+      if (api_.motor_get_state(selected[i]->descriptor.motor, &initial[i]) != 0 ||
+          !initial[i].has_value || !finite(initial[i].pos)) {
         throw std::runtime_error(
-            error.empty() ? "motor power feedback verification failed" : error);
+            stable_motor_role(*selected[i]) +
+            ": finite motor feedback is unavailable");
+      }
+      if (enabled && initial[i].status_code > 1) {
+        throw std::runtime_error(
+            stable_motor_role(*selected[i]) + ": motor reports fault status " +
+            std::to_string(initial[i].status_code));
+      }
+    }
+    if (enabled && started_ready) {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      for (const auto& motor : motors_) {
+        ArticoreMotorState state{};
+        if (api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+            state.has_value && state.status_code == 0) {
+          intentionally_disabled_motors_.insert(motor.descriptor.motor);
+        }
       }
     }
 
-    const auto confirmed = cached_motor_power_state(motor);
-    const auto expected = enabled ? ARTICORE_MOTOR_POWER_ENABLED
-                                  : ARTICORE_MOTOR_POWER_DISABLED;
-    if (confirmed != expected) {
-      throw std::runtime_error(
-          std::string(motor->descriptor.name) +
-          (enabled ? " did not confirm enabled" : " did not confirm disabled"));
-    }
-    const auto all = cached_motor_power_state();
-    {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      if (all == ARTICORE_MOTOR_POWER_DISABLED) {
-        state_ = ARTICORE_READY;
-        disable_confirmed_ = true;
-      } else {
-        // Even when every motor was enabled one-by-one, no atomic initial hold
-        // was established. The normal control APIs therefore remain blocked
-        // until whole-product enable() completes its native transaction.
-        state_ = ARTICORE_PARTIALLY_ENABLED;
-        disable_confirmed_ = false;
+    if (!enabled) {
+      std::string barrier_error;
+      if (!establish_disable_barrier(barrier_error)) {
+        transaction_ok = false;
+        error = "motor disable queue barrier failed: " + barrier_error;
       }
-      hardware_transition_ = false;
     }
-    wakeup_.notify_all();
-    return confirmed;
-  } catch (...) {
-    {
-      std::lock_guard<std::mutex> lock(state_mutex_);
+
+    if (enabled) {
+      for (std::size_t i = 0; i < selected.size(); ++i) {
+        auto* motor = selected[i];
+        if (initial[i].status_code == 1) continue;
+        // A callback may report failure after the device accepted the command.
+        // Include it in rollback before calling so the transaction remains
+        // fail-closed even for ambiguous transport outcomes.
+        newly_enabled.push_back(motor);
+        if (motor_enable_(motor->descriptor.motor) != 0) {
+          throw std::runtime_error(
+              stable_motor_role(*motor) + ": " +
+              motor_error("motor enable failed"));
+        }
+        command_sent.insert(motor->descriptor.motor);
+      }
+
+      std::vector<ArticorePosVelCommand> pv_holds;
+      std::vector<ArticoreMitCommand> mit_holds;
+      for (std::size_t i = 0; i < selected.size(); ++i) {
+        auto* motor = selected[i];
+        if (motor->descriptor.is_gripper || mode_ == ARTICORE_MODE_MIT) {
+          float kp = motor->descriptor.is_gripper
+              ? motor->descriptor.normal_kp : motor->descriptor.safe_kp;
+          float kd = motor->descriptor.is_gripper
+              ? motor->descriptor.normal_kd : motor->descriptor.safe_kd;
+          const auto configured = joint_configs_.find(motor->descriptor.motor);
+          if (!motor->descriptor.is_gripper && configured != joint_configs_.end()) {
+            kp = configured->second.mit_kp;
+            kd = configured->second.mit_kd;
+          }
+          mit_holds.push_back(ArticoreMitCommand{
+              motor->descriptor.motor, initial[i].pos, 0.0f, kp, kd, 0.0f});
+        } else {
+          pv_holds.push_back(ArticorePosVelCommand{
+              motor->descriptor.motor, initial[i].pos,
+              config_.safe_pv_velocity_limit});
+        }
+      }
+      if ((!pv_holds.empty() && api_.group_send_pos_vel(
+              controller_group_, pv_holds.data(), pv_holds.size()) != 0) ||
+          (!mit_holds.empty() && api_.group_send_mit(
+              controller_group_, mit_holds.data(), mit_holds.size()) != 0)) {
+        throw std::runtime_error(
+            motor_error("motor enable current-position hold failed"));
+      }
+      std::string confirmation_error;
+      if (!refresh(confirmation_error) || !selected_confirmed(true)) {
+        throw std::runtime_error(
+            confirmation_error.empty()
+                ? "motor enable feedback confirmation failed"
+                : confirmation_error);
+      }
+    } else {
+      for (auto* motor : selected) {
+        if (api_.motor_disable(motor->descriptor.motor) == 0) {
+          command_sent.insert(motor->descriptor.motor);
+        } else {
+          transaction_ok = false;
+          if (!error.empty()) error += "; ";
+          error += stable_motor_role(*motor) + ": " +
+                   motor_error("motor disable failed");
+        }
+      }
+      std::string confirmation_error;
+      bool confirmed = refresh(confirmation_error) && selected_confirmed(false);
+      if (!confirmed) {
+        for (auto* motor : selected) {
+          ArticoreMotorState state{};
+          if (api_.motor_get_state(motor->descriptor.motor, &state) == 0 &&
+              state.has_value && state.status_code == 0) continue;
+          if (api_.motor_disable(motor->descriptor.motor) == 0) {
+            command_sent.insert(motor->descriptor.motor);
+          }
+        }
+        confirmation_error.clear();
+        confirmed = refresh(confirmation_error) && selected_confirmed(false);
+      }
+      if (!confirmed) {
+        transaction_ok = false;
+        if (!error.empty()) error += "; ";
+        error += confirmation_error.empty()
+            ? "motor disable feedback confirmation failed" : confirmation_error;
+      }
+    }
+  } catch (const std::exception& failure) {
+    transaction_ok = false;
+    error = failure.what();
+    if (enabled && !newly_enabled.empty()) {
+      report.rollback_attempted = 1;
+      for (auto* motor : newly_enabled) {
+        if (api_.motor_disable(motor->descriptor.motor) == 0) {
+          rollback_sent.insert(motor->descriptor.motor);
+        }
+      }
+      std::string rollback_error;
+      if (!refresh(rollback_error)) rollback_confirmed = false;
+      for (auto* motor : newly_enabled) {
+        ArticoreFeedbackStats stats{};
+        ArticoreMotorState state{};
+        if (api_.motor_get_feedback_stats(motor->descriptor.motor, &stats) != 0 ||
+            !stats.has_feedback || stats.age_ns > max_age ||
+            api_.motor_get_state(motor->descriptor.motor, &state) != 0 ||
+            !state.has_value || state.status_code != 0) {
+          rollback_confirmed = false;
+        }
+      }
+      if (!rollback_confirmed) {
+        error += "; enable rollback was not confirmed";
+        if (!rollback_error.empty()) error += ": " + rollback_error;
+      }
+    }
+  }
+  command_lock.unlock();
+
+  report.rollback_confirmed =
+      report.rollback_attempted && rollback_confirmed ? 1 : 0;
+  report.success = transaction_ok ? 1 : 0;
+  report.command_sent_count = static_cast<uint32_t>(command_sent.size());
+  for (uint32_t i = 0; i < report.motor_count; ++i) {
+    auto* motor = selected[i];
+    auto& output = report.motors[i];
+    output.command_sent = command_sent.count(motor->descriptor.motor) ? 1 : 0;
+    output.rollback_sent = rollback_sent.count(motor->descriptor.motor) ? 1 : 0;
+    ArticoreFeedbackStats stats{};
+    ArticoreMotorState state{};
+    const bool has_stats =
+        api_.motor_get_feedback_stats(motor->descriptor.motor, &stats) == 0 &&
+        stats.has_feedback;
+    const bool has_state =
+        api_.motor_get_state(motor->descriptor.motor, &state) == 0 &&
+        state.has_value;
+    output.has_feedback = has_stats && has_state ? 1 : 0;
+    output.feedback_fresh = output.has_feedback && stats.age_ns <= max_age;
+    if (has_state) {
+      output.can_id = static_cast<uint8_t>(state.can_id);
+      output.status_code = state.status_code;
+    }
+    output.confirmed = transaction_ok && output.feedback_fresh &&
+        output.status_code == (enabled ? 1 : 0);
+    if (output.confirmed) {
+      ++report.confirmed_count;
+    } else {
+      ++report.failure_count;
+      copy_text(output.error, error.empty() ? "motor state was not confirmed"
+                                            : error);
+    }
+  }
+  copy_text(report.error, error);
+
+  const auto all = cached_motor_power_state();
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    const bool rollback_safety_failure = enabled &&
+        report.rollback_attempted && !report.rollback_confirmed;
+    const bool preserve_abnormal_state = !enabled &&
+        (started_state == ARTICORE_DEGRADED ||
+         started_state == ARTICORE_SAFE_HOLD ||
+         started_state == ARTICORE_SAFE_STOP ||
+         started_state == ARTICORE_FAULT);
+    if (enabled) {
+      if (transaction_ok) {
+        for (auto* motor : selected) {
+          intentionally_disabled_motors_.erase(motor->descriptor.motor);
+        }
+      } else {
+        for (std::size_t i = 0; i < selected.size(); ++i) {
+          if (initial[i].has_value && initial[i].status_code == 0) {
+            intentionally_disabled_motors_.insert(
+                selected[i]->descriptor.motor);
+          }
+        }
+      }
+    }
+    if (rollback_safety_failure) {
+      state_ = ARTICORE_FAULT;
+      fault_latched_ = true;
+      disable_confirmed_ = false;
+      fault_reason_ = error;
+    } else if (all == ARTICORE_MOTOR_POWER_DISABLED) {
+      disable_confirmed_ = true;
+      if (preserve_abnormal_state) {
+        state_ = started_state;
+        for (const auto& motor : motors_) {
+          intentionally_disabled_motors_.insert(motor.descriptor.motor);
+        }
+      } else if (!fault_latched_) {
+        state_ = ARTICORE_READY;
+        intentionally_disabled_motors_.clear();
+      }
+    } else {
+      disable_confirmed_ = false;
+      if (preserve_abnormal_state) {
+        state_ = started_state;
+      } else if (!fault_latched_) {
+        state_ = ARTICORE_PARTIALLY_ENABLED;
+      }
+    }
+    if (enabled && transaction_ok && !fault_latched_) {
       state_ = ARTICORE_PARTIALLY_ENABLED;
       disable_confirmed_ = false;
-      hardware_transition_ = false;
     }
-    wakeup_.notify_all();
-    throw;
+    hardware_transition_ = false;
+    next_control_tick_ = Clock::now();
+    next_feedback_check_ = Clock::now();
+    next_ready_feedback_ = Clock::now();
   }
+  wakeup_.notify_all();
+  return report;
+}
+
+ArticoreMotorPowerState SafetyRuntime::set_motor_power(
+    const std::string& motor_name, bool enabled) {
+  const auto report = set_motor_power_batch({motor_name}, enabled);
+  if (!report.success) {
+    throw std::runtime_error(report.error[0]
+        ? report.error : "motor power transaction failed");
+  }
+  return enabled ? ARTICORE_MOTOR_POWER_ENABLED
+                 : ARTICORE_MOTOR_POWER_DISABLED;
 }
 
 void SafetyRuntime::enable(ArticoreControlMode mode) {
@@ -1168,6 +1424,9 @@ void SafetyRuntime::disable() {
     }
     preserve_fault = state_ == ARTICORE_FAULT && fault_latched_;
     preserved_reason = fault_reason_;
+    terminate_trajectory_locked(
+        ARTICORE_TRAJECTORY_CANCELLED,
+        "trajectory cancelled by Runtime disable");
     hardware_transition_ = true;
   }
   std::string error;
@@ -1192,6 +1451,7 @@ void SafetyRuntime::disable() {
     gripper_sent_generation_ = 0;
     hardware_transition_ = false;
     if (confirmed) {
+      intentionally_disabled_motors_.clear();
       if (preserve_fault) {
         state_ = ARTICORE_FAULT;
         fault_latched_ = true;
@@ -1216,95 +1476,371 @@ void SafetyRuntime::disable() {
   if (!confirmed) throw std::runtime_error(error);
 }
 
-void SafetyRuntime::estop(const std::string& reason) {
+void SafetyRuntime::estop() {
   std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
-  enter_fault(reason.empty() ? "emergency stop" : reason, true);
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (emergency_stop_latched_ &&
+        (state_ == ARTICORE_DISCONNECTED ||
+         (state_ == ARTICORE_FAULT && disable_confirmed_))) {
+      fault_latched_ = true;
+      fault_reason_ = "emergency stop requested";
+      safety_reason_.clear();
+      return;
+    }
+    emergency_stop_latched_ = true;
+    fault_latched_ = true;
+    fault_reason_ = "emergency stop requested";
+    safety_reason_.clear();
+    if (state_ == ARTICORE_DISCONNECTED) return;
+  }
+  // Emergency stop never enters a product-specific protective hold. Marking
+  // FAULT and clearing all command mailboxes happens before the full-product
+  // disable transaction, so the worker cannot submit another control frame.
+  enter_fault("emergency stop requested", true, false);
 }
 
 void SafetyRuntime::recover() {
   std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
-  bool recover_enabled_runtime = false;
+  constexpr float kRecoverySpeedPercent = 5.0f;
+  constexpr float kRecoveryPositionToleranceRad = 0.02f;
+  constexpr float kRecoveryVelocityToleranceRadPerSecond = 0.05f;
+
+  auto all_motor_names = [&] {
+    std::vector<std::string> names;
+    names.reserve(motors_.size());
+    for (const auto& motor : motors_) {
+      names.emplace_back(motor.descriptor.name);
+    }
+    return names;
+  };
+  auto arm_motor_names = [&] {
+    std::vector<std::string> names;
+    for (const auto& motor : motors_) {
+      if (!motor.descriptor.is_gripper) {
+        names.emplace_back(motor.descriptor.name);
+      }
+    }
+    return names;
+  };
+  auto append_error = [](std::string& destination,
+                         const std::string& addition) {
+    if (addition.empty()) return;
+    if (!destination.empty()) destination += "; ";
+    destination += addition;
+  };
+  auto fail_recovery = [&](const char* stage, int32_t code,
+                           const std::string& stage_error,
+                           std::vector<std::string> failed_motors) -> void {
+    {
+      std::lock_guard<std::mutex> command_lock(command_mutex_);
+      safe_pv_.clear();
+      safe_mit_.clear();
+      safe_grippers_.clear();
+      last_sent_pv_.clear();
+      last_sent_mit_.clear();
+      fault_hold_active_ = false;
+      clear_pending_arm_mailbox();
+      arm_mailbox_ = ArmMailbox{};
+    }
+    {
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
+      state_ = ARTICORE_FAULT;
+      fault_latched_ = true;
+      hardware_transition_ = true;
+    }
+
+    std::string disable_error;
+    const bool disabled = disable_hardware(true, false, disable_error);
+    std::string detail = std::string("recover failed during ") + stage +
+                         ": " + stage_error;
+    if (!disabled) append_error(detail, "fallback disable failed: " +
+                                           disable_error);
+    if (failed_motors.empty()) failed_motors = all_motor_names();
+    {
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
+      state_ = ARTICORE_FAULT;
+      fault_latched_ = true;
+      disable_confirmed_ = disabled;
+      hardware_transition_ = false;
+      enable_transaction_ = false;
+      fault_reason_ = detail;
+      safety_reason_.clear();
+      last_operation_ = ARTICORE_OPERATION_RECOVER;
+      last_operation_code_ = code;
+      last_operation_error_ = detail;
+      operation_failed_motors_ = failed_motors;
+    }
+    wakeup_.notify_all();
+    throw std::runtime_error(detail);
+  };
+
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    recover_enabled_runtime =
-        state_ == ARTICORE_DEGRADED || state_ == ARTICORE_SAFE_STOP;
-    if (!recover_enabled_runtime &&
-        (state_ != ARTICORE_FAULT || !fault_latched_)) {
+    last_operation_ = ARTICORE_OPERATION_RECOVER;
+    last_operation_code_ = ARTICORE_OPERATION_OK;
+    last_operation_error_.clear();
+    operation_failed_motors_.clear();
+    const bool recoverable_state = state_ == ARTICORE_DEGRADED ||
+        state_ == ARTICORE_SAFE_STOP ||
+        (state_ == ARTICORE_FAULT && fault_latched_);
+    if (!recoverable_state || hardware_transition_) {
+      last_operation_code_ = ARTICORE_OPERATION_INVALID_STATE;
+      last_operation_error_ =
+          "recover requires DEGRADED, SAFE_STOP, or latched FAULT";
       throw std::runtime_error(
           "recover is only valid from DEGRADED, SAFE_STOP, or latched FAULT");
     }
-    if ((active_sides_[0] && !sides_[0].connected) ||
-        (active_sides_[1] && !sides_[1].connected)) {
-      throw std::runtime_error(
-          "all active transports must be connected before recover");
-    }
-    if (!recover_enabled_runtime && !disable_confirmed_) {
-      throw std::runtime_error(
-          "physical disable must be confirmed before recover");
-    }
+    // Freeze the worker before the first recovery action. No old user target
+    // may be sent while the product is being cleared, checked, or homed.
+    state_ = ARTICORE_FAULT;
+    fault_latched_ = true;
     hardware_transition_ = true;
-  }
-  std::string error;
-  std::vector<MissingMotor> missing_motors;
-  if (!request_feedback_parallel(config_.disable_feedback_timeout_ms,
-                                 missing_motors, error)) {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    hardware_transition_ = false;
-    throw std::runtime_error(error);
   }
   {
     std::lock_guard<std::mutex> command_lock(command_mutex_);
-    if (!refresh_feedback_health(!recover_enabled_runtime, false, error)) {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      hardware_transition_ = false;
-      throw std::runtime_error(error);
+    safe_pv_.clear();
+    safe_mit_.clear();
+    safe_grippers_.clear();
+    last_sent_pv_.clear();
+    last_sent_mit_.clear();
+    fault_hold_active_ = false;
+    clear_pending_arm_mailbox();
+    arm_mailbox_ = ArmMailbox{};
+    gravity_control_.phase = ARTICORE_GRAVITY_INACTIVE;
+    gravity_control_.hold_positions.clear();
+    gravity_control_.status.active = 0;
+    gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
+  }
+
+  std::string error;
+  if (!disable_hardware(true, false, error)) {
+    fail_recovery("initial disable", ARTICORE_OPERATION_VERIFICATION, error,
+                  all_motor_names());
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    disable_confirmed_ = true;
+  }
+
+  if (!maintenance_api_.motor_clear_error) {
+    fail_recovery("clear recoverable faults", ARTICORE_OPERATION_UNSUPPORTED,
+                  "native clear-fault callback is unavailable",
+                  all_motor_names());
+  }
+  struct ClearResult {
+    std::vector<std::string> failed;
+    std::vector<std::string> errors;
+  } clear_results[2];
+  std::vector<std::thread> clear_workers;
+  for (uint8_t side = 0; side < 2; ++side) {
+    if (!active_sides_[side]) continue;
+    clear_workers.emplace_back([&, side] {
+      for (const auto& motor : motors_) {
+        if (motor.descriptor.side != side) continue;
+        if (maintenance_api_.motor_clear_error(motor.descriptor.motor) == 0) {
+          continue;
+        }
+        clear_results[side].failed.emplace_back(motor.descriptor.name);
+        clear_results[side].errors.emplace_back(
+            motor_error("native motor clear-fault command failed"));
+      }
+    });
+  }
+  for (auto& worker : clear_workers) worker.join();
+  std::vector<std::string> failed_motors;
+  error.clear();
+  for (const auto& result : clear_results) {
+    failed_motors.insert(failed_motors.end(), result.failed.begin(),
+                         result.failed.end());
+    for (std::size_t index = 0; index < result.failed.size(); ++index) {
+      append_error(error, result.failed[index] + ": " + result.errors[index]);
     }
-    if (recover_enabled_runtime) {
-      try {
-        initialize_arm_mailbox_from_feedback(mode_, true);
-      } catch (...) {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        hardware_transition_ = false;
-        throw;
+  }
+  if (!failed_motors.empty()) {
+    fail_recovery("clear recoverable faults",
+                  ARTICORE_OPERATION_MOTOR_COMMAND, error, failed_motors);
+  }
+
+  error.clear();
+  if (!refresh_transport_health(error)) {
+    fail_recovery("dual-arm health validation", ARTICORE_OPERATION_TRANSPORT,
+                  error, all_motor_names());
+  }
+  std::vector<MissingMotor> missing_motors;
+  if (!request_feedback_parallel(config_.disable_feedback_timeout_ms,
+                                 missing_motors, error) ||
+      !refresh_feedback_health(true, false, error)) {
+    failed_motors.clear();
+    for (const auto& motor : motors_) {
+      ArticoreFeedbackStats stats{};
+      ArticoreMotorState state{};
+      const bool healthy =
+          api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
+          stats.has_feedback &&
+          stats.age_ns <= static_cast<uint64_t>(config_.feedback_max_age_ms) *
+                              1'000'000ULL &&
+          api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+          state.has_value && finite(state.pos) && finite(state.vel) &&
+          state.status_code == 0;
+      if (!healthy) failed_motors.emplace_back(motor.descriptor.name);
+    }
+    fail_recovery("dual-arm health validation", ARTICORE_OPERATION_FEEDBACK,
+                  error.empty() ? "complete fresh disabled feedback is required"
+                                : error,
+                  failed_motors);
+  }
+
+  float maximum_distance = 0.0f;
+  for (const auto& motor : motors_) {
+    if (motor.descriptor.is_gripper) continue;
+    ArticoreMotorState state{};
+    if (api_.motor_get_state(motor.descriptor.motor, &state) != 0 ||
+        !state.has_value || !finite(state.pos)) {
+      fail_recovery("dual-arm health validation", ARTICORE_OPERATION_FEEDBACK,
+                    std::string(motor.descriptor.name) +
+                        ": calibrated position is unavailable",
+                    {motor.descriptor.name});
+    }
+    maximum_distance = std::max(maximum_distance, std::fabs(state.pos));
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    state_ = ARTICORE_READY;
+    fault_latched_ = false;
+    disable_confirmed_ = true;
+    hardware_transition_ = false;
+    fault_reason_.clear();
+    safety_reason_.clear();
+    motor_faults_.clear();
+  }
+
+  try {
+    enable(mode_);
+  } catch (const std::exception& exception) {
+    fail_recovery("enable for zero return", ARTICORE_OPERATION_MOTOR_COMMAND,
+                  exception.what(), all_motor_names());
+  }
+
+  try {
+    std::vector<ArticoreJointMitTarget> mit_targets;
+    std::vector<ArticoreJointPvTarget> pv_targets;
+    for (const auto& motor : motors_) {
+      if (motor.descriptor.is_gripper) continue;
+      if (mode_ == ARTICORE_MODE_MIT) {
+        mit_targets.push_back(ArticoreJointMitTarget{
+            sizeof(ArticoreJointMitTarget), motor.descriptor.motor, 0.0f});
+      } else {
+        pv_targets.push_back(ArticoreJointPvTarget{
+            sizeof(ArticoreJointPvTarget), motor.descriptor.motor, 0.0f});
       }
     }
+    if (mode_ == ARTICORE_MODE_MIT) {
+      set_joint_mit_speed(mit_targets.data(),
+                          static_cast<uint32_t>(mit_targets.size()),
+                          kRecoverySpeedPercent);
+    } else {
+      set_joint_pv_speed(pv_targets.data(),
+                         static_cast<uint32_t>(pv_targets.size()),
+                         kRecoverySpeedPercent);
+    }
+  } catch (const std::exception& exception) {
+    fail_recovery("submit calibrated-zero return",
+                  ARTICORE_OPERATION_MOTOR_COMMAND, exception.what(),
+                  arm_motor_names());
   }
-  if (recover_enabled_runtime) seed_gripper_targets_from_feedback(true);
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  state_ = recover_enabled_runtime ? ARTICORE_ENABLED : ARTICORE_READY;
-  fault_latched_ = false;
-  disable_confirmed_ = !recover_enabled_runtime;
-  fault_reason_.clear();
-  safety_reason_.clear();
-  consecutive_send_failures_ = 0;
-  consecutive_feedback_failures_ = 0;
-  motor_faults_.clear();
-  unconfirmed_disable_.clear();
-  safe_pv_.clear();
-  safe_mit_.clear();
-  if (!recover_enabled_runtime) safe_grippers_.clear();
-  last_sent_pv_.clear();
-  last_sent_mit_.clear();
-  fault_hold_active_ = false;
-  clear_pending_arm_mailbox();
-  if (!recover_enabled_runtime) arm_mailbox_ = ArmMailbox{};
-  has_successful_command_ = false;
-  gripper_command_generation_ = 0;
-  gripper_sent_generation_ = 0;
-  hardware_transition_ = false;
-  const auto now = Clock::now();
-  if (recover_enabled_runtime) {
-    enabled_at_ = now;
-    next_control_tick_ = now;
-    next_feedback_check_ = now;
-    next_gripper_control_ = now;
-  } else {
+
+  const float recovery_velocity =
+      ordinary_velocity_from_percent(mode_, kRecoverySpeedPercent);
+  const auto expected_seconds = recovery_velocity > 0.0f
+      ? maximum_distance / recovery_velocity + 3.0f
+      : 120.0f;
+  const auto timeout_seconds = std::clamp(expected_seconds, 5.0f, 120.0f);
+  const auto deadline = Clock::now() + std::chrono::milliseconds(
+      static_cast<int64_t>(timeout_seconds * 1000.0f));
+  while (Clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    missing_motors.clear();
+    error.clear();
+    if (!request_feedback_parallel(config_.disable_feedback_timeout_ms,
+                                   missing_motors, error)) {
+      fail_recovery("calibrated-zero return feedback",
+                    ARTICORE_OPERATION_FEEDBACK, error, arm_motor_names());
+    }
+    bool runtime_stopped = false;
+    std::string runtime_stop_reason;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      runtime_stopped = state_ == ARTICORE_FAULT ||
+          state_ == ARTICORE_SAFE_STOP || state_ == ARTICORE_DEGRADED;
+      if (runtime_stopped) {
+        runtime_stop_reason =
+            fault_reason_.empty() ? safety_reason_ : fault_reason_;
+      }
+    }
+    if (runtime_stopped) {
+      if (runtime_stop_reason.empty()) {
+        runtime_stop_reason = "Runtime stopped during calibrated-zero return";
+      }
+      fail_recovery("calibrated-zero return",
+                    ARTICORE_OPERATION_VERIFICATION, runtime_stop_reason,
+                    arm_motor_names());
+    }
+    failed_motors.clear();
+    for (const auto& motor : motors_) {
+      if (motor.descriptor.is_gripper) continue;
+      ArticoreFeedbackStats stats{};
+      ArticoreMotorState state{};
+      const bool reached =
+          api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
+          stats.has_feedback &&
+          stats.age_ns <= static_cast<uint64_t>(config_.feedback_max_age_ms) *
+                              1'000'000ULL &&
+          api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+          state.has_value && state.status_code == 1 && finite(state.pos) &&
+          finite(state.vel) &&
+          std::fabs(state.pos) <= kRecoveryPositionToleranceRad &&
+          std::fabs(state.vel) <= kRecoveryVelocityToleranceRadPerSecond;
+      if (!reached) failed_motors.emplace_back(motor.descriptor.name);
+    }
+    if (failed_motors.empty()) break;
+  }
+  if (!failed_motors.empty()) {
+    fail_recovery("calibrated-zero return", ARTICORE_OPERATION_VERIFICATION,
+                  "timed out waiting for all arm joints to reach calibrated zero",
+                  failed_motors);
+  }
+
+  try {
+    disable();
+  } catch (const std::exception& exception) {
+    fail_recovery("final whole-product disable",
+                  ARTICORE_OPERATION_VERIFICATION, exception.what(),
+                  all_motor_names());
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    state_ = ARTICORE_READY;
+    fault_latched_ = false;
+    emergency_stop_latched_ = false;
+    disable_confirmed_ = true;
+    fault_reason_.clear();
+    safety_reason_.clear();
+    consecutive_send_failures_ = 0;
+    consecutive_feedback_failures_ = 0;
+    motor_faults_.clear();
+    unconfirmed_disable_.clear();
+    last_operation_ = ARTICORE_OPERATION_RECOVER;
+    last_operation_code_ = ARTICORE_OPERATION_OK;
+    last_operation_error_.clear();
+    operation_failed_motors_.clear();
     const auto ready_refresh_hz = std::min(config_.feedback_check_hz, 10U);
-    next_ready_feedback_ = now + std::chrono::nanoseconds(
+    next_ready_feedback_ = Clock::now() + std::chrono::nanoseconds(
         1'000'000'000ULL / ready_refresh_hz);
-  }
-  for (auto& entry : presence_) {
-    if (entry.second == ARTICORE_FAULTED) entry.second = ARTICORE_PRESENT;
+    for (auto& entry : presence_) {
+      if (entry.second == ARTICORE_FAULTED) entry.second = ARTICORE_PRESENT;
+    }
   }
   wakeup_.notify_all();
 }

@@ -141,15 +141,14 @@ Runtime ABI 2.9 将整机维护操作收归 C++ Runtime。`configure_mode`、`cl
 不会释放 ControllerGroup、关闭 Runtime 或重建资源。调零固定检查 READY、双 transport、
 反馈新鲜、物理失能和静止速度，操作后逐电机验证失能、零位和零速；任何部分失败都以稳定
 错误码写入统一 `SafetyHealthV2`，不会伪装为成功。产品工厂
-`articore_runtime_create_product("yunyi_v1_0", ...)` 内部拥有 can-left/can-right、
+`articore_runtime_create_yunyi(...)` 内部拥有 can-left/can-right、
 SocketCAN-FD+BRS、14 个关节和两个夹爪。协议仍是逐电机写入，真正 all-or-none 需要固件增加
 prepare/commit。
 
 Runtime ABI 2.10 将 `yunyi_v1_0` 从“由语言绑定组装的通用容器”升级为完整产品
 Runtime。产品工厂固定拥有双通道、16 个 Motor、方向/量程/限位、默认 MIT 参数、夹爪与
 重力模型；新增固定 14 关节 MIT/PV/普通位置帧、双夹爪帧和一次性整机状态快照。SDK 只传
-逻辑关节数组，不再传 Controller、ControllerGroup、Motor 或产品配置。产品 Runtime 对象
-保持存在，`disconnect()` 只把状态切回 DISCONNECTED，不释放 lease 或重建 worker。普通
+逻辑关节数组，不再传 Controller、ControllerGroup、Motor 或产品配置。普通
 位置命令的速度传 0 时，由原生产品配置选择当前模式默认值。
 
 Runtime ABI 2.11 为整机工厂增加固定拓扑参数 `with_grippers`。值为 true 时创建并验证
@@ -163,7 +162,7 @@ Runtime ABI 2.12 将通信质量与电机硬故障分离。少于
 速度参考和 MIT 力矩上限缩放到 25%；延迟达到三倍阈值后进入 `SAFE_STOP`，停止接受新轨迹
 并持续发送当前位置保护保持，不主动失能，也不写入 `fault_reason`。只有确认的电机故障码、
 意外失能、非有限反馈或 transport 断开才进入 `FAULT`。通信恢复不会自动重放旧目标；调用
-`recover()` 后 Runtime 重新读取全部电机、同步当前位置，并回到 `ENABLED` 等待新命令。
+`recover()` 后由 Runtime 执行完整整机恢复，最终回到已确认失能的 `READY`，不会继续旧轨迹。
 
 Runtime ABI 2.13 将普通 MIT/PV 位置接口的统一速度参数改为 `0～100`。`0` 暂停位置
 reference 推进，`100` 对应产品为当前模式配置的最大普通速度；百分比到 rad/s、逐周期
@@ -181,6 +180,59 @@ Runtime ABI 2.15 增加 `articore_runtime_get_pose()`。接口从原生反馈缓
 `[x, y, z, roll, pitch, yaw]`（米、弧度）以及参与计算的最旧反馈时间戳和序列号。
 调用本身不发送 CAN 帧；当前产品没有 TCP 偏移配置，因此不提供虚构的 TCP 位姿，也不增加
 驱动无法可靠提供的电压/相电流字段。
+
+Runtime ABI 2.16 将 `articore_runtime_estop()` 改为无业务参数接口。调用后 Runtime 先停止
+控制帧，再失能全部已安装关节和夹爪，并在 health 的 `fault_reason` 中记录固定原因
+`emergency stop requested`。重复调用是安全的幂等操作；`disable()`、清除电机故障以及断开后
+重连都不能解除急停锁存，只有确认整机失能后的 `recover()` 可以恢复到 READY。
+
+Runtime ABI 2.17 重新定义 `recover()` 为完整整机恢复：先停止旧控制并确认失能，再并行清除
+左右通道的可恢复故障、验证 transport 与全部新鲜反馈，然后只为低速回到已标定关节零位而
+临时使能，回零验证通过后再次整机失能。任一步骤失败都会再次尝试整机失能，并把失败阶段、
+稳定错误码、说明和失败电机写入 health。`clear_faults()` 仍然只清错、不运动；`set_zero()`
+仍然表示把当前位置标定为新的零点，两者不会被 `recover()` 混用。
+
+Runtime ABI 2.18 将控制调度频率完全收归底层内部实现。删除公开的控制频率 getter 和 capability；
+配置结构中为保持二进制布局而保留的两个频率槽位改为忽略的 reserved 字段。产品 Runtime 根据
+内部产品与 transport 策略自行调度，Articore-SDK 和用户既不设置也不读取该频率。
+
+Runtime ABI 2.19 将产品 `disconnect()` 定义为唯一的终止型安全关闭：停止接收和发送控制命令，
+失能并确认全部已安装关节与夹爪，停止并回收 worker，关闭左右 CAN，最后释放 Controller、
+ControllerGroup、Motor、模型及产品资源。重复调用安全幂等；失能确认失败时仍会先终止 worker，
+再通过 Runtime 错误返回原因。旧 `close/free` C 符号仅为 ABI 兼容保留，SDK 在 ctypes 内部自动
+释放空句柄，不再向业务用户公开 `close()`。
+
+Runtime ABI 2.20 将产品面彻底收口为唯一的 Yunyi V1.0 双臂。SDK 和新的 C++ 包装器只调用
+`articore_runtime_create_yunyi(mode, with_grippers)`，不再传 `product_id`，也不再公开通用
+Runtime 构造、Controller/Motor 组装、关节映射、夹爪 profile 或重力模型绑定。固定双 CAN、
+14 关节、可选双夹爪、方向/量程/限位、模型和资源生命周期统一放在独立的 C++ Yunyi 产品模块。
+旧 `create_product/create_ex*` C 符号只为已有二进制兼容保留，不再进入正常 SDK 路径。
+
+Runtime ABI 2.21 增加产品级原子批量使能/失能接口。电机使用 `l-joint1..7`、
+`r-joint1..7`、`l-gripper`、`r-gripper` 稳定名称；批量使能任一步失败会回滚并确认本次已
+使能的电机，批量失能在异常状态下仍可执行并逐台确认。Runtime 正式管理
+`PARTIALLY_ENABLED`：上层仍提交完整双臂帧，底层只向已使能电机发送，主动失能不会被当成
+异常掉使能。每台电机的发送、反馈、确认和错误同时写入事务报告与统一 health。
+
+Runtime ABI 2.22 新增 `articore_runtime_get_state_v2()`。它从 Motor 的低速反馈缓存一次读取
+完整产品状态，不发送额外 CAN 请求；左右臂分别返回 `enabled_mask` 和
+`enabled_valid_mask`，夹爪返回同语义的使能值与有效标志。状态码、反馈序列和反馈年龄在每台
+Motor 的同一个缓存锁内读取；缺失、过期或未知状态不会被推断，而是由 SDK 映射为 `None`。
+旧 `articore_runtime_get_state()` 和原结构保持不变，供已有二进制客户端继续使用。
+
+Runtime ABI 2.23 增加产品级原生双臂五次轨迹。`start_trajectory()` 在返回前复制全部路点，
+计算共享的中间速度/加速度和每段五次系数，并检查时间、有限值、产品关节限制以及多项式段内
+位置、速度、加速度极值。执行不创建第二个线程：现有产品 worker 使用绝对单调时间在内部
+500 Hz 调度下求值，并直接复用 Raw MIT/PV 整帧和 ControllerGroup 原子发送路径。MIT 每轴
+显式携带目标速度、Kp、Kd 和前馈力矩；PV 每轴显式携带速度上限。部分使能时仍接收完整
+14 轴轨迹，但只发送已主动使能的 Motor。取消为幂等操作，并把当帧转换为零目标速度、零
+前馈的保持；disable、estop、disconnect、安全停机及 transport/send fault 都会终止轨迹。
+轨迹状态通过统一原生 status/health 返回，底层不保存任何 Python 内存指针。
+
+Runtime ABI 2.24 增加 `product_gripper_force_10_levels`。Yunyi 整机接口
+`articore_runtime_set_grippers()` 的力度等级现在直接使用 1..10：1 最轻、10 最强、
+5 为默认值。左右开合度仍为 0..1000，整机状态返回实际采用的同一十级值；SDK 应检查
+新的产品级能力位，不能再把旧的通用十级夹爪能力误认为整机接口已经支持 1..10。
 
 ## 安全
 

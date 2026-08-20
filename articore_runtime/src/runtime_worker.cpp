@@ -17,7 +17,7 @@ using detail::copy_text;
 
 void SafetyRuntime::worker_loop() {
   const auto control_period = std::chrono::nanoseconds(
-      1'000'000'000ULL / config_.control_hz);
+      1'000'000'000ULL / control_hz_);
   const auto idle_poll_period = std::chrono::milliseconds(2);
   const auto feedback_period = std::chrono::nanoseconds(
       1'000'000'000ULL / config_.feedback_check_hz);
@@ -34,15 +34,14 @@ void SafetyRuntime::worker_loop() {
       std::unique_lock<std::mutex> lock(state_mutex_);
       const auto now = Clock::now();
       auto deadline = now + idle_poll_period;
-      if (!hardware_transition_ &&
-          (state_ == ARTICORE_READY ||
-           state_ == ARTICORE_PARTIALLY_ENABLED) &&
+      if (!hardware_transition_ && state_ == ARTICORE_READY &&
           next_ready_feedback_ != Clock::time_point{}) {
         deadline = std::min(deadline, next_ready_feedback_);
       } else if (!hardware_transition_ &&
                  (state_ == ARTICORE_ENABLED ||
                   state_ == ARTICORE_RUNNING ||
-                  state_ == ARTICORE_DEGRADED) &&
+                  state_ == ARTICORE_DEGRADED ||
+                  state_ == ARTICORE_PARTIALLY_ENABLED) &&
                  next_control_tick_ != Clock::time_point{}) {
         deadline = std::min(deadline, next_control_tick_);
       }
@@ -68,7 +67,8 @@ void SafetyRuntime::worker_loop() {
           !has_successful_command_) {
         grace_fault = true;
       } else if ((state_ == ARTICORE_RUNNING ||
-                  state_ == ARTICORE_DEGRADED) &&
+                  state_ == ARTICORE_DEGRADED ||
+                  state_ == ARTICORE_PARTIALLY_ENABLED) &&
                  has_successful_command_ &&
                  arm_mailbox_.user_command &&
                  arm_mailbox_.lifetime == ARTICORE_COMMAND_STREAMING &&
@@ -77,20 +77,21 @@ void SafetyRuntime::worker_loop() {
         command_timeout = true;
       }
       if ((state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING ||
-           state_ == ARTICORE_DEGRADED) &&
+           state_ == ARTICORE_DEGRADED ||
+           state_ == ARTICORE_PARTIALLY_ENABLED) &&
           now >= next_control_tick_) {
         run_arm_control = true;
         detail::advance_periodic_deadline(
             next_control_tick_, control_period, now);
       }
-      if ((state_ == ARTICORE_READY ||
-           state_ == ARTICORE_PARTIALLY_ENABLED) &&
+      if (state_ == ARTICORE_READY &&
           now >= next_ready_feedback_) {
         run_ready_feedback = true;
         detail::advance_periodic_deadline(
             next_ready_feedback_, ready_feedback_period, now);
       }
       if ((state_ == ARTICORE_RUNNING || state_ == ARTICORE_DEGRADED ||
+           state_ == ARTICORE_PARTIALLY_ENABLED ||
            state_ == ARTICORE_SAFE_HOLD ||
            state_ == ARTICORE_SAFE_STOP) &&
           now >= next_feedback_check_) {
@@ -105,7 +106,8 @@ void SafetyRuntime::worker_loop() {
       }
       if (!enable_transaction_ &&
           (state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING ||
-           state_ == ARTICORE_DEGRADED) &&
+           state_ == ARTICORE_DEGRADED ||
+           state_ == ARTICORE_PARTIALLY_ENABLED) &&
           now >= next_gripper_control_ &&
           std::any_of(motors_.begin(), motors_.end(),
                       [](const MotorRecord& motor) {
@@ -153,9 +155,7 @@ void SafetyRuntime::worker_loop() {
         std::lock_guard<std::mutex> command_lock(command_mutex_);
         {
           std::lock_guard<std::mutex> state_lock(state_mutex_);
-          still_ready = !hardware_transition_ &&
-              (state_ == ARTICORE_READY ||
-               state_ == ARTICORE_PARTIALLY_ENABLED);
+          still_ready = !hardware_transition_ && state_ == ARTICORE_READY;
         }
         if (still_ready) {
           complete = request_feedback_parallel(
@@ -186,6 +186,21 @@ void SafetyRuntime::worker_loop() {
     if (run_arm_control) {
       std::string error;
       if (!run_arm_control_cycle(now, combine_mit_arm_and_gripper, error)) {
+        uint32_t send_failures = 0;
+        {
+          std::lock_guard<std::mutex> lock(state_mutex_);
+          send_failures = consecutive_send_failures_;
+        }
+        // A bounded SocketCAN write timeout represents one missed product
+        // frame, not proof that the Motor or transport is permanently bad.
+        // Preserve the active command/trajectory for a small number of
+        // consecutive misses and retry on the next native cycle. Persistent
+        // failure still transitions to a protective stop, while the
+        // non-blocking transport guarantees shutdown remains interruptible.
+        const uint32_t failure_threshold =
+            std::max<uint32_t>(1, config_.feedback_failure_threshold);
+        if (send_failures < failure_threshold) continue;
+        fault_trajectory(error);
         std::string stop_error;
         if (!enter_safe_stop(
                 "arm control cycle failed: " + error, stop_error)) {
@@ -205,6 +220,7 @@ void SafetyRuntime::worker_loop() {
           std::lock_guard<std::mutex> state_lock(state_mutex_);
           still_active = !hardware_transition_ &&
               (state_ == ARTICORE_RUNNING || state_ == ARTICORE_DEGRADED ||
+               state_ == ARTICORE_PARTIALLY_ENABLED ||
                state_ == ARTICORE_SAFE_HOLD ||
                state_ == ARTICORE_SAFE_STOP);
         }

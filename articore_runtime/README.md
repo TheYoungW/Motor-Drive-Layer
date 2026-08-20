@@ -1,8 +1,8 @@
 # Articore native safety runtime
 
-This directory contains single- and dual-arm Articore product policy. It is a separate native
-library in the Motor-Drive-Layer repository and depends on the generic motor C ABI without adding
-Yunyi or Articore concepts to `libmotor_abi`.
+This directory contains the native Yunyi V1.0 dual-arm product Runtime. It is a separate native
+library in the Motor-Drive-Layer repository and uses the generic motor C ABI internally without
+asking SDK users to assemble Controllers, Motors, mappings, profiles, or product identifiers.
 
 The public runtime remains one `libarticore_runtime` library and one
 `SafetyRuntime` state owner. Its implementation is split by responsibility:
@@ -14,12 +14,14 @@ The public runtime remains one `libarticore_runtime` library and one
 - `runtime_joint_position.cpp`: ordinary PV/MIT position targets and constant-speed reference advancement.
 - `runtime_safety.cpp`: feedback/transport supervision, protective hold, fault policy, and health snapshots.
 - `runtime_worker.cpp`: persistent absolute-deadline scheduler and safety event dispatch.
+- `yunyi_runtime.cpp`: the single product factory, fixed dual-channel topology, calibration,
+  joint mapping, gripper profiles, models, and ownership of all native resources.
 
 The split does not create additional shared libraries or independent state machines; it only gives
 the existing state owner smaller compilation units with a single lock order and one state owner.
 
 The runtime owns one persistent worker thread. Its arm loop uses `steady_clock` absolute deadlines
-at the effective control rate, skips missed periods, and never
+at an internal product cadence, skips missed periods, and never
 replays expired frames. Complete PV or MIT commands atomically overwrite a capacity-one
 latest-value mailbox; if A, B, and C arrive before the next tick, only C is sent. The native
 control path reads the mailbox storage directly without copying a command queue or allocating a
@@ -37,14 +39,13 @@ hold from the persistent worker. Both channels are refreshed in parallel until e
 fresh `ENABLED` feedback within `enable_grace_ms`. Any failure latches `FAULT`, attempts every
 motor disable, confirms physical disable, and remains available through a structured per-channel,
 per-motor enable report. `disable()` is valid in `FAULT` and never clears the latch; `recover()`
-only clears it after disabled feedback and transport health have been confirmed. SDKs must call
+performs the ABI 2.17 whole-product recovery transaction described below. SDKs must call
 the runtime enable entry point directly instead of enabling individual arms first. If a complete
 fresh confirmation shows one motor is still `DISABLED`, the runtime retries only that motor once;
 there is no unbounded enable retry loop.
-SDK bindings create ABI 1.4-or-newer runtimes with `articore_runtime_create_ex()` and pass the generic
-`motor_controller_enable_all` and `motor_handle_enable` function pointers. This preserves the
-separate-library boundary and avoids a direct DLL/dylib dependency between the product runtime and
-`libmotor_abi`; the original `articore_runtime_create()` remains available for ABI 1.3 callers.
+Current SDK bindings call only `articore_runtime_create_yunyi()`. Legacy generic creation symbols
+remain exported for binary compatibility, but they are not part of the product SDK or the normal
+C++ wrapper path.
 
 Feedback health is deliberately separate from command validation. Runtime command limits apply to
 user commands before transmission, but are not applied to measured
@@ -69,11 +70,11 @@ advanced dynamic MIT control should use the raw streaming interface.
 Runtime ABI 1.12 adds `articore_runtime_set_joint_mit()` for ordinary one-shot MIT position
 setting. One call supplies the complete active arm layout, final joint positions, and one shared
 speed value. ABI 2.13 defines that value as 0..100 and converts it to the product's physical
-reference velocity inside C++. On the first command after enable, reconnect, or recovery, the Runtime
+reference velocity inside C++. On the first command after enable or recovery, the Runtime
 requires complete fresh enabled feedback and initializes every `current_target` from measured
-position. At each native control tick it advances each reference by at most
-the scaled physical velocity divided by `control_hz`, transmits `dq=0` and `tau=0`, and uses the product-configured
-MIT Kp/Kd. Different travel distances may finish at different times; this interface deliberately
+position. At each native control tick it advances each reference by a bounded
+step derived from the product-owned scheduler, transmits `dq=0` and `tau=0`,
+and uses the product-configured MIT Kp/Kd. Different travel distances may finish at different times; this interface deliberately
 does not synchronize different joint arrival times.
 
 The ordinary MIT target is a capacity-one latest-value mailbox. A new complete dual-arm command
@@ -87,7 +88,7 @@ ordinary-position ramping.
 
 Runtime ABI 1.13 adds the symmetric `articore_runtime_set_joint_pv()` ordinary position path. It
 uses the same complete-arm latest-value mailbox, fresh-feedback initialization, shared rad/s speed,
-and `max_reference_velocity / control_hz` position step. Generated PV frames use the current native
+and a scheduler-owned bounded position step. Generated PV frames use the current native
 reference as position and the same shared speed as their protocol velocity limit. A new PV target
 atomically replaces only the final positions and shared speed; the currently transmitted reference
 remains continuous. The raw `articore_runtime_submit_pos_vel_ex()` entry point remains unchanged for
@@ -105,12 +106,13 @@ markers on CH0/CH1; receipt proves that previously accepted Runtime motion frame
 USB/CAN queue boundary. Both channels are disabled in parallel and confirmed with fresh feedback.
 If confirmation is incomplete, only the unconfirmed motors receive one directed disable retry,
 followed by one final parallel confirmation. There is no unbounded retry loop.
-`close()` and the native destructor reuse the same transaction. A checked close does not enter
-`DISCONNECTED` when physical disable cannot be confirmed, so the caller must not release its
-Controller or Transport handles. `articore_runtime_get_last_disable_report()` exposes stable
+Terminal shutdown reuses the same transaction. If physical disable cannot be confirmed, the
+Runtime still stops and joins its worker before reporting failure, so no background sender survives.
+`articore_runtime_get_last_disable_report()` exposes stable
 per-channel/per-motor status, missing IDs, barrier status, and whether the one-shot retry ran.
 Legacy `articore_runtime_free()` remains a void best-effort destructor for ABI compatibility;
-bindings must call checked `articore_runtime_close()` first.
+ABI 2.20 product bindings call checked `articore_runtime_disconnect()` and then free the opaque
+tombstone internally.
 
 The additive `articore_runtime_configure_joint_safety_limits()` call keeps the original joint
 configuration ABI stable while separating mechanical hard limits from normal-operation soft
@@ -177,10 +179,10 @@ opening targets to motor position, ramps closing motion with the normal MIT gain
 from torque plus a position-motion window and target error, then switches to a low-gain hold with
 zero feedforward torque. Sustained overload produces a rate-limited bounded retreat. No Python
 gripper control loop is involved in the native dual-arm path. During `ENABLED` and `RUNNING`, the
-gripper state machine and MIT output run at the same effective `control_hz` as the arm.
-Only `SAFE_HOLD` and protective `FAULT` holding use `safe_hold_hz` (normally 100 Hz). The legacy
-`gripper_control_hz` config field remains in the ABI layout but no longer down-samples normal
-gripper control.
+gripper state machine and MIT output run on the same internal scheduler as the arm.
+Only `SAFE_HOLD` and protective `FAULT` holding use their independent safety cadence. Legacy
+rate slots remain in the ABI struct layout as ignored placeholders and do not configure normal
+arm or gripper control.
 
 Operational faults use protective fault hold rather than linked torque-off. One missing feedback
 sample only increments the failure counters: arms continue their current control-rate output and a
@@ -196,9 +198,10 @@ does not prevent a still-controllable channel from continuing its hold, and a ho
 never automatically disables another channel. `FAULT` remains latched and rejects ordinary motion.
 An explicit `disable()` always attempts every motor, records any motor whose disabled state was not
 confirmed, and does not clear the latch. `recover()` returns to `READY` only after fresh disabled
-feedback and transport health are confirmed. `estop()` currently applies the explicit product
-policy: arm joints are torque-disabled, while `gripper_fault_action` selects low-gain gripper hold
-or gripper disable. A later explicit `disable()` always disables held grippers as well.
+feedback and transport health are confirmed. Parameterless `estop()` immediately stops Runtime
+control and disables every installed arm and gripper motor, regardless of the ordinary protective
+gripper policy. It records the standard `emergency stop requested` health reason, is idempotent,
+and can only be unlatched by `recover()`.
 
 `runtime_abi.h` is the stable boundary used by Articore-SDK's private native binding. The optional generic
 motor-drive-layer transport-health callback is used when available; the wrapper remains compatible
@@ -217,16 +220,14 @@ expected/received/missing counts plus missing motor IDs. Disable confirmation an
 consume those fields directly; diagnostic error text is retained for logs but is never parsed to
 choose safety behavior.
 
-Runtime ABI 2.1 exposes `articore_runtime_get_control_hz()` and advertises
-`ARTICORE_CAP_EFFECTIVE_CONTROL_RATE`. Runtime ABI 2.5 adds immutable per-side transport
-capabilities to runtime creation. A dual runtime preserves a requested rate up to 500 Hz only when
-both sides report `socketcanfd`, CAN-FD, and active BRS. That path sustained approximately 499 Hz
-feedback for all 16 motors in a 30-second pure C++ streaming raw-MIT hardware test. Raw submissions
-replace a separate capacity-one pending mailbox and do not wait for an in-flight physical batch;
-the worker consumes only the newest complete generation at its next tick. Legacy callers, mixed
-transports, and DM Device dual runtimes remain capped at 400 Hz. Single-side runtimes keep their
-explicitly requested rate. Product SDKs should query and report the effective value instead of
-assuming the requested rate was accepted unchanged.
+Runtime ABI 2.5 adds immutable per-side transport capabilities to runtime creation so the native
+implementation can select a safe scheduler for the installed product. Raw submissions replace a
+separate capacity-one pending mailbox and do not wait for an in-flight physical batch; the worker
+consumes only the newest complete generation at its next tick. Runtime ABI 2.18 removes the former
+control-rate getter and capability. Rate fields retained in the configuration struct are ignored
+ABI-layout placeholders. Articore-SDK and applications neither set nor observe the Runtime control
+frequency; they submit business commands and inspect state, timestamps, health, and operation
+results instead.
 
 Runtime ABI 2.6 advertises `ARTICORE_CAP_PER_CYCLE_MIT_TORQUE_LIMIT`. Before every native MIT arm
 send—including cycles that repeat the latest capacity-one mailbox target—the worker reads the
@@ -237,8 +238,8 @@ are multiplied by the same scale so their relative contributions are preserved. 
 batch is rejected before transmission if the cached feedback is disabled, unavailable, or
 non-finite, which then enters the existing protective fault-hold path. A stale-but-valid cached
 sample remains usable while its age is reported diagnostically, so feedback timeout alone does not
-stop the native sender. This keeps the protection at
-the actual native control rate even when a publisher updates at only 100--500 Hz. The cumulative
+stop the native sender. This keeps protection inside every native product cycle even when a
+publisher updates at a different application cadence. The cumulative
 activation count and latest per-joint requested torque, applied scale, and applied torque are
 available through `articore_runtime_get_mit_torque_limit_stats()`.
 
@@ -265,7 +266,7 @@ zeroing transaction requires READY, fresh feedback, healthy transports, confirme
 disable, and a fixed 0.05 rad/s stationary threshold. Both channels run in parallel; every motor
 is re-read and checked for disabled state, position within 0.02 rad, and stationary velocity.
 Partial completion returns a stable error and is recorded in `ArticoreSafetyHealthV2`; it is never
-reported as success. `articore_runtime_create_product("yunyi_v1_0", ...)` constructs and owns the
+reported as success. `articore_runtime_create_yunyi(...)` constructs and owns the
 fixed can-left/can-right SocketCAN-FD+BRS dual-arm product with all 14 joints and two grippers.
 True all-or-none zeroing still requires a future firmware prepare/commit protocol.
 
@@ -275,14 +276,13 @@ both SocketCAN-FD/BRS channels, all 16 Motors, direction and range conversion,
 joint limits, default MIT gains, grippers, gravity models, the ControllerGroup,
 leases, workers, and resource lifetimes. Fixed 14-joint logical-coordinate
 position, raw MIT, and raw PV frames are validated and converted natively;
-`articore_runtime_get_state()` returns one left/right/gripper snapshot. A
-reconnectable `disconnect()` keeps the same Runtime and native resources alive.
+`articore_runtime_get_state()` returns one left/right/gripper snapshot.
 
 Runtime ABI 2.11 adds the immutable `with_grippers` product topology. The true
 variant creates and validates 16 Motors; the false variant creates only the 14
 arm Motors and never waits for or faults on absent grippers. The simplified
 whole-product gripper command accepts only left/right 0..1000 openings and one
-1..5 force level, and is a successful no-op for a gripperless Runtime. Product
+1..10 force level, and is a successful no-op for a gripperless Runtime. Product
 state exposes only gripper availability, logical opening, and force level.
 
 Runtime ABI 2.12 adds graded feedback safety. One or two missed feedback checks
@@ -291,9 +291,10 @@ velocity/torque scale; three times the configured failure threshold enters
 `SAFE_STOP`, rejects new motion, and continuously holds the latest safe
 position without disabling motors. `fault_reason` is reserved for confirmed
 motor/transport faults; communication quality is exposed as `safety_reason`.
-Recovered communication never resumes an old target: explicit `recover()`
-refreshes all feedback, synchronizes the current pose, and returns to
-`ENABLED` awaiting a new command.
+Recovered communication never resumes an old target. Explicit `recover()`
+clears recoverable faults, validates both arms, returns all arm joints to the
+already-calibrated zero at low speed, and finishes in confirmed-disabled
+`READY`; it never restores the previous command.
 
 Runtime ABI 2.13 normalizes the shared pace of ordinary MIT/PV position
 commands to an inclusive 0..100 product scale. Zero pauses reference
@@ -315,6 +316,71 @@ left/right flange pose with the product-owned Pinocchio model. The fixed output
 is `[x, y, z, roll, pitch, yaw]` in metres/radians plus the oldest contributing
 feedback timestamp and sequence. The getter sends no CAN frames and does not
 apply an unavailable TCP offset.
+
+Runtime ABI 2.16 makes `articore_runtime_estop()` parameterless. It clears all
+pending control, disables the complete installed product, records the standard
+emergency-stop reason in health, and latches until an explicit `recover()`.
+
+Runtime ABI 2.17 defines `articore_runtime_recover()` as a complete native
+whole-product transaction: stop old commands and disable, clear recoverable
+faults on both channels, validate transports and fresh disabled feedback,
+enable only for a fixed low-speed return of all 14 arm joints to their
+previously calibrated zero, then disable and verify every installed motor.
+Every failed stage attempts the same full-product disable and records the
+stage, stable operation code, error text, and affected motor names in health.
+`clear_faults()` remains clear-only and never moves; `set_zero()` still changes
+calibration by defining the current physical position as zero.
+
+Runtime ABI 2.19 makes product `disconnect()` the single terminal shutdown
+operation. It rejects new commands, performs and verifies whole-product
+disable, joins the native worker, closes both CAN channels, and releases all
+product-owned Controllers, Motors, models, and group resources. Calls are
+idempotent. The old `close/free` C symbols remain as compatibility aliases;
+language bindings free the small opaque tombstone internally and expose no
+separate close operation.
+
+Runtime ABI 2.20 removes product selection from the supported binding surface. Yunyi V1.0 dual arm
+is the only product: `articore_runtime_create_yunyi(mode, with_grippers)` owns both CAN channels,
+the fixed 14-joint mapping, optional paired grippers, models, calibration and all resource
+lifetimes. C++ and Python product APIs no longer expose generic construction or any
+`configure_joints/configure_gripper_products/configure_gravity_products` step. The older
+`create_product/create_ex*` C symbols remain only as ABI compatibility entry points.
+
+Runtime ABI 2.21 adds atomic product-level subset power transactions with stable Yunyi roles
+(`l-joint1..7`, `r-joint1..7`, `l-gripper`, `r-gripper`). A failed subset enable rolls back and
+verifies motors changed by that call; subset disable remains available from abnormal states and
+verifies each requested motor. `PARTIALLY_ENABLED` is a supported control state: clients keep
+submitting complete 14-axis frames while native dispatch filters intentionally disabled motors.
+Per-motor command, feedback, confirmation and error details are returned in
+`ArticoreMotorPowerReport` and mirrored into unified operation health.
+
+Runtime ABI 2.22 adds `articore_runtime_get_state_v2()`. It reads the complete product from the
+existing low-rate Motor feedback caches and never emits a feedback request. Each arm carries
+`enabled_mask` plus `enabled_valid_mask`; grippers carry the same value/validity semantics.
+State, update sequence and feedback age for each Motor are captured under one cache lock. Missing,
+stale or unrecognized feedback remains unknown instead of being inferred from Runtime intent. The
+legacy state structure and `articore_runtime_get_state()` symbol remain binary compatible.
+
+Runtime ABI 2.23 adds one product-level native dual-arm quintic trajectory transaction.
+`articore_runtime_start_trajectory()` copies every waypoint before returning, resolves shared
+intermediate velocity/acceleration boundary values, precomputes each quintic segment, and checks
+timestamp, finite-value, product position, velocity, acceleration, torque and polynomial interior
+extrema constraints. The existing product worker samples the plan from an absolute monotonic
+clock at its private 500 Hz schedule and feeds the existing complete-frame Raw MIT/PV
+ControllerGroup path; no Python loop or second realtime thread exists. MIT frames carry explicit
+target velocity, Kp, Kd and feedforward torque, while PV frames carry explicit per-axis velocity
+limits. Partial power filters intentionally disabled Motors. Cancellation is idempotent and turns
+the in-flight MIT sample into a stationary hold; disable, estop, disconnect, safe stop and
+transport/send faults terminate the active plan. Status and errors remain native and are mirrored
+into unified operation health.
+
+Runtime ABI 2.24 adds `product_gripper_force_10_levels`. The public Yunyi
+`articore_runtime_set_grippers()` selector now addresses the ten immutable
+`yunyi_gripper_v1` calibrations directly: 1 is lightest, 10 is strongest, and
+5 is the default. Product state reports this same selected level without a
+1..5 compatibility compression. Bindings must require the product-specific
+capability instead of inferring support from the older generic ten-level
+gripper capability.
 
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations

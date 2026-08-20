@@ -63,6 +63,8 @@ int main() {
           "transport capabilities v2 rejects null controller and output");
   require(motor_controller_new_socketcanfd_ex(nullptr, 1) == nullptr,
           "SocketCAN-FD options reject null channel");
+  require(motor_handle_get_state_snapshot(nullptr, nullptr, nullptr) != 0,
+          "coherent cached state snapshot rejects null arguments");
 
   MotorRegisterInfo register_info{};
   require(motor_damiao_register_info(11, &register_info) == 0,

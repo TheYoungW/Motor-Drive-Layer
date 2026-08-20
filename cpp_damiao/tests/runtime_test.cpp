@@ -526,6 +526,12 @@ int main() {
   require(first_feedback_stats.update_count == 1, "first sensor frame increments feedback count");
   require(first_feedback_stats.age >= std::chrono::nanoseconds::zero(),
           "feedback age is non-negative");
+  const auto coherent_snapshot = motor1->state_snapshot();
+  require(coherent_snapshot.state.has_value() &&
+              coherent_snapshot.state->status_code == 0x01 &&
+              coherent_snapshot.feedback.has_feedback &&
+              coherent_snapshot.feedback.update_count == 1,
+          "state and feedback metadata share one coherent cache snapshot");
   const auto empty_feedback_stats = motor2->feedback_stats();
   require(!empty_feedback_stats.has_feedback, "unmatched motor has no feedback timestamp");
   require(empty_feedback_stats.update_count == 0, "unmatched motor feedback count stays zero");

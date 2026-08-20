@@ -637,6 +637,19 @@ std::optional<MotorState> MotorHandle::latest_state() const {
   return state_;
 }
 
+MotorStateSnapshot MotorHandle::state_snapshot() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  MotorStateSnapshot snapshot;
+  snapshot.state = state_;
+  snapshot.feedback.update_count = feedback_update_count_;
+  if (state_time_.has_value()) {
+    snapshot.feedback.has_feedback = true;
+    snapshot.feedback.age = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - *state_time_);
+  }
+  return snapshot;
+}
+
 FeedbackStats MotorHandle::feedback_stats() const {
   std::lock_guard<std::mutex> lock(state_mutex_);
   FeedbackStats stats;

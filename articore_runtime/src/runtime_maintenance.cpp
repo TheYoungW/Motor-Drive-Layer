@@ -23,6 +23,9 @@ const char* operation_name(ArticoreRuntimeOperation operation) {
     case ARTICORE_OPERATION_CLOSE: return "close";
     case ARTICORE_OPERATION_DISCONNECT: return "disconnect";
     case ARTICORE_OPERATION_COMMAND: return "command";
+    case ARTICORE_OPERATION_RECOVER: return "recover";
+    case ARTICORE_OPERATION_START_TRAJECTORY: return "start trajectory";
+    case ARTICORE_OPERATION_CANCEL_TRAJECTORY: return "cancel trajectory";
     default: return "maintenance";
   }
 }
@@ -31,13 +34,16 @@ const char* operation_name(ArticoreRuntimeOperation operation) {
 
 void SafetyRuntime::record_operation_result(
     ArticoreRuntimeOperation operation, int32_t code,
-    const std::string& error) {
+    const std::string& error,
+    const std::vector<std::string>& failed_motors) {
   std::lock_guard<std::mutex> lock(state_mutex_);
   last_operation_ = operation;
   last_operation_code_ = code;
   last_operation_error_ = error;
-  operation_failed_motors_.clear();
-  if (operation != ARTICORE_OPERATION_COMMAND &&
+  operation_failed_motors_ = failed_motors;
+  if (!emergency_stop_latched_ && operation != ARTICORE_OPERATION_COMMAND &&
+      operation != ARTICORE_OPERATION_START_TRAJECTORY &&
+      operation != ARTICORE_OPERATION_CANCEL_TRAJECTORY &&
       code != ARTICORE_OPERATION_OK && !error.empty()) {
     fault_reason_ = std::string(operation_name(operation)) + " failed: " + error;
   }
@@ -94,7 +100,7 @@ int32_t SafetyRuntime::maintenance_precheck(
     operation_failed_motors_.clear();
     const bool valid_state = state_ == ARTICORE_READY ||
         (operation == ARTICORE_OPERATION_CLEAR_FAULTS &&
-         state_ == ARTICORE_FAULT);
+         state_ == ARTICORE_FAULT && !emergency_stop_latched_);
     if (!valid_state || hardware_transition_) {
       error = std::string(operation_name(operation)) +
               " requires Runtime READY";

@@ -309,6 +309,11 @@ int32_t motor_handle_get_register_f32(MotorHandle* handle, uint8_t rid, uint32_t
 int32_t motor_handle_get_register_u32(MotorHandle* handle, uint8_t rid, uint32_t timeout_ms, uint32_t* out_value);
 
 int32_t motor_handle_get_state(MotorHandle* handle, MotorState* out_state);
+// Reads state and feedback metadata from one cache lock. This never sends a
+// bus request and keeps status_code, update_count and age coherent.
+int32_t motor_handle_get_state_snapshot(
+    MotorHandle* handle, MotorState* out_state,
+    MotorFeedbackStats* out_stats);
 int32_t motor_handle_get_feedback_stats(MotorHandle* handle, MotorFeedbackStats* out_stats);
 int32_t motor_handle_get_feedback_integrity_stats(
     MotorHandle* handle, MotorFeedbackIntegrityStats* out_stats);

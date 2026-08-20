@@ -483,6 +483,20 @@ void SafetyRuntime::set_gripper_commands(
   wakeup_.notify_all();
 }
 
+int32_t SafetyRuntime::gripper_force_level(uint8_t side) const {
+  if (side > 1) throw std::invalid_argument("invalid gripper side");
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  const auto motor = std::find_if(
+      motors_.begin(), motors_.end(), [&](const MotorRecord& candidate) {
+        return candidate.descriptor.is_gripper &&
+               candidate.descriptor.side == side;
+      });
+  if (motor == motors_.end()) {
+    throw std::runtime_error("requested product gripper is not installed");
+  }
+  return static_cast<int32_t>(motor->force_level);
+}
+
 void SafetyRuntime::seed_gripper_targets_from_feedback(bool activate) {
   std::vector<ArticoreMitCommand> seeded;
   std::lock_guard<std::mutex> command_lock(command_mutex_);
@@ -513,12 +527,15 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
   commands.clear();
   commands.reserve(motors_.size());
   float command_scale = 1.0f;
+  std::set<void*> intentionally_disabled;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     if (state_ == ARTICORE_DEGRADED) command_scale = 0.25f;
+    intentionally_disabled = intentionally_disabled_motors_;
   }
   for (auto& motor : motors_) {
     if (!motor.descriptor.is_gripper || !motor.has_gripper_target) continue;
+    if (intentionally_disabled.count(motor.descriptor.motor)) continue;
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
     if (api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
@@ -721,7 +738,8 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     if (hardware_transition_ ||
         (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING &&
-         state_ != ARTICORE_DEGRADED)) {
+         state_ != ARTICORE_DEGRADED &&
+         state_ != ARTICORE_PARTIALLY_ENABLED)) {
       return true;
     }
   }
@@ -739,10 +757,12 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
 
 bool SafetyRuntime::send_gripper_hold_once(std::string& error) {
   std::vector<ArticoreMitCommand> commands;
+  std::set<void*> intentionally_disabled;
   ArticoreSafetyState hold_state;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     commands = safe_grippers_;
+    intentionally_disabled = intentionally_disabled_motors_;
     hold_state = state_;
   }
   if (commands.empty()) return true;
@@ -752,6 +772,7 @@ bool SafetyRuntime::send_gripper_hold_once(std::string& error) {
   std::vector<ArticoreMitCommand> sendable;
   sendable.reserve(commands.size());
   for (auto& command : commands) {
+    if (intentionally_disabled.count(command.motor)) continue;
     const auto found = std::find_if(
         motors_.begin(), motors_.end(), [&](const MotorRecord& motor) {
           return motor.descriptor.is_gripper &&

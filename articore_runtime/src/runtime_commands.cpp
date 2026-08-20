@@ -224,13 +224,18 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
 void SafetyRuntime::require_state_for_command(bool allow_gravity) const {
   if (fault_latched_ || hardware_transition_ || enable_transaction_ ||
       (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING &&
-       state_ != ARTICORE_DEGRADED)) {
+       state_ != ARTICORE_DEGRADED &&
+       state_ != ARTICORE_PARTIALLY_ENABLED)) {
     throw std::runtime_error("Articore runtime is not accepting motion commands");
   }
   if (!allow_gravity &&
       gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE) {
     throw std::runtime_error(
         "arm commands are owned by active gravity compensation");
+  }
+  if (trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING) {
+    throw std::runtime_error(
+        "arm commands are owned by an active native trajectory");
   }
 }
 
@@ -401,6 +406,9 @@ bool SafetyRuntime::enter_safe_stop(const std::string& reason,
     return false;
   }
   state_ = ARTICORE_SAFE_STOP;
+  terminate_trajectory_locked(
+      ARTICORE_TRAJECTORY_FAULT,
+      "trajectory terminated by safe stop: " + reason);
   fault_latched_ = false;
   fault_reason_.clear();
   safety_reason_ = reason;
@@ -613,27 +621,36 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
   ArticoreControlMode mode;
   bool gravity_active = false;
   bool degraded = false;
+  std::set<void*> intentionally_disabled;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     if (hardware_transition_ ||
         (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING &&
-         state_ != ARTICORE_DEGRADED)) {
+         state_ != ARTICORE_DEGRADED &&
+         state_ != ARTICORE_PARTIALLY_ENABLED)) {
       return true;
     }
     mode = mode_;
     degraded = state_ == ARTICORE_DEGRADED;
     gravity_active =
         gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE;
+    intentionally_disabled = intentionally_disabled_motors_;
   }
 
   if (gravity_active) {
     return run_gravity_control_cycle(now, include_grippers, error);
   }
 
-  // Consume only the newest accepted raw command. Physical sends may take
-  // most of a 2 ms cycle, but publishers can replace this pending slot while
-  // the previous generation is in flight.
-  consume_pending_arm_mailbox();
+  bool trajectory_completing = false;
+  const bool trajectory_active =
+      prepare_trajectory_cycle(now, trajectory_completing, error);
+  if (!error.empty()) return false;
+  if (!trajectory_active) {
+    // Consume only the newest accepted raw command. Physical sends may take
+    // most of a 2 ms cycle, but publishers can replace this pending slot while
+    // the previous generation is in flight.
+    consume_pending_arm_mailbox();
+  }
 
   if (!arm_mailbox_.valid) return true;
   const bool mailbox_user_command = arm_mailbox_.user_command;
@@ -649,7 +666,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     }
     const float command_scale = degraded ? 0.25f : 1.0f;
     const float max_delta = arm_mailbox_.max_reference_velocity * command_scale /
-                            static_cast<float>(config_.control_hz);
+                            static_cast<float>(control_hz_);
     if (mode == ARTICORE_MODE_PV) {
       for (std::size_t i = 0; i < arm_mailbox_.pv.size(); ++i) {
         auto& command = arm_mailbox_.pv[i];
@@ -693,16 +710,36 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
       }
       requested = &degraded_mit_commands_;
     }
+    filtered_mit_commands_.clear();
+    filtered_mit_commands_.reserve(requested->size());
+    for (const auto& command : *requested) {
+      if (!intentionally_disabled.count(command.motor)) {
+        filtered_mit_commands_.push_back(command);
+      }
+    }
     if (!prepare_mit_torque_limited_commands(
-            *requested, mit_torque_limited_commands_,
+            filtered_mit_commands_, mit_torque_limited_commands_,
             torque_limit_cycle, error, degraded ? 0.25f : 1.0f)) {
       return false;
     }
     mit_data = mit_torque_limited_commands_.data();
   }
-  const uint32_t command_count = mode == ARTICORE_MODE_PV
-      ? static_cast<uint32_t>(arm_mailbox_.pv.size())
-      : static_cast<uint32_t>(arm_mailbox_.mit.size());
+  uint32_t command_count = 0;
+  if (mode == ARTICORE_MODE_PV) {
+    filtered_pv_commands_.clear();
+    const auto& source = degraded ? degraded_pv_commands_ : arm_mailbox_.pv;
+    filtered_pv_commands_.reserve(source.size());
+    for (const auto& command : source) {
+      if (!intentionally_disabled.count(command.motor)) {
+        filtered_pv_commands_.push_back(command);
+      }
+    }
+    pv_data = filtered_pv_commands_.data();
+    command_count = static_cast<uint32_t>(filtered_pv_commands_.size());
+  } else {
+    mit_data = mit_torque_limited_commands_.data();
+    command_count = static_cast<uint32_t>(mit_torque_limited_commands_.size());
+  }
 
   std::vector<ArticoreMitCommand> gripper_commands;
   std::vector<ArticoreMitCommand> combined_mit;
@@ -713,7 +750,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
       return false;
     }
     if (!gripper_commands.empty()) {
-      combined_mit.reserve(gripper_commands.size() + arm_mailbox_.mit.size());
+      combined_mit.reserve(gripper_commands.size() + command_count);
       // Put grippers first so they no longer sit behind a completed 14-axis
       // transaction and a second ControllerGroup dispatch barrier. The group
       // still preserves one atomic cross-channel generation.
@@ -728,8 +765,10 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
   }
 
   const int32_t result = mode == ARTICORE_MODE_PV
-      ? api_.group_send_pos_vel(controller_group_, pv_data, command_count)
-      : api_.group_send_mit(controller_group_, mit_send_data, mit_send_count);
+      ? (command_count == 0 ? 0 : api_.group_send_pos_vel(
+            controller_group_, pv_data, command_count))
+      : (mit_send_count == 0 ? 0 : api_.group_send_mit(
+            controller_group_, mit_send_data, mit_send_count));
   if (result != 0) {
     error = motor_error(
         mode == ARTICORE_MODE_PV
@@ -777,6 +816,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     }
   }
   commit_gripper_commands_sent(gripper_commands, now);
+  if (trajectory_completing) complete_trajectory_cycle();
   return true;
 }
 

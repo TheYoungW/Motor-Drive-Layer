@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -19,6 +20,38 @@
 #include "robot_model.hpp"
 
 namespace articore {
+
+struct NativeTrajectoryJoint {
+  void* motor = nullptr;
+  float direction = 1.0f;
+  float velocity_command_scale = 1.0f;
+  float velocity_feedback_scale = 1.0f;
+  float torque_command_scale = 1.0f;
+  float lower_position = 0.0f;
+  float upper_position = 0.0f;
+  float velocity_limit = 0.0f;
+  float acceleration_limit = 0.0f;
+  float torque_limit = 0.0f;
+  float mit_kp = 0.0f;
+  float mit_kd = 0.0f;
+  float mit_feedforward_torque = 0.0f;
+  float pv_velocity_limit = 0.0f;
+};
+
+struct NativeTrajectoryWaypoint {
+  double time_s = 0.0;
+  std::vector<float> positions;
+  std::vector<float> velocities;
+  std::vector<float> accelerations;
+  uint32_t velocity_valid_mask = 0;
+  uint32_t acceleration_valid_mask = 0;
+};
+
+struct NativeTrajectoryRequest {
+  ArticoreControlMode mode = ARTICORE_MODE_MIT;
+  std::vector<NativeTrajectoryJoint> joints;
+  std::vector<NativeTrajectoryWaypoint> waypoints;
+};
 
 namespace detail {
 
@@ -49,7 +82,8 @@ class SafetyRuntime {
                 bool require_gripper_product_profiles = false,
                 std::vector<ArticoreRuntimeTransportCapabilities>
                     transport_capabilities = {},
-                ArticoreMotorMaintenanceApi maintenance_api = {});
+                ArticoreMotorMaintenanceApi maintenance_api = {},
+                uint32_t internal_control_rate_override = 0);
   ~SafetyRuntime();
 
   SafetyRuntime(const SafetyRuntime&) = delete;
@@ -64,6 +98,8 @@ class SafetyRuntime {
   void configure_joint_safety_limits(
       const ArticoreJointSafetyLimits* limits, uint32_t count);
   void enable(ArticoreControlMode mode);
+  ArticoreMotorPowerReport set_motor_power_batch(
+      const std::vector<std::string>& motor_names, bool enabled);
   ArticoreMotorPowerState set_motor_power(const std::string& motor_name,
                                           bool enabled);
   ArticoreMotorPowerState motor_power_state(const std::string& motor_name);
@@ -72,7 +108,8 @@ class SafetyRuntime {
   int32_t set_zero();
   void record_operation_result(ArticoreRuntimeOperation operation,
                                int32_t code,
-                               const std::string& error = {});
+                               const std::string& error = {},
+                               const std::vector<std::string>& failed_motors = {});
   ArticoreEnableReport last_enable_report() const;
   void submit_pos_vel(const ArticorePosVelCommand* commands, uint32_t count);
   void submit_mit(const ArticoreMitCommand* commands, uint32_t count);
@@ -82,6 +119,9 @@ class SafetyRuntime {
   void submit_mit_ex(const ArticoreMitCommand* commands,
                      uint32_t count,
                      ArticoreCommandLifetime lifetime);
+  uint64_t start_trajectory(NativeTrajectoryRequest request);
+  ArticoreTrajectoryStatus trajectory_status() const;
+  void cancel_trajectory();
   void set_joint_mit(const ArticoreJointMitTarget* targets,
                      uint32_t count,
                      float max_reference_velocity);
@@ -107,16 +147,20 @@ class SafetyRuntime {
   ArticoreGravityCompensationStatus gravity_compensation_status() const;
   void set_gripper_commands(const ArticoreGripperCommand* commands,
                             uint32_t count);
+  int32_t gripper_force_level(uint8_t side) const;
   void report_feedback_failure(uint8_t side, const std::string& reason);
   void disable();
   ArticoreDisableReport last_disable_report() const;
   ArticoreMitTorqueLimitStats mit_torque_limit_stats() const;
-  void estop(const std::string& reason);
+  void estop();
   void recover();
   ArticoreSafetyHealth health() const;
   ArticoreSafetyHealthV2 health_v2() const;
-  uint32_t control_hz() const noexcept { return config_.control_hz; }
+  uint32_t control_hz() const noexcept { return control_hz_; }
   ArticoreControlMode control_mode() const;
+  uint64_t feedback_max_age_ns() const noexcept {
+    return static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL;
+  }
   void declare_motor_presence(const std::string& role,
                               ArticorePresenceState state);
   ArticorePresenceState motor_presence(const std::string& role) const;
@@ -254,12 +298,38 @@ class SafetyRuntime {
     ArticoreGravityCompensationStatus status{};
   };
 
+  struct TrajectorySegment {
+    double start_s = 0.0;
+    double duration_s = 0.0;
+    std::vector<std::array<double, 6>> coefficients;
+  };
+
+  struct TrajectoryControl {
+    ArticoreTrajectoryState state = ARTICORE_TRAJECTORY_IDLE;
+    uint64_t id = 0;
+    uint32_t waypoint_count = 0;
+    uint32_t active_segment = 0;
+    double elapsed_s = 0.0;
+    double duration_s = 0.0;
+    Clock::time_point started_at{};
+    std::vector<NativeTrajectoryJoint> joints;
+    std::vector<TrajectorySegment> segments;
+    std::string error;
+  };
+
   void worker_loop();
   bool run_arm_control_cycle(Clock::time_point now, bool include_grippers,
                              std::string& error);
   bool run_gravity_control_cycle(Clock::time_point now,
                                  bool include_grippers,
                                  std::string& error);
+  bool prepare_trajectory_cycle(Clock::time_point now,
+                                bool& completing,
+                                std::string& error);
+  void complete_trajectory_cycle();
+  void terminate_trajectory_locked(ArticoreTrajectoryState state,
+                                   const std::string& error);
+  void fault_trajectory(const std::string& error);
   bool prepare_mit_torque_limited_commands(
       const std::vector<ArticoreMitCommand>& requested,
       std::vector<ArticoreMitCommand>& applied,
@@ -306,7 +376,8 @@ class SafetyRuntime {
                                      std::string& error);
   void enter_degraded(const std::string& reason);
   bool enter_safe_stop(const std::string& reason, std::string& error);
-  void enter_fault(const std::string& reason, bool torque_off = false);
+  void enter_fault(const std::string& reason, bool torque_off = false,
+                   bool allow_protective_hold = true);
   bool send_safe_hold_once(std::string& error);
   bool run_gripper_control_once(std::string& error);
   bool prepare_gripper_commands_locked(
@@ -352,6 +423,7 @@ class SafetyRuntime {
                                 ArticoreControlMode mode);
   static bool finite(float value);
   MotorRecord* resolve_motor_role(const std::string& role);
+  std::string stable_motor_role(const MotorRecord& motor) const;
   ArticoreMotorPowerState cached_motor_power_state(
       const MotorRecord* selected = nullptr) const;
   static float clamp_opening(float opening);
@@ -359,6 +431,10 @@ class SafetyRuntime {
   static float position_to_opening(const MotorRecord& motor, float position);
 
   ArticoreRuntimeConfig config_{};
+  // Product control scheduling is deliberately absent from the stable ABI.
+  // The optional constructor override exists only in this private header for
+  // deterministic native tests.
+  uint32_t control_hz_ = 400;
   ArticoreMotorApi api_{};
   ArticoreMotorMaintenanceApi maintenance_api_{};
   void* controller_group_ = nullptr;
@@ -373,6 +449,8 @@ class SafetyRuntime {
   std::unordered_map<void*, JointControlConfig> joint_configs_;
   std::vector<GravityArm> gravity_arms_;
   GravityControl gravity_control_;
+  TrajectoryControl trajectory_control_;
+  uint64_t next_trajectory_id_ = 1;
   mutable std::mutex state_mutex_;
   mutable std::mutex command_mutex_;
   // Raw arm submissions use a capacity-one pending mailbox so callers never
@@ -388,6 +466,7 @@ class SafetyRuntime {
   ArticoreSafetyState state_ = ARTICORE_DISCONNECTED;
   ArticoreControlMode mode_ = ARTICORE_MODE_PV;
   bool fault_latched_ = false;
+  bool emergency_stop_latched_ = false;
   bool disable_confirmed_ = false;
   bool has_successful_command_ = false;
   Clock::time_point enabled_at_{};
@@ -419,6 +498,10 @@ class SafetyRuntime {
   int32_t last_operation_code_ = ARTICORE_OPERATION_OK;
   std::string last_operation_error_;
   std::vector<std::string> operation_failed_motors_;
+  // Motors disabled through the product-level subset transaction. Complete
+  // frames remain valid, but worker dispatch filters these handles until an
+  // explicit subset or whole-product enable succeeds.
+  std::set<void*> intentionally_disabled_motors_;
   std::vector<ArticorePosVelCommand> safe_pv_;
   std::vector<ArticoreMitCommand> safe_mit_;
   std::vector<ArticoreMitCommand> safe_grippers_;
@@ -429,6 +512,8 @@ class SafetyRuntime {
   std::vector<ArticoreMitCommand> mit_torque_limited_commands_;
   std::vector<ArticorePosVelCommand> degraded_pv_commands_;
   std::vector<ArticoreMitCommand> degraded_mit_commands_;
+  std::vector<ArticorePosVelCommand> filtered_pv_commands_;
+  std::vector<ArticoreMitCommand> filtered_mit_commands_;
   bool fault_hold_active_ = false;
   ArticoreEnableReport last_enable_report_{};
   ArticoreDisableReport last_disable_report_{};

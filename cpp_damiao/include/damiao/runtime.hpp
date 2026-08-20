@@ -37,6 +37,11 @@ struct FeedbackStats {
   std::chrono::nanoseconds age{0};
 };
 
+struct MotorStateSnapshot {
+  std::optional<MotorState> state;
+  FeedbackStats feedback;
+};
+
 enum class FeedbackRejectionReason : uint8_t {
   None = 0,
   ShortFrame = 1,
@@ -154,6 +159,7 @@ class MotorHandle {
   bool accepts_frame(const CanFrame& frame) const;
   void process_feedback_frame(const CanFrame& frame);
   std::optional<MotorState> latest_state() const;
+  MotorStateSnapshot state_snapshot() const;
   FeedbackStats feedback_stats() const;
   FeedbackIntegrityStats feedback_integrity_stats() const;
 
