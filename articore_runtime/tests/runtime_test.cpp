@@ -1393,9 +1393,9 @@ void test_gripper_direct_mode_bypasses_stall_and_overload_retreat() {
   std::lock_guard<std::mutex> lock(driver.mutex);
   require(driver.last_mit.size() == 1 &&
               std::abs(driver.last_mit[0].target_position - 2.0f) < 1e-6f &&
-              std::abs(driver.last_mit[0].stiffness - 4.0f) < 1e-6f &&
-              std::abs(driver.last_mit[0].damping - 0.5f) < 1e-6f,
-          "direct mode keeps the requested target and selected moving gains");
+              std::abs(driver.last_mit[0].stiffness - 40.0f) < 1e-6f &&
+              std::abs(driver.last_mit[0].damping - 5.0f) < 1e-6f,
+          "direct mode keeps the requested target with ten-times moving gains");
 }
 
 void test_gripper_command_profiles_and_bidirectional_ramp() {
@@ -1688,6 +1688,18 @@ void test_builtin_yunyi_gripper_profile_owns_product_calibration() {
           "direct strength zero sends no active gripper stiffness");
   require(runtime.gripper_force_level(source_gripper.side) == 0,
           "Runtime state reports the executed zero strength");
+
+  command.force_level = ARTICORE_GRIPPER_FORCE_DEFAULT;
+  runtime.set_gripper_commands(
+      &command, 1, ARTICORE_GRIPPER_MODE_DIRECT);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_mit.size() == 1 &&
+                   driver.last_mit[0].motor == source_gripper.motor &&
+                   std::abs(driver.last_mit[0].stiffness - 80.0f) < 1e-6f &&
+                   std::abs(driver.last_mit[0].damping - 5.0f) < 1e-6f;
+          }),
+          "default direct strength applies ten-times Kp and Kd");
 
   runtime.estop();
   {

@@ -154,10 +154,13 @@ bool SafetyRuntime::prepare_protective_hold(std::string& error) {
           static_cast<int32_t>(motor->force_level) !=
               ARTICORE_GRIPPER_STRENGTH_MIN;
       safe.target_velocity = 0.0f;
+      const auto gain_scale = gripper_gain_scale(*motor);
       safe.stiffness =
-          protection_enabled ? profile.hold_kp : profile.moving_kp;
+          (protection_enabled ? profile.hold_kp : profile.moving_kp) *
+          gain_scale;
       safe.damping =
-          protection_enabled ? profile.hold_kd : profile.moving_kd;
+          (protection_enabled ? profile.hold_kd : profile.moving_kd) *
+          gain_scale;
       safe.feedforward_torque = 0.0f;
       grippers.push_back(safe);
     }

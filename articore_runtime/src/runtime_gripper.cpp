@@ -48,6 +48,13 @@ SafetyRuntime::active_gripper_profile(const MotorRecord& motor) {
   return profile->second;
 }
 
+float SafetyRuntime::gripper_gain_scale(const MotorRecord& motor) {
+  return motor.gripper_mode == ARTICORE_GRIPPER_MODE_DIRECT &&
+          static_cast<int32_t>(motor.force_level) !=
+              ARTICORE_GRIPPER_STRENGTH_MIN
+      ? 10.0f : 1.0f;
+}
+
 void SafetyRuntime::configure_gripper_products(
     const ArticoreGripperProductBinding* bindings, uint32_t count) {
   const auto gripper_count = static_cast<uint32_t>(std::count_if(
@@ -573,12 +580,15 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
           auto degraded_hold = *previous;
           if (command_scale < 1.0f) {
             const auto& force = active_gripper_profile(motor);
+            const auto gain_scale = gripper_gain_scale(motor);
             degraded_hold.stiffness = std::min(
                 degraded_hold.stiffness,
-                std::max(force.moving_kp, force.hold_kp) * command_scale);
+                std::max(force.moving_kp, force.hold_kp) * gain_scale *
+                    command_scale);
             degraded_hold.damping = std::min(
                 degraded_hold.damping,
-                std::max(force.moving_kd, force.hold_kd) * command_scale);
+                std::max(force.moving_kd, force.hold_kd) * gain_scale *
+                    command_scale);
           }
           commands.push_back(degraded_hold);
         }
@@ -747,10 +757,14 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
         (motor.gripper_state == ARTICORE_GRIPPER_CONTACT ||
          motor.gripper_state == ARTICORE_GRIPPER_HOLDING ||
          motor.gripper_state == ARTICORE_GRIPPER_OVERLOAD_RETREAT);
+    const auto gain_scale = gripper_gain_scale(motor);
     commands.push_back(ArticoreMitCommand{
         descriptor.motor, motor.command_position, 0.0f,
-        (low_gain ? force.hold_kp : force.moving_kp) * command_scale,
-        (low_gain ? force.hold_kd : force.moving_kd) * command_scale, 0.0f});
+        (low_gain ? force.hold_kp : force.moving_kp) * gain_scale *
+            command_scale,
+        (low_gain ? force.hold_kd : force.moving_kd) * gain_scale *
+            command_scale,
+        0.0f});
   }
   return true;
 }
@@ -890,8 +904,11 @@ bool SafetyRuntime::send_gripper_hold_once(std::string& error) {
       command.target_position = found->protective_target;
     }
     command.target_velocity = 0.0f;
-    command.stiffness = protection_enabled ? force.hold_kp : force.moving_kp;
-    command.damping = protection_enabled ? force.hold_kd : force.moving_kd;
+    const auto gain_scale = gripper_gain_scale(*found);
+    command.stiffness =
+        (protection_enabled ? force.hold_kp : force.moving_kp) * gain_scale;
+    command.damping =
+        (protection_enabled ? force.hold_kd : force.moving_kd) * gain_scale;
     command.feedforward_torque = 0.0f;
     sendable.push_back(command);
   }

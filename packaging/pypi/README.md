@@ -29,6 +29,9 @@ scale. Runtime-wide safety remains active in both modes.
 Version 0.10.29 guarantees that Yunyi grippers remain in MIT mode regardless
 of whether the fourteen arm joints use PV or MIT control.
 
+Version 0.10.30 multiplies both Kp and Kd by ten in direct gripper mode only;
+protected mode and zero strength remain unchanged.
+
 The required Pinocchio C++ template implementations are compiled into
 `libarticore_runtime.so` with hidden visibility. The installed runtime has no dynamic dependency
 on Pinocchio or Boost, so a ROS 2 `LD_LIBRARY_PATH` cannot substitute an incompatible robotics

@@ -159,6 +159,9 @@ enum ArticoreRuntimeCapability {
   // joints. Installed Yunyi grippers are configured and commanded as MIT in
   // both PV-arm and MIT-arm products.
   ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE = 1ULL << 50,
+  // ABI 2.27 applies a fixed 10x multiplier to both Kp and Kd in product
+  // DIRECT gripper mode. PROTECTED calibration and strength zero are unchanged.
+  ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10 = 1ULL << 51,
 };
 
 enum {

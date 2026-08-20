@@ -131,7 +131,8 @@ int main() {
       ARTICORE_CAP_PRODUCT_QUINTIC_TRAJECTORY |
       ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS |
       ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE |
-      ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE;
+      ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE |
+      ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10;
   bool product_gripper_levels_valid = true;
   for (const int32_t level : {1, 5, 10}) {
     product_gripper_levels_valid = product_gripper_levels_valid &&
@@ -193,7 +194,7 @@ int main() {
       !gravity_status || !health_v2 || !estop ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x0002001AU ||
+      version != 0x0002001BU ||
       (capabilities & required_with_pose_and_estop) !=
           required_with_pose_and_estop ||
       !product_gripper_levels_valid ||

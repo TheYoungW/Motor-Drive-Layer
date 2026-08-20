@@ -250,6 +250,11 @@ Runtime ABI 2.26 增加 `fixed_gripper_mit_mode` 保证。产品 `control_mode` 
 模式下都固定配置并使用 MIT。这样夹爪不会因跟随整机 PV 模式而持续顶住目标并堵转，且模式
 配置、使能当前位置保持、正常夹爪控制和恢复后的保持始终使用一致的 MIT 协议。
 
+Runtime ABI 2.27 增加 `direct_gripper_gain_x10`。仅在产品夹爪 `DIRECT` 模式下，Runtime
+将所选力度等级的 Kp 和 Kd 同时放大 10 倍；默认 5 级由 Kp=8、Kd=0.5 调整为
+Kp=80、Kd=5，10 级为 Kp=120、Kd=8。`PROTECTED` 模式的十级标定完全不变，力度 0 仍为
+Kp=Kd=0。通信降级时仍应用 Runtime 的 25% 增益缩放。
+
 ## 安全
 
 电机控制可能造成意外运动和人身伤害。测试时必须支撑机构、准备独立急停、确认通道/ID/型号/

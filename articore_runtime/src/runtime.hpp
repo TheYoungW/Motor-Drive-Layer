@@ -391,6 +391,7 @@ class SafetyRuntime {
   bool send_gripper_hold_once(std::string& error);
   static const MotorRecord::GripperForceProfile& active_gripper_profile(
       const MotorRecord& motor);
+  static float gripper_gain_scale(const MotorRecord& motor);
   bool prepare_protective_hold(std::string& error);
   bool disable_hardware(bool request_feedback, bool preserve_grippers,
                         std::string& error);

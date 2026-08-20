@@ -1,14 +1,14 @@
 {
   "schema": 1,
   "package": "motor_drive_layer_native",
-  "version": "0.10.29",
+  "version": "0.10.30",
   "purpose": "Canonical native ABI surface and external SDK binding contract.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",
     "articore_runtime": "product watchdog, safety state machine and gripper ABI"
   },
   "runtime_abi": {
-    "version": "2.26",
+    "version": "2.27",
     "capabilities": [
       "atomic_enable",
       "atomic_motor_power_batch",
@@ -19,6 +19,7 @@
       "current_position_hold",
       "deterministic_disable",
       "dual_channel",
+      "direct_gripper_gain_x10",
       "gripper_command_profiles",
       "gripper_force_10_levels",
       "gripper_protection",
