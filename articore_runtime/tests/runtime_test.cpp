@@ -13,9 +13,9 @@
 #include <thread>
 #include <vector>
 
-#include "cartesian_math.hpp"
-#include "product_cartesian.hpp"
-#include "runtime.hpp"
+#include "articore/detail/cartesian_math.hpp"
+#include "articore/detail/product_cartesian.hpp"
+#include "articore/detail/runtime.hpp"
 
 namespace {
 

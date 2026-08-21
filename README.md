@@ -71,16 +71,23 @@ Pinocchio library path.
 Requirements are CMake 3.16+, a C++17 compiler and Pinocchio C++ development headers.
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake -S . -B builds/cmake/default -DCMAKE_BUILD_TYPE=Release
+cmake --build builds/cmake/default -j
+ctest --test-dir builds/cmake/default --output-on-failure
 ```
 
 Install the native SDK and CMake package with:
 
 ```bash
-cmake --install build --prefix /desired/prefix
+cmake --install builds/cmake/default --prefix /desired/prefix
 ```
+
+All generated artifacts stay under the single ignored `builds/` tree:
+
+- `builds/cmake/default/`: current native build.
+- `builds/packages/`: package assembly intermediates.
+- `builds/wheels/`: local and release wheels.
+- `builds/archive/`: preserved historical build directories.
 
 C++ consumers can use:
 
@@ -111,7 +118,7 @@ preserving the existing high-level SDK interaction.
 Build a local payload after compiling the native libraries:
 
 ```bash
-python3 -m build --wheel packaging/pypi
+python3 -m build --wheel --outdir builds/wheels/current packaging/pypi
 ```
 
 The packaging command uses Python because PyPI's wheel tooling is Python-based; no Python runtime
@@ -151,13 +158,23 @@ Motor control can cause unexpected motion and injury. Support the mechanism, kee
 emergency stop available, verify channel/IDs/model/mode before enable, and begin with conservative
 limits. Register writes can permanently change motor configuration.
 
+Motor-control defects may create physical safety risks. Do not open a public issue containing a
+turnkey procedure for uncontrolled motion, bypassing limits, defeating a watchdog, or remotely
+driving attached hardware. Use the repository's private vulnerability-reporting channel when it is
+available. Include the affected release or commit, transport and adapter, motor model and firmware,
+whether motors must be enabled, minimum safe reproduction steps, expected versus observed fail-safe
+behavior, and any known mitigation. General bugs without a safety or security impact may use a
+public issue. Maintainers will reproduce private reports in a safe environment where possible and
+coordinate disclosure after a mitigation is available; no response-time guarantee is currently
+offered.
+
 ## Tests
 
 The repository's default tests do not enable physical motors:
 
 ```bash
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake --build builds/cmake/default -j
+ctest --test-dir builds/cmake/default --output-on-failure
 ```
 
 CI additionally checks that the PyPI wheel contains no Python source, that both native ABI

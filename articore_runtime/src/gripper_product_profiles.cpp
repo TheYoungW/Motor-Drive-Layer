@@ -1,4 +1,4 @@
-#include "gripper_product_profiles.hpp"
+#include "articore/detail/gripper_product_profiles.hpp"
 
 #include <cstring>
 

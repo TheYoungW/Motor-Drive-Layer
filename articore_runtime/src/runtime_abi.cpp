@@ -12,10 +12,10 @@
 #include <vector>
 
 #include "articore/runtime_abi.h"
-#include "product_cartesian.hpp"
-#include "robot_model.hpp"
-#include "runtime.hpp"
-#include "yunyi_runtime.hpp"
+#include "articore/detail/product_cartesian.hpp"
+#include "articore/detail/robot_model.hpp"
+#include "articore/detail/runtime.hpp"
+#include "articore/detail/yunyi_runtime.hpp"
 
 struct ArticoreRuntime {
   explicit ArticoreRuntime(

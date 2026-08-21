@@ -68,16 +68,23 @@ CI 会检查 ELF 依赖表，并在故意注入错误 Pinocchio 库的环境中�
 需要 CMake 3.16+、C++17 编译器和 Pinocchio C++ 开发头文件。
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake -S . -B builds/cmake/default -DCMAKE_BUILD_TYPE=Release
+cmake --build builds/cmake/default -j
+ctest --test-dir builds/cmake/default --output-on-failure
 ```
 
 安装原生 SDK 与 CMake 包：
 
 ```bash
-cmake --install build --prefix /desired/prefix
+cmake --install builds/cmake/default --prefix /desired/prefix
 ```
+
+所有生成物统一放在 Git 忽略的 `builds/` 目录：
+
+- `builds/cmake/default/`：当前原生构建。
+- `builds/packages/`：打包中间产物。
+- `builds/wheels/`：本地和发布 wheel。
+- `builds/archive/`：保留的历史构建目录。
 
 C++ 项目使用：
 
@@ -108,7 +115,7 @@ ABI 声明。这样底层保持纯 C/C++，上层 SDK 的 `robot.connect()`、`e
 编译原生库后可构建本地 wheel：
 
 ```bash
-python3 -m build --wheel packaging/pypi
+python3 -m build --wheel --outdir builds/wheels/current packaging/pypi
 ```
 
 这里使用 Python 是因为 PyPI wheel 构建工具本身基于 Python；最终 wheel 不安装任何 Python
@@ -347,13 +354,20 @@ health。该修复不修改电机 Flash、零点或 PV 固件增益，也没有�
 电机控制可能造成意外运动和人身伤害。测试时必须支撑机构、准备独立急停、确认通道/ID/型号/
 模式，并从保守限制开始。寄存器写入可能永久改变电机配置。
 
+电机控制缺陷可能造成实体安全风险。不要在公开 Issue 中提供可直接导致失控运动、绕过限位、
+关闭看门狗或远程驱动已连接硬件的完整操作步骤。GitHub 私密漏洞报告可用时应优先使用，并注明：
+受影响的版本或提交、通信方式与适配器、电机型号与固件、复现是否必须使能电机、最小安全复现
+步骤、预期与实际失效保护行为，以及已知缓解方案。没有安全影响的普通缺陷可以提交公开 Issue。
+维护者会在条件允许时于安全环境中复现私密报告，并在修复可用后协调披露；目前不承诺固定响应
+时限。
+
 ## 测试
 
 默认测试不会使能真实电机：
 
 ```bash
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake --build builds/cmake/default -j
+ctest --test-dir builds/cmake/default --output-on-failure
 ```
 
 CI 还会验证 wheel 不含 Python 源码、两个原生 ABI 库可加载、机器人模型不依赖 Pinocchio

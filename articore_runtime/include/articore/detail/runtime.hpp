@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "articore/runtime_abi.h"
-#include "robot_model.hpp"
+#include "articore/detail/robot_model.hpp"
 
 namespace articore {
 

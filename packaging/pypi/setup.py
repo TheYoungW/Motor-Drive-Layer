@@ -6,6 +6,7 @@ from pathlib import Path
 
 from setuptools import Distribution, setup
 from setuptools.command.bdist_wheel import bdist_wheel as _bdist_wheel
+from setuptools.command.build import build as _build
 from setuptools.command.build_py import build_py as _build_py
 
 
@@ -153,6 +154,11 @@ def _candidate_abi_paths() -> list[Path]:
     if env:
         candidates.append(Path(env).expanduser())
 
+    candidates.append(repo_root / "builds" / "cmake" / "default" / "cpp_damiao" / lib_name)
+    candidates.append(
+        repo_root / "builds" / "cmake" / "default" / "cpp_damiao" / "Release" / lib_name
+    )
+    candidates.append(repo_root / "builds" / "cmake" / "ci" / "cpp_damiao" / lib_name)
     candidates.append(repo_root / "build" / "cpp_damiao" / lib_name)
     candidates.append(repo_root / "build" / "cpp_damiao" / "Release" / lib_name)
     candidates.append(repo_root / "cpp_damiao" / "build" / lib_name)
@@ -171,7 +177,8 @@ def _resolve_abi_path() -> Path:
     raise RuntimeError(
         "Cannot locate motor_abi shared library for wheel build.\n"
         f"Tried:\n{tried}\n"
-        "Build native libraries first (`cmake -S . -B build && cmake --build build`) "
+        "Build native libraries first (`cmake -S . -B builds/cmake/default && "
+        "cmake --build builds/cmake/default`) "
         "or set MOTOR_DRIVE_LAYER_LIB."
     )
 
@@ -186,6 +193,20 @@ def _resolve_articore_runtime_path() -> Path:
         candidates.append(Path(env).expanduser())
     candidates.extend(
         [
+            repo_root
+            / "builds"
+            / "cmake"
+            / "default"
+            / "articore_runtime"
+            / lib_name,
+            repo_root
+            / "builds"
+            / "cmake"
+            / "default"
+            / "articore_runtime"
+            / "Release"
+            / lib_name,
+            repo_root / "builds" / "cmake" / "ci" / "articore_runtime" / lib_name,
             repo_root / "build" / "articore_runtime" / lib_name,
             repo_root
             / "build"
@@ -210,8 +231,16 @@ def _resolve_articore_runtime_path() -> Path:
         "Cannot locate articore_runtime shared library for wheel build.\n"
         f"Tried:\n{tried}\n"
         "Build the unified native targets first with "
-        "`cmake -S . -B build && cmake --build build`."
+        "`cmake -S . -B builds/cmake/default && "
+        "cmake --build builds/cmake/default`."
     )
+
+
+class BuildInArtifactTree(_build):
+    def initialize_options(self):
+        super().initialize_options()
+        repo_root = Path(__file__).resolve().parents[2]
+        self.build_base = str(repo_root / "builds" / "packages" / "pypi-build")
 
 
 class BuildPyWithAbi(_build_py):
@@ -256,6 +285,10 @@ class BinaryDistribution(Distribution):
 
 
 setup(
-    cmdclass={"build_py": BuildPyWithAbi, "bdist_wheel": BdistWheelWithAbi},
+    cmdclass={
+        "build": BuildInArtifactTree,
+        "build_py": BuildPyWithAbi,
+        "bdist_wheel": BdistWheelWithAbi,
+    },
     distclass=BinaryDistribution,
 )

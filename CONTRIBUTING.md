@@ -18,9 +18,10 @@ ctest --test-dir build --output-on-failure
 
 Default automated tests must not require external repositories, attached hardware, root privileges, or motor power.
 
-Changes to a C ABI must be additive unless a breaking release is explicitly planned. Update
-`bindings/api_surface.json`, native tests and documentation together, then coordinate the matching
-ctypes declaration and tests in Articore-SDK.
+Changes to a C ABI must be additive unless a breaking release is explicitly planned. Treat the
+installed ABI headers, exported capability bits and native ABI tests as the authoritative contract;
+update them and the documentation together, then coordinate the matching ctypes declaration and
+tests in Articore-SDK.
 
 ## Hardware changes
 

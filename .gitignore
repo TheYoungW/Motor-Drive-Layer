@@ -2,6 +2,7 @@
 /cpp_damiao/build/
 /build/
 /build-*/
+/builds/
 /releases/
 *.o
 *.a
@@ -16,8 +17,6 @@ cpp_abi_demo
 __pycache__/
 *.pyc
 .vscode/
-docs/superpowers/
-/bindings/python/
 /packaging/pypi/build/
 /packaging/pypi/dist/
 /packaging/pypi/*.egg-info/

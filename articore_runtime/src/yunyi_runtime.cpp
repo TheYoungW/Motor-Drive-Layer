@@ -1,4 +1,4 @@
-#include "yunyi_runtime.hpp"
+#include "articore/detail/yunyi_runtime.hpp"
 
 #include <cstring>
 #include <stdexcept>

@@ -1,4 +1,4 @@
-#include "product_cartesian.hpp"
+#include "articore/detail/product_cartesian.hpp"
 
 #include <algorithm>
 #include <array>
@@ -7,9 +7,9 @@
 #include <stdexcept>
 #include <string>
 
-#include "cartesian_math.hpp"
+#include "articore/detail/cartesian_math.hpp"
 #include "motor_abi.h"
-#include "yunyi_runtime.hpp"
+#include "articore/detail/yunyi_runtime.hpp"
 
 namespace articore {
 namespace {

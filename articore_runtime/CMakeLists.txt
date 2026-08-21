@@ -36,7 +36,7 @@ add_library(
   src/runtime_worker.cpp
 )
 add_library(articore::runtime_core ALIAS articore_runtime_core)
-target_include_directories(articore_runtime_core PUBLIC include src)
+target_include_directories(articore_runtime_core PUBLIC include)
 target_compile_features(articore_runtime_core PUBLIC cxx_std_17)
 target_include_directories(
   articore_runtime_core SYSTEM PRIVATE ${ARTICORE_PINOCCHIO_INCLUDE_DIRS}
@@ -70,7 +70,6 @@ target_include_directories(
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
     $<INSTALL_INTERFACE:include>
-  PRIVATE src
 )
 target_compile_features(articore_runtime PUBLIC cxx_std_17)
 target_compile_definitions(
@@ -142,7 +141,11 @@ install(
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
-install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(
+  DIRECTORY include/
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  PATTERN "detail" EXCLUDE
+)
 include(CTest)
 if(BUILD_TESTING)
   add_executable(articore_runtime_test tests/runtime_test.cpp)

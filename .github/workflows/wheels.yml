@@ -40,14 +40,14 @@ jobs:
 
       - name: Configure and build native libraries
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+          cmake -S . -B builds/cmake/ci -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"] + "/cmeel.prefix")')"
-          cmake --build build --config Release
-          ctest --test-dir build --build-config Release --output-on-failure --timeout 180
+          cmake --build builds/cmake/ci --config Release
+          ctest --test-dir builds/cmake/ci --build-config Release --output-on-failure --timeout 180
 
       - name: Install native SDK artifact
         run: |
-          cmake --install build --config Release \
+          cmake --install builds/cmake/ci --config Release \
             --prefix "${{ runner.temp }}/motor-drive-layer-native"
           mkdir -p "${{ runner.temp }}/motor-drive-layer-native/lib/dm_device"
           cp "${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0" \
@@ -57,14 +57,14 @@ jobs:
         if: matrix.name == 'linux-aarch64'
         env:
           MOTOR_PRIVATE_LIBUSB_LIB: ${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0
-        run: python -m build --wheel packaging/pypi
+        run: python -m build --wheel --outdir builds/wheels/raw packaging/pypi
 
       - name: Build x86_64 binary-only wheel
         if: matrix.name == 'linux-x86_64'
         env:
           _PYTHON_HOST_PLATFORM: ${{ matrix.wheel_platform }}
           MOTOR_PRIVATE_LIBUSB_LIB: ${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0
-        run: python -m build --wheel packaging/pypi
+        run: python -m build --wheel --outdir builds/wheels/raw packaging/pypi
 
       - name: Repair ARM64 wheel
         if: matrix.name == 'linux-aarch64'
@@ -72,13 +72,13 @@ jobs:
           LD_LIBRARY_PATH: ${{ runner.temp }}/libusb-1.0.27/lib
         run: |
           python -m pip install --upgrade auditwheel patchelf
-          python -m auditwheel repair packaging/pypi/dist/*.whl --wheel-dir wheelhouse
+          python -m auditwheel repair builds/wheels/raw/*.whl --wheel-dir wheelhouse
 
       - name: Collect x86_64 wheel
         if: matrix.name == 'linux-x86_64'
         run: |
           mkdir -p wheelhouse
-          cp packaging/pypi/dist/*.whl wheelhouse/
+          cp builds/wheels/raw/*.whl wheelhouse/
 
       - name: Install and verify binary-only wheel
         run: |

@@ -1,6 +1,6 @@
-#include "runtime.hpp"
-#include "runtime_utils.hpp"
-#include "gripper_product_profiles.hpp"
+#include "articore/detail/runtime.hpp"
+#include "articore/detail/runtime_utils.hpp"
+#include "articore/detail/gripper_product_profiles.hpp"
 
 #include <algorithm>
 #include <cmath>

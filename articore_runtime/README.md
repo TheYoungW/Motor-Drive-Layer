@@ -20,6 +20,11 @@ The public runtime remains one `libarticore_runtime` library and one
 The split does not create additional shared libraries or independent state machines; it only gives
 the existing state owner smaller compilation units with a single lock order and one state owner.
 
+Source layout is also separated by file type: `src/` contains implementation `.cpp` files only,
+`include/articore/` contains the installed public C/C++ API, and
+`include/articore/detail/` contains build-only internal `.hpp` files. The `detail` tree is excluded
+from installation and is not a supported SDK surface.
+
 The runtime owns one persistent worker thread. Its arm loop uses `steady_clock` absolute deadlines
 at an internal product cadence, skips missed periods, and never
 replays expired frames. Complete PV or MIT commands atomically overwrite a capacity-one

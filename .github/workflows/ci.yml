@@ -25,25 +25,25 @@ jobs:
 
       - name: Configure and build native libraries
         run: |
-          cmake -S . -B build \
+          cmake -S . -B builds/cmake/ci \
             -DCMAKE_PREFIX_PATH="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"] + "/cmeel.prefix")')"
-          cmake --build build
+          cmake --build builds/cmake/ci
 
       - name: Run native tests
-        run: ctest --test-dir build --output-on-failure --timeout 180
+        run: ctest --test-dir builds/cmake/ci --output-on-failure --timeout 180
 
       - name: Verify installed C++ RAII package
         run: |
-          cmake --install build --prefix "$RUNNER_TEMP/motor-drive-layer"
-          cmake -S tests/cmake_package -B build/cmake-consumer \
+          cmake --install builds/cmake/ci --prefix "$RUNNER_TEMP/motor-drive-layer"
+          cmake -S tests/cmake_package -B builds/cmake/cmake-consumer \
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/motor-drive-layer"
-          cmake --build build/cmake-consumer
-          "$PWD/build/cmake-consumer/motor_drive_layer_consumer"
+          cmake --build builds/cmake/cmake-consumer
+          "$PWD/builds/cmake/cmake-consumer/motor_drive_layer_consumer"
 
       - name: Build binary-only PyPI payload
         env:
           MOTOR_PRIVATE_LIBUSB_LIB: ${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0
-        run: python -m build --wheel packaging/pypi
+        run: python -m build --wheel --outdir builds/wheels/raw packaging/pypi
 
       - name: Verify binary-only wheel
         run: |
@@ -51,7 +51,7 @@ jobs:
           from pathlib import Path
           from zipfile import ZipFile
 
-          wheel = next(Path("packaging/pypi/dist").glob("*.whl"))
+          wheel = next(Path("builds/wheels/raw").glob("*.whl"))
           assert "-py3-none-" in wheel.name, wheel.name
           with ZipFile(wheel) as archive:
               names = archive.namelist()
@@ -62,7 +62,7 @@ jobs:
           assert "motor_drive_layer_native/lib/dm_device/v1.0.0/libdm_device.so" in names
           assert "motor_drive_layer_native/lib/dm_device/v1.1.0/libdm_device.so" in names
           PY
-          python -m pip install --force-reinstall --no-deps packaging/pypi/dist/*.whl
+          python -m pip install --force-reinstall --no-deps builds/wheels/raw/*.whl
           cd /tmp
           python - <<'PY'
           import ctypes
@@ -139,7 +139,8 @@ jobs:
 
       - name: Check repository boundary
         run: |
-          test ! -d bindings/python
+          test ! -d bindings
+          test ! -d docs
           test -z "$(find packaging/pypi/src -name '*.py' -o -name '*.pyi')"
           test -z "$(find . -path ./.git -prune -o -name '*.rs' -print)"
           test ! -d integrations/ros2_bridge
