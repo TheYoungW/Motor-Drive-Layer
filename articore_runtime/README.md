@@ -347,7 +347,7 @@ language bindings free the small opaque tombstone internally and expose no
 separate close operation.
 
 Runtime ABI 2.20 removes product selection from the supported binding surface. Yunyi V1.0 dual arm
-is the only product: `articore_runtime_create_yunyi(mode, with_grippers)` owns both CAN channels,
+is the only product: `articore_runtime_create_yunyi(mode, with_grippers, runtime_out)` owns both CAN channels,
 the fixed 14-joint mapping, optional paired grippers, models, calibration and all resource
 lifetimes. C++ and Python product APIs no longer expose generic construction or any
 `configure_joints/configure_gripper_products/configure_gravity_products` step. The generic
@@ -535,14 +535,12 @@ PV-only from ABI 2.38 onward; MIT retains its existing per-command ordinary
 speed, raw targets, gains, and feedforward behavior unchanged. The ABI 2.35
 `set_speed/get_speed` compatibility symbols keep their historical semantics.
 
-Runtime ABI 2.40 adds the status-returning factory
-`articore_runtime_create_yunyi_v2(mode, with_grippers, runtime_out)`. The ABI
-2.39 `articore_runtime_create_yunyi(mode, with_grippers)` entry point remains a
-two-argument function returning `ArticoreRuntime*`; its signature is frozen for
-binary compatibility. SDKs must not infer a factory calling convention from
-`ARTICORE_CAP_DIRECT_CPP_MOTOR_CORE`: that bit only identifies the direct C++
-Motor implementation. Bind v2 only when ABI is at least 2.40 and the symbol is
-present.
+Runtime ABI 3.0 removes the temporary dual factory ABI. The only product
+factory is `articore_runtime_create_yunyi(mode, with_grippers, runtime_out)`;
+it returns an `ArticoreOperationError` and writes the opaque handle through the
+output pointer. Neither the old two-argument pointer-returning function nor an
+`_v2` alias is exported. Articore-SDK requires ABI 3.0 and binds this one
+signature directly.
 
 motor-drive-layer 0.10.39 hardens native PV Cartesian completion and final
 hold. The public 0.02 rad / 0.05 rad/s arrival window remains compatible, but

@@ -175,13 +175,11 @@ CI additionally checks that the PyPI wheel contains no Python source, that the p
 loads as the only native payload, and that the robot model works without a Pinocchio runtime
 dependency.
 
-Runtime ABI 2.40 adds
-`articore_runtime_create_yunyi_v2(mode, with_grippers, runtime_out)`, which
-returns a stable operation status and writes the opaque handle through an
-output pointer. The ABI 2.39 `articore_runtime_create_yunyi(mode,
-with_grippers)` symbol remains permanently two-argument and pointer-returning.
-Bindings should select the v2 symbol only after checking for ABI 2.40 or newer;
-bit 63 describes the direct C++ Motor core, not the factory calling convention.
+Runtime ABI 3.0 has one product factory:
+`articore_runtime_create_yunyi(mode, with_grippers, runtime_out)`. It returns a
+stable operation status and writes the opaque handle through an output pointer.
+The old pointer-returning signature and temporary `_v2` alias are removed;
+Articore-SDK binds only this ABI 3.0 signature.
 
 Hardware acceptance remains opt-in. Inspect the scripts under `scripts/` and provide explicit
 motor mappings and acknowledgement flags before running them.

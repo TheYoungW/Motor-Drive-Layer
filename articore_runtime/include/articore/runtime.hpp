@@ -39,7 +39,7 @@ class Runtime final {
   explicit Runtime(ArticoreControlMode mode = ARTICORE_MODE_MIT,
                    bool with_grippers = true) {
     detail::check(
-        articore_runtime_create_yunyi_v2(
+        articore_runtime_create_yunyi(
             static_cast<int32_t>(mode), with_grippers ? 1 : 0, &runtime_),
         "create Yunyi Runtime");
   }

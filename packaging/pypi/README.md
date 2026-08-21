@@ -11,20 +11,20 @@ Articore-SDK locates this distribution through `importlib.metadata` and calls th
 ABI without importing `motor_drive_layer`.
 
 The supported product entry point is `articore_runtime_create_yunyi(mode,
-with_grippers)`. Product clients do not pass a product identifier, Controller,
-Motor handle, mapping table, gripper profile, gravity binding, or control rate.
+with_grippers, runtime_out)`. Product clients do not pass a product identifier,
+Controller, Motor handle, mapping table, gripper profile, gravity binding, or
+control rate.
 Product trajectories are likewise planned and executed entirely by the C++
 Runtime through the stable trajectory C ABI; the wheel contains no Python
 interpolator or realtime playback loop.
 
-Version 0.11.1 / Runtime ABI 2.40 adds
-`articore_runtime_create_yunyi_v2(mode, with_grippers, runtime_out)`. It returns
-an `ArticoreOperationError` and writes the opaque handle through `runtime_out`.
-The ABI 2.39 symbol `articore_runtime_create_yunyi(mode, with_grippers)` keeps
-its published two-argument, pointer-returning signature unchanged. SDKs may
-bind the old symbol for 0.11.0 and select the explicitly named v2 symbol only
-after observing ABI 2.40 or newer. `ARTICORE_CAP_DIRECT_CPP_MOTOR_CORE` describes
-the internal architecture and does not identify either factory signature.
+Version 0.12.0 / Runtime ABI 3.0 removes the temporary dual factory ABI. The
+only factory is `articore_runtime_create_yunyi(mode, with_grippers,
+runtime_out)`: it returns an `ArticoreOperationError` and writes the opaque
+handle through `runtime_out`. The two-argument pointer-returning factory and
+the temporary `_v2` symbol are not exported. Articore-SDK and this Runtime are
+released together and require ABI 3.0, so bindings do not branch between
+factory signatures.
 
 Version 0.11.0 / Runtime ABI 2.39 simplifies the native architecture to the
 only supported Yunyi product. `libarticore_runtime.so` directly owns the

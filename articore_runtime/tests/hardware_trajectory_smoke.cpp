@@ -189,9 +189,10 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  ArticoreRuntime* runtime =
-      articore_runtime_create_yunyi(ARTICORE_MODE_PV, 1);
-  if (!runtime) {
+  ArticoreRuntime* runtime = nullptr;
+  if (articore_runtime_create_yunyi(
+          ARTICORE_MODE_PV, 1, &runtime) != ARTICORE_OPERATION_OK ||
+      !runtime) {
     std::cerr << "create failed: " << articore_runtime_last_error() << '\n';
     return 1;
   }

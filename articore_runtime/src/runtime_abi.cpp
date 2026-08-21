@@ -474,7 +474,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 40U;
+  return (3U << 16);
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -648,20 +648,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_mode(
   });
 }
 
-ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_yunyi(
-    int32_t requested_mode, int32_t with_grippers) {
-  try {
-    auto* runtime = create_yunyi_runtime_checked(
-        requested_mode, with_grippers);
-    g_last_error = "ok";
-    return runtime;
-  } catch (const std::exception& error) {
-    g_last_error = error.what();
-    return nullptr;
-  }
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_create_yunyi_v2(
+ARTICORE_RUNTIME_API int32_t articore_runtime_create_yunyi(
     int32_t requested_mode, int32_t with_grippers,
     ArticoreRuntime** runtime) {
   if (!runtime) {

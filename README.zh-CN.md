@@ -204,7 +204,7 @@ ControllerGroup、Motor、模型及产品资源。重复调用安全幂等；失
 释放空句柄，不再向业务用户公开 `close()`。
 
 Runtime ABI 2.20 将产品面彻底收口为唯一的 Yunyi V1.0 双臂。SDK 和新的 C++ 包装器只调用
-`articore_runtime_create_yunyi(mode, with_grippers)`，不再传 `product_id`，也不再公开通用
+`articore_runtime_create_yunyi(mode, with_grippers, runtime_out)`，不再传 `product_id`，也不再公开通用
 Runtime 构造、Controller/Motor 组装、关节映射、夹爪 profile 或重力模型绑定。固定双 CAN、
 14 关节、可选双夹爪、方向/量程/限位、模型和资源生命周期统一放在独立的 C++ Yunyi 产品模块。
 `create_product/create_ex*` 通用 C 构造入口已经删除；新主版本只保留固定产品入口，避免上层
@@ -368,12 +368,10 @@ ctest --test-dir builds/cmake/default --output-on-failure
 CI 还会验证 wheel 不含 Python 源码、唯一的产品 Runtime 动态库可加载，以及机器人模型不依赖
 Pinocchio 动态库。
 
-Runtime ABI 2.40 新增
-`articore_runtime_create_yunyi_v2(mode, with_grippers, runtime_out)`：函数返回稳定操作状态码，
-并通过输出指针写入 Runtime 句柄。ABI 2.39 已发布的
-`articore_runtime_create_yunyi(mode, with_grippers)` 永久保持“两参数、直接返回指针”，不会
-静默替换签名。SDK 只能在确认 ABI 不低于 2.40 且新符号存在后绑定 v2；bit 63 只表示 Runtime
-内部使用直接 C++ Motor core，不代表工厂函数调用约定。
+Runtime ABI 3.0 只保留一个产品工厂：
+`articore_runtime_create_yunyi(mode, with_grippers, runtime_out)`。函数返回稳定操作状态码，并
+通过输出指针写入 Runtime 句柄。旧的两参数指针返回签名和临时 `_v2` 别名都已删除；
+Articore-SDK 固定要求 ABI 3.0，只绑定这一种签名。
 
 真机验收脚本位于 `scripts/`，必须先检查脚本，并显式提供电机映射和确认参数。
 

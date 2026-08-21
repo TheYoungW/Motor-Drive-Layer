@@ -64,15 +64,16 @@ jobs:
           import importlib.util
           from importlib.metadata import distribution, version
 
-          assert version("motor-drive-layer") == "0.11.1"
+          assert version("motor-drive-layer") == "0.12.0"
           assert importlib.util.find_spec("motor_drive_layer") is None
           dist = distribution("motor-drive-layer")
           files = {str(item): dist.locate_file(item) for item in dist.files or ()}
           runtime = files["motor_drive_layer_native/lib/libarticore_runtime.so"]
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00020028
-          assert hasattr(runtime_lib, "articore_runtime_create_yunyi_v2")
+          assert runtime_lib.articore_runtime_abi_version() == 0x00030000
+          assert hasattr(runtime_lib, "articore_runtime_create_yunyi")
+          assert not hasattr(runtime_lib, "articore_runtime_create_yunyi_v2")
           runtime_lib.articore_runtime_capabilities.restype = ctypes.c_uint64
           capabilities = runtime_lib.articore_runtime_capabilities()
           assert capabilities & (1 << 62)

@@ -83,7 +83,7 @@ jobs:
           from importlib.metadata import distribution, version
           from pathlib import Path
 
-          assert version("motor-drive-layer") == "0.11.1"
+          assert version("motor-drive-layer") == "0.12.0"
           assert importlib.util.find_spec("motor_drive_layer") is None
           dist = distribution("motor-drive-layer")
           entries = {str(item): item for item in dist.files or ()}
@@ -92,8 +92,9 @@ jobs:
           assert not any("libmotor_abi" in name or "/dm_device/" in name for name in entries)
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00020028
-          assert hasattr(runtime_lib, "articore_runtime_create_yunyi_v2")
+          assert runtime_lib.articore_runtime_abi_version() == 0x00030000
+          assert hasattr(runtime_lib, "articore_runtime_create_yunyi")
+          assert not hasattr(runtime_lib, "articore_runtime_create_yunyi_v2")
           runtime_lib.articore_runtime_capabilities.restype = ctypes.c_uint64
           capabilities = runtime_lib.articore_runtime_capabilities()
           assert capabilities & (1 << 55)
