@@ -72,32 +72,17 @@ target_include_directories(
     $<INSTALL_INTERFACE:include>
 )
 target_compile_features(articore_runtime PUBLIC cxx_std_17)
-target_compile_definitions(
-  articore_runtime PRIVATE ARTICORE_RUNTIME_BUILDING_LIBRARY
+target_link_options(
+  articore_runtime
+  PRIVATE
+    "-Wl,--exclude-libs,ALL"
+    "-Wl,--as-needed"
+    "-Wl,-z,defs"
 )
-if(UNIX AND NOT APPLE)
-  target_link_options(
-    articore_runtime
-    PRIVATE
-      "-Wl,--exclude-libs,ALL"
-      "-Wl,--as-needed"
-      "-Wl,-z,defs"
-  )
-  set_target_properties(
-    articore_runtime PROPERTIES
-    BUILD_RPATH "\$ORIGIN"
-    INSTALL_RPATH "\$ORIGIN"
-  )
-elseif(APPLE)
-  set_target_properties(
-    articore_runtime PROPERTIES
-    BUILD_RPATH "@loader_path"
-    INSTALL_RPATH "@loader_path"
-  )
-endif()
 set_target_properties(
   articore_runtime PROPERTIES
-  WINDOWS_EXPORT_ALL_SYMBOLS ON
+  BUILD_RPATH "\$ORIGIN"
+  INSTALL_RPATH "\$ORIGIN"
   OUTPUT_NAME articore_runtime
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN YES

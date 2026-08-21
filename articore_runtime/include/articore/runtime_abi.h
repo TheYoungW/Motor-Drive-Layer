@@ -3,15 +3,7 @@
 
 #include <stdint.h>
 
-#if defined(_WIN32)
-#if defined(ARTICORE_RUNTIME_BUILDING_LIBRARY)
-#define ARTICORE_RUNTIME_API __declspec(dllexport)
-#else
-#define ARTICORE_RUNTIME_API __declspec(dllimport)
-#endif
-#else
 #define ARTICORE_RUNTIME_API __attribute__((visibility("default")))
-#endif
 
 #ifdef __cplusplus
 extern "C" {

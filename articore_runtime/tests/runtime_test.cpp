@@ -589,13 +589,6 @@ std::vector<ArticoreJointSafetyLimits> layered_joint_limits(
 
 template <typename Predicate>
 bool wait_for(Predicate predicate, std::chrono::milliseconds timeout = 300ms) {
-#if defined(__APPLE__) || defined(_WIN32)
-  // Hosted macOS and Windows runners have substantially coarser scheduling
-  // under load. The assertions below validate generated cycle counts and
-  // per-cycle values, so allow wall-clock jitter without weakening those
-  // deterministic checks.
-  timeout *= 4;
-#endif
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline) {
     if (predicate()) return true;
@@ -2013,8 +2006,7 @@ void test_single_gripper_feedback_miss_reuses_current_output() {
   cfg.reserved_gripper_control_rate = 100;
   // The assertion restores feedback after observing a retransmitted frame,
   // not after an exact number of scheduler ticks. Keep the threshold well
-  // above host scheduling jitter so this remains a one-gap behavior test on
-  // fast macOS and slower Linux/Windows runners alike.
+  // above host scheduling jitter so this remains a one-gap behavior test.
   cfg.feedback_failure_threshold = 100;
   articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);

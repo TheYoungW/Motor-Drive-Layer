@@ -1,6 +1,5 @@
 import os
 import shutil
-import sys
 from pathlib import Path
 
 from setuptools import Distribution, setup
@@ -9,18 +8,10 @@ from setuptools.command.build import build as _build
 from setuptools.command.build_py import build_py as _build_py
 
 
-def _articore_platform_lib_name() -> str:
-    if sys.platform.startswith("win"):
-        return "articore_runtime.dll"
-    if sys.platform == "darwin":
-        return "libarticore_runtime.dylib"
-    return "libarticore_runtime.so"
-
-
 def _resolve_articore_runtime_path() -> Path:
     here = Path(__file__).resolve()
     repo_root = here.parents[2]
-    lib_name = _articore_platform_lib_name()
+    lib_name = "libarticore_runtime.so"
     candidates = []
     env = os.getenv("ARTICORE_RUNTIME_LIB")
     if env:

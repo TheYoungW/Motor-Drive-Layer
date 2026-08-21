@@ -19,19 +19,11 @@
 namespace {
 
 void set_test_env(const char* name, const char* value) {
-#if defined(_WIN32)
-  _putenv_s(name, value);
-#else
   ::setenv(name, value, 1);
-#endif
 }
 
 void unset_test_env(const char* name) {
-#if defined(_WIN32)
-  _putenv_s(name, "");
-#else
   ::unsetenv(name);
-#endif
 }
 
 static_assert(!std::is_copy_constructible_v<damiao::MotorHandle>,

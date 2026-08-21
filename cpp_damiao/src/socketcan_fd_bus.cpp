@@ -8,7 +8,6 @@
 #include <limits>
 #include <stdexcept>
 
-#if defined(__linux__)
 #include <fcntl.h>
 #include <linux/can.h>
 #include <linux/can/raw.h>
@@ -17,7 +16,6 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#endif
 
 namespace damiao {
 namespace {
@@ -34,7 +32,6 @@ void validate_frame(const CanFrame& frame) {
   }
 }
 
-#if defined(__linux__)
 constexpr auto kDefaultSendTimeout = std::chrono::milliseconds(20);
 constexpr uint64_t kMaximumSendTimeoutMs = 60000;
 
@@ -146,8 +143,6 @@ int open_bound_socket(const std::string& interface) {
   }
   return fd;
 }
-#endif
-
 }  // namespace
 
 SocketCanFdRawFrame SocketCanCodec::encode_fd(const CanFrame& frame, bool enable_brs) {
@@ -171,15 +166,9 @@ CanFrame SocketCanCodec::decode_fd(const SocketCanFdRawFrame& raw) {
 
 std::shared_ptr<SocketCanFdBus> SocketCanFdBus::open(const std::string& interface,
                                                      bool enable_brs) {
-#if defined(__linux__)
   return std::shared_ptr<SocketCanFdBus>(new SocketCanFdBus(open_bound_socket(interface),
                                                             interface, enable_brs,
                                                             configured_send_timeout()));
-#else
-  (void)interface;
-  (void)enable_brs;
-  throw std::runtime_error("socketcanfd transport is only available on Linux");
-#endif
 }
 
 SocketCanFdBus::SocketCanFdBus(int fd, std::string interface, bool enable_brs,
@@ -197,7 +186,6 @@ SocketCanFdBus::~SocketCanFdBus() {
 }
 
 void SocketCanFdBus::send(const CanFrame& frame) {
-#if defined(__linux__)
   const auto raw_portable = SocketCanCodec::encode_fd(frame, enable_brs_);
   canfd_frame raw{};
   raw.can_id = raw_portable.can_id;
@@ -208,14 +196,9 @@ void SocketCanFdBus::send(const CanFrame& frame) {
   if (fd_ < 0) throw std::runtime_error("socketcanfd fd already closed");
   write_frame_with_timeout(fd_, &raw, sizeof(raw), send_timeout_,
                            "socketcanfd " + interface_);
-#else
-  (void)frame;
-  throw std::runtime_error("socketcanfd transport is only available on Linux");
-#endif
 }
 
 std::optional<CanFrame> SocketCanFdBus::receive_for(std::chrono::milliseconds timeout) {
-#if defined(__linux__)
   std::lock_guard<std::mutex> lock(mutex_);
   if (fd_ < 0) throw std::runtime_error("socketcanfd fd already closed");
   pollfd pfd{fd_, POLLIN, 0};
@@ -239,20 +222,14 @@ std::optional<CanFrame> SocketCanFdBus::receive_for(std::chrono::milliseconds ti
   portable.flags = raw.flags;
   std::copy(raw.data, raw.data + 64, portable.data.begin());
   return SocketCanCodec::decode_fd(portable);
-#else
-  (void)timeout;
-  throw std::runtime_error("socketcanfd transport is only available on Linux");
-#endif
 }
 
 void SocketCanFdBus::shutdown() {
-#if defined(__linux__)
   std::lock_guard<std::mutex> lock(mutex_);
   if (fd_ >= 0) {
     ::close(fd_);
     fd_ = -1;
   }
-#endif
 }
 
 TransportCapabilities SocketCanFdBus::capabilities() const {

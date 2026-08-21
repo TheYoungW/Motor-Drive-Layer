@@ -10,12 +10,10 @@
 #include "damiao/runtime.hpp"
 #include "damiao/socketcan_fd_bus.hpp"
 
-#if defined(__linux__)
 #include <cerrno>
 #include <linux/can.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#endif
 
 namespace damiao {
 
@@ -38,7 +36,6 @@ void require(bool condition, const char* message) {
   }
 }
 
-#if defined(__linux__)
 class ImmediateBus final : public damiao::CanBus {
  public:
   void send(const damiao::CanFrame&) override { ++send_count; }
@@ -143,8 +140,6 @@ void verify_blocked_fd_send_is_bounded() {
 
   ::close(sockets[1]);
 }
-#endif
-
 }  // namespace
 
 int main() {
@@ -167,14 +162,12 @@ int main() {
   require(fd_raw.len == 8, "fd len");
   require((fd_raw.flags & damiao::SocketCanCodec::kCanFdBrs) != 0,
           "fd default includes CANFD_BRS");
-#if defined(__linux__)
   static_assert(damiao::SocketCanCodec::kCanFdBrs == CANFD_BRS,
                 "portable BRS flag must match Linux canfd_frame");
   canfd_frame kernel_fd_frame{};
   kernel_fd_frame.flags = fd_raw.flags;
   require((kernel_fd_frame.flags & CANFD_BRS) != 0,
           "Linux canfd_frame.flags includes CANFD_BRS");
-#endif
   const auto fd_raw_without_brs = damiao::SocketCanCodec::encode_fd(frame, false);
   require((fd_raw_without_brs.flags & damiao::SocketCanCodec::kCanFdBrs) == 0,
           "fd explicit BRS disable clears CANFD_BRS");
@@ -182,9 +175,7 @@ int main() {
   require(fd_decoded.id == 0x123, "fd decoded id");
   require(fd_decoded.data == frame.data, "fd decoded payload");
 
-#if defined(__linux__)
   verify_blocked_fd_send_is_bounded();
-#endif
 
   std::cout << "socketcan-fd tests passed\n";
   return 0;
