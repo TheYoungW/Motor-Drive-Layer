@@ -459,6 +459,15 @@ and its race. The legacy three-pose function remains available for ABI
 compatibility. Non-PV Runtime instances reject the v2 call before any existing
 motion is replaced.
 
+Motor-Drive-Layer 0.10.33 strengthens the ABI 2.31 Cartesian planner without
+changing its public surface. Point-to-point endpoints use a deterministic
+fixed-seed 1000-retry global IK search. Linear planning no longer performs an
+unnecessary isolated endpoint solve before constructing the continuous path;
+its intermediate samples stay on the current local IK branch and its final
+sample receives the same global fallback. Circular endpoints follow the same
+policy. Any unreachable, discontinuous or over-limit result is still rejected
+before the active motion is replaced.
+
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations
 are rejected after connect, and a present motor that loses fresh feedback, reports a motor fault,

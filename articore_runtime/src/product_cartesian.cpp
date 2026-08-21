@@ -9,6 +9,7 @@
 
 #include "cartesian_math.hpp"
 #include "motor_abi.h"
+#include "yunyi_runtime.hpp"
 
 namespace articore {
 namespace {
@@ -76,9 +77,9 @@ std::array<double, ARTICORE_PRODUCT_ARM_DOF> solve_ik(
     YunyiRuntimeResources& product, uint32_t side,
     const ArticoreRobotPose& target,
     const std::array<double, ARTICORE_PRODUCT_ARM_DOF>& seed,
-    const char* context) {
-  ArticoreIkOptions options{};
-  options.struct_size = sizeof(options);
+    const char* context,
+    CartesianIkSearch search = CartesianIkSearch::LocalPath) {
+  auto options = product_cartesian_ik_options(search);
   ArticoreIkResult ik{};
   ik.struct_size = sizeof(ik);
   {
@@ -274,11 +275,11 @@ NativeCartesianPlan build_cartesian_plan(
   for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
     start_q[index] = start_positions[side_offset + index];
   }
-  const auto target_q = solve_ik(
-      product, side, target, start_q, "Cartesian target");
-
   std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>> path;
   if (interpolation == ARTICORE_CARTESIAN_POINT_TO_POINT) {
+    const auto target_q = solve_ik(
+        product, side, target, start_q, "Cartesian target",
+        CartesianIkSearch::GlobalEndpoint);
     path = {start_positions, start_positions};
     for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
       path.back()[side_offset + index] = static_cast<float>(target_q[index]);
@@ -341,7 +342,8 @@ NativeCartesianPlan build_cartesian_plan(
       path.push_back(waypoint);
     }
     const auto linear_target_q = solve_ik(
-        product, side, target, seed, "Cartesian linear target");
+        product, side, target, seed, "Cartesian linear target",
+        CartesianIkSearch::GlobalEndpoint);
     for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
       if (std::abs(linear_target_q[index] - seed[index]) > 0.35) {
         throw std::invalid_argument(
@@ -480,6 +482,7 @@ NativeCartesianPlan build_circular_plan_common(
                                  const cartesian::Quaternion& orientation,
                                  const char* context,
                                  uint32_t sample_index,
+                                 CartesianIkSearch search,
                                  auto& mutable_seed,
                                  auto& mutable_path) {
     ArticoreRobotPose sample_pose{};
@@ -489,7 +492,7 @@ NativeCartesianPlan build_circular_plan_common(
     cartesian::rotation_from_quaternion(
         orientation, sample_pose.rotation);
     const auto solved = solve_ik(
-        product, side, sample_pose, mutable_seed, context);
+        product, side, sample_pose, mutable_seed, context, search);
     for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
       if (std::abs(solved[index] - mutable_seed[index]) > 0.35) {
         throw std::invalid_argument(
@@ -514,7 +517,8 @@ NativeCartesianPlan build_circular_plan_common(
         amount * arc.via_angle,
         cartesian::slerp(
             actual_start_orientation, via_orientation, amount),
-        "Cartesian circular start-to-via path", sample, seed, path);
+        "Cartesian circular start-to-via path", sample,
+        CartesianIkSearch::LocalPath, seed, path);
   }
   for (uint32_t sample = 1; sample <= second_segments; ++sample) {
     const double amount = static_cast<double>(sample) /
@@ -523,7 +527,10 @@ NativeCartesianPlan build_circular_plan_common(
         arc.via_angle + amount * (arc.end_angle - arc.via_angle),
         cartesian::slerp(via_orientation, end_orientation, amount),
         "Cartesian circular via-to-end path",
-        first_segments + sample, seed, path);
+        first_segments + sample,
+        sample == second_segments ? CartesianIkSearch::GlobalEndpoint
+                                  : CartesianIkSearch::LocalPath,
+        seed, path);
   }
 
   return assemble_cartesian_plan(

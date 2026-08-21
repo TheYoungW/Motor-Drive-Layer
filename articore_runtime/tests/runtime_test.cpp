@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "cartesian_math.hpp"
+#include "product_cartesian.hpp"
 #include "runtime.hpp"
 
 namespace {
@@ -4282,6 +4283,61 @@ void test_cartesian_linear_math_uses_straight_xyz_and_shortest_slerp() {
           "SLERP treats q and -q as the same orientation and takes the shortest path");
 }
 
+void test_product_cartesian_endpoint_ik_search_is_global_and_deterministic() {
+  articore::RobotModel model("yunyi_v1_0", ARTICORE_ROBOT_LEFT);
+  const std::array<double, ARTICORE_PRODUCT_ARM_DOF> reachable_q{
+      1.73197888, -0.17180270, -2.42435922, 1.44727633,
+      -0.39948210, 0.33895601, 1.38079965};
+  const std::array<double, ARTICORE_PRODUCT_ARM_DOF> seed{};
+  ArticoreRobotPose target{};
+  target.struct_size = sizeof(target);
+  model.fk(reachable_q.data(), reachable_q.size(), &target);
+
+  const auto local_options = articore::product_cartesian_ik_options(
+      articore::CartesianIkSearch::LocalPath);
+  const auto global_options = articore::product_cartesian_ik_options(
+      articore::CartesianIkSearch::GlobalEndpoint);
+  require(local_options.max_retries == 8 &&
+              global_options.max_retries == 1000 &&
+              global_options.random_seed == 0,
+          "product endpoint IK has an explicit deterministic global-search budget");
+
+  ArticoreIkOptions documented_defaults{};
+  documented_defaults.struct_size = sizeof(documented_defaults);
+  ArticoreIkResult default_result{};
+  default_result.struct_size = sizeof(default_result);
+  model.ik(
+      &target, seed.data(), seed.size(), &documented_defaults,
+      &default_result);
+  ArticoreIkResult local_result{};
+  local_result.struct_size = sizeof(local_result);
+  model.ik(
+      &target, seed.data(), seed.size(), &local_options, &local_result);
+  require(default_result.success == local_result.success &&
+              std::abs(default_result.error_norm - local_result.error_norm) <
+                  1e-15,
+          "zero-valued IK options select the documented eight-retry default");
+
+  ArticoreIkResult first{};
+  first.struct_size = sizeof(first);
+  model.ik(
+      &target, seed.data(), seed.size(), &global_options, &first);
+  ArticoreIkResult second{};
+  second.struct_size = sizeof(second);
+  model.ik(
+      &target, seed.data(), seed.size(), &global_options, &second);
+  require(first.success && second.success &&
+              first.error_norm < 1e-4 && second.error_norm < 1e-4,
+          "global endpoint IK reaches a pose that the former short search missed");
+  require(std::abs(first.error_norm - second.error_norm) < 1e-15 &&
+              std::equal(
+                  first.q, first.q + ARTICORE_PRODUCT_ARM_DOF, second.q,
+                  [](double lhs, double rhs) {
+                    return std::abs(lhs - rhs) < 1e-15;
+                  }),
+          "fixed-seed endpoint IK returns the same solution on repeated calls");
+}
+
 void test_cartesian_linear_samples_support_continuous_native_ik() {
   articore::RobotModel model("yunyi_v1_0", ARTICORE_ROBOT_LEFT);
   std::array<double, ARTICORE_PRODUCT_ARM_DOF> start_q{};
@@ -4672,6 +4728,7 @@ int main() {
     RUN_TEST(test_native_trajectory_uses_raw_mit_and_cancel_is_idempotent);
     RUN_TEST(test_native_point_target_replacement_is_validated_and_atomic);
     RUN_TEST(test_cartesian_linear_math_uses_straight_xyz_and_shortest_slerp);
+    RUN_TEST(test_product_cartesian_endpoint_ik_search_is_global_and_deterministic);
     RUN_TEST(test_cartesian_linear_samples_support_continuous_native_ik);
     RUN_TEST(test_three_point_circular_arc_geometry_and_degenerate_rejection);
     RUN_TEST(test_product_cartesian_motion_is_pv_only);

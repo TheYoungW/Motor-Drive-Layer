@@ -300,7 +300,9 @@ void RobotModel::ik(const ArticoreRobotPose* target, const double* initial_q,
   if (options && options->struct_size < sizeof(*options))
     throw std::invalid_argument("IK options struct is too small");
   const uint32_t max_iterations = options && options->max_iterations ? options->max_iterations : 1000;
-  const uint32_t max_retries = options ? options->max_retries : 8;
+  const uint32_t max_retries = options && options->max_retries
+      ? options->max_retries
+      : 8;
   const double tolerance = options && options->tolerance > 0 ? options->tolerance : 1e-4;
   const double step_size = options && options->step_size > 0 ? options->step_size : .5;
   const double damping = options && options->damping > 0 ? options->damping : 1e-6;

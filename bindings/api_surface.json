@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "motor_drive_layer_native",
-  "version": "0.10.32",
+  "version": "0.10.33",
   "purpose": "Canonical native ABI surface and external SDK binding contract.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",

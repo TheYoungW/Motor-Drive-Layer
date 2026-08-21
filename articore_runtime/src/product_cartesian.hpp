@@ -4,14 +4,34 @@
 
 #include "articore/runtime_abi.h"
 #include "runtime.hpp"
-#include "yunyi_runtime.hpp"
 
 namespace articore {
+
+struct YunyiRuntimeResources;
 
 struct NativeCartesianPlan {
   NativeTrajectoryRequest trajectory;
   uint64_t replace_trajectory_id = 0;
 };
+
+enum class CartesianIkSearch {
+  LocalPath,
+  GlobalEndpoint,
+};
+
+// Product Cartesian planning uses a small local search for sequential path
+// samples and a deterministic, fixed-seed global search for user endpoints.
+inline ArticoreIkOptions product_cartesian_ik_options(
+    CartesianIkSearch search) {
+  ArticoreIkOptions options{};
+  options.struct_size = sizeof(options);
+  options.max_iterations = 1000;
+  options.max_retries = search == CartesianIkSearch::GlobalEndpoint
+      ? 1000U
+      : 8U;
+  options.random_seed = 0;
+  return options;
+}
 
 std::vector<NativeTrajectoryJoint> product_cartesian_joints(
     const YunyiRuntimeResources& product);

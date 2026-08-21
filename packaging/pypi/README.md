@@ -61,6 +61,13 @@ It never uses a lagging feedback pose or requires an SDK `get_pose()` round
 trip. The legacy three-pose symbol remains available, and MIT Runtime instances
 reject v2 before replacing an active motion.
 
+Version 0.10.33 makes product Cartesian endpoint IK deterministic and more
+robust. PTP endpoints use a fixed-seed 1000-retry global search. Linear motion
+removes its redundant isolated endpoint solve, retains local seeded IK for
+continuous samples, and applies the global fallback only at the endpoint;
+circular endpoints use the same policy. Failed planning still leaves the
+currently active motion untouched.
+
 The required Pinocchio C++ template implementations are compiled into
 `libarticore_runtime.so` with hidden visibility. The installed runtime has no dynamic dependency
 on Pinocchio or Boost, so a ROS 2 `LD_LIBRARY_PATH` cannot substitute an incompatible robotics
