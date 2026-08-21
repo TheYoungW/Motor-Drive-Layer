@@ -7,6 +7,17 @@ int main() {
   static_assert(std::is_move_constructible_v<articore::Runtime>);
   static_assert(std::is_constructible_v<
                 articore::Runtime, ArticoreControlMode, bool>);
+  using JointLimitsGetter =
+      ArticoreProductJointAngleVelLimits (articore::Runtime::*)() const;
+  static_assert(std::is_same_v<
+      decltype(&articore::Runtime::joint_angle_vel_limits),
+      JointLimitsGetter>);
+  using SpeedGetter = float (articore::Runtime::*)() const;
+  using SpeedSetter = void (articore::Runtime::*)(float);
+  static_assert(std::is_same_v<
+      decltype(&articore::Runtime::get_speed), SpeedGetter>);
+  static_assert(std::is_same_v<
+      decltype(&articore::Runtime::set_speed), SpeedSetter>);
 
   // This target is a cross-platform compile/link smoke test for the public
   // RAII wrapper. Runtime behavior and invalid construction are exercised by

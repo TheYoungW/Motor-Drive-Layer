@@ -117,8 +117,8 @@ enum ArticoreRuntimeCapability {
   // the latest native feedback cache. No Python-side URDF/FK is involved.
   ARTICORE_CAP_PRODUCT_POSE = 1ULL << 40,
   // ABI 2.16 makes emergency stop a parameterless Runtime-owned transaction.
-  // It always disables the complete installed product, records a standard
-  // health reason, is idempotent, and can only be unlatched by recover().
+  // It records a standard health reason, is idempotent, and can only be
+  // unlatched by recover(). ABI 2.33 defines the current hold behavior.
   ARTICORE_CAP_PARAMETERLESS_ESTOP = 1ULL << 41,
   // ABI 2.17 defines recover() as a native whole-product transaction: clear
   // recoverable faults, validate both arms, return every arm joint to its
@@ -178,6 +178,21 @@ enum ArticoreRuntimeCapability {
   // current planned joint reference and installs the replacement under one
   // native command transaction, avoiding feedback lag and SDK round trips.
   ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START = 1ULL << 55,
+  // ABI 2.32 exposes MOS and rotor temperature for every installed product
+  // Motor in the coherent cached state snapshot. State reads never issue CAN
+  // requests; freshness is reported explicitly for each arm joint/gripper.
+  ARTICORE_CAP_PRODUCT_TEMPERATURE_STATE = 1ULL << 56,
+  // ABI 2.33 defines product estop as a latched current-position hold. It
+  // atomically supersedes user motion, keeps enabled Motors enabled, and
+  // continuously transmits native PV/MIT safety holds until recover().
+  ARTICORE_CAP_LATCHED_ESTOP_POSITION_HOLD = 1ULL << 57,
+  // ABI 2.34 returns the fixed logical-coordinate angle and velocity limits
+  // for all 14 Yunyi arm joints in one product snapshot. Grippers are omitted.
+  ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS = 1ULL << 58,
+  // ABI 2.35 adds one persistent 0..100 ordinary-motion speed setting. The
+  // default is 70 and 100 maps to a shared 5 rad/s cap for all 14 arm joints.
+  // Updating it also changes an active ordinary MIT/PV position reference.
+  ARTICORE_CAP_PRODUCT_SPEED_SETTING = 1ULL << 59,
 };
 
 enum {
@@ -592,6 +607,58 @@ typedef struct ArticoreProductStateV2 {
   uint64_t timestamp_ns;
   uint64_t sequence;
 } ArticoreProductStateV2;
+
+typedef struct ArticoreProductArmStateV3 {
+  float positions[ARTICORE_PRODUCT_ARM_DOF];
+  float velocities[ARTICORE_PRODUCT_ARM_DOF];
+  float torques[ARTICORE_PRODUCT_ARM_DOF];
+  float mos_temperatures[ARTICORE_PRODUCT_ARM_DOF];
+  float rotor_temperatures[ARTICORE_PRODUCT_ARM_DOF];
+  uint32_t enabled_mask;
+  uint32_t enabled_valid_mask;
+  // Bit i is set when both temperatures come from finite, fresh cached
+  // feedback. A clear bit means the corresponding values are NaN.
+  uint32_t temperature_valid_mask;
+} ArticoreProductArmStateV3;
+
+typedef struct ArticoreProductStateV3 {
+  // Caller initializes this to sizeof(ArticoreProductStateV3).
+  uint32_t struct_size;
+  int32_t has_grippers;
+  ArticoreProductArmStateV3 left;
+  ArticoreProductArmStateV3 right;
+  int32_t left_gripper_available;
+  int32_t right_gripper_available;
+  float left_gripper_opening;
+  float right_gripper_opening;
+  int32_t left_gripper_level;
+  int32_t right_gripper_level;
+  int32_t left_gripper_enabled;
+  int32_t right_gripper_enabled;
+  int32_t left_gripper_enabled_valid;
+  int32_t right_gripper_enabled_valid;
+  float left_gripper_mos_temperature;
+  float left_gripper_rotor_temperature;
+  float right_gripper_mos_temperature;
+  float right_gripper_rotor_temperature;
+  int32_t left_gripper_temperature_valid;
+  int32_t right_gripper_temperature_valid;
+  // CLOCK_MONOTONIC-compatible timestamp and slowest update sequence across
+  // every installed motor represented by this single cached snapshot.
+  uint64_t timestamp_ns;
+  uint64_t sequence;
+} ArticoreProductStateV3;
+
+typedef struct ArticoreProductJointAngleVelLimits {
+  // Caller initializes this to sizeof(ArticoreProductJointAngleVelLimits).
+  // Array order is left joint1..7, then right joint1..7.
+  uint32_t struct_size;
+  uint32_t joint_count;
+  // Logical product coordinates in radians and radians/second.
+  float lower_angles[ARTICORE_PRODUCT_DUAL_ARM_DOF];
+  float upper_angles[ARTICORE_PRODUCT_DUAL_ARM_DOF];
+  float velocity_limits[ARTICORE_PRODUCT_DUAL_ARM_DOF];
+} ArticoreProductJointAngleVelLimits;
 
 typedef struct ArticoreProductPose {
   // Caller initializes this to sizeof(ArticoreProductPose).
@@ -1189,6 +1256,19 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
     float speed_percent);
+// ABI 2.35 persistent whole-product ordinary-motion speed. The setting is
+// inclusive 0..100 and defaults to 70. It applies to ordinary MIT/PV joint
+// position references only; raw frames, trajectories, and Cartesian motions
+// keep their explicit physical limits or speed percentages. set_speed() also
+// updates an active ordinary position reference without replacing its target.
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_speed(
+    ArticoreRuntime* runtime, float speed_percent);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_speed(
+    ArticoreRuntime* runtime, float* speed_percent);
+// Uses the current persistent speed setting atomically. The legacy function
+// above remains available for callers that need a one-command explicit speed.
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions_v2(
+    ArticoreRuntime* runtime, const float* positions, uint32_t count);
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
     ArticoreRuntime* runtime, const float* positions,
     const float* velocities, const float* feedforward_torques,
@@ -1282,6 +1362,14 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_state(
 // and structure remain unchanged for existing binary clients.
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_state_v2(
     ArticoreRuntime* runtime, ArticoreProductStateV2* state);
+// ABI 2.32 cached product state including finite, fresh MOS and rotor
+// temperatures. This function performs no CAN I/O. V1/V2 remain unchanged.
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_state_v3(
+    ArticoreRuntime* runtime, ArticoreProductStateV3* state);
+// ABI 2.34 immutable product limits for exactly 14 arm joints. This performs
+// no CAN I/O, does not require a connected Runtime, and never includes grippers.
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_joint_angle_vel_limits(
+    ArticoreRuntime* runtime, ArticoreProductJointAngleVelLimits* limits);
 // Computes one arm's flange pose from the latest complete native feedback
 // cache. This call performs no CAN I/O and is suitable for high-rate reads.
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_pose(
@@ -1442,10 +1530,12 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_disable(ArticoreRuntime* runtime);
 // fresh disabled state could not be confirmed.
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_last_disable_report(
     ArticoreRuntime* runtime, ArticoreDisableReport* report);
-// Immediately stops Runtime control and torque-disables every installed motor,
-// including grippers. The Runtime records a standard emergency-stop reason in
-// health; callers do not supply business text. This call is idempotent and the
-// latch can only be cleared by articore_runtime_recover().
+// Immediately supersedes Runtime motion with a latched current-position hold.
+// Enabled Motors remain enabled and receive continuous native PV/MIT safety
+// frames; an already-disabled product is never re-enabled. The Runtime records
+// a standard emergency-stop reason in health, clears every superseded user
+// command/trajectory, and accepts no new motion. This call is idempotent and
+// the latch can only be cleared by articore_runtime_recover().
 ARTICORE_RUNTIME_API int32_t articore_runtime_estop(ArticoreRuntime* runtime);
 // ABI 2.17 whole-product recovery transaction. This clears recoverable motor
 // faults, validates both transports and all installed feedback, enables the

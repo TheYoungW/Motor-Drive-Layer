@@ -68,6 +68,30 @@ continuous samples, and applies the global fallback only at the endpoint;
 circular endpoints use the same policy. Failed planning still leaves the
 currently active motion untouched.
 
+Version 0.10.35 adds Runtime ABI 2.32 product temperature snapshots. Native
+`get_state_v3()` returns cached MOS and rotor temperatures for every Yunyi arm
+joint and installed gripper with explicit freshness validity, without sending
+extra CAN requests. Existing state V1/V2 callers remain ABI compatible.
+
+The same release advances the Runtime ABI to 2.33 for latched emergency-stop
+position holding. `estop()` clears superseded motion, keeps enabled Motors
+enabled, and continuously sends native PV/MIT holds; it no longer performs an
+implicit whole-product torque-off. Existing disabled products remain disabled,
+and only the full native `recover()` transaction clears the latch.
+
+Runtime ABI 2.34 in this release also adds one immutable 14-joint angle and
+velocity-limit snapshot. `articore_runtime_get_joint_angle_vel_limits()`
+returns logical lower/upper angles in radians and product velocity limits in
+radians/second, ordered left J1..J7 then right J1..J7; grippers are omitted.
+
+Runtime ABI 2.35 adds a persistent product ordinary-motion speed setting.
+`articore_runtime_set_speed()` accepts 0..100 and
+`articore_runtime_get_speed()` returns the current value; a newly created
+Runtime defaults to 70. All 14 arm joints map 100 to 5 rad/s. The setting can
+change an active ordinary MIT/PV reference, and
+`articore_runtime_set_joint_positions_v2()` uses it for later targets. Raw
+frames, trajectories, and Cartesian motions retain their explicit limits.
+
 The required Pinocchio C++ template implementations are compiled into
 `libarticore_runtime.so` with hidden visibility. The installed runtime has no dynamic dependency
 on Pinocchio or Boost, so a ROS 2 `LD_LIBRARY_PATH` cannot substitute an incompatible robotics

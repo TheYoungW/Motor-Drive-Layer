@@ -835,7 +835,7 @@ void test_runtime_maintenance_keeps_ready_and_reports_partial_failure() {
               health.health.disable_confirmed == 1 &&
               std::string(health.health.fault_reason) ==
                   "emergency stop requested",
-          "estop records the standard reason and confirms full disable");
+          "estop latches an already-disabled product without re-enabling it");
   require(runtime.clear_faults() == ARTICORE_OPERATION_INVALID_STATE &&
               runtime.health().state == ARTICORE_FAULT,
           "clear faults cannot release an emergency-stop latch");
@@ -1710,10 +1710,10 @@ void test_builtin_yunyi_gripper_profile_owns_product_calibration() {
   runtime.estop();
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
-    require(driver.motors[motors[0].motor].status == 0 &&
-                driver.motors[motors[1].motor].status == 0 &&
-                driver.motors[source_gripper.motor].status == 0,
-            "emergency stop overrides the gripper hold-on-fault policy");
+    require(driver.motors[motors[0].motor].status == 1 &&
+                driver.motors[motors[1].motor].status == 1 &&
+                driver.motors[source_gripper.motor].status == 1,
+            "emergency stop keeps the arm and gripper enabled for holding");
   }
 }
 
@@ -1794,7 +1794,7 @@ void test_legacy_three_level_gripper_profiles_expand_to_ten_levels() {
           "legacy three-level profiles expose interpolated force levels 1..10");
 }
 
-void test_estop_disables_complete_product_and_is_idempotent() {
+void test_estop_holds_current_position_and_is_idempotent() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
@@ -1810,30 +1810,62 @@ void test_estop_disables_complete_product_and_is_idempotent() {
                            static_cast<uint32_t>(controls.size()));
   runtime.connect();
   runtime.enable(ARTICORE_MODE_PV);
-  runtime.estop();
-
-  const auto fault = runtime.health();
-  require(fault.state == ARTICORE_FAULT && fault.disable_confirmed == 1 &&
-              fault.safe_holding == 0 &&
-              std::string(fault.fault_reason) == "emergency stop requested",
-          "estop latches the standard reason after disabling the product");
   uint32_t left_disable_calls = 0;
   uint32_t right_disable_calls = 0;
+  std::size_t pv_history_before_estop = 0;
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     left_disable_calls = driver.disable_calls[0];
     right_disable_calls = driver.disable_calls[1];
-    require(driver.motors[motors[0].motor].status == 0 &&
-                driver.motors[motors[1].motor].status == 0 &&
-                driver.motors[motors[2].motor].status == 0,
-            "estop disables arm joints and grippers regardless of hold policy");
+    pv_history_before_estop = driver.pv_history.size();
   }
+  runtime.estop();
+
+  const auto fault = runtime.health();
+  require(fault.state == ARTICORE_FAULT && fault.disable_confirmed == 0 &&
+              fault.safe_holding == 1 &&
+              std::string(fault.fault_reason) == "emergency stop requested",
+          "estop latches the standard reason while holding current position");
+  uint32_t first_hold_send_count = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    first_hold_send_count = driver.pv_sends;
+    bool left_position_held = false;
+    bool right_position_held = false;
+    for (std::size_t index = pv_history_before_estop;
+         index < driver.pv_history.size(); ++index) {
+      for (const auto& command : driver.pv_history[index]) {
+        if (command.motor == motors[0].motor &&
+            std::abs(command.target_position -
+                     driver.motors[motors[0].motor].position) < 1e-6f) {
+          left_position_held = true;
+        }
+        if (command.motor == motors[1].motor &&
+            std::abs(command.target_position -
+                     driver.motors[motors[1].motor].position) < 1e-6f) {
+          right_position_held = true;
+        }
+      }
+    }
+    require(driver.disable_calls[0] == left_disable_calls &&
+                driver.disable_calls[1] == right_disable_calls &&
+                driver.motors[motors[0].motor].status == 1 &&
+                driver.motors[motors[1].motor].status == 1 &&
+                driver.motors[motors[2].motor].status == 1 &&
+                left_position_held && right_position_held,
+            "estop keeps Motors enabled and captures actual joint positions");
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.pv_sends > first_hold_send_count;
+          }),
+          "latched estop continuously transmits the position hold");
   runtime.estop();
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     require(driver.disable_calls[0] == left_disable_calls &&
                 driver.disable_calls[1] == right_disable_calls,
-            "repeated estop is an idempotent no-op after confirmed disable");
+            "repeated estop is idempotent and never torque-disables");
   }
   require(runtime.clear_faults() == ARTICORE_OPERATION_INVALID_STATE &&
               runtime.health().state == ARTICORE_FAULT,
@@ -1848,7 +1880,7 @@ void test_estop_disables_complete_product_and_is_idempotent() {
           "terminal disconnect remains idempotent after estop recovery");
 }
 
-void test_estop_can_disable_gripper_by_product_policy() {
+void test_estop_hold_overrides_gripper_disable_fault_policy() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
@@ -1861,14 +1893,14 @@ void test_estop_can_disable_gripper_by_product_policy() {
   runtime.estop();
 
   const auto fault = runtime.health();
-  require(fault.state == ARTICORE_FAULT && fault.disable_confirmed == 1 &&
-              fault.safe_holding == 0,
-          "disable-policy estop confirms full torque-off");
+  require(fault.state == ARTICORE_FAULT && fault.disable_confirmed == 0 &&
+              fault.safe_holding == 1,
+          "estop uses position hold independent of ordinary fault policy");
   std::lock_guard<std::mutex> lock(driver.mutex);
-  require(driver.motors[motors[0].motor].status == 0 &&
-              driver.motors[motors[1].motor].status == 0 &&
-              driver.motors[motors[2].motor].status == 0,
-          "disable-policy estop disables arms and gripper");
+  require(driver.motors[motors[0].motor].status == 1 &&
+              driver.motors[motors[1].motor].status == 1 &&
+              driver.motors[motors[2].motor].status == 1,
+          "ordinary gripper fault policy cannot torque-disable estop hold");
 }
 
 void test_missing_feedback_degrades_then_safe_stops_and_resynchronizes() {
@@ -3490,6 +3522,15 @@ void test_ordinary_speed_percent_scales_and_zero_pauses() {
           }),
           "fifty percent maps to half the shared physical velocity limit");
 
+  runtime.update_joint_position_velocity(1.25f);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_pv.size() == 2 &&
+                std::abs(driver.last_pv[0].velocity_limit - 1.25f) < 1e-6f &&
+                std::abs(driver.last_pv[1].velocity_limit - 1.25f) < 1e-6f;
+          }),
+          "persistent speed update changes an active ordinary PV reference");
+
   bool invalid_rejected = false;
   try {
     runtime.set_joint_pv_speed(targets, 2, 100.1f);
@@ -3497,6 +3538,15 @@ void test_ordinary_speed_percent_scales_and_zero_pauses() {
     invalid_rejected = true;
   }
   require(invalid_rejected, "ordinary speed above 100 is rejected natively");
+
+  invalid_rejected = false;
+  try {
+    runtime.update_joint_position_velocity(-0.1f);
+  } catch (const std::invalid_argument&) {
+    invalid_rejected = true;
+  }
+  require(invalid_rejected,
+          "negative active ordinary reference velocity is rejected");
 }
 
 void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
@@ -4678,8 +4728,8 @@ int main() {
     RUN_TEST(test_builtin_yunyi_gripper_profile_owns_product_calibration);
     RUN_TEST(test_builtin_gripper_binding_is_complete_and_optional);
     RUN_TEST(test_legacy_three_level_gripper_profiles_expand_to_ten_levels);
-    RUN_TEST(test_estop_disables_complete_product_and_is_idempotent);
-    RUN_TEST(test_estop_can_disable_gripper_by_product_policy);
+    RUN_TEST(test_estop_holds_current_position_and_is_idempotent);
+    RUN_TEST(test_estop_hold_overrides_gripper_disable_fault_policy);
     RUN_TEST(test_missing_feedback_degrades_then_safe_stops_and_resynchronizes);
     RUN_TEST(test_single_gripper_feedback_miss_reuses_current_output);
     RUN_TEST(test_feedback_measurements_do_not_reuse_command_limits);

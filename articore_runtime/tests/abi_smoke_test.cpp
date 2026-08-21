@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <type_traits>
 
 #include "articore/runtime_abi.h"
@@ -16,6 +17,9 @@ int main() {
   const auto set_zero = &articore_runtime_set_zero;
   const auto disconnect = &articore_runtime_disconnect;
   const auto product_positions = &articore_runtime_set_joint_positions;
+  const auto product_positions_v2 = &articore_runtime_set_joint_positions_v2;
+  const auto set_product_speed = &articore_runtime_set_speed;
+  const auto get_product_speed = &articore_runtime_get_speed;
   const auto product_mit = &articore_runtime_submit_mit_frame;
   const auto product_pv = &articore_runtime_submit_pv_frame;
   const auto start_trajectory = &articore_runtime_start_trajectory;
@@ -71,11 +75,26 @@ int main() {
   const auto has_product_grippers = &articore_runtime_has_grippers;
   const auto product_state = &articore_runtime_get_state;
   const auto product_state_v2 = &articore_runtime_get_state_v2;
+  const auto product_state_v3 = &articore_runtime_get_state_v3;
+  const auto product_joint_limits =
+      &articore_runtime_get_joint_angle_vel_limits;
   using ProductStateV2Getter = int32_t (*)(
       ArticoreRuntime*, ArticoreProductStateV2*);
   static_assert(std::is_same_v<
       std::remove_cv_t<decltype(product_state_v2)>, ProductStateV2Getter>);
   static_assert(sizeof(ArticoreProductStateV2) == 248);
+  using ProductStateV3Getter = int32_t (*)(
+      ArticoreRuntime*, ArticoreProductStateV3*);
+  static_assert(std::is_same_v<
+      std::remove_cv_t<decltype(product_state_v3)>, ProductStateV3Getter>);
+  static_assert(sizeof(ArticoreProductArmStateV3) == 152);
+  static_assert(sizeof(ArticoreProductStateV3) == 392);
+  using ProductJointLimitsGetter = int32_t (*)(
+      ArticoreRuntime*, ArticoreProductJointAngleVelLimits*);
+  static_assert(std::is_same_v<
+      std::remove_cv_t<decltype(product_joint_limits)>,
+      ProductJointLimitsGetter>);
+  static_assert(sizeof(ArticoreProductJointAngleVelLimits) == 176);
   const auto product_pose = &articore_runtime_get_pose;
   const auto control_mode = &articore_runtime_get_control_mode;
   const auto enable_report = &articore_runtime_get_last_enable_report;
@@ -170,7 +189,11 @@ int main() {
       ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR;
   const uint64_t required_with_circular = required_with_pose_and_estop |
       ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR |
-      ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START;
+      ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START |
+      ARTICORE_CAP_PRODUCT_TEMPERATURE_STATE |
+      ARTICORE_CAP_LATCHED_ESTOP_POSITION_HOLD |
+      ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS |
+      ARTICORE_CAP_PRODUCT_SPEED_SETTING;
   bool product_gripper_levels_valid = true;
   for (const int32_t level : {1, 5, 10}) {
     product_gripper_levels_valid = product_gripper_levels_valid &&
@@ -212,6 +235,56 @@ int main() {
       (1ULL << 9) | (1ULL << 12) | (1ULL << 15) |
       (1ULL << 16) | (1ULL << 17);
   const uint64_t removed_public_rate_bits = (1ULL << 23) | (1ULL << 27);
+  ArticoreProductStateV3 undersized_state_v3{};
+  undersized_state_v3.struct_size = sizeof(undersized_state_v3) - 1;
+  const bool state_v3_size_checked =
+      articore_runtime_get_state_v3(nullptr, &undersized_state_v3) == -1 &&
+      std::strcmp(articore_runtime_last_error(),
+                  "product state v3 output is null or too small") == 0;
+  ArticoreProductStateV3 null_runtime_state_v3{};
+  null_runtime_state_v3.struct_size = sizeof(null_runtime_state_v3);
+  const bool state_v3_runtime_checked =
+      articore_runtime_get_state_v3(nullptr, &null_runtime_state_v3) == -1 &&
+      std::strcmp(articore_runtime_last_error(), "runtime is null") == 0;
+  ArticoreProductJointAngleVelLimits undersized_joint_limits{};
+  undersized_joint_limits.struct_size = sizeof(undersized_joint_limits) - 1;
+  const bool joint_limits_size_checked =
+      articore_runtime_get_joint_angle_vel_limits(
+          nullptr, &undersized_joint_limits) == -1 &&
+      std::strcmp(
+          articore_runtime_last_error(),
+          "joint angle/velocity limits output is null or too small") == 0;
+  ArticoreProductJointAngleVelLimits null_runtime_joint_limits{};
+  null_runtime_joint_limits.struct_size = sizeof(null_runtime_joint_limits);
+  const bool joint_limits_runtime_checked =
+      articore_runtime_get_joint_angle_vel_limits(
+          nullptr, &null_runtime_joint_limits) == -1 &&
+      std::strcmp(articore_runtime_last_error(), "runtime is null") == 0;
+  float speed_percent = 0.0f;
+  const bool product_speed_validation_checked =
+      articore_runtime_get_speed(nullptr, nullptr) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(),
+                  "speed_percent output is null") == 0 &&
+      articore_runtime_get_speed(nullptr, &speed_percent) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(), "runtime is null") == 0 &&
+      articore_runtime_set_speed(nullptr, 70.0f) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(), "runtime is null") == 0 &&
+      articore_runtime_set_speed(nullptr, -0.1f) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(),
+                  "ordinary speed must be finite and within 0..100") == 0 &&
+      articore_runtime_set_speed(nullptr, 100.1f) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(),
+                  "ordinary speed must be finite and within 0..100") == 0 &&
+      articore_runtime_set_speed(
+          nullptr, std::numeric_limits<float>::quiet_NaN()) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(),
+                  "ordinary speed must be finite and within 0..100") == 0;
   float invalid_pose[ARTICORE_PRODUCT_POSE_DOF]{};
   uint64_t invalid_motion_id = 0;
   const bool invalid_cartesian_interpolation_rejected =
@@ -224,7 +297,9 @@ int main() {
   if (!create_ex || !create_ex2 || !create_ex3 || !create_yunyi ||
       !create_product ||
       !configure_mode || !clear_faults || !set_zero || !disconnect ||
-      !product_positions || !product_mit || !product_pv ||
+      !product_positions || !product_positions_v2 ||
+      !set_product_speed || !get_product_speed ||
+      !product_mit || !product_pv ||
       !start_trajectory || !trajectory_status || !cancel_trajectory ||
       !move_pose || !move_pose_status || !cancel_move_pose ||
       !move_cartesian || !move_linear || !cartesian_motion_status ||
@@ -233,6 +308,8 @@ int main() {
       !product_grippers || !product_grippers_v2 || !has_product_grippers ||
       !product_state ||
       !product_state_v2 ||
+      !product_state_v3 ||
+      !product_joint_limits ||
       !product_pose ||
       !control_mode ||
       !enable_report || !enable_motors || !disable_motors ||
@@ -245,10 +322,13 @@ int main() {
       !gravity_status || !health_v2 || !estop ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x0002001FU ||
+      version != 0x00020023U ||
       (capabilities & required_with_circular) != required_with_circular ||
       !product_gripper_levels_valid ||
       !product_gripper_direct_valid ||
+      !state_v3_size_checked || !state_v3_runtime_checked ||
+      !joint_limits_size_checked || !joint_limits_runtime_checked ||
+      !product_speed_validation_checked ||
       !invalid_cartesian_interpolation_rejected ||
       (capabilities & removed_trajectory_bits) != 0 ||
       (capabilities & removed_public_rate_bits) != 0) {

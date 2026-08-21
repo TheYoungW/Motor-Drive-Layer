@@ -198,10 +198,11 @@ does not prevent a still-controllable channel from continuing its hold, and a ho
 never automatically disables another channel. `FAULT` remains latched and rejects ordinary motion.
 An explicit `disable()` always attempts every motor, records any motor whose disabled state was not
 confirmed, and does not clear the latch. `recover()` returns to `READY` only after fresh disabled
-feedback and transport health are confirmed. Parameterless `estop()` immediately stops Runtime
-control and disables every installed arm and gripper motor, regardless of the ordinary protective
-gripper policy. It records the standard `emergency stop requested` health reason, is idempotent,
-and can only be unlatched by `recover()`.
+feedback and transport health are confirmed. With ABI 2.33, parameterless `estop()` immediately
+supersedes Runtime motion with a latched current-position hold instead of torque-off. It keeps
+enabled arm and gripper Motors enabled, continuously transmits native safety frames, records the
+standard `emergency stop requested` health reason, is idempotent, and can only be unlatched by
+`recover()`.
 
 `runtime_abi.h` is the stable boundary used by Articore-SDK's private native binding. The optional generic
 motor-drive-layer transport-health callback is used when available; the wrapper remains compatible
@@ -317,9 +318,10 @@ is `[x, y, z, roll, pitch, yaw]` in metres/radians plus the oldest contributing
 feedback timestamp and sequence. The getter sends no CAN frames and does not
 apply an unavailable TCP offset.
 
-Runtime ABI 2.16 makes `articore_runtime_estop()` parameterless. It clears all
-pending control, disables the complete installed product, records the standard
-emergency-stop reason in health, and latches until an explicit `recover()`.
+Runtime ABI 2.16 makes `articore_runtime_estop()` parameterless, records the
+standard emergency-stop reason in health, and latches until an explicit
+`recover()`. ABI 2.33 supersedes the earlier whole-product torque-off behavior
+with continuous current-position holding.
 
 Runtime ABI 2.17 defines `articore_runtime_recover()` as a complete native
 whole-product transaction: stop old commands and disable, clear recoverable
@@ -467,6 +469,39 @@ its intermediate samples stay on the current local IK branch and its final
 sample receives the same global fallback. Circular endpoints follow the same
 policy. Any unreachable, discontinuous or over-limit result is still rejected
 before the active motion is replaced.
+
+Runtime ABI 2.32 adds `ARTICORE_CAP_PRODUCT_TEMPERATURE_STATE` and
+`articore_runtime_get_state_v3()`. The V3 snapshot extends V2 with MOS and
+rotor temperatures in degrees Celsius for all 14 arm joints and installed
+grippers, plus explicit per-Motor validity. Values are copied from the existing
+coherent Motor feedback cache; the getter performs no CAN I/O. Missing, stale,
+or non-finite temperature feedback is returned as NaN with its validity bit
+clear. The V1/V2 structures and symbols remain binary compatible.
+
+Runtime ABI 2.33 adds `ARTICORE_CAP_LATCHED_ESTOP_POSITION_HOLD`. Product
+`estop()` atomically terminates the superseded trajectory/user mailbox,
+captures the current arm reference from fresh native feedback, and continuously
+dispatches PV/MIT safety holds. Enabled Motors remain enabled; a product that
+was already disabled is never re-enabled. Feedback and hold-send failures stay
+visible in health while the estop latch rejects all new motion. Repeated calls
+are idempotent and only `recover()` may clear the latch.
+
+Runtime ABI 2.34 adds `ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS` and
+`articore_runtime_get_joint_angle_vel_limits()`. One immutable snapshot returns
+lower angle, upper angle, and product velocity limit for exactly 14 arm joints
+in left J1..J7 then right J1..J7 order. Units are radians and radians/second.
+Values come directly from the built-in Yunyi product configuration, require no
+CAN traffic or connected state, and never include grippers.
+
+Runtime ABI 2.35 adds `ARTICORE_CAP_PRODUCT_SPEED_SETTING`,
+`articore_runtime_set_speed()`, and `articore_runtime_get_speed()`. A product
+Runtime owns one persistent ordinary-joint-motion setting in the inclusive
+range 0..100, defaulting to 70. For all 14 arm joints, 100 maps to a shared
+5 rad/s reference cap, so the default maps to 3.5 rad/s. Updating the setting
+also updates an active ordinary MIT/PV position reference. The additive
+`articore_runtime_set_joint_positions_v2()` uses the stored value, while the
+legacy explicit-speed symbol remains available. Raw frames, native
+trajectories, and Cartesian motions retain their independent explicit limits.
 
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations

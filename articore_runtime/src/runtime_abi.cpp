@@ -30,6 +30,8 @@ struct ArticoreRuntime {
   std::unique_ptr<articore::YunyiRuntimeResources> yunyi;
   std::unique_ptr<articore::SafetyRuntime> runtime;
   ArticoreControlMode product_mode = ARTICORE_MODE_PV;
+  std::mutex product_speed_mutex;
+  float product_speed_percent = articore::kYunyiDefaultSpeedPercent;
   std::mutex move_pose_mutex;
   uint64_t move_pose_id = 0;
   uint64_t superseded_move_pose_id = 0;
@@ -457,7 +459,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 31U;
+  return (2U << 16) | 35U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -508,7 +510,11 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT |
          ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR |
          ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR |
-         ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START;
+         ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START |
+         ARTICORE_CAP_PRODUCT_TEMPERATURE_STATE |
+         ARTICORE_CAP_LATCHED_ESTOP_POSITION_HOLD |
+         ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS |
+         ARTICORE_CAP_PRODUCT_SPEED_SETTING;
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -931,6 +937,61 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions(
   } catch (const std::exception& error) {
     return record_product_command_error(
         runtime, ARTICORE_OPERATION_INVALID_STATE, error.what());
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_speed(
+    ArticoreRuntime* runtime, float speed_percent) {
+  try {
+    if (!std::isfinite(speed_percent) || speed_percent < 0.0f ||
+        speed_percent > 100.0f) {
+      throw std::invalid_argument(
+          "ordinary speed must be finite and within 0..100");
+    }
+    checked_yunyi(runtime);
+    std::lock_guard<std::mutex> lock(runtime->product_speed_mutex);
+    checked(runtime).update_joint_position_velocity(
+        articore::kYunyiOrdinaryMaximumVelocity * speed_percent / 100.0f);
+    runtime->product_speed_percent = speed_percent;
+    g_last_error = "ok";
+    return 0;
+  } catch (const std::invalid_argument& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
+  } catch (const std::exception& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_STATE, error.what());
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_speed(
+    ArticoreRuntime* runtime, float* speed_percent) {
+  if (!speed_percent) {
+    g_last_error = "speed_percent output is null";
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  }
+  try {
+    checked_yunyi(runtime);
+    std::lock_guard<std::mutex> lock(runtime->product_speed_mutex);
+    *speed_percent = runtime->product_speed_percent;
+    g_last_error = "ok";
+    return 0;
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions_v2(
+    ArticoreRuntime* runtime, const float* positions, uint32_t count) {
+  try {
+    checked_yunyi(runtime);
+    std::lock_guard<std::mutex> lock(runtime->product_speed_mutex);
+    return articore_runtime_set_joint_positions(
+        runtime, positions, count, runtime->product_speed_percent);
+  } catch (const std::exception& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
   }
 }
 
@@ -1518,6 +1579,171 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_state_v2(
           ? 0 : sequence;
     }
     *state = output;
+    g_last_error = "ok";
+    return 0;
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return -1;
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_state_v3(
+    ArticoreRuntime* runtime, ArticoreProductStateV3* state) {
+  if (!state || state->struct_size < sizeof(*state)) {
+    g_last_error = "product state v3 output is null or too small";
+    return -1;
+  }
+  try {
+    auto& product = checked_yunyi(runtime);
+    auto& safety = checked(runtime);
+    const uint32_t caller_size = state->struct_size;
+    ArticoreProductStateV3 output{};
+    output.struct_size = caller_size;
+    output.has_grippers = product.with_grippers ? 1 : 0;
+    const float unavailable = std::numeric_limits<float>::quiet_NaN();
+    output.left_gripper_mos_temperature = unavailable;
+    output.left_gripper_rotor_temperature = unavailable;
+    output.right_gripper_mos_temperature = unavailable;
+    output.right_gripper_rotor_temperature = unavailable;
+    uint64_t maximum_age = 0;
+    uint64_t sequence = std::numeric_limits<uint64_t>::max();
+    bool complete_timing = true;
+    const uint64_t fresh_limit = safety.feedback_max_age_ns();
+
+    for (uint32_t i = 0; i < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++i) {
+      const auto& joint = product.joints[i];
+      MotorState motor{};
+      MotorFeedbackStats stats{};
+      const bool cached = motor_handle_get_state_snapshot(
+          joint.motor, &motor, &stats) == 0;
+      auto& arm = i < ARTICORE_PRODUCT_ARM_DOF ? output.left : output.right;
+      const uint32_t index = i % ARTICORE_PRODUCT_ARM_DOF;
+      const uint32_t bit = 1U << index;
+      if (cached && motor.has_value) {
+        arm.positions[index] = joint.direction * motor.pos;
+        arm.velocities[index] = joint.direction * motor.vel *
+                                joint.velocity_feedback_scale;
+        arm.torques[index] = joint.direction * motor.torq *
+                             joint.torque_feedback_scale;
+      } else {
+        arm.positions[index] = unavailable;
+        arm.velocities[index] = unavailable;
+        arm.torques[index] = unavailable;
+      }
+      const bool feedback_present =
+          cached && motor.has_value && stats.has_feedback;
+      const bool fresh = feedback_present && stats.age_ns <= fresh_limit;
+      const bool power_valid = fresh && motor.status_code <= 1;
+      if (power_valid) {
+        arm.enabled_valid_mask |= bit;
+        if (motor.status_code == 1) arm.enabled_mask |= bit;
+      }
+      const bool temperature_valid =
+          fresh && std::isfinite(motor.t_mos) && std::isfinite(motor.t_rotor);
+      if (temperature_valid) {
+        arm.mos_temperatures[index] = motor.t_mos;
+        arm.rotor_temperatures[index] = motor.t_rotor;
+        arm.temperature_valid_mask |= bit;
+      } else {
+        arm.mos_temperatures[index] = unavailable;
+        arm.rotor_temperatures[index] = unavailable;
+      }
+      if (feedback_present) {
+        maximum_age = std::max(maximum_age, stats.age_ns);
+        sequence = std::min(sequence, stats.update_count);
+      } else {
+        complete_timing = false;
+      }
+    }
+
+    if (product.with_grippers) {
+      const auto health = safety.health();
+      for (uint32_t side = 0; side < 2; ++side) {
+        MotorState motor{};
+        MotorFeedbackStats stats{};
+        const bool cached = motor_handle_get_state_snapshot(
+            product.grippers[side], &motor, &stats) == 0;
+        const bool feedback_present =
+            cached && motor.has_value && stats.has_feedback;
+        const bool fresh = feedback_present && stats.age_ns <= fresh_limit;
+        const bool power_valid = fresh && motor.status_code <= 1;
+        const bool temperature_valid =
+            fresh && std::isfinite(motor.t_mos) && std::isfinite(motor.t_rotor);
+        if (side == 0) {
+          output.left_gripper_available = 1;
+          output.left_gripper_level = safety.gripper_force_level(side);
+          output.left_gripper_enabled_valid = power_valid ? 1 : 0;
+          output.left_gripper_enabled =
+              power_valid && motor.status_code == 1 ? 1 : 0;
+          output.left_gripper_temperature_valid = temperature_valid ? 1 : 0;
+          if (temperature_valid) {
+            output.left_gripper_mos_temperature = motor.t_mos;
+            output.left_gripper_rotor_temperature = motor.t_rotor;
+          }
+        } else {
+          output.right_gripper_available = 1;
+          output.right_gripper_level = safety.gripper_force_level(side);
+          output.right_gripper_enabled_valid = power_valid ? 1 : 0;
+          output.right_gripper_enabled =
+              power_valid && motor.status_code == 1 ? 1 : 0;
+          output.right_gripper_temperature_valid = temperature_valid ? 1 : 0;
+          if (temperature_valid) {
+            output.right_gripper_mos_temperature = motor.t_mos;
+            output.right_gripper_rotor_temperature = motor.t_rotor;
+          }
+        }
+        for (uint32_t i = 0; i < health.gripper_count && i < 2; ++i) {
+          if (health.grippers[i].side != side) continue;
+          if (side == 0) {
+            output.left_gripper_opening = health.grippers[i].opening;
+          } else {
+            output.right_gripper_opening = health.grippers[i].opening;
+          }
+        }
+        if (feedback_present) {
+          maximum_age = std::max(maximum_age, stats.age_ns);
+          sequence = std::min(sequence, stats.update_count);
+        } else {
+          complete_timing = false;
+        }
+      }
+    }
+
+    if (complete_timing) {
+      const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
+      output.timestamp_ns = static_cast<uint64_t>(now) > maximum_age
+          ? static_cast<uint64_t>(now) - maximum_age : 0;
+      output.sequence = sequence == std::numeric_limits<uint64_t>::max()
+          ? 0 : sequence;
+    }
+    *state = output;
+    g_last_error = "ok";
+    return 0;
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return -1;
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_joint_angle_vel_limits(
+    ArticoreRuntime* runtime, ArticoreProductJointAngleVelLimits* limits) {
+  if (!limits || limits->struct_size < sizeof(*limits)) {
+    g_last_error = "joint angle/velocity limits output is null or too small";
+    return -1;
+  }
+  try {
+    const auto& product = checked_yunyi(runtime);
+    const uint32_t caller_size = limits->struct_size;
+    ArticoreProductJointAngleVelLimits output{};
+    output.struct_size = caller_size;
+    output.joint_count = ARTICORE_PRODUCT_DUAL_ARM_DOF;
+    for (uint32_t index = 0; index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
+      output.lower_angles[index] = product.joints[index].lower;
+      output.upper_angles[index] = product.joints[index].upper;
+      output.velocity_limits[index] = product.joints[index].velocity_limit;
+    }
+    *limits = output;
     g_last_error = "ok";
     return 0;
   } catch (const std::exception& error) {

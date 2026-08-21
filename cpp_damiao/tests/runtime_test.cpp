@@ -519,6 +519,8 @@ int main() {
   require(state->can_id == 0x01, "state can id");
   require(state->status_code == 0x01, "state status");
   require_close(state->pos, 1.2f, 0.05f, "state position");
+  require(state->t_mos == 31.0f, "state cache preserves MOS temperature");
+  require(state->t_rotor == 32.0f, "state cache preserves rotor temperature");
   require(!motor2->latest_state().has_value(), "unmatched motor state stays empty");
 
   const auto first_feedback_stats = motor1->feedback_stats();
@@ -529,6 +531,8 @@ int main() {
   const auto coherent_snapshot = motor1->state_snapshot();
   require(coherent_snapshot.state.has_value() &&
               coherent_snapshot.state->status_code == 0x01 &&
+              coherent_snapshot.state->t_mos == 31.0f &&
+              coherent_snapshot.state->t_rotor == 32.0f &&
               coherent_snapshot.feedback.has_feedback &&
               coherent_snapshot.feedback.update_count == 1,
           "state and feedback metadata share one coherent cache snapshot");

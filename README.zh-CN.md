@@ -181,10 +181,10 @@ Runtime ABI 2.15 增加 `articore_runtime_get_pose()`。接口从原生反馈缓
 调用本身不发送 CAN 帧；当前产品没有 TCP 偏移配置，因此不提供虚构的 TCP 位姿，也不增加
 驱动无法可靠提供的电压/相电流字段。
 
-Runtime ABI 2.16 将 `articore_runtime_estop()` 改为无业务参数接口。调用后 Runtime 先停止
-控制帧，再失能全部已安装关节和夹爪，并在 health 的 `fault_reason` 中记录固定原因
-`emergency stop requested`。重复调用是安全的幂等操作；`disable()`、清除电机故障以及断开后
-重连都不能解除急停锁存，只有确认整机失能后的 `recover()` 可以恢复到 READY。
+Runtime ABI 2.16 将 `articore_runtime_estop()` 改为无业务参数接口，并在 health 的
+`fault_reason` 中记录固定原因 `emergency stop requested`。重复调用是安全的幂等操作；
+`disable()`、清除电机故障以及断开后重连都不能解除急停锁存。ABI 2.33 已将早期的急停
+整机失能行为替换为持续当前位置保持，只有 `recover()` 可以解除锁存。
 
 Runtime ABI 2.17 重新定义 `recover()` 为完整整机恢复：先停止旧控制并确认失能，再并行清除
 左右通道的可恢复故障、验证 transport 与全部新鲜反馈，然后只为低速回到已标定关节零位而
@@ -295,6 +295,30 @@ Motor-Drive-Layer 0.10.33 在不改变 ABI 2.31 接口的前提下增强笛卡�
 多余的孤立终点求解，中间采样继续使用当前关节解做局部连续 IK，最终采样再使用相同的
 全局回退策略；圆弧终点同样处理。目标不可达、IK 分支不连续或越界时仍会在覆盖当前运动
 之前返回失败。
+
+Runtime ABI 2.32 新增 `ARTICORE_CAP_PRODUCT_TEMPERATURE_STATE` 和
+`articore_runtime_get_state_v3()`。状态快照在 V2 的位置、速度、力矩和实际使能状态之外，
+增加 14 个关节及已安装夹爪的 MOS 温度、转子温度和逐电机有效标志。温度单位为摄氏度，
+来自现有 Motor 反馈缓存；接口不发送 CAN 请求，反馈缺失、过期或数值无效时返回 NaN 并
+清除对应有效位。旧 V1/V2 状态接口和结构保持二进制兼容。
+
+Runtime ABI 2.33 新增 `ARTICORE_CAP_LATCHED_ESTOP_POSITION_HOLD`，重新定义产品急停：
+`estop()` 原子终止旧轨迹和用户目标，从新鲜反馈缓存捕获当前位置，并在 Runtime 安全周期内
+持续发送 PV/MIT 位置保持帧。已使能电机保持使能，不再主动整机失能；原本已失能的产品也
+不会被急停重新使能。急停保持继续检查反馈和发送结果，失败原因写入 health。急停锁存期间
+拒绝新运动命令，重复调用幂等，仍只能通过 `recover()` 进入完整恢复流程。
+
+Runtime ABI 2.34 新增 `ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS` 和
+`articore_runtime_get_joint_angle_vel_limits()`。接口一次返回固定 14 个机械臂关节的最小角度、
+最大角度与产品速度上限，顺序为左 J1–J7、右 J1–J7，单位分别为 rad 和 rad/s。数据直接来自
+Yunyi 内置产品配置，不发送 CAN 请求、不依赖连接状态，也不包含左右夹爪。
+
+Runtime ABI 2.35 新增 `ARTICORE_CAP_PRODUCT_SPEED_SETTING`、
+`articore_runtime_set_speed()` 和 `articore_runtime_get_speed()`。产品 Runtime 保存一个普通关节
+运动速度设置，范围为 0–100，默认值为 70；14 个机械臂关节的 100 均对应 5 rad/s，因此默认
+实际参考速度为 3.5 rad/s。修改设置会立即作用于正在执行的普通 MIT/PV 位置参考。
+`articore_runtime_set_joint_positions_v2()` 使用当前设置，旧的带显式 `speed_percent` 参数接口
+继续保留。Raw MIT/PV、原生轨迹和笛卡尔运动不受此全局设置影响。
 
 ## 安全
 

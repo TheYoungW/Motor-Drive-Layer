@@ -1478,11 +1478,11 @@ void SafetyRuntime::disable() {
 
 void SafetyRuntime::estop() {
   std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+  bool requires_hold = false;
+  bool was_disable_confirmed = false;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (emergency_stop_latched_ &&
-        (state_ == ARTICORE_DISCONNECTED ||
-         (state_ == ARTICORE_FAULT && disable_confirmed_))) {
+    if (emergency_stop_latched_) {
       fault_latched_ = true;
       fault_reason_ = "emergency stop requested";
       safety_reason_.clear();
@@ -1493,11 +1493,56 @@ void SafetyRuntime::estop() {
     fault_reason_ = "emergency stop requested";
     safety_reason_.clear();
     if (state_ == ARTICORE_DISCONNECTED) return;
+    was_disable_confirmed = disable_confirmed_;
+    requires_hold = !disable_confirmed_ && state_ != ARTICORE_READY;
   }
-  // Emergency stop never enters a product-specific protective hold. Marking
-  // FAULT and clearing all command mailboxes happens before the full-product
-  // disable transaction, so the worker cannot submit another control frame.
-  enter_fault("emergency stop requested", true, false);
+  // Product emergency stop is a latched current-position stop, not torque-off.
+  // Capture the replacement hold before clearing every user command/trajectory,
+  // then let the existing native safety cadence keep transmitting it. A call
+  // made while already physically disabled latches without re-enabling Motors.
+  enter_fault("emergency stop requested", false, requires_hold);
+  if (!requires_hold) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    disable_confirmed_ = was_disable_confirmed;
+    fault_reason_ = "emergency stop requested";
+    return;
+  }
+
+  bool arm_hold_available = false;
+  {
+    std::lock_guard<std::mutex> command_lock(command_mutex_);
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    arm_hold_available = mode_ == ARTICORE_MODE_PV
+        ? !safe_pv_.empty() : !safe_mit_.empty();
+    // These are diagnostic/fallback copies of the superseded user output. The
+    // new safe_* vectors above are now the only active command reference.
+    last_sent_pv_.clear();
+    last_sent_mit_.clear();
+  }
+  if (!arm_hold_available) {
+    const std::string error =
+        "emergency stop current-position hold is unavailable";
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (fault_reason_.find(error) == std::string::npos) {
+        fault_reason_ += "; " + error;
+      }
+    }
+    throw std::runtime_error(error);
+  }
+
+  std::string hold_error;
+  if (!send_safe_hold_once(hold_error)) {
+    const std::string error = "emergency stop initial hold failed" +
+        (hold_error.empty() ? std::string{} : ": " + hold_error);
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (fault_reason_.find(error) == std::string::npos) {
+        fault_reason_ += "; " + error;
+      }
+    }
+    throw std::runtime_error(error);
+  }
 }
 
 void SafetyRuntime::recover() {

@@ -12,6 +12,9 @@
 
 namespace articore {
 
+inline constexpr float kYunyiOrdinaryMaximumVelocity = 5.0f;
+inline constexpr float kYunyiDefaultSpeedPercent = 70.0f;
+
 // Complete native ownership for the only supported robot product. Nothing in
 // this structure crosses the public ABI or needs to be assembled by Python.
 struct YunyiRuntimeResources {
@@ -46,8 +49,8 @@ struct YunyiRuntimeResources {
   std::array<std::unique_ptr<RobotModel>, 2> pose_models;
   std::array<std::mutex, 2> pose_mutexes;
   bool with_grippers = true;
-  float default_mit_reference_velocity = 3.4906585f;
-  float default_pv_reference_velocity = 5.0f;
+  float default_mit_reference_velocity = kYunyiOrdinaryMaximumVelocity;
+  float default_pv_reference_velocity = kYunyiOrdinaryMaximumVelocity;
 };
 
 struct YunyiRuntimeBundle {

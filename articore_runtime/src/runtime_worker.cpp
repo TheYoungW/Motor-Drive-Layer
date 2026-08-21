@@ -93,7 +93,9 @@ void SafetyRuntime::worker_loop() {
       if ((state_ == ARTICORE_RUNNING || state_ == ARTICORE_DEGRADED ||
            state_ == ARTICORE_PARTIALLY_ENABLED ||
            state_ == ARTICORE_SAFE_HOLD ||
-           state_ == ARTICORE_SAFE_STOP) &&
+           state_ == ARTICORE_SAFE_STOP ||
+           (state_ == ARTICORE_FAULT && emergency_stop_latched_ &&
+            fault_hold_active_)) &&
           now >= next_feedback_check_) {
         run_feedback_check = true;
         detail::advance_periodic_deadline(
@@ -222,7 +224,9 @@ void SafetyRuntime::worker_loop() {
               (state_ == ARTICORE_RUNNING || state_ == ARTICORE_DEGRADED ||
                state_ == ARTICORE_PARTIALLY_ENABLED ||
                state_ == ARTICORE_SAFE_HOLD ||
-               state_ == ARTICORE_SAFE_STOP);
+               state_ == ARTICORE_SAFE_STOP ||
+               (state_ == ARTICORE_FAULT && emergency_stop_latched_ &&
+                fault_hold_active_));
         }
         if (still_active) {
           healthy = refresh_feedback_health(

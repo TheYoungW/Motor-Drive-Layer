@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "motor-drive-layer"
-version = "0.10.33"
+version = "0.10.35"
 description = "Native C/C++ libraries for the Motor-Drive-Layer ABI"
 readme = "README.md"
 license = "MIT"

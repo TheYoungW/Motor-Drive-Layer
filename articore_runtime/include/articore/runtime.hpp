@@ -127,11 +127,30 @@ class Runtime final {
     return result != 0;
   }
 
+  void set_speed(float speed_percent) {
+    detail::check(
+        articore_runtime_set_speed(checked(), speed_percent), "set_speed");
+  }
+
+  float get_speed() const {
+    float result = 0.0f;
+    detail::check(articore_runtime_get_speed(checked(), &result), "get_speed");
+    return result;
+  }
+
+  void set_joint_positions(const std::vector<float>& positions) {
+    detail::check(
+        articore_runtime_set_joint_positions_v2(
+            checked(), positions.data(), detail::size(positions)),
+        "set_joint_positions_v2");
+  }
+
   void set_joint_positions(const std::vector<float>& positions,
-                           float speed = 100.0f) {
+                           float speed_percent) {
     detail::check(
         articore_runtime_set_joint_positions(
-            checked(), positions.data(), detail::size(positions), speed),
+            checked(), positions.data(), detail::size(positions),
+            speed_percent),
         "set_joint_positions");
   }
 
@@ -302,6 +321,23 @@ class Runtime final {
     result.struct_size = sizeof(result);
     detail::check(
         articore_runtime_get_state_v2(checked(), &result), "get_state_v2");
+    return result;
+  }
+
+  ArticoreProductStateV3 state_v3() const {
+    ArticoreProductStateV3 result{};
+    result.struct_size = sizeof(result);
+    detail::check(
+        articore_runtime_get_state_v3(checked(), &result), "get_state_v3");
+    return result;
+  }
+
+  ArticoreProductJointAngleVelLimits joint_angle_vel_limits() const {
+    ArticoreProductJointAngleVelLimits result{};
+    result.struct_size = sizeof(result);
+    detail::check(
+        articore_runtime_get_joint_angle_vel_limits(checked(), &result),
+        "get_joint_angle_vel_limits");
     return result;
   }
 
