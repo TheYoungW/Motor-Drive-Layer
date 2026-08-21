@@ -1709,6 +1709,18 @@ void test_builtin_yunyi_gripper_profile_owns_product_calibration() {
           }),
           "default direct strength applies ten-times Kp and Kd");
 
+  command.force_level = ARTICORE_GRIPPER_FORCE_LEVEL_10;
+  runtime.set_gripper_commands(
+      &command, 1, ARTICORE_GRIPPER_MODE_DIRECT);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_mit.size() == 1 &&
+                   driver.last_mit[0].motor == source_gripper.motor &&
+                   std::abs(driver.last_mit[0].stiffness - 120.0f) < 1e-6f &&
+                   std::abs(driver.last_mit[0].damping - 5.0f) < 1e-6f;
+          }),
+          "direct force level 10 keeps Kp=120 and clamps Kd to 5");
+
   runtime.estop();
   {
     std::lock_guard<std::mutex> lock(driver.mutex);

@@ -34,8 +34,9 @@ scale. Runtime-wide safety remains active in both modes.
 Version 0.10.29 guarantees that Yunyi grippers remain in MIT mode regardless
 of whether the fourteen arm joints use PV or MIT control.
 
-Version 0.10.30 multiplies both Kp and Kd by ten in direct gripper mode only;
-protected mode and zero strength remain unchanged.
+Version 0.10.30 scales direct-mode Kp and Kd by ten. Runtime caps the resulting
+MIT Kd at the protocol maximum of 5; protected mode and zero strength remain
+unchanged.
 
 Version 0.10.31 adds native asynchronous Cartesian point-to-point motion for
 the Yunyi product Runtime. `articore_runtime_move_pose()` performs C++ IK and

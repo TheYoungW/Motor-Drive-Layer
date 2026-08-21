@@ -417,11 +417,12 @@ commanded as MIT. Mode configuration, enable-time current-position hold,
 normal gripper control, and recovery holding therefore use one consistent
 gripper protocol and never place a Yunyi gripper in PV mode.
 
-Runtime ABI 2.27 adds `ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10`. Only product
-`DIRECT` gripper mode multiplies both selected Kp and Kd by ten: default level
-5 becomes Kp=80/Kd=5 and level 10 becomes Kp=120/Kd=8. `PROTECTED` calibration
-is unchanged, strength zero remains Kp=Kd=0, and Runtime DEGRADED scaling still
-reduces the resulting gains to 25 percent.
+Runtime ABI 2.27 adds `ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10`. Product `DIRECT`
+mode scales the selected gains by ten and caps MIT damping at the protocol
+maximum of 5: default level 5 becomes Kp=80/Kd=5 and level 10 becomes
+Kp=120/Kd=5. `PROTECTED` calibration is unchanged, strength zero remains
+Kp=Kd=0, and Runtime DEGRADED scaling still reduces the resulting gains to
+25 percent.
 
 Runtime ABI 2.28 adds
 `ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT` and the native

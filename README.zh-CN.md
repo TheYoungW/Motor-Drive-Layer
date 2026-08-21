@@ -257,8 +257,8 @@ Runtime ABI 2.26 增加 `fixed_gripper_mit_mode` 保证。产品 `control_mode` 
 配置、使能当前位置保持、正常夹爪控制和恢复后的保持始终使用一致的 MIT 协议。
 
 Runtime ABI 2.27 增加 `direct_gripper_gain_x10`。仅在产品夹爪 `DIRECT` 模式下，Runtime
-将所选力度等级的 Kp 和 Kd 同时放大 10 倍；默认 5 级由 Kp=8、Kd=0.5 调整为
-Kp=80、Kd=5，10 级为 Kp=120、Kd=8。`PROTECTED` 模式的十级标定完全不变，力度 0 仍为
+将所选力度等级的 Kp 和 Kd 放大 10 倍，同时把 MIT Kd 限制在协议最大值 5；默认 5 级为
+Kp=80、Kd=5，10 级为 Kp=120、Kd=5。`PROTECTED` 模式的十级标定完全不变，力度 0 仍为
 Kp=Kd=0。通信降级时仍应用 Runtime 的 25% 增益缩放。
 
 Runtime ABI 2.28 增加 `product_cartesian_point_to_point` 与原生

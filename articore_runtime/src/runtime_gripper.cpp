@@ -13,6 +13,15 @@
 #include <utility>
 
 namespace articore {
+namespace {
+
+constexpr float kMaximumMitDamping = 5.0f;
+
+float clamp_gripper_damping(float damping) {
+  return std::clamp(damping, 0.0f, kMaximumMitDamping);
+}
+
+}  // namespace
 
 using detail::age_ns;
 using detail::copy_text;
@@ -587,8 +596,9 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
                     command_scale);
             degraded_hold.damping = std::min(
                 degraded_hold.damping,
-                std::max(force.moving_kd, force.hold_kd) * gain_scale *
-                    command_scale);
+                clamp_gripper_damping(
+                    std::max(force.moving_kd, force.hold_kd) * gain_scale *
+                    command_scale));
           }
           commands.push_back(degraded_hold);
         }
@@ -762,8 +772,9 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
         descriptor.motor, motor.command_position, 0.0f,
         (low_gain ? force.hold_kp : force.moving_kp) * gain_scale *
             command_scale,
-        (low_gain ? force.hold_kd : force.moving_kd) * gain_scale *
-            command_scale,
+        clamp_gripper_damping(
+            (low_gain ? force.hold_kd : force.moving_kd) * gain_scale *
+            command_scale),
         0.0f});
   }
   return true;
@@ -907,8 +918,8 @@ bool SafetyRuntime::send_gripper_hold_once(std::string& error) {
     const auto gain_scale = gripper_gain_scale(*found);
     command.stiffness =
         (protection_enabled ? force.hold_kp : force.moving_kp) * gain_scale;
-    command.damping =
-        (protection_enabled ? force.hold_kd : force.moving_kd) * gain_scale;
+    command.damping = clamp_gripper_damping(
+        (protection_enabled ? force.hold_kd : force.moving_kd) * gain_scale);
     command.feedforward_torque = 0.0f;
     sendable.push_back(command);
   }
