@@ -320,6 +320,11 @@ Runtime ABI 2.35 新增 `ARTICORE_CAP_PRODUCT_SPEED_SETTING`、
 `articore_runtime_set_joint_positions_v2()` 使用当前设置，旧的带显式 `speed_percent` 参数接口
 继续保留。Raw MIT/PV、原生轨迹和笛卡尔运动不受此全局设置影响。
 
+Runtime ABI 2.36 将该设置的正式名称修正为“普通运动最大速度”，新增
+`ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING`、`articore_runtime_set_max_speed()` 和
+`articore_runtime_get_max_speed()`。范围、默认值、物理映射和动态生效行为不变。ABI 2.35 的
+`set_speed/get_speed` 符号保留为兼容别名，新 SDK 应只公开 `set_max_speed/get_max_speed`。
+
 ## 安全
 
 电机控制可能造成意外运动和人身伤害。测试时必须支撑机构、准备独立急停、确认通道/ID/型号/

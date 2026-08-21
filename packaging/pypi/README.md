@@ -92,6 +92,12 @@ change an active ordinary MIT/PV reference, and
 `articore_runtime_set_joint_positions_v2()` uses it for later targets. Raw
 frames, trajectories, and Cartesian motions retain their explicit limits.
 
+Version 0.10.36 / Runtime ABI 2.36 corrects the public name of that setting to
+maximum speed. New SDKs bind `articore_runtime_set_max_speed()` and
+`articore_runtime_get_max_speed()` and expose `set_max_speed()` /
+`get_max_speed()`. The 2.35 `set_speed/get_speed` symbols remain binary
+compatibility aliases; all values and behavior are unchanged.
+
 The required Pinocchio C++ template implementations are compiled into
 `libarticore_runtime.so` with hidden visibility. The installed runtime has no dynamic dependency
 on Pinocchio or Boost, so a ROS 2 `LD_LIBRARY_PATH` cannot substitute an incompatible robotics

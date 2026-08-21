@@ -503,6 +503,14 @@ also updates an active ordinary MIT/PV position reference. The additive
 legacy explicit-speed symbol remains available. Raw frames, native
 trajectories, and Cartesian motions retain their independent explicit limits.
 
+Runtime ABI 2.36 corrects the preferred public terminology to an ordinary
+motion maximum-speed setting. `ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING`,
+`articore_runtime_set_max_speed()`, and `articore_runtime_get_max_speed()` are
+the canonical API. The 0..100 scale, default 70, 5 rad/s maximum, and live
+ordinary-reference update semantics are unchanged. ABI 2.35
+`set_speed/get_speed` remain exported compatibility aliases; new bindings
+should expose only the max-speed names.
+
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations
 are rejected after connect, and a present motor that loses fresh feedback, reports a motor fault,

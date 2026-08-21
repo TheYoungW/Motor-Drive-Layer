@@ -127,16 +127,24 @@ class Runtime final {
     return result != 0;
   }
 
-  void set_speed(float speed_percent) {
+  void set_max_speed(float max_speed_percent) {
     detail::check(
-        articore_runtime_set_speed(checked(), speed_percent), "set_speed");
+        articore_runtime_set_max_speed(checked(), max_speed_percent),
+        "set_max_speed");
   }
 
-  float get_speed() const {
+  float get_max_speed() const {
     float result = 0.0f;
-    detail::check(articore_runtime_get_speed(checked(), &result), "get_speed");
+    detail::check(
+        articore_runtime_get_max_speed(checked(), &result), "get_max_speed");
     return result;
   }
+
+  [[deprecated("use set_max_speed()")]]
+  void set_speed(float speed_percent) { set_max_speed(speed_percent); }
+
+  [[deprecated("use get_max_speed()")]]
+  float get_speed() const { return get_max_speed(); }
 
   void set_joint_positions(const std::vector<float>& positions) {
     detail::check(

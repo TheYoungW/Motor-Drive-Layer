@@ -15,9 +15,9 @@ int main() {
   using SpeedGetter = float (articore::Runtime::*)() const;
   using SpeedSetter = void (articore::Runtime::*)(float);
   static_assert(std::is_same_v<
-      decltype(&articore::Runtime::get_speed), SpeedGetter>);
+      decltype(&articore::Runtime::get_max_speed), SpeedGetter>);
   static_assert(std::is_same_v<
-      decltype(&articore::Runtime::set_speed), SpeedSetter>);
+      decltype(&articore::Runtime::set_max_speed), SpeedSetter>);
 
   // This target is a cross-platform compile/link smoke test for the public
   // RAII wrapper. Runtime behavior and invalid construction are exercised by

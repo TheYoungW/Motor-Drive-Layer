@@ -193,6 +193,11 @@ enum ArticoreRuntimeCapability {
   // default is 70 and 100 maps to a shared 5 rad/s cap for all 14 arm joints.
   // Updating it also changes an active ordinary MIT/PV position reference.
   ARTICORE_CAP_PRODUCT_SPEED_SETTING = 1ULL << 59,
+  // ABI 2.36 gives the setting its precise public meaning and preferred API
+  // name: it is the maximum ordinary-motion speed percentage, not an
+  // instantaneous target velocity. ABI 2.35 symbols remain compatibility
+  // aliases.
+  ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING = 1ULL << 60,
 };
 
 enum {
@@ -1265,6 +1270,13 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_speed(
     ArticoreRuntime* runtime, float speed_percent);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_speed(
     ArticoreRuntime* runtime, float* speed_percent);
+// ABI 2.36 preferred names. max_speed_percent is the persistent upper bound
+// used while advancing ordinary MIT/PV position references. The inclusive
+// 0..100 scale, default 70, and 5 rad/s physical maximum are unchanged.
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
+    ArticoreRuntime* runtime, float max_speed_percent);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(
+    ArticoreRuntime* runtime, float* max_speed_percent);
 // Uses the current persistent speed setting atomically. The legacy function
 // above remains available for callers that need a one-command explicit speed.
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions_v2(

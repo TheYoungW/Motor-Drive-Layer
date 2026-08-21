@@ -20,6 +20,8 @@ int main() {
   const auto product_positions_v2 = &articore_runtime_set_joint_positions_v2;
   const auto set_product_speed = &articore_runtime_set_speed;
   const auto get_product_speed = &articore_runtime_get_speed;
+  const auto set_product_max_speed = &articore_runtime_set_max_speed;
+  const auto get_product_max_speed = &articore_runtime_get_max_speed;
   const auto product_mit = &articore_runtime_submit_mit_frame;
   const auto product_pv = &articore_runtime_submit_pv_frame;
   const auto start_trajectory = &articore_runtime_start_trajectory;
@@ -193,7 +195,8 @@ int main() {
       ARTICORE_CAP_PRODUCT_TEMPERATURE_STATE |
       ARTICORE_CAP_LATCHED_ESTOP_POSITION_HOLD |
       ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS |
-      ARTICORE_CAP_PRODUCT_SPEED_SETTING;
+      ARTICORE_CAP_PRODUCT_SPEED_SETTING |
+      ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING;
   bool product_gripper_levels_valid = true;
   for (const int32_t level : {1, 5, 10}) {
     product_gripper_levels_valid = product_gripper_levels_valid &&
@@ -262,29 +265,29 @@ int main() {
       std::strcmp(articore_runtime_last_error(), "runtime is null") == 0;
   float speed_percent = 0.0f;
   const bool product_speed_validation_checked =
-      articore_runtime_get_speed(nullptr, nullptr) ==
+      articore_runtime_get_max_speed(nullptr, nullptr) ==
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
       std::strcmp(articore_runtime_last_error(),
-                  "speed_percent output is null") == 0 &&
-      articore_runtime_get_speed(nullptr, &speed_percent) ==
+                  "max_speed_percent output is null") == 0 &&
+      articore_runtime_get_max_speed(nullptr, &speed_percent) ==
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
       std::strcmp(articore_runtime_last_error(), "runtime is null") == 0 &&
-      articore_runtime_set_speed(nullptr, 70.0f) ==
+      articore_runtime_set_max_speed(nullptr, 70.0f) ==
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
       std::strcmp(articore_runtime_last_error(), "runtime is null") == 0 &&
-      articore_runtime_set_speed(nullptr, -0.1f) ==
+      articore_runtime_set_max_speed(nullptr, -0.1f) ==
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
       std::strcmp(articore_runtime_last_error(),
-                  "ordinary speed must be finite and within 0..100") == 0 &&
-      articore_runtime_set_speed(nullptr, 100.1f) ==
+                  "ordinary maximum speed must be finite and within 0..100") == 0 &&
+      articore_runtime_set_max_speed(nullptr, 100.1f) ==
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
       std::strcmp(articore_runtime_last_error(),
-                  "ordinary speed must be finite and within 0..100") == 0 &&
-      articore_runtime_set_speed(
+                  "ordinary maximum speed must be finite and within 0..100") == 0 &&
+      articore_runtime_set_max_speed(
           nullptr, std::numeric_limits<float>::quiet_NaN()) ==
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
       std::strcmp(articore_runtime_last_error(),
-                  "ordinary speed must be finite and within 0..100") == 0;
+                  "ordinary maximum speed must be finite and within 0..100") == 0;
   float invalid_pose[ARTICORE_PRODUCT_POSE_DOF]{};
   uint64_t invalid_motion_id = 0;
   const bool invalid_cartesian_interpolation_rejected =
@@ -299,6 +302,7 @@ int main() {
       !configure_mode || !clear_faults || !set_zero || !disconnect ||
       !product_positions || !product_positions_v2 ||
       !set_product_speed || !get_product_speed ||
+      !set_product_max_speed || !get_product_max_speed ||
       !product_mit || !product_pv ||
       !start_trajectory || !trajectory_status || !cancel_trajectory ||
       !move_pose || !move_pose_status || !cancel_move_pose ||
@@ -322,7 +326,7 @@ int main() {
       !gravity_status || !health_v2 || !estop ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x00020023U ||
+      version != 0x00020024U ||
       (capabilities & required_with_circular) != required_with_circular ||
       !product_gripper_levels_valid ||
       !product_gripper_direct_valid ||

@@ -1,14 +1,14 @@
 {
   "schema": 1,
   "package": "motor_drive_layer_native",
-  "version": "0.10.35",
+  "version": "0.10.36",
   "purpose": "Canonical native ABI surface and external SDK binding contract.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",
     "articore_runtime": "product watchdog, safety state machine and gripper ABI"
   },
   "runtime_abi": {
-    "version": "2.35",
+    "version": "2.36",
     "capabilities": [
       "atomic_enable",
       "atomic_motor_power_batch",
@@ -53,6 +53,7 @@
       "product_temperature_state",
       "product_joint_angle_vel_limits",
       "product_speed_setting",
+      "product_max_speed_setting",
       "product_gripper_force_10_levels",
       "product_gripper_direct_mode",
       "unified_operation_health",
@@ -146,9 +147,9 @@
       "ArticoreRuntime.configure_mode(mode)",
       "ArticoreRuntime.clear_faults()",
       "ArticoreRuntime.set_zero()",
-      "ArticoreRuntime.set_speed(speed_percent)",
-      "ArticoreRuntime.get_speed()",
-      "ArticoreRuntime.set_joint_positions(positions, speed_percent=None)",
+      "ArticoreRuntime.set_max_speed(max_speed_percent)",
+      "ArticoreRuntime.get_max_speed()",
+      "ArticoreRuntime.set_joint_positions(positions, max_speed_percent=None)",
       "ArticoreRuntime.submit_mit_frame(positions, velocities, torques, kp, kd)",
       "ArticoreRuntime.submit_pv_frame(positions, velocity_limits)",
       "ArticoreRuntime.set_product_grippers(left, right, strength, mode)",
@@ -218,6 +219,8 @@
         "articore_runtime_set_joint_positions_v2",
         "articore_runtime_set_speed",
         "articore_runtime_get_speed",
+        "articore_runtime_set_max_speed",
+        "articore_runtime_get_max_speed",
         "articore_runtime_submit_mit_frame",
         "articore_runtime_submit_pv_frame",
         "articore_runtime_start_trajectory",
