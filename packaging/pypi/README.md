@@ -10,6 +10,11 @@ their `ctypes` declarations, value types and user-facing interfaces. In particul
 Articore-SDK locates this distribution through `importlib.metadata` and calls the stable native
 ABI without importing `motor_drive_layer`.
 
+Motor publishes one PyPI project and one version. Each release contains an
+x86_64 wheel and an aarch64 wheel under the same `motor-drive-layer` project;
+pip selects the matching platform artifact. Runtime, Motor and SocketCAN-FD
+are never split into separate PyPI distributions.
+
 The supported product entry point is `articore_runtime_create_yunyi(mode,
 with_grippers, runtime_out)`. Product clients do not pass a product identifier,
 Controller, Motor handle, mapping table, gripper profile, gravity binding, or
