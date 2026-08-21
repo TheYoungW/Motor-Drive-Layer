@@ -66,6 +66,21 @@ int32_t call(Function&& function) {
   }
 }
 
+ArticoreRuntime* create_yunyi_runtime_checked(
+    int32_t requested_mode, int32_t with_grippers) {
+  if (requested_mode != ARTICORE_MODE_PV &&
+      requested_mode != ARTICORE_MODE_MIT) {
+    throw std::invalid_argument("unsupported Yunyi control mode");
+  }
+  if (with_grippers != 0 && with_grippers != 1) {
+    throw std::invalid_argument("with_grippers must be 0 or 1");
+  }
+  auto bundle = articore::create_yunyi_runtime(
+      static_cast<ArticoreControlMode>(requested_mode), with_grippers != 0);
+  return new ArticoreRuntime(
+      std::move(bundle.runtime), std::move(bundle.resources), bundle.mode);
+}
+
 articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
   if (!runtime || !runtime->runtime) throw std::invalid_argument("runtime is null");
   return *runtime->runtime;
@@ -459,7 +474,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 39U;
+  return (2U << 16) | 40U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -635,24 +650,38 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_mode(
 
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_yunyi(
     int32_t requested_mode, int32_t with_grippers) {
-  if (requested_mode != ARTICORE_MODE_PV &&
-      requested_mode != ARTICORE_MODE_MIT) {
-    g_last_error = "unsupported Yunyi control mode";
-    return nullptr;
-  }
-  if (with_grippers != 0 && with_grippers != 1) {
-    g_last_error = "with_grippers must be 0 or 1";
-    return nullptr;
-  }
   try {
-    auto bundle = articore::create_yunyi_runtime(
-        static_cast<ArticoreControlMode>(requested_mode), with_grippers != 0);
+    auto* runtime = create_yunyi_runtime_checked(
+        requested_mode, with_grippers);
     g_last_error = "ok";
-    return new ArticoreRuntime(
-        std::move(bundle.runtime), std::move(bundle.resources), bundle.mode);
+    return runtime;
   } catch (const std::exception& error) {
     g_last_error = error.what();
     return nullptr;
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_create_yunyi_v2(
+    int32_t requested_mode, int32_t with_grippers,
+    ArticoreRuntime** runtime) {
+  if (!runtime) {
+    g_last_error = "runtime output is null";
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  }
+  *runtime = nullptr;
+  try {
+    *runtime = create_yunyi_runtime_checked(requested_mode, with_grippers);
+    g_last_error = "ok";
+    return ARTICORE_OPERATION_OK;
+  } catch (const std::invalid_argument& error) {
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_STATE;
+  } catch (...) {
+    g_last_error = "unknown Yunyi Runtime creation error";
+    return ARTICORE_OPERATION_INVALID_STATE;
   }
 }
 

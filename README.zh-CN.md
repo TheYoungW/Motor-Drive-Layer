@@ -368,6 +368,13 @@ ctest --test-dir builds/cmake/default --output-on-failure
 CI 还会验证 wheel 不含 Python 源码、唯一的产品 Runtime 动态库可加载，以及机器人模型不依赖
 Pinocchio 动态库。
 
+Runtime ABI 2.40 新增
+`articore_runtime_create_yunyi_v2(mode, with_grippers, runtime_out)`：函数返回稳定操作状态码，
+并通过输出指针写入 Runtime 句柄。ABI 2.39 已发布的
+`articore_runtime_create_yunyi(mode, with_grippers)` 永久保持“两参数、直接返回指针”，不会
+静默替换签名。SDK 只能在确认 ABI 不低于 2.40 且新符号存在后绑定 v2；bit 63 只表示 Runtime
+内部使用直接 C++ Motor core，不代表工厂函数调用约定。
+
 真机验收脚本位于 `scripts/`，必须先检查脚本，并显式提供电机映射和确认参数。
 
 ## 仓库结构

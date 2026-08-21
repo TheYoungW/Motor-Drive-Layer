@@ -38,13 +38,10 @@ class Runtime final {
  public:
   explicit Runtime(ArticoreControlMode mode = ARTICORE_MODE_MIT,
                    bool with_grippers = true) {
-    runtime_ = articore_runtime_create_yunyi(
-        static_cast<int32_t>(mode), with_grippers ? 1 : 0);
-    if (!runtime_) {
-      const char* reason = articore_runtime_last_error();
-      throw RuntimeError(std::string("create Yunyi Runtime failed: ") +
-                         (reason ? reason : "unknown Runtime error"));
-    }
+    detail::check(
+        articore_runtime_create_yunyi_v2(
+            static_cast<int32_t>(mode), with_grippers ? 1 : 0, &runtime_),
+        "create Yunyi Runtime");
   }
 
   ~Runtime() noexcept { release(); }

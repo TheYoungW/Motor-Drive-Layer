@@ -8,6 +8,14 @@
 
 int main() {
   const auto create_yunyi = &articore_runtime_create_yunyi;
+  const auto create_yunyi_v2 = &articore_runtime_create_yunyi_v2;
+  using CreateYunyiV1 = ArticoreRuntime* (*)(int32_t, int32_t);
+  using CreateYunyiV2 = int32_t (*)(
+      int32_t, int32_t, ArticoreRuntime**);
+  static_assert(std::is_same_v<
+      std::remove_cv_t<decltype(create_yunyi)>, CreateYunyiV1>);
+  static_assert(std::is_same_v<
+      std::remove_cv_t<decltype(create_yunyi_v2)>, CreateYunyiV2>);
   const auto configure_mode = &articore_runtime_configure_mode;
   const auto clear_faults = &articore_runtime_clear_faults;
   const auto set_zero = &articore_runtime_set_zero;
@@ -296,7 +304,27 @@ int main() {
       std::strcmp(
           articore_runtime_last_error(),
           "Cartesian interpolation must be POINT_TO_POINT or LINEAR") == 0;
-  if (!create_yunyi ||
+  ArticoreRuntime* invalid_created_runtime =
+      reinterpret_cast<ArticoreRuntime*>(static_cast<uintptr_t>(1));
+  const bool factory_v2_validation_checked =
+      articore_runtime_create_yunyi_v2(
+          ARTICORE_MODE_PV, 1, nullptr) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(),
+                  "runtime output is null") == 0 &&
+      articore_runtime_create_yunyi_v2(
+          99, 1, &invalid_created_runtime) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      invalid_created_runtime == nullptr &&
+      std::strcmp(articore_runtime_last_error(),
+                  "unsupported Yunyi control mode") == 0 &&
+      articore_runtime_create_yunyi_v2(
+          ARTICORE_MODE_PV, 2, &invalid_created_runtime) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      invalid_created_runtime == nullptr &&
+      std::strcmp(articore_runtime_last_error(),
+                  "with_grippers must be 0 or 1") == 0;
+  if (!create_yunyi || !create_yunyi_v2 ||
       !configure_mode || !clear_faults || !set_zero || !disconnect ||
       !product_positions || !product_positions_v2 ||
       !set_product_speed || !get_product_speed ||
@@ -324,13 +352,14 @@ int main() {
       !gravity_status || !health_v2 || !estop ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x00020027U ||
+      version != 0x00020028U ||
       (capabilities & required_with_circular) != required_with_circular ||
       !product_gripper_levels_valid ||
       !product_gripper_direct_valid ||
       !state_v3_size_checked || !state_v3_runtime_checked ||
       !joint_limits_size_checked || !joint_limits_runtime_checked ||
       !product_speed_validation_checked ||
+      !factory_v2_validation_checked ||
       !invalid_cartesian_interpolation_rejected ||
       (capabilities & removed_trajectory_bits) != 0 ||
       (capabilities & removed_public_rate_bits) != 0) {

@@ -971,8 +971,12 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_mode(
     ArticoreRuntime* runtime, int32_t* mode);
 
 /* Product lifecycle. Runtime owns both SocketCAN-FD channels and all Motors. */
+/* ABI 2.39 compatibility entry point: two arguments, pointer return. */
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_yunyi(
     int32_t mode, int32_t with_grippers);
+/* ABI 2.40 entry point: three arguments, status return and output handle. */
+ARTICORE_RUNTIME_API int32_t articore_runtime_create_yunyi_v2(
+    int32_t mode, int32_t with_grippers, ArticoreRuntime** runtime);
 ARTICORE_RUNTIME_API void articore_runtime_free(ArticoreRuntime* runtime);
 
 /* Pre-connect only; identities must cover every installed Motor. */
