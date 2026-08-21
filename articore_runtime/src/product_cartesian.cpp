@@ -445,7 +445,7 @@ NativeCartesianPlan build_circular_plan_common(
         actual_start_orientation, declared_start_orientation);
     if (position_error > 0.005 || orientation_error > 0.035) {
       throw std::invalid_argument(
-          "circular start pose does not match the current planned flange pose");
+          "circular start pose does not match the current planned end-effector pose");
     }
   }
   const auto& geometric_start = declared_start ? *declared_start : actual_start;

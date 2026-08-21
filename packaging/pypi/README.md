@@ -98,6 +98,11 @@ maximum speed. New SDKs bind `articore_runtime_set_max_speed()` and
 `get_max_speed()`. The 2.35 `set_speed/get_speed` symbols remain binary
 compatibility aliases; all values and behavior are unchanged.
 
+Version 0.10.37 / Runtime ABI 2.37 defines the existing product pose as the
+single active Cartesian control point. With grippers, native FK/IK and all
+Cartesian planners use the fixed `l-tool0` / `r-tool0` gripper center; without
+grippers they continue to use link7. No extra public flange-pose API is added.
+
 The required Pinocchio C++ template implementations are compiled into
 `libarticore_runtime.so` with hidden visibility. The installed runtime has no dynamic dependency
 on Pinocchio or Boost, so a ROS 2 `LD_LIBRARY_PATH` cannot substitute an incompatible robotics

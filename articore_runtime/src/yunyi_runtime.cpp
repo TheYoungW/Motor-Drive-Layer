@@ -210,7 +210,7 @@ YunyiRuntimeBundle create_yunyi_runtime(
   resources->with_grippers = with_grippers;
   for (uint32_t side = 0; side < 2; ++side) {
     resources->pose_models[side] =
-        std::make_unique<RobotModel>(kProductId, side);
+        std::make_unique<RobotModel>(kProductId, side, with_grippers);
     resources->controllers[side] =
         motor_controller_new_socketcanfd_ex(kChannels[side], 1);
     if (!resources->controllers[side]) {

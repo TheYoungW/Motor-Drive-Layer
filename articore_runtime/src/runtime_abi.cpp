@@ -459,7 +459,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 36U;
+  return (2U << 16) | 37U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -515,7 +515,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_LATCHED_ESTOP_POSITION_HOLD |
          ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS |
          ARTICORE_CAP_PRODUCT_SPEED_SETTING |
-         ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING;
+         ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING |
+         ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE;
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(

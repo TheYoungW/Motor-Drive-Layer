@@ -11,7 +11,8 @@ namespace articore {
 
 class RobotModel final {
  public:
-  RobotModel(std::string product_id, uint32_t side);
+  RobotModel(std::string product_id, uint32_t side,
+             bool use_gripper_tool_frame = false);
   ~RobotModel();
   RobotModel(const RobotModel&) = delete;
   RobotModel& operator=(const RobotModel&) = delete;

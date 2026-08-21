@@ -113,8 +113,8 @@ enum ArticoreRuntimeCapability {
   // Every operation confirms the resulting state from fresh feedback; a
   // Runtime with only some motors enabled is explicitly non-commandable.
   ARTICORE_CAP_RUNTIME_MOTOR_POWER = 1ULL << 39,
-  // ABI 2.15 exposes a coherent product-arm flange pose computed in C++ from
-  // the latest native feedback cache. No Python-side URDF/FK is involved.
+  // ABI 2.15 exposes a coherent product-arm pose computed in C++ from the
+  // latest native feedback cache. ABI 2.37 defines its active tool/link frame.
   ARTICORE_CAP_PRODUCT_POSE = 1ULL << 40,
   // ABI 2.16 makes emergency stop a parameterless Runtime-owned transaction.
   // It records a standard health reason, is idempotent, and can only be
@@ -198,6 +198,11 @@ enum ArticoreRuntimeCapability {
   // instantaneous target velocity. ABI 2.35 symbols remain compatibility
   // aliases.
   ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING = 1ULL << 60,
+  // ABI 2.37 defines the single public product pose as the active physical
+  // control point. A Yunyi Runtime with grippers uses the fixed l/r-tool0
+  // gripper-center frame; a gripperless Runtime uses l/r-link7. FK, IK, PTP,
+  // linear and circular motion all share this exact frame selection.
+  ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE = 1ULL << 61,
 };
 
 enum {
@@ -1335,14 +1340,14 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_cartesian_motion(
     ArticoreRuntime* runtime);
 // ABI 2.30 PV-only three-pose circular motion. Every pose is
 // [x,y,z,roll,pitch,yaw]. XYZ defines the unique arc from start through via to
-// end. The declared start must match the current planned flange pose; it is
+// end. The declared start must match the current planned end-effector pose; it is
 // never used as a teleport target. Orientation uses shortest-path quaternion
 // SLERP from start to via and from via to end.
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* via_pose, const float* end_pose, float speed_percent,
     uint64_t* motion_id);
-// ABI 2.31 circular motion whose start is the Runtime-owned planned flange
+// ABI 2.31 circular motion whose start is the Runtime-owned planned end-effector
 // pose. Reading that reference and installing the replacement are one native
 // command transaction. The old three-pose entry point remains ABI-compatible.
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular_v2(
@@ -1382,8 +1387,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_state_v3(
 // no CAN I/O, does not require a connected Runtime, and never includes grippers.
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_joint_angle_vel_limits(
     ArticoreRuntime* runtime, ArticoreProductJointAngleVelLimits* limits);
-// Computes one arm's flange pose from the latest complete native feedback
-// cache. This call performs no CAN I/O and is suitable for high-rate reads.
+// Computes one arm's active product-control pose from the latest complete
+// native feedback cache. With grippers this is l/r-tool0 at the gripper
+// center; without grippers it is l/r-link7. This call performs no CAN I/O and
+// is suitable for high-rate reads.
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_pose(
     ArticoreRuntime* runtime, uint32_t side, ArticoreProductPose* pose);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_last_connect_report(

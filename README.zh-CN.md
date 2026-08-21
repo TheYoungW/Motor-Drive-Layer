@@ -325,6 +325,11 @@ Runtime ABI 2.36 将该设置的正式名称修正为“普通运动最大速度
 `articore_runtime_get_max_speed()`。范围、默认值、物理映射和动态生效行为不变。ABI 2.35 的
 `set_speed/get_speed` 符号保留为兼容别名，新 SDK 应只公开 `set_max_speed/get_max_speed`。
 
+Runtime ABI 2.37 新增 `ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE`，并将现有产品位姿统一定义为
+实际笛卡尔控制点。有夹爪时，原生 FK、IK、点到点、直线和圆弧运动统一使用位于夹爪中心的
+`l-tool0/r-tool0`；无夹爪时继续使用 `l-link7/r-link7`。公开接口仍然只有 `get_pose()`，
+没有增加单独的法兰位姿方法。
+
 ## 安全
 
 电机控制可能造成意外运动和人身伤害。测试时必须支撑机构、准备独立急停、确认通道/ID/型号/

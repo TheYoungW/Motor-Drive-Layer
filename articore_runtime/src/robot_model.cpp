@@ -28,6 +28,12 @@ namespace {
 
 constexpr uint32_t kDof = 7;
 
+// Fixed Yunyi gripper-center control frame relative to link7. This is the
+// midpoint of the two gripper slide origins in the product URDF. Products
+// without grippers use link7 directly (an identity tool transform).
+constexpr std::array<double, 3> kGripperToolTranslation = {
+    -0.004, 0.0, -0.178};
+
 struct JointSpec {
   std::array<double, 3> axis;
   std::array<double, 3> translation;
@@ -114,10 +120,15 @@ struct RobotModel::Impl {
   pinocchio::Model model;
   std::unique_ptr<pinocchio::Data> realtime_data;
   pinocchio::JointIndex end_joint = 0;
+  pinocchio::FrameIndex end_frame = 0;
+  pinocchio::SE3 end_placement = pinocchio::SE3::Identity();
+  bool uses_gripper_tool_frame = false;
 
-  Impl(std::string product, uint32_t selected_side)
+  Impl(std::string product, uint32_t selected_side,
+       bool use_gripper_tool_frame)
       : product_id(std::move(product)), side(selected_side),
-        prefix(side == ARTICORE_ROBOT_LEFT ? "l" : "r") {
+        prefix(side == ARTICORE_ROBOT_LEFT ? "l" : "r"),
+        uses_gripper_tool_frame(use_gripper_tool_frame) {
     if (product_id != "yunyi_v1_0") {
       throw std::invalid_argument("unsupported robot product_id: " + product_id);
     }
@@ -147,6 +158,14 @@ struct RobotModel::Impl {
       parent = joint;
     }
     end_joint = parent;
+    if (uses_gripper_tool_frame) {
+      end_placement.translation() = Eigen::Vector3d(
+          kGripperToolTranslation[0], kGripperToolTranslation[1],
+          kGripperToolTranslation[2]);
+    }
+    end_frame = model.addFrame(pinocchio::Frame(
+        prefix + (uses_gripper_tool_frame ? "-tool0" : "-link7"),
+        end_joint, end_placement, pinocchio::OP_FRAME));
     model.gravity.linear() = Eigen::Vector3d(0, 0, -9.81);
     realtime_data = std::make_unique<pinocchio::Data>(model);
   }
@@ -162,8 +181,10 @@ struct RobotModel::Impl {
   }
 };
 
-RobotModel::RobotModel(std::string product_id, uint32_t side)
-    : impl_(std::make_unique<Impl>(std::move(product_id), side)) {}
+RobotModel::RobotModel(std::string product_id, uint32_t side,
+                       bool use_gripper_tool_frame)
+    : impl_(std::make_unique<Impl>(
+          std::move(product_id), side, use_gripper_tool_frame)) {}
 RobotModel::~RobotModel() = default;
 
 void RobotModel::get_info(ArticoreRobotModelInfo* info) const {
@@ -177,7 +198,8 @@ void RobotModel::get_info(ArticoreRobotModelInfo* info) const {
   info->side = impl_->side;
   copy_string(info->product_id, sizeof(info->product_id), impl_->product_id);
   copy_string(info->end_effector_frame, sizeof(info->end_effector_frame),
-              impl_->prefix + "-link7");
+              impl_->prefix +
+                  (impl_->uses_gripper_tool_frame ? "-tool0" : "-link7"));
   for (uint32_t i = 0; i < kDof; ++i) {
     copy_string(info->joint_names[i], sizeof(info->joint_names[i]),
                 impl_->prefix + "-joint" + std::to_string(i + 1));
@@ -193,7 +215,8 @@ void RobotModel::fk(const double* q, uint32_t count, ArticoreRobotPose* pose) co
   const auto configuration = impl_->vector(q, count, "q");
   pinocchio::Data data(impl_->model);
   pinocchio::forwardKinematics(impl_->model, data, configuration);
-  const auto& transform = data.oMi[impl_->end_joint];
+  const pinocchio::SE3 transform =
+      data.oMi[impl_->end_joint] * impl_->end_placement;
   for (int i = 0; i < 3; ++i) pose->position[i] = transform.translation()[i];
   const Eigen::Matrix<double, 3, 3, Eigen::RowMajor> rotation = transform.rotation();
   std::copy(rotation.data(), rotation.data() + 9, pose->rotation);
@@ -213,10 +236,10 @@ void RobotModel::jacobian(const double* q, uint32_t count, uint32_t reference,
     default: throw std::invalid_argument("unknown Jacobian reference frame");
   }
   pinocchio::Data data(impl_->model);
-  pinocchio::computeJointJacobians(impl_->model, data, configuration);
   Eigen::Matrix<double, 6, Eigen::Dynamic> jacobian(6, kDof);
   jacobian.setZero();
-  pinocchio::getJointJacobian(impl_->model, data, impl_->end_joint, frame, jacobian);
+  pinocchio::computeFrameJacobian(
+      impl_->model, data, configuration, impl_->end_frame, frame, jacobian);
   Eigen::Map<Eigen::Matrix<double, 6, kDof, Eigen::RowMajor>> mapped(output);
   mapped = jacobian;
 }
@@ -320,7 +343,10 @@ void RobotModel::ik(const ArticoreRobotPose* target, const double* initial_q,
       rotation.determinant() <= 0.0) {
     throw std::invalid_argument("IK target must contain a finite proper rotation");
   }
-  const pinocchio::SE3 desired(rotation, translation);
+  // Keep the iterative solve at joint7. A gripper product converts its public
+  // tool-center target into the equivalent link7 target first.
+  const pinocchio::SE3 desired =
+      pinocchio::SE3(rotation, translation) * impl_->end_placement.inverse();
   Eigen::VectorXd seed = impl_->vector(initial_q, initial_q_count, "initial_q");
   struct Attempt { Eigen::VectorXd q; double error; uint32_t iterations; bool success; };
   auto solve = [&](Eigen::VectorXd q) {

@@ -4388,6 +4388,80 @@ void test_product_cartesian_endpoint_ik_search_is_global_and_deterministic() {
           "fixed-seed endpoint IK returns the same solution on repeated calls");
 }
 
+void test_product_pose_selects_gripper_tool_center() {
+  constexpr std::array<double, 3> tool_offset{-0.004, 0.0, -0.178};
+  const std::array<double, ARTICORE_PRODUCT_ARM_DOF> q{
+      0.2, 0.1, -0.25, 0.35, -0.15, 0.2, -0.1};
+
+  for (const uint32_t side : {ARTICORE_ROBOT_LEFT, ARTICORE_ROBOT_RIGHT}) {
+    articore::RobotModel flange_model("yunyi_v1_0", side);
+    articore::RobotModel tool_model("yunyi_v1_0", side, true);
+    ArticoreRobotPose flange{};
+    flange.struct_size = sizeof(flange);
+    ArticoreRobotPose tool{};
+    tool.struct_size = sizeof(tool);
+    flange_model.fk(q.data(), q.size(), &flange);
+    tool_model.fk(q.data(), q.size(), &tool);
+
+    for (uint32_t row = 0; row < 3; ++row) {
+      double expected = flange.position[row];
+      for (uint32_t column = 0; column < 3; ++column) {
+        expected += flange.rotation[row * 3 + column] * tool_offset[column];
+      }
+      require(std::abs(tool.position[row] - expected) < 1e-12,
+              "gripper product FK applies the fixed link7-to-tool0 offset");
+    }
+    require(std::equal(
+                std::begin(flange.rotation), std::end(flange.rotation),
+                std::begin(tool.rotation), [](double lhs, double rhs) {
+                  return std::abs(lhs - rhs) < 1e-12;
+                }),
+            "tool0 preserves the calibrated link7 orientation");
+
+    ArticoreRobotModelInfo flange_info{};
+    flange_info.struct_size = sizeof(flange_info);
+    flange_model.get_info(&flange_info);
+    ArticoreRobotModelInfo tool_info{};
+    tool_info.struct_size = sizeof(tool_info);
+    tool_model.get_info(&tool_info);
+    const std::string prefix =
+        side == ARTICORE_ROBOT_LEFT ? "l" : "r";
+    require(std::string(flange_info.end_effector_frame) == prefix + "-link7" &&
+                std::string(tool_info.end_effector_frame) == prefix + "-tool0",
+            "product topology selects link7 without grippers and tool0 with grippers");
+
+    ArticoreIkOptions options{};
+    options.struct_size = sizeof(options);
+    ArticoreIkResult result{};
+    result.struct_size = sizeof(result);
+    tool_model.ik(&tool, q.data(), q.size(), &options, &result);
+    require(result.success && result.error_norm < 1e-12,
+            "tool-center IK uses the same frame as tool-center FK");
+
+    std::array<double, 6 * ARTICORE_PRODUCT_ARM_DOF> jacobian{};
+    tool_model.jacobian(
+        q.data(), q.size(), ARTICORE_JACOBIAN_LOCAL_WORLD_ALIGNED,
+        jacobian.data(), jacobian.size());
+    constexpr double epsilon = 1e-7;
+    for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+      auto displaced_q = q;
+      displaced_q[joint] += epsilon;
+      ArticoreRobotPose displaced{};
+      displaced.struct_size = sizeof(displaced);
+      tool_model.fk(
+          displaced_q.data(), displaced_q.size(), &displaced);
+      for (uint32_t axis = 0; axis < 3; ++axis) {
+        const double numerical =
+            (displaced.position[axis] - tool.position[axis]) / epsilon;
+        require(std::abs(
+                    jacobian[axis * ARTICORE_PRODUCT_ARM_DOF + joint] -
+                    numerical) < 1e-6,
+                "tool-center Jacobian includes the fixed TCP lever arm");
+      }
+    }
+  }
+}
+
 void test_cartesian_linear_samples_support_continuous_native_ik() {
   articore::RobotModel model("yunyi_v1_0", ARTICORE_ROBOT_LEFT);
   std::array<double, ARTICORE_PRODUCT_ARM_DOF> start_q{};
@@ -4779,6 +4853,7 @@ int main() {
     RUN_TEST(test_native_point_target_replacement_is_validated_and_atomic);
     RUN_TEST(test_cartesian_linear_math_uses_straight_xyz_and_shortest_slerp);
     RUN_TEST(test_product_cartesian_endpoint_ik_search_is_global_and_deterministic);
+    RUN_TEST(test_product_pose_selects_gripper_tool_center);
     RUN_TEST(test_cartesian_linear_samples_support_continuous_native_ik);
     RUN_TEST(test_three_point_circular_arc_geometry_and_degenerate_rejection);
     RUN_TEST(test_product_cartesian_motion_is_pv_only);

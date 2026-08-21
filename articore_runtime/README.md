@@ -313,10 +313,10 @@ whole-product `enable()` transaction establishes an initial position hold.
 
 Runtime ABI 2.15 adds `articore_runtime_get_pose()`. It reads one coherent
 seven-joint sample from the native feedback cache and computes the selected
-left/right flange pose with the product-owned Pinocchio model. The fixed output
+left/right product pose with the product-owned Pinocchio model. The fixed output
 is `[x, y, z, roll, pitch, yaw]` in metres/radians plus the oldest contributing
-feedback timestamp and sequence. The getter sends no CAN frames and does not
-apply an unavailable TCP offset.
+feedback timestamp and sequence. The getter sends no CAN frames. ABI 2.37
+defines whether this pose is the gripper-center tool frame or link7.
 
 Runtime ABI 2.16 makes `articore_runtime_estop()` parameterless, records the
 standard emergency-stop reason in health, and latches until an explicit
@@ -444,7 +444,7 @@ Runtime ABI 2.30 adds `ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR` and
 `articore_runtime_move_circular()`. Callers provide three complete
 `[x,y,z,roll,pitch,yaw]` poses. Their XYZ values define the unique arc from
 start through via to end; duplicate or collinear points are rejected. The
-declared start must match the current planned flange pose within 5 mm and
+declared start must match the current planned end-effector pose within 5 mm and
 0.035 rad and is never treated as a teleport target. Orientation passes through
 all three declared attitudes using shortest-path quaternion SLERP on the two
 arc portions. The complete sampled arc receives the same sequential IK,
@@ -510,6 +510,13 @@ the canonical API. The 0..100 scale, default 70, 5 rad/s maximum, and live
 ordinary-reference update semantics are unchanged. ABI 2.35
 `set_speed/get_speed` remain exported compatibility aliases; new bindings
 should expose only the max-speed names.
+
+Runtime ABI 2.37 adds `ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE` and makes the
+existing product pose the single active Cartesian control point. A Yunyi
+Runtime created with grippers uses `l-tool0` / `r-tool0`, fixed at
+`[-0.004, 0, -0.178]` metres from link7; a gripperless Runtime uses link7
+directly. `get_pose()`, endpoint IK, point-to-point, linear and circular motion
+all use the same selection. No additional public flange-pose getter is added.
 
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations
