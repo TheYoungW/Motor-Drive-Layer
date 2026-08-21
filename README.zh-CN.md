@@ -330,6 +330,18 @@ Runtime ABI 2.37 新增 `ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE`，并将现有�
 `l-tool0/r-tool0`；无夹爪时继续使用 `l-link7/r-link7`。公开接口仍然只有 `get_pose()`，
 没有增加单独的法兰位姿方法。
 
+Runtime ABI 2.38 新增 `ARTICORE_CAP_PV_MAX_SPEED_ONLY`。产品 SDK 的普通 PV 控制只保留
+`set_max_speed(0..100)` 与不带速度参数的位置命令；默认最大速度仍为 70，Runtime 在原生周期
+内按该上限逐步推进 reference。每次位置命令单独传速度以及 Raw PV 直发不再属于产品 SDK
+接口。该最大速度设置只属于 PV；MIT 继续使用原有的逐命令速度、Raw 目标、Kp/Kd 和前馈
+力矩逻辑，不受影响。旧 C ABI 符号只为已发布客户端保留二进制兼容，新绑定不得继续公开。
+
+motor-drive-layer 0.10.39 修复 Yunyi 原生 PV 笛卡尔运动的终点保持抖动。Runtime 保持
+0.02 rad / 0.05 rad/s 的公开到位窗口，但会先以低速继续收敛，并对笛卡尔终点执行
+2.5 mm / 0.01 rad 的原生 FK 核验；核验通过后安装持续发送的零速最终位置帧，再用 200 ms
+新鲜反馈确认稳定。`COMPLETED` 后仍持续监控反馈，持续失稳会重新进入等待稳定状态并写入
+health。该修复不修改电机 Flash、零点或 PV 固件增益，也没有在五次轨迹上叠加普通步进器。
+
 ## 安全
 
 电机控制可能造成意外运动和人身伤害。测试时必须支撑机构、准备独立急停、确认通道/ID/型号/

@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -20,6 +21,14 @@
 #include "robot_model.hpp"
 
 namespace articore {
+
+// Damiao POS_VEL interprets the second float as a motion speed limit. Once the
+// final position has physically arrived, zero keeps the position target armed
+// without asking the drive to keep making finite-speed corrections around the
+// target. The normal trajectory limit is restored automatically if feedback
+// leaves the arrival window.
+inline constexpr float kNativePvFinalHoldVelocityLimit = 0.0f;
+inline constexpr float kNativePvSettlingVelocityLimit = 0.05f;
 
 struct NativeTrajectoryJoint {
   void* motor = nullptr;
@@ -36,6 +45,9 @@ struct NativeTrajectoryJoint {
   float mit_kd = 0.0f;
   float mit_feedforward_torque = 0.0f;
   float pv_velocity_limit = 0.0f;
+  // PV trajectories use their normal limit while moving, then switch to this
+  // lower limit for the final stationary hold.
+  float pv_hold_velocity_limit = 0.0f;
 };
 
 struct NativeTrajectoryWaypoint {
@@ -52,6 +64,10 @@ struct NativeTrajectoryRequest {
   ArticoreRuntimeOperation operation = ARTICORE_OPERATION_START_TRAJECTORY;
   std::vector<NativeTrajectoryJoint> joints;
   std::vector<NativeTrajectoryWaypoint> waypoints;
+  // Product-owned optional endpoint verification. The callback receives one
+  // coherent logical-joint snapshot and must not retain it.
+  std::function<bool(const std::vector<float>&, std::string&)>
+      final_convergence_check;
 };
 
 struct NativeTrajectorySample {
@@ -340,12 +356,20 @@ class SafetyRuntime {
     double duration_s = 0.0;
     Clock::time_point started_at{};
     Clock::time_point settling_started_at{};
+    Clock::time_point settling_stable_started_at{};
+    Clock::time_point hold_unstable_started_at{};
     ArticoreRuntimeOperation operation = ARTICORE_OPERATION_START_TRAJECTORY;
     std::vector<NativeTrajectoryJoint> joints;
     std::vector<TrajectorySegment> segments;
+    std::function<bool(const std::vector<float>&, std::string&)>
+        final_convergence_check;
     std::vector<uint64_t> settling_feedback_updates;
+    std::vector<float> settling_position_min;
+    std::vector<float> settling_position_max;
     uint32_t settled_feedback_samples = 0;
     bool settling_feedback_initialized = false;
+    bool stationary_hold_active = false;
+    bool final_hold_limit_active = false;
     std::string error;
   };
 

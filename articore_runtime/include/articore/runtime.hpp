@@ -140,11 +140,19 @@ class Runtime final {
     return result;
   }
 
-  [[deprecated("use set_max_speed()")]]
-  void set_speed(float speed_percent) { set_max_speed(speed_percent); }
+  [[deprecated("legacy ordinary-motion compatibility API")]]
+  void set_speed(float speed_percent) {
+    detail::check(
+        articore_runtime_set_speed(checked(), speed_percent), "set_speed");
+  }
 
-  [[deprecated("use get_max_speed()")]]
-  float get_speed() const { return get_max_speed(); }
+  [[deprecated("legacy ordinary-motion compatibility API")]]
+  float get_speed() const {
+    float result = 0.0f;
+    detail::check(
+        articore_runtime_get_speed(checked(), &result), "get_speed");
+    return result;
+  }
 
   void set_joint_positions(const std::vector<float>& positions) {
     detail::check(
@@ -173,15 +181,6 @@ class Runtime final {
             feedforward_torques.data(), kp.data(), kd.data(),
             detail::size(positions)),
         "submit_mit_frame");
-  }
-
-  void submit_pv_frame(const std::vector<float>& positions,
-                       const std::vector<float>& velocity_limits) {
-    detail::check(
-        articore_runtime_submit_pv_frame(
-            checked(), positions.data(), velocity_limits.data(),
-            detail::size(positions)),
-        "submit_pv_frame");
   }
 
   void start_trajectory(

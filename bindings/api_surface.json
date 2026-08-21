@@ -1,14 +1,14 @@
 {
   "schema": 1,
   "package": "motor_drive_layer_native",
-  "version": "0.10.37",
+  "version": "0.10.39",
   "purpose": "Canonical native ABI surface and external SDK binding contract.",
   "native_libraries": {
     "motor_abi": "generic transport, protocol, controller and motor ABI",
     "articore_runtime": "product watchdog, safety state machine and gripper ABI"
   },
   "runtime_abi": {
-    "version": "2.37",
+    "version": "2.38",
     "capabilities": [
       "atomic_enable",
       "atomic_motor_power_batch",
@@ -45,6 +45,7 @@
       "product_state",
       "product_pose",
       "product_tool_center_pose",
+      "pv_max_speed_only",
       "product_power_state_snapshot",
       "product_quintic_trajectory",
       "product_cartesian_point_to_point",
@@ -150,9 +151,9 @@
       "ArticoreRuntime.set_zero()",
       "ArticoreRuntime.set_max_speed(max_speed_percent)",
       "ArticoreRuntime.get_max_speed()",
-      "ArticoreRuntime.set_joint_positions(positions, max_speed_percent=None)",
+      "ArticoreRuntime.set_joint_positions(positions)",
+      "ArticoreRuntime.set_joint_positions(positions, speed_percent) [MIT]",
       "ArticoreRuntime.submit_mit_frame(positions, velocities, torques, kp, kd)",
-      "ArticoreRuntime.submit_pv_frame(positions, velocity_limits)",
       "ArticoreRuntime.set_product_grippers(left, right, strength, mode)",
       "ArticoreRuntime.has_grippers",
       "ArticoreRuntime.state",

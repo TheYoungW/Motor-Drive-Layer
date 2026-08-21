@@ -203,6 +203,12 @@ enum ArticoreRuntimeCapability {
   // gripper-center frame; a gripperless Runtime uses l/r-link7. FK, IK, PTP,
   // linear and circular motion all share this exact frame selection.
   ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE = 1ULL << 61,
+  // ABI 2.38 defines one public ordinary-PV path: set_max_speed(0..100)
+  // configures the persistent product-owned step limit and the position
+  // command carries positions only. Explicit-speed and raw-PV C symbols stay
+  // exported solely for binary compatibility and must not be exposed by new
+  // product SDKs. MIT ordinary and raw command semantics are unchanged.
+  ARTICORE_CAP_PV_MAX_SPEED_ONLY = 1ULL << 62,
 };
 
 enum {
@@ -1258,11 +1264,13 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_clear_faults(
     ArticoreRuntime* runtime);
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(
     ArticoreRuntime* runtime);
-// ABI 2.10 whole-product logical-coordinate APIs. All arrays use fixed product
+// ABI 2.10 compatibility entry point. All arrays use fixed product
 // order: left joint1..7, then right joint1..7. Direction conversion, product
 // limits, Motor mapping, and per-Motor command construction remain native.
 // speed_percent is inclusive 0..100. 0 pauses reference advancement and 100
 // selects the product's maximum ordinary speed for the active control mode.
+// ABI 2.38 product bindings must use set_max_speed() plus the v2 position
+// command instead of exposing this per-call speed parameter.
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
     float speed_percent);
@@ -1275,21 +1283,25 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_speed(
     ArticoreRuntime* runtime, float speed_percent);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_speed(
     ArticoreRuntime* runtime, float* speed_percent);
-// ABI 2.36 preferred names. max_speed_percent is the persistent upper bound
-// used while advancing ordinary MIT/PV position references. The inclusive
-// 0..100 scale, default 70, and 5 rad/s physical maximum are unchanged.
+// ABI 2.38 PV-only names. max_speed_percent is the persistent upper bound used
+// while advancing ordinary PV position references. The inclusive 0..100
+// scale, default 70, and 5 rad/s physical maximum are unchanged. MIT continues
+// to use its per-command ordinary speed or explicit raw frame parameters.
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
     ArticoreRuntime* runtime, float max_speed_percent);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(
     ArticoreRuntime* runtime, float* max_speed_percent);
-// Uses the current persistent speed setting atomically. The legacy function
-// above remains available for callers that need a one-command explicit speed.
+// Canonical ordinary MIT/PV position command. It always uses the current
+// persistent max-speed setting and advances the reference inside Runtime.
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions_v2(
     ArticoreRuntime* runtime, const float* positions, uint32_t count);
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
     ArticoreRuntime* runtime, const float* positions,
     const float* velocities, const float* feedforward_torques,
     const float* kp, const float* kd, uint32_t count);
+// ABI compatibility only. ABI 2.38 product bindings must not expose raw PV;
+// native trajectory and Cartesian implementations may still use raw PV
+// internally after completing their own validation and interpolation.
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pv_frame(
     ArticoreRuntime* runtime, const float* positions,
     const float* velocity_limits, uint32_t count);

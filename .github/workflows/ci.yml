@@ -69,7 +69,7 @@ jobs:
           import importlib.util
           from importlib.metadata import distribution, version
 
-          assert version("motor-drive-layer") == "0.10.26"
+          assert version("motor-drive-layer") == "0.10.39"
           assert importlib.util.find_spec("motor_drive_layer") is None
           dist = distribution("motor-drive-layer")
           files = {str(item): dist.locate_file(item) for item in dist.files or ()}
@@ -80,9 +80,10 @@ jobs:
           assert motor_lib.motor_abi_version() == b"0.5.0-cpp"
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00020017
+          assert runtime_lib.articore_runtime_abi_version() == 0x00020026
           runtime_lib.articore_runtime_capabilities.restype = ctypes.c_uint64
           capabilities = runtime_lib.articore_runtime_capabilities()
+          assert capabilities & (1 << 62)
           assert capabilities & ((1 << 23) | (1 << 27)) == 0
           assert not hasattr(runtime_lib, "articore_runtime_get_control_hz")
           runtime_lib.articore_robot_model_create.argtypes = [ctypes.c_char_p, ctypes.c_uint32]

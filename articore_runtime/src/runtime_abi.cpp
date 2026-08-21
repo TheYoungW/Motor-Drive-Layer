@@ -459,7 +459,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 37U;
+  return (2U << 16) | 38U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -516,7 +516,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS |
          ARTICORE_CAP_PRODUCT_SPEED_SETTING |
          ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING |
-         ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE;
+         ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE |
+         ARTICORE_CAP_PV_MAX_SPEED_ONLY;
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -951,6 +952,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
           "ordinary maximum speed must be finite and within 0..100");
     }
     checked_yunyi(runtime);
+    if (runtime->product_mode != ARTICORE_MODE_PV) {
+      throw std::runtime_error(
+          "maximum speed setting is available only in product PV mode");
+    }
     std::lock_guard<std::mutex> lock(runtime->product_speed_mutex);
     checked(runtime).update_joint_position_velocity(
         articore::kYunyiOrdinaryMaximumVelocity *
@@ -975,6 +980,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(
   }
   try {
     checked_yunyi(runtime);
+    if (runtime->product_mode != ARTICORE_MODE_PV) {
+      throw std::runtime_error(
+          "maximum speed setting is available only in product PV mode");
+    }
     std::lock_guard<std::mutex> lock(runtime->product_speed_mutex);
     *max_speed_percent = runtime->product_max_speed_percent;
     g_last_error = "ok";
@@ -987,12 +996,44 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_speed(
     ArticoreRuntime* runtime, float speed_percent) {
-  return articore_runtime_set_max_speed(runtime, speed_percent);
+  try {
+    if (!std::isfinite(speed_percent) || speed_percent < 0.0f ||
+        speed_percent > 100.0f) {
+      throw std::invalid_argument(
+          "ordinary speed must be finite and within 0..100");
+    }
+    checked_yunyi(runtime);
+    std::lock_guard<std::mutex> lock(runtime->product_speed_mutex);
+    checked(runtime).update_joint_position_velocity(
+        articore::kYunyiOrdinaryMaximumVelocity * speed_percent / 100.0f);
+    runtime->product_max_speed_percent = speed_percent;
+    g_last_error = "ok";
+    return 0;
+  } catch (const std::invalid_argument& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
+  } catch (const std::exception& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_STATE, error.what());
+  }
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_speed(
     ArticoreRuntime* runtime, float* speed_percent) {
-  return articore_runtime_get_max_speed(runtime, speed_percent);
+  if (!speed_percent) {
+    g_last_error = "speed_percent output is null";
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  }
+  try {
+    checked_yunyi(runtime);
+    std::lock_guard<std::mutex> lock(runtime->product_speed_mutex);
+    *speed_percent = runtime->product_max_speed_percent;
+    g_last_error = "ok";
+    return 0;
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  }
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions_v2(

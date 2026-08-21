@@ -104,6 +104,10 @@ struct FakeDriver {
   bool transport_connected[2]{true, true};
   bool transport_healthy[2]{true, true};
   bool emulate_arm_feedback = false;
+  uint32_t emulated_pv_feedback_period = 1;
+  uint64_t emulated_pv_send_count = 0;
+  float emulated_pv_position_offset = 0.0f;
+  float emulated_pv_velocity = 0.0f;
   std::string error = "injected failure";
 };
 
@@ -136,11 +140,16 @@ int32_t send_pv(void*, const ArticorePosVelCommand* commands, uint32_t count) {
     }
     g_driver->last_pv.assign(commands, commands + count);
     g_driver->pv_history.emplace_back(commands, commands + count);
-    if (g_driver->emulate_arm_feedback && count == 2) {
+    ++g_driver->emulated_pv_send_count;
+    if (g_driver->emulate_arm_feedback && count == 2 &&
+        g_driver->emulated_pv_send_count %
+                g_driver->emulated_pv_feedback_period ==
+            0) {
       for (uint32_t index = 0; index < count; ++index) {
         auto& motor = g_driver->motors[commands[index].motor];
-        motor.position = commands[index].target_position;
-        motor.velocity = 0.0f;
+        motor.position = commands[index].target_position +
+            g_driver->emulated_pv_position_offset;
+        motor.velocity = g_driver->emulated_pv_velocity;
         ++motor.update_count;
       }
     }
@@ -3977,6 +3986,7 @@ void test_native_quintic_trajectory_executes_at_worker_rate() {
   FakeDriver driver;
   g_driver = &driver;
   driver.emulate_arm_feedback = true;
+  driver.emulated_pv_feedback_period = 2;
   auto motors = descriptors(driver);
   auto cfg = config();
   cfg.command_timeout_ms = 500;
@@ -4006,11 +4016,18 @@ void test_native_quintic_trajectory_executes_at_worker_rate() {
               std::abs(status.progress - 1.0f) < 1e-6f &&
               std::abs(status.elapsed_s - 0.4) < 1e-6,
           "trajectory status reports complete native execution");
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_pv.size() == 2 &&
+                std::abs(driver.last_pv[0].velocity_limit) < 1e-6f;
+          }),
+          "completed trajectory switches to the low-speed PV hold frame");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     const auto trajectory_frames = driver.pv_history.size() - baseline_frames;
-    require(trajectory_frames >= 150 && trajectory_frames <= 260,
-            "500 Hz worker executes the 0.4 second trajectory near 500 Hz");
+    require(trajectory_frames >= 250 && trajectory_frames <= 380,
+            "500 Hz worker executes the trajectory and verifies a 200 ms "
+            "physical settling window near 500 Hz");
     float previous = -1.0f;
     for (const auto& frame : driver.pv_history) {
       if (frame.size() != 2) continue;
@@ -4023,6 +4040,23 @@ void test_native_quintic_trajectory_executes_at_worker_rate() {
     require(std::abs(driver.last_pv[0].target_position - 0.2f) < 1e-5f &&
                 std::abs(driver.last_pv[1].target_position - 0.8f) < 1e-5f,
             "completed trajectory keeps the final complete-arm hold");
+    require(std::abs(driver.last_pv[0].velocity_limit) < 1e-6f &&
+                std::abs(driver.last_pv[1].velocity_limit) < 1e-6f,
+            "completed PV trajectory uses a stationary final hold limit");
+  }
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto final_left = driver.last_pv[0].target_position;
+    const auto final_right = driver.last_pv[1].target_position;
+    for (const auto& frame : driver.pv_history) {
+      if (frame.size() != 2 ||
+          std::abs(frame[0].velocity_limit) > 1e-6f) {
+        continue;
+      }
+      require(std::abs(frame[0].target_position - final_left) < 1e-6f &&
+                  std::abs(frame[1].target_position - final_right) < 1e-6f,
+              "every final PV hold frame keeps an exactly constant reference");
+    }
   }
   runtime.disable();
 }
@@ -4124,6 +4158,62 @@ void test_native_trajectory_completion_waits_for_physical_arrival() {
   runtime.disable();
 }
 
+void test_completed_pv_hold_is_rechecked_and_restabilizes() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+  auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  runtime.start_trajectory(
+      trajectory_request(motors, ARTICORE_MODE_PV, 0.4));
+  require(wait_for([&] {
+            return runtime.trajectory_status().state ==
+                ARTICORE_TRAJECTORY_COMPLETED;
+          }, 800ms),
+          "stable feedback completes PV trajectory after the settling window");
+
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.emulated_pv_position_offset = 0.03f;
+    driver.emulated_pv_velocity = 0.08f;
+  }
+  require(wait_for([&] {
+            return runtime.trajectory_status().state ==
+                ARTICORE_TRAJECTORY_RUNNING;
+          }),
+          "persistent post-completion motion returns status to settling");
+  {
+    const auto health = runtime.health_v2();
+    require(
+        health.last_operation_code == ARTICORE_OPERATION_FEEDBACK &&
+            std::string(health.last_operation_error).find(
+                "completed trajectory hold became unstable") !=
+                std::string::npos,
+        "post-completion instability is reported through unified health");
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.emulated_pv_position_offset = 0.0f;
+    driver.emulated_pv_velocity = 0.0f;
+  }
+  require(wait_for([&] {
+            return runtime.trajectory_status().state ==
+                ARTICORE_TRAJECTORY_COMPLETED;
+          }, 800ms),
+          "restored stable feedback can complete the same final hold again");
+  runtime.disable();
+}
+
 void test_native_trajectory_arrival_timeout_is_reported_in_health() {
   FakeDriver driver;
   g_driver = &driver;
@@ -4143,7 +4233,7 @@ void test_native_trajectory_arrival_timeout_is_reported_in_health() {
   require(wait_for([&] {
             return runtime.trajectory_status().state ==
                 ARTICORE_TRAJECTORY_FAULT;
-          }, 3000ms),
+          }, 5000ms),
           "a trajectory that never physically arrives reaches its native timeout");
   const auto status = runtime.trajectory_status();
   require(std::string(status.error).find("arrival timed out") !=
@@ -4848,6 +4938,7 @@ int main() {
     RUN_TEST(test_native_quintic_trajectory_executes_at_worker_rate);
     RUN_TEST(test_planned_reference_transaction_does_not_use_lagging_feedback);
     RUN_TEST(test_native_trajectory_completion_waits_for_physical_arrival);
+    RUN_TEST(test_completed_pv_hold_is_rechecked_and_restabilizes);
     RUN_TEST(test_native_trajectory_arrival_timeout_is_reported_in_health);
     RUN_TEST(test_native_trajectory_uses_raw_mit_and_cancel_is_idempotent);
     RUN_TEST(test_native_point_target_replacement_is_validated_and_atomic);

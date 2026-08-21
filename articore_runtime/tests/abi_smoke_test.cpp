@@ -197,7 +197,8 @@ int main() {
       ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS |
       ARTICORE_CAP_PRODUCT_SPEED_SETTING |
       ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING |
-      ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE;
+      ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE |
+      ARTICORE_CAP_PV_MAX_SPEED_ONLY;
   bool product_gripper_levels_valid = true;
   for (const int32_t level : {1, 5, 10}) {
     product_gripper_levels_valid = product_gripper_levels_valid &&
@@ -327,7 +328,7 @@ int main() {
       !gravity_status || !health_v2 || !estop ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x00020025U ||
+      version != 0x00020026U ||
       (capabilities & required_with_circular) != required_with_circular ||
       !product_gripper_levels_valid ||
       !product_gripper_direct_valid ||

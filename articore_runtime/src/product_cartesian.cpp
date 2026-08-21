@@ -107,6 +107,24 @@ std::array<double, ARTICORE_PRODUCT_ARM_DOF> solve_ik(
   return result;
 }
 
+std::array<double, ARTICORE_PRODUCT_ARM_DOF> solve_endpoint_ik(
+    YunyiRuntimeResources& product, uint32_t side,
+    const ArticoreRobotPose& target,
+    const std::array<double, ARTICORE_PRODUCT_ARM_DOF>& seed,
+    const char* context) {
+  // Prefer the measured/planned seed so a small Cartesian request stays on
+  // the nearby joint branch. Fall back to the deterministic global search
+  // only when the local solve genuinely cannot reach the endpoint.
+  try {
+    return solve_ik(
+        product, side, target, seed, context, CartesianIkSearch::LocalPath);
+  } catch (const std::invalid_argument&) {
+    return solve_ik(
+        product, side, target, seed, context,
+        CartesianIkSearch::GlobalEndpoint);
+  }
+}
+
 NativeTrajectoryJoint trajectory_joint(
     const YunyiRuntimeResources::Joint& source,
     float scale, float start_velocity) {
@@ -127,6 +145,11 @@ NativeTrajectoryJoint trajectory_joint(
   joint.pv_velocity_limit = std::max(
       source.velocity_limit * scale,
       std::min(source.velocity_limit, std::abs(start_velocity) + 0.01f));
+  // DM PV exposes position plus a velocity limit, not MIT Kp/Kd. Use the
+  // requested product limit while moving, then cap the stationary endpoint
+  // correction so a loaded elbow cannot repeatedly overshoot the same target.
+  joint.pv_hold_velocity_limit = std::min(
+      joint.pv_velocity_limit, kNativePvFinalHoldVelocityLimit);
   return joint;
 }
 
@@ -167,11 +190,12 @@ NativeCartesianPlan assemble_cartesian_plan(
     const std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>>& path,
     const std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>& start_velocities,
     const std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>& start_accelerations,
-    const YunyiRuntimeResources& product,
+    YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     ArticoreRuntimeOperation operation,
     float speed_percent,
-    uint64_t replace_trajectory_id) {
+    uint64_t replace_trajectory_id,
+    uint32_t completion_side) {
   NativeCartesianPlan plan;
   plan.replace_trajectory_id = replace_trajectory_id;
   const float scale = speed_percent / 100.0f;
@@ -209,6 +233,55 @@ NativeCartesianPlan assemble_cartesian_plan(
     }
     trajectory.waypoints.push_back(std::move(waypoint));
   }
+  const uint32_t completion_offset =
+      completion_side * ARTICORE_PRODUCT_ARM_DOF;
+  std::array<double, ARTICORE_PRODUCT_ARM_DOF> expected_q{};
+  for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
+    expected_q[index] = path.back()[completion_offset + index];
+  }
+  ArticoreRobotPose expected_pose{};
+  expected_pose.struct_size = sizeof(expected_pose);
+  {
+    std::lock_guard<std::mutex> lock(product.pose_mutexes[completion_side]);
+    product.pose_models[completion_side]->fk(
+        expected_q.data(), expected_q.size(), &expected_pose);
+  }
+  auto* completion_model = product.pose_models[completion_side].get();
+  auto* completion_mutex = &product.pose_mutexes[completion_side];
+  trajectory.final_convergence_check =
+      [completion_model, completion_mutex, completion_offset, expected_pose](
+          const std::vector<float>& actual_positions,
+          std::string& error) {
+        if (actual_positions.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF) {
+          error = "Cartesian endpoint feedback has the wrong joint count";
+          return false;
+        }
+        std::array<double, ARTICORE_PRODUCT_ARM_DOF> actual_q{};
+        for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
+          actual_q[index] = actual_positions[completion_offset + index];
+        }
+        ArticoreRobotPose actual_pose{};
+        actual_pose.struct_size = sizeof(actual_pose);
+        {
+          std::lock_guard<std::mutex> lock(*completion_mutex);
+          completion_model->fk(
+              actual_q.data(), actual_q.size(), &actual_pose);
+        }
+        const double position_error = cartesian::norm(cartesian::subtract(
+            actual_pose.position, expected_pose.position));
+        const double orientation_error = cartesian::angular_distance(
+            cartesian::quaternion_from_rotation(actual_pose.rotation),
+            cartesian::quaternion_from_rotation(expected_pose.rotation));
+        if (position_error <= 0.0025 && orientation_error <= 0.01) {
+          error.clear();
+          return true;
+        }
+        error = "Cartesian endpoint position_error=" +
+            std::to_string(position_error) +
+            " orientation_error=" + std::to_string(orientation_error) +
+            " tolerances=[position<=0.0025, orientation<=0.01]";
+        return false;
+      };
   return plan;
 }
 
@@ -277,9 +350,8 @@ NativeCartesianPlan build_cartesian_plan(
   }
   std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>> path;
   if (interpolation == ARTICORE_CARTESIAN_POINT_TO_POINT) {
-    const auto target_q = solve_ik(
-        product, side, target, start_q, "Cartesian target",
-        CartesianIkSearch::GlobalEndpoint);
+    const auto target_q = solve_endpoint_ik(
+        product, side, target, start_q, "Cartesian target");
     path = {start_positions, start_positions};
     for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
       path.back()[side_offset + index] = static_cast<float>(target_q[index]);
@@ -341,9 +413,13 @@ NativeCartesianPlan build_cartesian_plan(
       }
       path.push_back(waypoint);
     }
+    // The linear endpoint is only one path sample away from `seed`. Solving it
+    // globally can jump to another valid IK branch after every intermediate
+    // sample was continuous. Keep the endpoint on the same local branch; PTP
+    // still uses the deterministic global endpoint search because it has no
+    // Cartesian-path continuity constraint.
     const auto linear_target_q = solve_ik(
-        product, side, target, seed, "Cartesian linear target",
-        CartesianIkSearch::GlobalEndpoint);
+        product, side, target, seed, "Cartesian linear target");
     for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
       if (std::abs(linear_target_q[index] - seed[index]) > 0.35) {
         throw std::invalid_argument(
@@ -363,7 +439,7 @@ NativeCartesianPlan build_cartesian_plan(
       interpolation == ARTICORE_CARTESIAN_LINEAR
           ? ARTICORE_OPERATION_MOVE_LINEAR
           : ARTICORE_OPERATION_MOVE_POSE,
-      speed_percent, plan.replace_trajectory_id);
+      speed_percent, plan.replace_trajectory_id, side);
 }
 
 std::vector<NativeTrajectoryJoint> product_cartesian_joints(
@@ -536,7 +612,7 @@ NativeCartesianPlan build_circular_plan_common(
   return assemble_cartesian_plan(
       path, start_velocities, start_accelerations, product, mode,
       ARTICORE_OPERATION_MOVE_CIRCULAR, speed_percent,
-      reference.active ? reference.trajectory_id : 0);
+      reference.active ? reference.trajectory_id : 0, side);
 }
 
 }  // namespace

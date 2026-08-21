@@ -7,6 +7,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 namespace articore {
@@ -22,11 +23,29 @@ constexpr float kStartVelocityTolerance = 0.10f;
 // position/velocity window.
 constexpr float kPvArrivalPositionTolerance = 0.02f;
 constexpr float kPvArrivalVelocityTolerance = 0.05f;
+// Do not freeze the drive at zero speed merely because it entered the public
+// 0.02 rad arrival window. First let the low-speed settling phase converge to
+// a tighter target error, then install the stationary hold.
+constexpr float kPvFinalPositionTolerance = 0.005f;
+constexpr float kPvLoadedJointFinalPositionTolerance = 0.012f;
+// Arrival still accepts <=0.02 rad absolute error for compatibility, but a
+// completed PV hold must remain inside a tighter 0.012 rad peak-to-peak window.
+// This rejects the reported ~0.0145 rad visible oscillation without treating
+// one quantized feedback step as instability.
+constexpr float kPvStablePositionRange = 0.012f;
 constexpr float kMitArrivalPositionTolerance = 0.05f;
 constexpr float kMitArrivalVelocityTolerance = 0.10f;
-constexpr uint32_t kArrivalStableFeedbackSamples = 5;
-constexpr double kMinimumArrivalTimeoutSeconds = 2.0;
+constexpr auto kArrivalStableDuration = std::chrono::milliseconds(200);
+constexpr auto kCompletedHoldViolationDuration =
+    std::chrono::milliseconds(50);
+constexpr double kMinimumArrivalTimeoutSeconds = 4.0;
 constexpr double kMaximumArrivalTimeoutSeconds = 10.0;
+
+bool is_loaded_joint4_role(const std::string& role) {
+  constexpr std::string_view suffix = "joint4";
+  return role.size() >= suffix.size() &&
+      role.compare(role.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
 
 using Polynomial = std::vector<double>;
 
@@ -265,7 +284,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
         "trajectory must cover the complete fixed arm layout");
   }
   for (std::size_t index = 0; index < joint_count; ++index) {
-    const auto& joint = request.joints[index];
+    auto& joint = request.joints[index];
     const bool known_motor = std::any_of(
         motors_.begin(), motors_.end(), [&](const MotorRecord& motor) {
           return !motor.descriptor.is_gripper &&
@@ -300,12 +319,21 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
             "trajectory contains invalid MIT configuration at joint " +
             std::to_string(index));
       }
-    } else if (!finite(joint.pv_velocity_limit) ||
-               joint.pv_velocity_limit <= 0.0f ||
-               joint.pv_velocity_limit > joint.velocity_limit) {
-      throw std::invalid_argument(
-          "trajectory contains invalid PV velocity limit at joint " +
-          std::to_string(index));
+    } else {
+      if (!finite(joint.pv_velocity_limit) ||
+          joint.pv_velocity_limit <= 0.0f ||
+          joint.pv_velocity_limit > joint.velocity_limit) {
+        throw std::invalid_argument(
+            "trajectory contains invalid PV velocity limit at joint " +
+            std::to_string(index));
+      }
+      if (!finite(joint.pv_hold_velocity_limit) ||
+          joint.pv_hold_velocity_limit < 0.0f ||
+          joint.pv_hold_velocity_limit > joint.pv_velocity_limit) {
+        throw std::invalid_argument(
+            "trajectory contains invalid PV final-hold velocity limit at joint " +
+            std::to_string(index));
+      }
     }
   }
 
@@ -533,6 +561,8 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
     trajectory_control_.operation = request.operation;
     trajectory_control_.joints = std::move(request.joints);
     trajectory_control_.segments = std::move(segments);
+    trajectory_control_.final_convergence_check =
+        std::move(request.final_convergence_check);
     id = trajectory_control_.id;
     next_control_tick_ = now;
   }
@@ -664,6 +694,13 @@ bool SafetyRuntime::prepare_trajectory_cycle(
     Clock::time_point now, bool& completing, std::string& error) {
   completing = false;
   std::lock_guard<std::mutex> state_lock(state_mutex_);
+  if (trajectory_control_.state == ARTICORE_TRAJECTORY_COMPLETED) {
+    // Keep checking physical feedback after reporting completion. The final
+    // mailbox remains a constant low-speed PV hold; this flag asks the worker
+    // to monitor that hold after the frame is sent.
+    completing = true;
+    return false;
+  }
   if (trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING) return false;
   if (trajectory_control_.segments.empty() ||
       trajectory_control_.joints.empty()) {
@@ -674,6 +711,12 @@ bool SafetyRuntime::prepare_trajectory_cycle(
   double elapsed = std::chrono::duration<double>(
       now - trajectory_control_.started_at).count();
   elapsed = std::clamp(elapsed, 0.0, trajectory_control_.duration_s);
+  const bool at_final_reference =
+      elapsed >= trajectory_control_.duration_s;
+  const bool use_final_hold_limit =
+      at_final_reference && trajectory_control_.final_hold_limit_active;
+  const bool use_stationary_hold =
+      at_final_reference && trajectory_control_.stationary_hold_active;
   std::size_t segment_index = trajectory_control_.active_segment;
   while (segment_index + 1 < trajectory_control_.segments.size() &&
          elapsed >= trajectory_control_.segments[segment_index].start_s +
@@ -722,13 +765,19 @@ bool SafetyRuntime::prepare_trajectory_cycle(
               joint.torque_command_scale};
     } else {
       arm_mailbox_.pv[joint_index] = ArticorePosVelCommand{
-          joint.motor, joint.direction * position, joint.pv_velocity_limit};
+          joint.motor, joint.direction * position,
+          use_stationary_hold
+              ? joint.pv_hold_velocity_limit
+              : use_final_hold_limit
+              ? std::min(joint.pv_velocity_limit,
+                         kNativePvSettlingVelocityLimit)
+              : joint.pv_velocity_limit};
     }
   }
 
   trajectory_control_.active_segment = static_cast<uint32_t>(segment_index);
   trajectory_control_.elapsed_s = elapsed;
-  completing = elapsed >= trajectory_control_.duration_s;
+  completing = at_final_reference;
   return true;
 }
 
@@ -742,29 +791,43 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
 
   uint64_t trajectory_id = 0;
   ArticoreControlMode mode = ARTICORE_MODE_PV;
-  Clock::time_point settling_started_at{};
+  bool monitoring_completed_hold = false;
   std::vector<uint64_t> previous_updates;
   bool feedback_initialized = false;
+  std::function<bool(const std::vector<float>&, std::string&)>
+      final_convergence_check;
   std::vector<ArrivalJoint> arrivals;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
-    if (trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING ||
+    if ((trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING &&
+         trajectory_control_.state != ARTICORE_TRAJECTORY_COMPLETED) ||
         trajectory_control_.segments.empty()) {
       return;
     }
-    if (trajectory_control_.settling_started_at == Clock::time_point{}) {
+    monitoring_completed_hold =
+        trajectory_control_.state == ARTICORE_TRAJECTORY_COMPLETED;
+    if (!monitoring_completed_hold &&
+        trajectory_control_.settling_started_at == Clock::time_point{}) {
       trajectory_control_.settling_started_at = now;
+      trajectory_control_.settling_stable_started_at = Clock::time_point{};
+      trajectory_control_.hold_unstable_started_at = Clock::time_point{};
       trajectory_control_.settling_feedback_updates.assign(
           trajectory_control_.joints.size(), 0);
+      trajectory_control_.settling_position_min.assign(
+          trajectory_control_.joints.size(),
+          std::numeric_limits<float>::infinity());
+      trajectory_control_.settling_position_max.assign(
+          trajectory_control_.joints.size(),
+          -std::numeric_limits<float>::infinity());
       trajectory_control_.settled_feedback_samples = 0;
       trajectory_control_.settling_feedback_initialized = false;
     }
     trajectory_id = trajectory_control_.id;
     mode = mode_;
-    settling_started_at = trajectory_control_.settling_started_at;
     previous_updates = trajectory_control_.settling_feedback_updates;
     feedback_initialized =
         trajectory_control_.settling_feedback_initialized;
+    final_convergence_check = trajectory_control_.final_convergence_check;
     const auto& final_coefficients =
         trajectory_control_.segments.back().coefficients;
     arrivals.reserve(trajectory_control_.joints.size());
@@ -790,15 +853,26 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
   const float velocity_tolerance = mode == ARTICORE_MODE_PV
       ? kPvArrivalVelocityTolerance : kMitArrivalVelocityTolerance;
   bool all_arrived = true;
+  bool all_positions_arrived = true;
+  bool final_position_ready = true;
   bool all_feedback_new = true;
+  bool any_feedback_new = !feedback_initialized;
   bool has_active_joint = false;
   std::vector<uint64_t> current_updates(arrivals.size(), 0);
+  std::vector<float> actual_positions(
+      arrivals.size(), std::numeric_limits<float>::quiet_NaN());
   float worst_position_error = 0.0f;
   float worst_velocity = 0.0f;
   std::string worst_role;
   float worst_target = 0.0f;
   float worst_actual = 0.0f;
+  float worst_violation_score = -1.0f;
+  float worst_position_range = 0.0f;
+  std::string worst_range_role;
+  float settling_worst_position_range = 0.0f;
+  std::string settling_worst_range_role;
   std::string unavailable_role;
+  std::string convergence_error;
 
   for (std::size_t index = 0; index < arrivals.size(); ++index) {
     const auto& arrival = arrivals[index];
@@ -814,6 +888,7 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
         finite(state.vel);
     if (!available) {
       all_arrived = false;
+      all_positions_arrived = false;
       all_feedback_new = false;
       if (unavailable_role.empty()) unavailable_role = arrival.role;
       continue;
@@ -823,18 +898,33 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
         index < previous_updates.size() &&
         stats.update_count == previous_updates[index]) {
       all_feedback_new = false;
+    } else if (feedback_initialized && index < previous_updates.size()) {
+      any_feedback_new = true;
     }
     const float actual = arrival.joint.direction * state.pos;
     const float velocity = arrival.joint.direction * state.vel *
         arrival.joint.velocity_feedback_scale;
     const float position_error = std::abs(actual - arrival.target);
     const float speed = std::abs(velocity);
-    if (position_error > position_tolerance ||
-        speed > velocity_tolerance) {
+    actual_positions[index] = actual;
+    if (position_error > position_tolerance) {
+      all_arrived = false;
+      all_positions_arrived = false;
+    }
+    if (speed > velocity_tolerance) {
       all_arrived = false;
     }
-    if (position_error > worst_position_error ||
-        (position_error == worst_position_error && speed > worst_velocity)) {
+    const float final_position_tolerance = is_loaded_joint4_role(arrival.role)
+        ? kPvLoadedJointFinalPositionTolerance
+        : kPvFinalPositionTolerance;
+    if (mode == ARTICORE_MODE_PV &&
+        position_error > final_position_tolerance) {
+      final_position_ready = false;
+    }
+    const float violation_score = std::max(
+        position_error / position_tolerance, speed / velocity_tolerance);
+    if (violation_score > worst_violation_score) {
+      worst_violation_score = violation_score;
       worst_position_error = position_error;
       worst_velocity = speed;
       worst_role = arrival.role;
@@ -843,10 +933,24 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
     }
   }
 
+  if (mode == ARTICORE_MODE_PV && final_convergence_check &&
+      unavailable_role.empty()) {
+    try {
+      final_position_ready =
+          final_convergence_check(actual_positions, convergence_error);
+    } catch (const std::exception& err) {
+      final_position_ready = false;
+      convergence_error = err.what();
+    }
+  }
+
   bool completed = false;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
-    if (trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING ||
+    const auto expected_state = monitoring_completed_hold
+        ? ARTICORE_TRAJECTORY_COMPLETED
+        : ARTICORE_TRAJECTORY_RUNNING;
+    if (trajectory_control_.state != expected_state ||
         trajectory_control_.id != trajectory_id) {
       return;
     }
@@ -854,25 +958,209 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
     trajectory_control_.active_segment =
         static_cast<uint32_t>(trajectory_control_.segments.size() - 1);
 
+    if (monitoring_completed_hold) {
+      if (!has_active_joint) return;
+      if (!any_feedback_new) return;
+      trajectory_control_.settling_feedback_updates = current_updates;
+
+      bool position_range_stable = true;
+      for (std::size_t index = 0; index < arrivals.size(); ++index) {
+        if (arrivals[index].intentionally_disabled ||
+            !finite(actual_positions[index])) {
+          continue;
+        }
+        trajectory_control_.settling_position_min[index] = std::min(
+            trajectory_control_.settling_position_min[index],
+            actual_positions[index]);
+        trajectory_control_.settling_position_max[index] = std::max(
+            trajectory_control_.settling_position_max[index],
+            actual_positions[index]);
+        const float position_range =
+            trajectory_control_.settling_position_max[index] -
+            trajectory_control_.settling_position_min[index];
+        if (mode == ARTICORE_MODE_PV &&
+            position_range > kPvStablePositionRange) {
+          position_range_stable = false;
+          if (position_range > worst_position_range) {
+            worst_position_range = position_range;
+            worst_range_role = arrivals[index].role;
+          }
+        }
+      }
+      const bool hold_stable = all_arrived && position_range_stable;
+      if (hold_stable) {
+        trajectory_control_.hold_unstable_started_at = Clock::time_point{};
+        return;
+      }
+      if (trajectory_control_.hold_unstable_started_at == Clock::time_point{}) {
+        trajectory_control_.hold_unstable_started_at = now;
+        return;
+      }
+      if (now - trajectory_control_.hold_unstable_started_at <
+          kCompletedHoldViolationDuration) {
+        return;
+      }
+
+      std::ostringstream stream;
+      stream << "completed trajectory hold became unstable; waiting for "
+                "physical restabilization";
+      if (!unavailable_role.empty()) {
+        stream << "; fresh enabled feedback unavailable for "
+               << unavailable_role;
+      } else if (!position_range_stable && !worst_range_role.empty()) {
+        stream << "; " << worst_range_role
+               << " position_range=" << worst_position_range
+               << " stable_range_limit=" << kPvStablePositionRange;
+      } else if (!worst_role.empty()) {
+        stream << "; " << worst_role
+               << " target=" << worst_target
+               << " actual=" << worst_actual
+               << " position_error=" << worst_position_error
+               << " velocity=" << worst_velocity;
+      }
+      const auto unstable_error = stream.str();
+      trajectory_control_.state = ARTICORE_TRAJECTORY_RUNNING;
+      trajectory_control_.settling_started_at = now;
+      trajectory_control_.settling_stable_started_at = Clock::time_point{};
+      trajectory_control_.hold_unstable_started_at = Clock::time_point{};
+      trajectory_control_.settled_feedback_samples = 0;
+      trajectory_control_.stationary_hold_active = all_positions_arrived;
+      trajectory_control_.final_hold_limit_active = all_positions_arrived;
+      trajectory_control_.settling_position_min.assign(
+          arrivals.size(), std::numeric_limits<float>::infinity());
+      trajectory_control_.settling_position_max.assign(
+          arrivals.size(), -std::numeric_limits<float>::infinity());
+      trajectory_control_.error = unstable_error;
+      last_operation_ = trajectory_control_.operation;
+      last_operation_code_ = ARTICORE_OPERATION_FEEDBACK;
+      last_operation_error_ = unstable_error;
+      operation_failed_motors_.clear();
+      if (!unavailable_role.empty()) {
+        operation_failed_motors_.push_back(unavailable_role);
+      } else if (!worst_role.empty()) {
+        operation_failed_motors_.push_back(worst_role);
+      }
+      return;
+    }
+
     if (!has_active_joint) {
       completed = true;
     } else {
-      if (!feedback_initialized || all_feedback_new) {
+      if (!feedback_initialized || any_feedback_new) {
         trajectory_control_.settling_feedback_updates = current_updates;
         trajectory_control_.settling_feedback_initialized = true;
       }
-      if (all_arrived && (!feedback_initialized || all_feedback_new)) {
-        ++trajectory_control_.settled_feedback_samples;
-      } else if (!all_arrived) {
-        trajectory_control_.settled_feedback_samples = 0;
+      const bool fresh_arrival_feedback =
+          all_arrived && (!feedback_initialized || any_feedback_new);
+      const bool fresh_position_feedback =
+          all_positions_arrived &&
+          (!feedback_initialized || any_feedback_new);
+      const bool fresh_final_feedback =
+          fresh_position_feedback &&
+          (final_position_ready || trajectory_control_.stationary_hold_active);
+      if (fresh_arrival_feedback) {
+        trajectory_control_.final_hold_limit_active = true;
       }
-      completed = trajectory_control_.settled_feedback_samples >=
-          kArrivalStableFeedbackSamples;
+      if (fresh_final_feedback) {
+        const bool entering_stationary_hold =
+            !trajectory_control_.stationary_hold_active;
+        trajectory_control_.stationary_hold_active = true;
+        if (entering_stationary_hold) {
+          // Low-speed convergence and zero-speed hold verification are two
+          // distinct physical phases. Give the stationary phase its own
+          // deadline/window instead of inheriting nearly expired settling
+          // time and motion accumulated before the zero-speed command.
+          trajectory_control_.settling_started_at = now;
+          trajectory_control_.settling_stable_started_at = now;
+          trajectory_control_.settled_feedback_samples = 0;
+          trajectory_control_.settling_position_min.assign(
+              arrivals.size(), std::numeric_limits<float>::infinity());
+          trajectory_control_.settling_position_max.assign(
+              arrivals.size(), -std::numeric_limits<float>::infinity());
+        } else if (trajectory_control_.settling_stable_started_at ==
+            Clock::time_point{}) {
+          trajectory_control_.settling_stable_started_at = now;
+        }
+        for (std::size_t index = 0; index < arrivals.size(); ++index) {
+          if (arrivals[index].intentionally_disabled ||
+              !finite(actual_positions[index])) {
+            continue;
+          }
+          trajectory_control_.settling_position_min[index] = std::min(
+              trajectory_control_.settling_position_min[index],
+              actual_positions[index]);
+          trajectory_control_.settling_position_max[index] = std::max(
+              trajectory_control_.settling_position_max[index],
+              actual_positions[index]);
+        }
+        ++trajectory_control_.settled_feedback_samples;
+      } else if (!feedback_initialized || any_feedback_new) {
+        // A 500 Hz control cycle may legitimately observe the same coherent
+        // feedback snapshot as the preceding cycle. That is not instability:
+        // preserve the settling timer until a genuinely newer snapshot either
+        // confirms or violates the window.
+        const bool stationary_velocity_transient =
+            trajectory_control_.stationary_hold_active &&
+            all_positions_arrived;
+        if (!stationary_velocity_transient) {
+          trajectory_control_.settled_feedback_samples = 0;
+          trajectory_control_.stationary_hold_active = false;
+          if (!all_positions_arrived) {
+            trajectory_control_.final_hold_limit_active = false;
+          }
+          trajectory_control_.settling_stable_started_at =
+              Clock::time_point{};
+          trajectory_control_.settling_position_min.assign(
+              arrivals.size(), std::numeric_limits<float>::infinity());
+          trajectory_control_.settling_position_max.assign(
+              arrivals.size(), -std::numeric_limits<float>::infinity());
+        }
+      }
+      bool position_range_stable = true;
+      if (mode == ARTICORE_MODE_PV) {
+        for (std::size_t index = 0; index < arrivals.size(); ++index) {
+          if (arrivals[index].intentionally_disabled) continue;
+          const float position_range =
+              trajectory_control_.settling_position_max[index] -
+              trajectory_control_.settling_position_min[index];
+          if (position_range > settling_worst_position_range) {
+            settling_worst_position_range = position_range;
+            settling_worst_range_role = arrivals[index].role;
+          }
+          if (position_range > kPvStablePositionRange) {
+            position_range_stable = false;
+          }
+        }
+      }
+      const bool stable_duration_met =
+          trajectory_control_.settling_stable_started_at !=
+              Clock::time_point{} &&
+          now - trajectory_control_.settling_stable_started_at >=
+              kArrivalStableDuration;
+      completed = stable_duration_met && position_range_stable && all_arrived;
+      if (stable_duration_met && !position_range_stable) {
+        trajectory_control_.settling_stable_started_at = now;
+        trajectory_control_.settled_feedback_samples = 1;
+        trajectory_control_.settling_position_min = actual_positions;
+        trajectory_control_.settling_position_max = actual_positions;
+      }
     }
 
     if (completed) {
       trajectory_control_.state = ARTICORE_TRAJECTORY_COMPLETED;
       trajectory_control_.error.clear();
+      trajectory_control_.final_hold_limit_active = true;
+      trajectory_control_.stationary_hold_active = true;
+      if (mode == ARTICORE_MODE_PV &&
+          arm_mailbox_.pv.size() == trajectory_control_.joints.size()) {
+        for (std::size_t index = 0; index < arm_mailbox_.pv.size(); ++index) {
+          arm_mailbox_.pv[index].velocity_limit =
+              trajectory_control_.joints[index].pv_hold_velocity_limit;
+        }
+      }
+      trajectory_control_.hold_unstable_started_at = Clock::time_point{};
+      trajectory_control_.settling_position_min = actual_positions;
+      trajectory_control_.settling_position_max = actual_positions;
       return;
     }
 
@@ -880,13 +1168,32 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
         trajectory_control_.duration_s * 0.25,
         kMinimumArrivalTimeoutSeconds, kMaximumArrivalTimeoutSeconds);
     if (std::chrono::duration<double>(
-            now - settling_started_at).count() >= arrival_timeout_s) {
+            now - trajectory_control_.settling_started_at).count() >=
+        arrival_timeout_s) {
       std::ostringstream stream;
       stream << "trajectory arrival timed out after " << arrival_timeout_s
-             << " s";
+             << " s"
+             << "; stationary_hold="
+             << (trajectory_control_.stationary_hold_active ? "true" : "false")
+             << "; settling_hold="
+             << (trajectory_control_.final_hold_limit_active ? "true" : "false")
+             << "; stable_samples="
+             << trajectory_control_.settled_feedback_samples
+             << "; all_feedback_new="
+             << (all_feedback_new ? "true" : "false")
+             << "; any_feedback_new="
+             << (any_feedback_new ? "true" : "false");
       if (!unavailable_role.empty()) {
         stream << "; fresh enabled feedback unavailable for "
                << unavailable_role;
+      } else if (all_arrived &&
+                 settling_worst_position_range > kPvStablePositionRange &&
+                 !settling_worst_range_role.empty()) {
+        stream << "; " << settling_worst_range_role
+               << " position_range=" << settling_worst_position_range
+               << " stable_range_limit=" << kPvStablePositionRange;
+      } else if (!convergence_error.empty()) {
+        stream << "; " << convergence_error;
       } else if (!worst_role.empty()) {
         stream << "; " << worst_role
                << " target=" << worst_target

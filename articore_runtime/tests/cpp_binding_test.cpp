@@ -18,6 +18,16 @@ int main() {
       decltype(&articore::Runtime::get_max_speed), SpeedGetter>);
   static_assert(std::is_same_v<
       decltype(&articore::Runtime::set_max_speed), SpeedSetter>);
+  using JointPositionSetter =
+      void (articore::Runtime::*)(const std::vector<float>&);
+  using JointPositionSpeedSetter =
+      void (articore::Runtime::*)(const std::vector<float>&, float);
+  static_assert(std::is_same_v<decltype(static_cast<JointPositionSetter>(
+                                   &articore::Runtime::set_joint_positions)),
+                               JointPositionSetter>);
+  static_assert(std::is_same_v<decltype(static_cast<JointPositionSpeedSetter>(
+                                   &articore::Runtime::set_joint_positions)),
+                               JointPositionSpeedSetter>);
 
   // This target is a cross-platform compile/link smoke test for the public
   // RAII wrapper. Runtime behavior and invalid construction are exercised by

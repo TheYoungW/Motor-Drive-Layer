@@ -94,10 +94,10 @@ atomically replaces only the final positions and shared speed; the currently tra
 remains continuous. The raw `articore_runtime_submit_pos_vel_ex()` entry point remains unchanged for
 internal advanced controllers.
 
-Product SDKs should expose only one ordinary position method for the selected mode—`set_joint_mit`
-or `set_joint_pv`—with final positions and one velocity argument. Raw PV/MIT structures, gains,
-feedforward terms, and streaming lifetimes remain internal SDK/runtime integration capabilities and
-should not appear in ordinary user examples.
+This was the ABI 1.13 product-binding rule. ABI 2.38 supersedes the PV half:
+product SDKs expose persistent `set_max_speed(0..100)` plus a positions-only
+`set_joint_pv`; raw PV and per-command PV speed are no longer public. MIT keeps
+its existing ordinary and advanced raw controls.
 
 Runtime ABI 1.6 makes normal torque-off a checked transaction instead of relying on the motor
 communication watchdog. `disable()` first rejects new commands and waits for any in-flight
@@ -517,6 +517,25 @@ Runtime created with grippers uses `l-tool0` / `r-tool0`, fixed at
 `[-0.004, 0, -0.178]` metres from link7; a gripperless Runtime uses link7
 directly. `get_pose()`, endpoint IK, point-to-point, linear and circular motion
 all use the same selection. No additional public flange-pose getter is added.
+
+Runtime ABI 2.38 adds `ARTICORE_CAP_PV_MAX_SPEED_ONLY`. Product SDKs expose
+one ordinary PV path: `set_max_speed(0..100)` configures the persistent limit
+(default 70), and position commands contain positions only. Runtime advances
+the reference incrementally at its private rate. Per-command ordinary speed
+and raw direct-PV entry points are no longer product SDK APIs; their existing C
+symbols remain exported only for binary compatibility. The max-speed names are
+PV-only from ABI 2.38 onward; MIT retains its existing per-command ordinary
+speed, raw targets, gains, and feedforward behavior unchanged. The ABI 2.35
+`set_speed/get_speed` compatibility symbols keep their historical semantics.
+
+motor-drive-layer 0.10.39 hardens native PV Cartesian completion and final
+hold. The public 0.02 rad / 0.05 rad/s arrival window remains compatible, but
+the Runtime first performs low-speed settling and native FK endpoint checks at
+2.5 mm / 0.01 rad. It then installs a continuously refreshed zero-speed final
+position frame and verifies 200 ms of fresh stable feedback. Completed holds
+remain supervised and can return to settling if instability persists. This
+does not rewrite motor flash, zero offsets, or firmware PV gains, and it does
+not layer the ordinary position stepper on top of native quintic execution.
 
 Runtime ABI 1.2 adds fixed-connection motor presence. Active descriptor names begin as `PRESENT`;
 omitted optional roles can be declared `NOT_INSTALLED` before `connect()`. Presence declarations

@@ -103,6 +103,20 @@ single active Cartesian control point. With grippers, native FK/IK and all
 Cartesian planners use the fixed `l-tool0` / `r-tool0` gripper center; without
 grippers they continue to use link7. No extra public flange-pose API is added.
 
+Version 0.10.38 / Runtime ABI 2.38 reduces ordinary PV control to one
+product-owned stepped path. `set_max_speed(0..100)` is persistent and defaults
+to 70; position commands carry no per-call speed. New SDKs do not expose raw
+PV submission or the legacy explicit-speed ordinary command. Existing C ABI
+symbols remain available only for binary compatibility. This setting is PV
+only; MIT ordinary speed, raw targets, gains, and feedforward behavior are
+unchanged.
+
+Version 0.10.39 also fixes visible Yunyi PV Cartesian endpoint oscillation.
+Native motion now performs staged low-speed settling, product FK endpoint
+verification, a continuously refreshed zero-speed final hold, 200 ms stable
+feedback confirmation, and post-completion supervision. No motor flash,
+zero-offset, or firmware-gain values are rewritten.
+
 The required Pinocchio C++ template implementations are compiled into
 `libarticore_runtime.so` with hidden visibility. The installed runtime has no dynamic dependency
 on Pinocchio or Boost, so a ROS 2 `LD_LIBRARY_PATH` cannot substitute an incompatible robotics
