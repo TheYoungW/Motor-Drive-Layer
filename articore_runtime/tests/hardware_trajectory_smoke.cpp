@@ -219,11 +219,24 @@ int main(int argc, char** argv) {
     check(articore_runtime_enable(runtime, ARTICORE_MODE_PV), "enable");
     enabled = true;
 
+    wait_until_stationary(runtime, std::chrono::seconds(4));
+    // A powered-off arm can be physically outside a logical product limit.
+    // Recover with one legal ordinary target first; never interpolate a chain
+    // of out-of-range waypoints from the measured pose.
+    JointArray zero_target{};
+    check(articore_runtime_set_max_speed(runtime, 10.0f), "set_max_speed");
+    check(articore_runtime_set_joint_positions_v2(
+              runtime, zero_target.data(), zero_target.size()),
+          "recover_to_legal_zero");
+    const float normalization_error =
+        wait_for_target(runtime, zero_target, std::chrono::seconds(12));
+    if (normalization_error > kArrivalTolerance) {
+      throw std::runtime_error("legal zero recovery feedback exceeded tolerance");
+    }
     const auto initial_state =
         wait_until_stationary(runtime, std::chrono::seconds(4));
     const auto initial = positions(initial_state);
     if (return_zero_only) {
-      JointArray zero_target{};
       const double duration = safe_duration(initial, zero_target);
       std::cout << "stage=safety_return duration_s=" << duration << std::endl;
       const auto returned = run_trajectory(runtime, initial, zero_target,
@@ -260,7 +273,6 @@ int main(int argc, char** argv) {
     const auto return_state =
         wait_until_stationary(runtime, std::chrono::seconds(4));
     const auto return_start = positions(return_state);
-    JointArray zero_target{};
     const double return_duration = safe_duration(return_start, zero_target);
     std::cout << "stage=return duration_s=" << return_duration << std::endl;
     const auto returned = run_trajectory(runtime, return_start, zero_target,

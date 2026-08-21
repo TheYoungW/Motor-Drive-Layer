@@ -218,9 +218,9 @@ void SafetyRuntime::install_joint_position(
         });
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
-    if (api_.motor_get_feedback_stats(motor_handle, &stats) != 0 ||
+    if (backend_->get_feedback_stats(motor_handle, &stats) != 0 ||
         !stats.has_feedback || stats.age_ns > maximum_age_ns ||
-        api_.motor_get_state(motor_handle, &state) != 0 ||
+        backend_->get_state(motor_handle, &state) != 0 ||
         !state.has_value || !finite(state.pos) || state.status_code != 1) {
       throw std::runtime_error(
           "CH" + std::to_string(motor->descriptor.side) + "/" +

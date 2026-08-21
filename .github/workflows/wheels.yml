@@ -35,9 +35,6 @@ jobs:
       - name: Install build tools and pinned Pinocchio C++ headers
         run: python -m pip install --upgrade build 'libpinocchio==3.8.0' cmeel-eigen cmeel-urdfdom-headers
 
-      - name: Build private Linux libusb runtime
-        run: bash scripts/build_private_libusb.sh "$RUNNER_TEMP/libusb-1.0.27"
-
       - name: Configure and build native libraries
         run: |
           cmake -S . -B builds/cmake/ci -DCMAKE_BUILD_TYPE=Release \
@@ -49,27 +46,22 @@ jobs:
         run: |
           cmake --install builds/cmake/ci --config Release \
             --prefix "${{ runner.temp }}/motor-drive-layer-native"
-          mkdir -p "${{ runner.temp }}/motor-drive-layer-native/lib/dm_device"
-          cp "${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0" \
-            "${{ runner.temp }}/motor-drive-layer-native/lib/dm_device/libusb-1.0.so.0"
 
       - name: Build ARM64 binary-only wheel
         if: matrix.name == 'linux-aarch64'
         env:
-          MOTOR_PRIVATE_LIBUSB_LIB: ${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0
+          ARTICORE_RUNTIME_LIB: ${{ github.workspace }}/builds/cmake/ci/articore_runtime/libarticore_runtime.so
         run: python -m build --wheel --outdir builds/wheels/raw packaging/pypi
 
       - name: Build x86_64 binary-only wheel
         if: matrix.name == 'linux-x86_64'
         env:
           _PYTHON_HOST_PLATFORM: ${{ matrix.wheel_platform }}
-          MOTOR_PRIVATE_LIBUSB_LIB: ${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0
+          ARTICORE_RUNTIME_LIB: ${{ github.workspace }}/builds/cmake/ci/articore_runtime/libarticore_runtime.so
         run: python -m build --wheel --outdir builds/wheels/raw packaging/pypi
 
       - name: Repair ARM64 wheel
         if: matrix.name == 'linux-aarch64'
-        env:
-          LD_LIBRARY_PATH: ${{ runner.temp }}/libusb-1.0.27/lib
         run: |
           python -m pip install --upgrade auditwheel patchelf
           python -m auditwheel repair builds/wheels/raw/*.whl --wheel-dir wheelhouse
@@ -91,19 +83,16 @@ jobs:
           from importlib.metadata import distribution, version
           from pathlib import Path
 
-          assert version("motor-drive-layer") == "0.10.39"
+          assert version("motor-drive-layer") == "0.11.0"
           assert importlib.util.find_spec("motor_drive_layer") is None
           dist = distribution("motor-drive-layer")
           entries = {str(item): item for item in dist.files or ()}
           assert not any(name.endswith((".py", ".pyi")) for name in entries)
-          motor = Path(dist.locate_file(entries["motor_drive_layer_native/lib/libmotor_abi.so"]))
           runtime = Path(dist.locate_file(entries["motor_drive_layer_native/lib/libarticore_runtime.so"]))
-          motor_lib = ctypes.CDLL(str(motor))
-          motor_lib.motor_abi_version.restype = ctypes.c_char_p
-          assert motor_lib.motor_abi_version() == b"0.5.0-cpp"
+          assert not any("libmotor_abi" in name or "/dm_device/" in name for name in entries)
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00020026
+          assert runtime_lib.articore_runtime_abi_version() == 0x00020027
           runtime_lib.articore_runtime_capabilities.restype = ctypes.c_uint64
           capabilities = runtime_lib.articore_runtime_capabilities()
           assert capabilities & (1 << 55)
@@ -121,6 +110,7 @@ jobs:
           assert hasattr(runtime_lib, "articore_runtime_set_max_speed")
           assert hasattr(runtime_lib, "articore_runtime_get_max_speed")
           assert capabilities & (1 << 62)
+          assert capabilities & (1 << 63)
           assert capabilities & ((1 << 23) | (1 << 27)) == 0
           assert not hasattr(runtime_lib, "articore_runtime_get_control_hz")
           dynamic = subprocess.check_output(["readelf", "-d", runtime], text=True)
@@ -162,55 +152,6 @@ jobs:
           model = library.articore_robot_model_create(b"yunyi_v1_0", 0)
           assert model
           library.articore_robot_model_free(model)
-          PY
-
-      - name: Verify x86_64 private vendor dependencies
-        if: matrix.name == 'linux-x86_64'
-        run: |
-          cd /tmp
-          env -u LD_LIBRARY_PATH -u MOTOR_DM_DEVICE_LIB python - <<'PY'
-          import ctypes
-          import re
-          import subprocess
-          from importlib.metadata import distribution
-          from pathlib import Path
-
-          dist = distribution("motor-drive-layer")
-          entries = {str(item): item for item in dist.files or ()}
-          root = Path(dist.locate_file(entries["motor_drive_layer_native/PAYLOAD"])).parent
-          package_lib = root / "lib"
-          package_dm = package_lib / "dm_device"
-          linkage = subprocess.check_output(["ldd", str(package_lib / "libmotor_abi.so")], text=True)
-          assert "/dm_device/libstdc++.so.6" in linkage, linkage
-          for library in package_lib.rglob("*.so*"):
-              versions = re.findall(
-                  r"GLIBC_(\d+)\.(\d+)",
-                  subprocess.check_output(["readelf", "--version-info", str(library)], text=True),
-              )
-              assert not versions or max((int(a), int(b)) for a, b in versions) <= (2, 34)
-          ctypes.CDLL(str(package_dm / "libstdc++.so.6"), mode=ctypes.RTLD_GLOBAL)
-          support = ctypes.CDLL(str(package_dm / "libusb-1.0.so.0"), mode=ctypes.RTLD_GLOBAL)
-          assert support.libusb_init_context
-          vendor = ctypes.CDLL(str(package_dm / "v1.1.0" / "libdm_device.so"))
-          assert vendor.dmcan_context_create
-          PY
-
-      - name: Verify ARM64 vendor library resolves
-        if: matrix.name == 'linux-aarch64'
-        run: |
-          cd /tmp
-          env -u LD_LIBRARY_PATH -u MOTOR_DM_DEVICE_LIB python - <<'PY'
-          import ctypes
-          from importlib.metadata import distribution
-          from pathlib import Path
-
-          dist = distribution("motor-drive-layer")
-          vendor_entry = next(
-              item for item in dist.files or ()
-              if str(item).endswith("motor_drive_layer_native/lib/dm_device/v1.1.0/libdm_device.so")
-          )
-          vendor = Path(dist.locate_file(vendor_entry))
-          ctypes.CDLL(str(vendor))
           PY
 
       - name: Upload wheel artifact

@@ -1,0 +1,44 @@
+{
+  "date": "2026-08-21",
+  "hardware": {
+    "product": "yunyi_v1_0",
+    "channels": ["can-left", "can-right"],
+    "transport": "SocketCAN-FD+BRS",
+    "arbitration_bitrate": 1000000,
+    "data_bitrate": 5000000,
+    "arm_motor_count": 14
+  },
+  "direct_cpp_runtime": {
+    "version": "0.11.0",
+    "runtime_abi": "2.39",
+    "soak_seconds": 10.0001,
+    "left_tx_frames": 35000,
+    "right_tx_frames": 35000,
+    "left_control_hz": 499.997,
+    "right_control_hz": 499.997,
+    "process_cpu_percent_runs": [10.5551, 12.1372, 10.9702],
+    "process_cpu_percent_mean": 11.2208,
+    "send_errors": 0,
+    "queue_backlog_after_test": "0b 0p",
+    "final_zero_error_rad": 0.000190735
+  },
+  "legacy_motor_abi_runtime": {
+    "version": "0.10.39",
+    "runtime_abi": "2.38",
+    "left_control_hz_runs": [499.997, 499.896],
+    "right_control_hz_runs": [499.997, 499.896],
+    "process_cpu_percent_runs": [12.1563, 10.7787],
+    "process_cpu_percent_mean": 11.4675,
+    "send_errors": 0
+  },
+  "trajectory": {
+    "mode": "PV",
+    "target": "both J4=90deg, other arm joints=0",
+    "outward_duration_s": 10.0261,
+    "outward_max_error_rad": 0.0118965,
+    "return_duration_s": 9.74551,
+    "return_max_error_rad": 0.0112534,
+    "final_state": "disabled_and_disconnected"
+  },
+  "conclusion": "Both architectures sustain the same 500 Hz control rate. The observed CPU difference is small and run-to-run noise is comparable, so no material performance gain is claimed. The direct C++ design primarily improves ownership, packaging, and maintenance."
+}

@@ -16,21 +16,19 @@ Articore-SDK / C++ SDK / ROS 2
   libarticore_runtime.so
   watchdog, safety, robot model,
   gripper and gravity compensation
-          │ stable motor ABI
+          │ direct C++ calls
           ▼
-      libmotor_abi.so
-  controller, motor and transport API
+ layered Motor C++ core
+ protocol, Motor, Controller, group
           │
           ▼
- C++ protocol and transport core
-          │
-          ▼
-SocketCAN / SocketCAN-FD / serial / DM Device
+ Linux SocketCAN-FD+BRS
 ```
 
 The ownership boundary is deliberate:
 
-- `cpp_damiao/` contains generic transport, protocol, Controller and Motor behavior.
+- `cpp_damiao/` contains the internal SocketCAN-FD transport, protocol,
+  Controller and Motor layers.
 - `articore_runtime/` contains product Runtime, robot-model and gravity-compensation behavior.
 - Articore-SDK owns its Python `ctypes` declarations, value objects and user-facing API.
 - The PyPI `motor-drive-layer` wheel is a binary payload only. It contains no `.py` or `.pyi`
@@ -38,15 +36,14 @@ The ownership boundary is deliberate:
 
 The public native outputs are:
 
-- `libmotor_abi.so`, declared by the motor C ABI headers.
 - `libarticore_runtime.so`, declared by
   [`articore/runtime_abi.h`](articore_runtime/include/articore/runtime_abi.h).
 - The C++17 RAII target `motorbridge::articore_runtime_cpp`.
 
 ## Native features
 
-- Damiao MIT, position/velocity, velocity and force/position modes.
-- Linux SocketCAN and SocketCAN-FD+BRS, Damiao serial bridge and DM Device transports.
+- Damiao MIT and position/velocity product control.
+- Linux SocketCAN-FD+BRS on the fixed `can-left` and `can-right` Yunyi channels.
 - Background feedback reception, integrity checks and per-motor cached state.
 - Structured feedback, transport and Runtime faults.
 - Bounded non-blocking SocketCAN transmission so a full kernel queue cannot permanently block
@@ -106,9 +103,7 @@ The PyPI wheel is built from `packaging/pypi/` only to distribute platform libra
 ```text
 motor_drive_layer_native/
 └── lib/
-    ├── libmotor_abi.so
-    ├── libarticore_runtime.so
-    └── dm_device/
+    └── libarticore_runtime.so
 ```
 
 It intentionally provides no Python import surface. Articore-SDK locates these files with package
@@ -130,14 +125,13 @@ A Controller uses no artificial TX delay for one motor. Adding a second motor en
 200 µs minimum interval between outgoing frames. Set `MOTOR_DRIVE_LAYER_TX_GAP_US` or use the
 native configuration API to change it.
 
-Linux SocketCAN and SocketCAN-FD sockets are non-blocking. When the kernel TX queue stays full, a
+Linux SocketCAN-FD sockets are non-blocking. When the kernel TX queue stays full, a
 send fails after 20 ms by default, is recorded in transport health and propagates into Runtime
 fault handling. Set `MOTOR_DRIVE_LAYER_SOCKETCAN_SEND_TIMEOUT_MS` to a value from 1 to 60000 ms to
 change the bound.
 
-`motor_controller_request_feedback_all_ex()` provides stable feedback failure codes and a
-structured missing-motor report. Runtime integrations must use structured results rather than
-parsing diagnostic strings.
+The internal Controller provides structured feedback failure codes and a missing-motor report.
+Runtime safety policy never depends on parsing diagnostic strings.
 
 ## Runtime and gravity compensation
 
@@ -177,9 +171,9 @@ cmake --build builds/cmake/default -j
 ctest --test-dir builds/cmake/default --output-on-failure
 ```
 
-CI additionally checks that the PyPI wheel contains no Python source, that both native ABI
-libraries load, that the robot model works without a Pinocchio runtime dependency, and that the
-DM Device vendor libraries resolve on each release architecture.
+CI additionally checks that the PyPI wheel contains no Python source, that the product Runtime
+loads as the only native payload, and that the robot model works without a Pinocchio runtime
+dependency.
 
 Hardware acceptance remains opt-in. Inspect the scripts under `scripts/` and provide explicit
 motor mappings and acknowledgement flags before running them.
@@ -187,15 +181,13 @@ motor mappings and acknowledgement flags before running them.
 ## Repository layout
 
 ```text
-cpp_damiao/              Generic C++ protocol, transports and motor C ABI
+cpp_damiao/              Internal layered protocol, Motor and SocketCAN-FD core
 articore_runtime/         Native product Runtime, robot model and C/C++ ABI
 packaging/pypi/           Binary-only wheel assembly; no Python runtime module
-third_party/dm_device/    Optional vendor headers and redistributable libraries
 scripts/                  Build, diagnostic and hardware-acceptance helpers
 tests/                    Native CMake package consumer tests
 ```
 
 ## License
 
-Motor-Drive-Layer is MIT licensed. Bundled DM Device, libusb and libstdc++ runtime components retain
-their respective notices under `packaging/pypi/LICENSES/`.
+Motor-Drive-Layer is MIT licensed.

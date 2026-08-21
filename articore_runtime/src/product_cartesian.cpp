@@ -8,7 +8,6 @@
 #include <string>
 
 #include "articore/detail/cartesian_math.hpp"
-#include "motor_abi.h"
 #include "articore/detail/yunyi_runtime.hpp"
 
 namespace articore {
@@ -21,11 +20,9 @@ void read_product_arm_snapshot(
     std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>& velocities) {
   for (uint32_t index = 0; index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
     const auto& joint = product.joints[index];
-    MotorState motor{};
-    MotorFeedbackStats stats{};
-    if (motor_handle_get_state(joint.motor, &motor) != 0 ||
-        !motor.has_value ||
-        motor_handle_get_feedback_stats(joint.motor, &stats) != 0 ||
+    ArticoreMotorState motor{};
+    ArticoreFeedbackStats stats{};
+    if (!read_yunyi_motor_state(joint.motor, motor, stats) || !motor.has_value ||
         !stats.has_feedback || stats.age_ns > safety.feedback_max_age_ns()) {
       throw std::runtime_error(
           "Cartesian motion requires fresh feedback at joint " +

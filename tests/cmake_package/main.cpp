@@ -4,6 +4,6 @@
 
 int main() {
   static_assert(!std::is_copy_constructible_v<articore::Runtime>);
-  const auto api = articore::detail::motor_api();
-  return api.group_send_mit && api.controller_request_feedback_all_ex ? 0 : 1;
+  static_assert(std::is_move_constructible_v<articore::Runtime>);
+  return articore_runtime_abi_version() >= 0x00020027U ? 0 : 1;
 }

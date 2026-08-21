@@ -1,8 +1,8 @@
 # Articore native safety runtime
 
-This directory contains the native Yunyi V1.0 dual-arm product Runtime. It is a separate native
-library in the Motor-Drive-Layer repository and uses the generic motor C ABI internally without
-asking SDK users to assemble Controllers, Motors, mappings, profiles, or product identifiers.
+This directory contains the native Yunyi V1.0 dual-arm product Runtime. It directly links and owns
+the repository's layered C++ Motor core; no intermediate Motor C ABI or second shared library is
+used. SDK users do not assemble Controllers, Motors, mappings, profiles, or product identifiers.
 
 The public runtime remains one `libarticore_runtime` library and one
 `SafetyRuntime` state owner. Its implementation is split by responsibility:
@@ -350,8 +350,9 @@ Runtime ABI 2.20 removes product selection from the supported binding surface. Y
 is the only product: `articore_runtime_create_yunyi(mode, with_grippers)` owns both CAN channels,
 the fixed 14-joint mapping, optional paired grippers, models, calibration and all resource
 lifetimes. C++ and Python product APIs no longer expose generic construction or any
-`configure_joints/configure_gripper_products/configure_gravity_products` step. The older
-`create_product/create_ex*` C symbols remain only as ABI compatibility entry points.
+`configure_joints/configure_gripper_products/configure_gravity_products` step. The generic
+`create_product/create_ex*` C constructors are removed in the new major package line so callers
+cannot reassemble Motor, Controller, or product resources above the native product runtime.
 
 Runtime ABI 2.21 adds atomic product-level subset power transactions with stable Yunyi roles
 (`l-joint1..7`, `r-joint1..7`, `l-gripper`, `r-gripper`). A failed subset enable rolls back and

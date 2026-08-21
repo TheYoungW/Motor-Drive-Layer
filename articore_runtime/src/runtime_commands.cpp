@@ -187,11 +187,11 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
     const std::string name(motor.descriptor.name);
-    if (api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
+    if (backend_->get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
         !stats.has_feedback ||
         stats.age_ns > static_cast<uint64_t>(config_.feedback_max_age_ms) *
                            1'000'000ULL ||
-        api_.motor_get_state(motor.descriptor.motor, &state) != 0 ||
+        backend_->get_state(motor.descriptor.motor, &state) != 0 ||
         !state.has_value || !finite(state.pos) || !finite(state.vel) ||
         !finite(state.torq) || state.status_code > 1 ||
         (require_enabled && state.status_code != 1)) {
@@ -319,7 +319,7 @@ bool SafetyRuntime::enter_safe_hold_from_feedback(const std::string& reason,
 
     const std::string name(motor.descriptor.name);
     ArticoreFeedbackStats stats{};
-    if (api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
+    if (backend_->get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
         !stats.has_feedback) {
       error = name + ": current-position feedback is unavailable";
       return false;
@@ -331,7 +331,7 @@ bool SafetyRuntime::enter_safe_hold_from_feedback(const std::string& reason,
     }
 
     ArticoreMotorState state{};
-    if (api_.motor_get_state(motor.descriptor.motor, &state) != 0 ||
+    if (backend_->get_state(motor.descriptor.motor, &state) != 0 ||
         !state.has_value) {
       error = name + ": current-position motor state is unavailable";
       return false;
@@ -564,7 +564,7 @@ bool SafetyRuntime::prepare_mit_torque_limited_commands(
     }
 
     auto& state = feedback[index];
-    if (api_.motor_get_state(command.motor, &state) != 0 ||
+    if (backend_->get_state(command.motor, &state) != 0 ||
         !state.has_value || !finite(state.pos) || !finite(state.vel)) {
       error = name +
           ": MIT torque limit requires finite position/velocity feedback";
@@ -767,9 +767,9 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
   }
 
   const int32_t result = mode == ARTICORE_MODE_PV
-      ? (command_count == 0 ? 0 : api_.group_send_pos_vel(
+      ? (command_count == 0 ? 0 : backend_->send_pos_vel(
             controller_group_, pv_data, command_count))
-      : (mit_send_count == 0 ? 0 : api_.group_send_mit(
+      : (mit_send_count == 0 ? 0 : backend_->send_mit(
             controller_group_, mit_send_data, mit_send_count));
   if (result != 0) {
     error = motor_error(

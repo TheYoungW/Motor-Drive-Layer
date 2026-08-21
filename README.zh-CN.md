@@ -15,21 +15,18 @@ Articore-SDK / C++ SDK / ROS 2
   libarticore_runtime.so
   看门狗、安全、机器人模型、
   夹爪与重力补偿
-          │ 稳定电机 ABI
+          │ C++ 直接调用
           ▼
-      libmotor_abi.so
-  Controller、Motor 与通信接口
+  分层 Motor C++ 核心
+协议、Motor、Controller、双通道组
           │
           ▼
-     C++ 协议与通信核心
-          │
-          ▼
-SocketCAN / SocketCAN-FD / 串口 / DM Device
+Linux SocketCAN-FD+BRS
 ```
 
 职责划分如下：
 
-- `cpp_damiao/` 只负责通用通信、协议、Controller 和 Motor。
+- `cpp_damiao/` 负责内部 SocketCAN-FD、协议、Controller 和 Motor 分层。
 - `articore_runtime/` 负责产品 Runtime、机器人模型和重力补偿。
 - Articore-SDK 自己维护 Python `ctypes` 声明、值类型和用户接口。
 - PyPI 的 `motor-drive-layer` wheel 只分发二进制文件，不包含 `.py` 或 `.pyi`，也不能
@@ -37,15 +34,14 @@ SocketCAN / SocketCAN-FD / 串口 / DM Device
 
 公开的原生产物包括：
 
-- 通用电机 ABI：`libmotor_abi.so`。
 - 产品 Runtime ABI：`libarticore_runtime.so`，声明位于
   [`articore/runtime_abi.h`](articore_runtime/include/articore/runtime_abi.h)。
 - C++17 RAII 目标：`motorbridge::articore_runtime_cpp`。
 
 ## 原生能力
 
-- 达妙 MIT、位置速度、速度和力位混合模式。
-- Linux SocketCAN、SocketCAN-FD+BRS、达妙串口桥和 DM Device。
+- 达妙 MIT 与位置速度产品控制。
+- Yunyi 固定 `can-left`、`can-right` 两路 Linux SocketCAN-FD+BRS。
 - 后台反馈接收、反馈一致性检查与电机状态缓存。
 - 结构化反馈、通信和 Runtime 故障。
 - 有限超时的非阻塞 SocketCAN 发送，内核队列堵塞不会永久卡死关闭流程。
@@ -103,9 +99,7 @@ PyPI wheel 从 `packaging/pypi/` 构建，仅用于分发平台动态库：
 ```text
 motor_drive_layer_native/
 └── lib/
-    ├── libmotor_abi.so
-    ├── libarticore_runtime.so
-    └── dm_device/
+    └── libarticore_runtime.so
 ```
 
 wheel 不提供 Python import 接口。Articore-SDK 通过发行包元数据定位动态库，并自行维护
@@ -126,12 +120,12 @@ python3 -m build --wheel --outdir builds/wheels/current packaging/pypi
 单电机 Controller 默认不增加发送延迟；添加第二个电机后，默认启用 200 µs 的最小帧间隔。
 可通过 `MOTOR_DRIVE_LAYER_TX_GAP_US` 或原生配置接口修改。
 
-Linux SocketCAN 与 SocketCAN-FD socket 使用非阻塞模式。内核发送队列持续满时，默认 20 ms
+Linux SocketCAN-FD socket 使用非阻塞模式。内核发送队列持续满时，默认 20 ms
 后返回错误，写入通信健康状态并传递给 Runtime 故障处理。可用
 `MOTOR_DRIVE_LAYER_SOCKETCAN_SEND_TIMEOUT_MS` 设置 1 到 60000 ms 的超时。
 
-`motor_controller_request_feedback_all_ex()` 返回稳定的反馈错误码与缺失电机报告。Runtime
-集成必须使用结构化结果，不能解析错误字符串做安全决策。
+内部 Controller 返回稳定的反馈错误码与缺失电机报告。Runtime 使用结构化结果，不解析错误
+字符串做安全决策。
 
 ## Runtime 与重力补偿
 
@@ -213,7 +207,8 @@ Runtime ABI 2.20 将产品面彻底收口为唯一的 Yunyi V1.0 双臂。SDK �
 `articore_runtime_create_yunyi(mode, with_grippers)`，不再传 `product_id`，也不再公开通用
 Runtime 构造、Controller/Motor 组装、关节映射、夹爪 profile 或重力模型绑定。固定双 CAN、
 14 关节、可选双夹爪、方向/量程/限位、模型和资源生命周期统一放在独立的 C++ Yunyi 产品模块。
-旧 `create_product/create_ex*` C 符号只为已有二进制兼容保留，不再进入正常 SDK 路径。
+`create_product/create_ex*` 通用 C 构造入口已经删除；新主版本只保留固定产品入口，避免上层
+重新组装 Motor、Controller 或产品配置。
 
 Runtime ABI 2.21 增加产品级原子批量使能/失能接口。电机使用 `l-joint1..7`、
 `r-joint1..7`、`l-gripper`、`r-gripper` 稳定名称；批量使能任一步失败会回滚并确认本次已
@@ -370,23 +365,21 @@ cmake --build builds/cmake/default -j
 ctest --test-dir builds/cmake/default --output-on-failure
 ```
 
-CI 还会验证 wheel 不含 Python 源码、两个原生 ABI 库可加载、机器人模型不依赖 Pinocchio
-动态库，以及各发布架构上的 DM Device 依赖可正确解析。
+CI 还会验证 wheel 不含 Python 源码、唯一的产品 Runtime 动态库可加载，以及机器人模型不依赖
+Pinocchio 动态库。
 
 真机验收脚本位于 `scripts/`，必须先检查脚本，并显式提供电机映射和确认参数。
 
 ## 仓库结构
 
 ```text
-cpp_damiao/              通用 C++ 协议、通信与电机 C ABI
+cpp_damiao/              内部分层协议、Motor 与 SocketCAN-FD 核心
 articore_runtime/         原生产品 Runtime、机器人模型与 C/C++ ABI
 packaging/pypi/           仅组装二进制 wheel；不含 Python 运行时模块
-third_party/dm_device/    可选厂商头文件和可再分发动态库
 scripts/                  构建、诊断与真机验收工具
 tests/                    原生 CMake 包消费测试
 ```
 
 ## 许可证
 
-Motor-Drive-Layer 使用 MIT 许可证。随 wheel 分发的 DM Device、libusb 和 libstdc++ 组件保留
-其各自许可证说明，位于 `packaging/pypi/LICENSES/`。
+Motor-Drive-Layer 使用 MIT 许可证。

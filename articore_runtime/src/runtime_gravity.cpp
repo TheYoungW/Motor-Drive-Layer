@@ -147,7 +147,7 @@ void SafetyRuntime::start_gravity_compensation(
             "gravity compensation requires joint torque-limit configuration");
       }
       ArticoreMotorState state{};
-      if (api_.motor_get_state(joint, &state) != 0 || !state.has_value ||
+      if (backend_->get_state(joint, &state) != 0 || !state.has_value ||
           state.status_code != 1 || !finite(state.pos) || !finite(state.vel)) {
         throw std::runtime_error(
             motor_roles_.at(joint) +
@@ -215,7 +215,7 @@ void SafetyRuntime::stop_gravity_compensation() {
   for (const auto& arm : gravity_arms_) {
     for (void* joint : arm.joints) {
       ArticoreMotorState state{};
-      if (api_.motor_get_state(joint, &state) != 0 || !state.has_value ||
+      if (backend_->get_state(joint, &state) != 0 || !state.has_value ||
           state.status_code != 1 || !finite(state.pos)) {
         throw std::runtime_error(
             motor_roles_.at(joint) +
@@ -284,7 +284,7 @@ bool SafetyRuntime::run_gravity_control_cycle(Clock::time_point now,
     std::array<double, kArmDof> gravity{};
     std::array<ArticoreMotorState, kArmDof> feedback{};
     for (std::size_t joint = 0; joint < kArmDof; ++joint) {
-      if (api_.motor_get_state(arm.joints[joint], &feedback[joint]) != 0 ||
+      if (backend_->get_state(arm.joints[joint], &feedback[joint]) != 0 ||
           !feedback[joint].has_value || feedback[joint].status_code != 1 ||
           !finite(feedback[joint].pos) || !finite(feedback[joint].vel)) {
         error = motor_roles_.at(arm.joints[joint]) +
@@ -337,7 +337,7 @@ bool SafetyRuntime::run_gravity_control_cycle(Clock::time_point now,
     }
   }
 
-  if (api_.group_send_mit(controller_group_, send_data, send_count) != 0) {
+  if (backend_->send_mit(controller_group_, send_data, send_count) != 0) {
     error = motor_error("gravity compensation MIT send failed");
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     ++consecutive_send_failures_;

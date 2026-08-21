@@ -20,9 +20,6 @@ jobs:
       - name: Install build tools and pinned Pinocchio C++ headers
         run: python -m pip install --upgrade build 'libpinocchio==3.8.0' cmeel-eigen cmeel-urdfdom-headers
 
-      - name: Build private libusb runtime
-        run: bash scripts/build_private_libusb.sh "$RUNNER_TEMP/libusb-1.0.27"
-
       - name: Configure and build native libraries
         run: |
           cmake -S . -B builds/cmake/ci \
@@ -42,7 +39,7 @@ jobs:
 
       - name: Build binary-only PyPI payload
         env:
-          MOTOR_PRIVATE_LIBUSB_LIB: ${{ runner.temp }}/libusb-1.0.27/lib/libusb-1.0.so.0
+          ARTICORE_RUNTIME_LIB: ${{ github.workspace }}/builds/cmake/ci/articore_runtime/libarticore_runtime.so
         run: python -m build --wheel --outdir builds/wheels/raw packaging/pypi
 
       - name: Verify binary-only wheel
@@ -56,11 +53,9 @@ jobs:
           with ZipFile(wheel) as archive:
               names = archive.namelist()
           assert not any(name.endswith((".py", ".pyi")) for name in names)
-          assert "motor_drive_layer_native/lib/libmotor_abi.so" in names
           assert "motor_drive_layer_native/lib/libarticore_runtime.so" in names
           assert not any("/robotics/" in name for name in names)
-          assert "motor_drive_layer_native/lib/dm_device/v1.0.0/libdm_device.so" in names
-          assert "motor_drive_layer_native/lib/dm_device/v1.1.0/libdm_device.so" in names
+          assert not any("libmotor_abi" in name or "/dm_device/" in name for name in names)
           PY
           python -m pip install --force-reinstall --no-deps builds/wheels/raw/*.whl
           cd /tmp
@@ -69,21 +64,18 @@ jobs:
           import importlib.util
           from importlib.metadata import distribution, version
 
-          assert version("motor-drive-layer") == "0.10.39"
+          assert version("motor-drive-layer") == "0.11.0"
           assert importlib.util.find_spec("motor_drive_layer") is None
           dist = distribution("motor-drive-layer")
           files = {str(item): dist.locate_file(item) for item in dist.files or ()}
-          motor = files["motor_drive_layer_native/lib/libmotor_abi.so"]
           runtime = files["motor_drive_layer_native/lib/libarticore_runtime.so"]
-          motor_lib = ctypes.CDLL(str(motor))
-          motor_lib.motor_abi_version.restype = ctypes.c_char_p
-          assert motor_lib.motor_abi_version() == b"0.5.0-cpp"
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00020026
+          assert runtime_lib.articore_runtime_abi_version() == 0x00020027
           runtime_lib.articore_runtime_capabilities.restype = ctypes.c_uint64
           capabilities = runtime_lib.articore_runtime_capabilities()
           assert capabilities & (1 << 62)
+          assert capabilities & (1 << 63)
           assert capabilities & ((1 << 23) | (1 << 27)) == 0
           assert not hasattr(runtime_lib, "articore_runtime_get_control_hz")
           runtime_lib.articore_robot_model_create.argtypes = [ctypes.c_char_p, ctypes.c_uint32]

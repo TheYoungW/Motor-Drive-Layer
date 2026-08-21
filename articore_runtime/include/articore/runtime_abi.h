@@ -209,6 +209,10 @@ enum ArticoreRuntimeCapability {
   // exported solely for binary compatibility and must not be exposed by new
   // product SDKs. MIT ordinary and raw command semantics are unchanged.
   ARTICORE_CAP_PV_MAX_SPEED_ONLY = 1ULL << 62,
+  // ABI 2.39 removes the caller-assembled generic Runtime factory. The fixed
+  // Yunyi factory directly owns a C++ MotorBackend and SocketCAN-FD resources;
+  // no Motor C ABI or second shared library exists in the product path.
+  ARTICORE_CAP_DIRECT_CPP_MOTOR_CORE = 1ULL << 63,
 };
 
 enum {
@@ -938,45 +942,6 @@ typedef struct ArticoreDriverTransportHealth {
   char last_error[256];
 } ArticoreDriverTransportHealth;
 
-typedef int32_t (*ArticoreGroupSendPosVelFn)(
-    void*, const ArticorePosVelCommand*, uint32_t);
-typedef int32_t (*ArticoreGroupSendMitFn)(
-    void*, const ArticoreMitCommand*, uint32_t);
-typedef int32_t (*ArticoreControllerCallFn)(void*);
-// Returns the stable MotorErrorCode value used by libmotor_abi's structured
-// feedback entry point. The runtime never parses an error string for policy.
-typedef int32_t (*ArticoreControllerFeedbackFn)(
-    void*, uint32_t, ArticoreFeedbackReport*, uint32_t*, uint32_t);
-typedef int32_t (*ArticoreMotorGetStateFn)(void*, ArticoreMotorState*);
-typedef int32_t (*ArticoreMotorGetFeedbackStatsFn)(void*, ArticoreFeedbackStats*);
-typedef int32_t (*ArticoreControllerTransportHealthFn)(
-    void*, ArticoreDriverTransportHealth*);
-typedef const char* (*ArticoreLastErrorFn)(void);
-typedef int32_t (*ArticoreMotorEnsureModeFn)(void*, uint32_t, uint32_t);
-typedef int32_t (*ArticoreMotorSetCanTimeoutFn)(void*, uint32_t);
-
-typedef struct ArticoreMotorApi {
-  ArticoreGroupSendPosVelFn group_send_pos_vel;
-  ArticoreGroupSendMitFn group_send_mit;
-  ArticoreControllerCallFn controller_disable_all;
-  ArticoreControllerFeedbackFn controller_request_feedback_all_ex;
-  ArticoreMotorGetStateFn motor_get_state;
-  ArticoreMotorGetFeedbackStatsFn motor_get_feedback_stats;
-  ArticoreLastErrorFn last_error_message;
-  ArticoreControllerTransportHealthFn controller_get_transport_health;
-  ArticoreControllerCallFn motor_disable;
-} ArticoreMotorApi;
-
-typedef struct ArticoreMotorMaintenanceApi {
-  // Caller initializes this to sizeof(ArticoreMotorMaintenanceApi).
-  uint32_t struct_size;
-  ArticoreControllerCallFn motor_clear_error;
-  ArticoreControllerCallFn motor_set_zero_position;
-  ArticoreMotorEnsureModeFn motor_ensure_mode;
-  ArticoreMotorSetCanTimeoutFn motor_set_can_timeout_ms;
-  uint32_t communication_timeout_ms;
-} ArticoreMotorMaintenanceApi;
-
 typedef struct ArticoreRuntimeTransportCapabilities {
   // Caller initializes this to sizeof(ArticoreRuntimeTransportCapabilities).
   uint32_t struct_size;
@@ -1174,58 +1139,6 @@ ARTICORE_RUNTIME_API int32_t articore_robot_model_ik(
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_mode(
     ArticoreRuntime* runtime, int32_t* mode);
 
-ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
-    const ArticoreRuntimeConfig* config,
-    const ArticoreMotorApi* motor_api,
-    void* controller_group,
-    void* left_controller,
-    void* right_controller,
-    const ArticoreMotorDescriptor* motors,
-    uint32_t motor_count);
-// ABI 1.4 entry point. The two additive callbacks let the product runtime own
-// native enable without creating a shared-library dependency on libmotor_abi.
-// Language bindings pass motor_controller_enable_all and motor_handle_enable.
-ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex(
-    const ArticoreRuntimeConfig* config,
-    const ArticoreMotorApi* motor_api,
-    void* controller_group,
-    void* left_controller,
-    void* right_controller,
-    const ArticoreMotorDescriptor* motors,
-    uint32_t motor_count,
-    ArticoreControllerCallFn controller_enable_all,
-    ArticoreControllerCallFn motor_enable);
-// ABI 2.5 entry point. Native integrations provide exactly one immutable
-// transport capability record for each active side. Product scheduling policy
-// remains private to the Runtime implementation.
-ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex2(
-    const ArticoreRuntimeConfig* config,
-    const ArticoreMotorApi* motor_api,
-    void* controller_group,
-    void* left_controller,
-    void* right_controller,
-    const ArticoreMotorDescriptor* motors,
-    uint32_t motor_count,
-    ArticoreControllerCallFn controller_enable_all,
-    ArticoreControllerCallFn motor_enable,
-    const ArticoreRuntimeTransportCapabilities* transport_capabilities,
-    uint32_t transport_capability_count);
-// ABI 2.9 advanced embedding entry point. It keeps the legacy caller-owned
-// resource construction path but lets the Runtime execute maintenance through
-// the same already-leased Motor handles.
-ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex3(
-    const ArticoreRuntimeConfig* config,
-    const ArticoreMotorApi* motor_api,
-    const ArticoreMotorMaintenanceApi* maintenance_api,
-    void* controller_group,
-    void* left_controller,
-    void* right_controller,
-    const ArticoreMotorDescriptor* motors,
-    uint32_t motor_count,
-    ArticoreControllerCallFn controller_enable_all,
-    ArticoreControllerCallFn motor_enable,
-    const ArticoreRuntimeTransportCapabilities* transport_capabilities,
-    uint32_t transport_capability_count);
 // ABI 2.20 fixed Yunyi dual-arm factory. It owns can-left/can-right,
 // SocketCAN-FD+BRS, both Controllers, the ControllerGroup, and every product
 // mapping. with_grippers=1 creates 16 Motors and requires both grippers;
@@ -1233,11 +1146,6 @@ ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex3(
 // DISCONNECTED; connect() performs the normal complete feedback barrier.
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_yunyi(
     int32_t mode, int32_t with_grippers);
-// Compatibility entry point retained for ABI clients built before 2.20. The
-// only accepted product_id is "yunyi_v1_0" and it forwards to the fixed
-// factory above. New bindings must not ask users to choose a product profile.
-ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_product(
-    const char* product_id, int32_t mode, int32_t with_grippers);
 ARTICORE_RUNTIME_API void articore_runtime_free(ArticoreRuntime* runtime);
 
 // Configures the immutable CAN identity of every Runtime motor. The complete
@@ -1254,8 +1162,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_connect(ArticoreRuntime* runtime);
 // worker, closes both CAN channels, and releases Controllers, ControllerGroup,
 // Motors, models, and product resources. The opaque allocation remains as an
 // idempotent tombstone until articore_runtime_free(); language bindings should
-// free it automatically after success. Legacy generic Runtime handles also
-// stop their worker but retain caller-owned transport resources.
+// free it automatically after success.
 ARTICORE_RUNTIME_API int32_t articore_runtime_disconnect(
     ArticoreRuntime* runtime);
 ARTICORE_RUNTIME_API int32_t articore_runtime_configure_mode(

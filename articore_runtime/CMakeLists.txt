@@ -62,7 +62,7 @@ add_library(
 )
 add_library(articore::runtime ALIAS articore_runtime)
 target_link_libraries(
-  articore_runtime PRIVATE articore::runtime_core motorbridge::motor_abi
+  articore_runtime PRIVATE articore::runtime_core damiao::runtime
 )
 target_include_directories(articore_runtime PRIVATE ../cpp_damiao/include)
 target_include_directories(
@@ -85,9 +85,8 @@ if(UNIX AND NOT APPLE)
   )
   set_target_properties(
     articore_runtime PROPERTIES
-    BUILD_RPATH "\$ORIGIN:\$ORIGIN/dm_device"
-    INSTALL_RPATH "\$ORIGIN:\$ORIGIN/dm_device"
-    BUILD_WITH_INSTALL_RPATH YES
+    BUILD_RPATH "\$ORIGIN"
+    INSTALL_RPATH "\$ORIGIN"
   )
 elseif(APPLE)
   set_target_properties(
@@ -103,22 +102,11 @@ set_target_properties(
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN YES
 )
-if(UNIX AND NOT APPLE)
-  # ABI tests execute from the Runtime build directory while release payloads
-  # place both libraries side-by-side. Mirror that layout without embedding an
-  # absolute build-tree RUNPATH in the wheel artifact.
-  add_custom_command(
-    TARGET articore_runtime POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:motor_abi> $<TARGET_FILE_DIR:articore_runtime>
-  )
-endif()
-
 add_library(articore_runtime_cpp INTERFACE)
 add_library(articore::runtime_cpp ALIAS articore_runtime_cpp)
 target_compile_features(articore_runtime_cpp INTERFACE cxx_std_17)
 target_link_libraries(
-  articore_runtime_cpp INTERFACE articore_runtime motorbridge::motor_abi
+  articore_runtime_cpp INTERFACE articore_runtime
 )
 target_include_directories(
   articore_runtime_cpp
@@ -180,5 +168,12 @@ if(BUILD_TESTING)
   )
   target_link_libraries(
     articore_runtime_hardware_trajectory_smoke PRIVATE articore_runtime
+  )
+  add_executable(
+    articore_runtime_hardware_500hz_smoke EXCLUDE_FROM_ALL
+    tests/hardware_500hz_smoke.cpp
+  )
+  target_link_libraries(
+    articore_runtime_hardware_500hz_smoke PRIVATE articore_runtime
   )
 endif()

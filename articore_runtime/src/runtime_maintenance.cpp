@@ -142,7 +142,7 @@ int32_t SafetyRuntime::maintenance_precheck(
   }
   for (const auto& motor : motors_) {
     ArticoreMotorState state{};
-    if (api_.motor_get_state(motor.descriptor.motor, &state) != 0 ||
+    if (backend_->get_state(motor.descriptor.motor, &state) != 0 ||
         !state.has_value) {
       error = std::string(motor.descriptor.name) + ": feedback unavailable";
       failed_motors.emplace_back(motor.descriptor.name);
@@ -167,8 +167,7 @@ int32_t SafetyRuntime::maintenance_precheck(
 }
 
 int32_t SafetyRuntime::run_motor_maintenance(
-    ArticoreRuntimeOperation operation, ArticoreControllerCallFn callback,
-    ArticoreControlMode mode) {
+    ArticoreRuntimeOperation operation, ArticoreControlMode mode) {
   std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
   std::unique_lock<std::mutex> command_lock(command_mutex_);
   std::string error;
@@ -181,8 +180,10 @@ int32_t SafetyRuntime::run_motor_maintenance(
   }
 
   const bool configure = operation == ARTICORE_OPERATION_CONFIGURE_MODE;
-  if ((!configure && !callback) ||
-      (configure && !maintenance_api_.motor_ensure_mode)) {
+  const bool supported = configure ? backend_->can_ensure_mode()
+      : operation == ARTICORE_OPERATION_CLEAR_FAULTS
+          ? backend_->can_clear_error() : backend_->can_set_zero();
+  if (!supported) {
     return finish_maintenance(
         operation, ARTICORE_OPERATION_UNSUPPORTED,
         "the Runtime was created without native maintenance callbacks", failed,
@@ -203,26 +204,28 @@ int32_t SafetyRuntime::run_motor_maintenance(
         if (configure) {
           // The product control mode applies only to the fourteen arm joints.
           // Yunyi grippers always run MIT because a position/velocity gripper
-          // can keep driving into an obstructed target and stall. libmotor_abi
+          // can keep driving into an obstructed target and stall. The Motor core
           // uses MIT=1 and POS_VEL=2.
           const uint32_t native_mode =
               motor.descriptor.is_gripper || mode == ARTICORE_MODE_MIT
                   ? 1U : 2U;
-          rc = maintenance_api_.motor_ensure_mode(
+          rc = backend_->ensure_mode(
               motor.descriptor.motor, native_mode,
               config_.disable_feedback_timeout_ms);
-          if (rc == 0 && maintenance_api_.motor_set_can_timeout_ms &&
-              maintenance_api_.communication_timeout_ms > 0) {
-            rc = maintenance_api_.motor_set_can_timeout_ms(
+          if (rc == 0 && backend_->can_set_timeout() &&
+              backend_->communication_timeout_ms() > 0) {
+            rc = backend_->set_timeout_ms(
                 motor.descriptor.motor,
-                maintenance_api_.communication_timeout_ms);
+                backend_->communication_timeout_ms());
           }
+        } else if (operation == ARTICORE_OPERATION_CLEAR_FAULTS) {
+          rc = backend_->clear_error(motor.descriptor.motor);
         } else {
-          rc = callback(motor.descriptor.motor);
+          rc = backend_->set_zero(motor.descriptor.motor);
         }
         if (rc == 0) continue;
         results[side].failed.emplace_back(motor.descriptor.name);
-        const char* detail = api_.last_error_message();
+        const char* detail = backend_->last_error_message();
         results[side].errors.emplace_back(
             detail && detail[0] ? detail : "native motor command failed");
       }
@@ -261,7 +264,7 @@ int32_t SafetyRuntime::run_motor_maintenance(
   for (const auto& motor : motors_) {
     ArticoreMotorState state{};
     const bool readable =
-        api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+        backend_->get_state(motor.descriptor.motor, &state) == 0 &&
         state.has_value;
     const bool disabled = readable && state.status_code == 0;
     const bool stationary = readable && finite(state.vel) &&
@@ -292,19 +295,15 @@ int32_t SafetyRuntime::configure_mode(ArticoreControlMode mode) {
                             "unsupported control mode");
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
   }
-  return run_motor_maintenance(ARTICORE_OPERATION_CONFIGURE_MODE, nullptr,
-                               mode);
+  return run_motor_maintenance(ARTICORE_OPERATION_CONFIGURE_MODE, mode);
 }
 
 int32_t SafetyRuntime::clear_faults() {
-  return run_motor_maintenance(ARTICORE_OPERATION_CLEAR_FAULTS,
-                               maintenance_api_.motor_clear_error, mode_);
+  return run_motor_maintenance(ARTICORE_OPERATION_CLEAR_FAULTS, mode_);
 }
 
 int32_t SafetyRuntime::set_zero() {
-  return run_motor_maintenance(ARTICORE_OPERATION_SET_ZERO,
-                               maintenance_api_.motor_set_zero_position,
-                               mode_);
+  return run_motor_maintenance(ARTICORE_OPERATION_SET_ZERO, mode_);
 }
 
 }  // namespace articore

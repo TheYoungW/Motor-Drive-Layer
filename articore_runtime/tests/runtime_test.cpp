@@ -2982,27 +2982,9 @@ void test_native_scheduler_selects_rate_from_transport_capabilities() {
   require(socketcanfd_brs_dual.control_hz() == 500,
           "native scheduler selects its verified SocketCAN-FD+BRS cadence");
 
-  articore::SafetyRuntime dm_device_dual(
-      cfg, api(), reinterpret_cast<void*>(0x102), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false,
-      transport_capabilities("dm-device", true, true));
-  require(dm_device_dual.control_hz() == 400,
-          "dual DM Device runtime remains capped at 400 Hz");
-
-  auto mixed_capabilities = transport_capabilities("socketcanfd", true, true);
-  std::strncpy(mixed_capabilities[1].transport, "socketcan",
-               sizeof(mixed_capabilities[1].transport) - 1);
-  mixed_capabilities[1].can_fd_brs = 0;
-  articore::SafetyRuntime mixed_dual(
-      cfg, api(), reinterpret_cast<void*>(0x103), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false,
-      mixed_capabilities);
-  require(mixed_dual.control_hz() == 400,
-          "both dual transports must report SocketCAN-FD+BRS for 500 Hz");
-
   std::vector<ArticoreMotorDescriptor> single_motors{motors[0]};
   articore::SafetyRuntime single(
-      cfg, api(), reinterpret_cast<void*>(0x104), g_left_controller, nullptr,
+      cfg, api(), reinterpret_cast<void*>(0x102), g_left_controller, nullptr,
       single_motors);
   require(single.control_hz() == 400,
           "single-side scheduling is selected internally");

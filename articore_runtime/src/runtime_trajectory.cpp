@@ -498,9 +498,9 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
     const auto& joint = request.joints[joint_index];
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
-    if (api_.motor_get_feedback_stats(joint.motor, &stats) != 0 ||
+    if (backend_->get_feedback_stats(joint.motor, &stats) != 0 ||
         !stats.has_feedback || stats.age_ns > feedback_max_age_ns() ||
-        api_.motor_get_state(joint.motor, &state) != 0 || !state.has_value ||
+        backend_->get_state(joint.motor, &state) != 0 || !state.has_value ||
         !finite(state.pos) || !finite(state.vel) || state.status_code > 1) {
       throw std::runtime_error(
           "trajectory start requires fresh fault-free feedback at joint " +
@@ -881,9 +881,9 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
     const bool available =
-        api_.motor_get_feedback_stats(arrival.joint.motor, &stats) == 0 &&
+        backend_->get_feedback_stats(arrival.joint.motor, &stats) == 0 &&
         stats.has_feedback && stats.age_ns <= feedback_max_age_ns() &&
-        api_.motor_get_state(arrival.joint.motor, &state) == 0 &&
+        backend_->get_state(arrival.joint.motor, &state) == 0 &&
         state.has_value && state.status_code == 1 && finite(state.pos) &&
         finite(state.vel);
     if (!available) {

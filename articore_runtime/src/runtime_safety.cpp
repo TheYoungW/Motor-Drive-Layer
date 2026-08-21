@@ -28,7 +28,7 @@ void SafetyRuntime::report_feedback_failure(uint8_t side,
 }
 
 std::string SafetyRuntime::motor_error(const std::string& fallback) const {
-  const char* message = api_.last_error_message();
+  const char* message = backend_->last_error_message();
   return message && message[0] ? std::string(message) : fallback;
 }
 
@@ -88,10 +88,10 @@ bool SafetyRuntime::prepare_protective_hold(std::string& error) {
       ArticoreFeedbackStats stats{};
       ArticoreMotorState state{};
       const bool has_stats =
-          api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
+          backend_->get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
           stats.has_feedback;
       const bool has_state =
-          api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+          backend_->get_state(motor.descriptor.motor, &state) == 0 &&
           state.has_value;
       if (has_state && state.status_code != 1) {
         faulted.push_back(motor.descriptor.motor);
@@ -139,7 +139,7 @@ bool SafetyRuntime::prepare_protective_hold(std::string& error) {
       }
       ArticoreMotorState state{};
       const bool has_state =
-          api_.motor_get_state(command.motor, &state) == 0 && state.has_value;
+          backend_->get_state(command.motor, &state) == 0 && state.has_value;
       if (has_state && state.status_code != 1) {
         faulted.push_back(command.motor);
         continue;
@@ -224,7 +224,7 @@ bool SafetyRuntime::send_safe_hold_once(std::string& error) {
             }
           }
           if (!side_commands.empty() &&
-              api_.group_send_pos_vel(controller_group_, side_commands.data(),
+              backend_->send_pos_vel(controller_group_, side_commands.data(),
                   static_cast<uint32_t>(side_commands.size())) != 0) {
             rc = -1;
             if (!error.empty()) error += "; ";
@@ -243,7 +243,7 @@ bool SafetyRuntime::send_safe_hold_once(std::string& error) {
             }
           }
           if (!side_commands.empty() &&
-              api_.group_send_mit(controller_group_, side_commands.data(),
+              backend_->send_mit(controller_group_, side_commands.data(),
                   static_cast<uint32_t>(side_commands.size())) != 0) {
             rc = -1;
             if (!error.empty()) error += "; ";
@@ -261,7 +261,7 @@ bool SafetyRuntime::send_safe_hold_once(std::string& error) {
           return false;
         }
       } else {
-        rc = api_.group_send_pos_vel(controller_group_, pv.data(),
+        rc = backend_->send_pos_vel(controller_group_, pv.data(),
                                       static_cast<uint32_t>(pv.size()));
       }
     } else {
@@ -273,7 +273,7 @@ bool SafetyRuntime::send_safe_hold_once(std::string& error) {
           return false;
         }
       } else {
-        rc = api_.group_send_mit(controller_group_, mit.data(),
+        rc = backend_->send_mit(controller_group_, mit.data(),
                                 static_cast<uint32_t>(mit.size()));
       }
     }
@@ -319,7 +319,7 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
     const bool has_state =
-        api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+        backend_->get_state(motor.descriptor.motor, &state) == 0 &&
         state.has_value;
     const auto identity = [&]() {
       std::ostringstream detail;
@@ -330,7 +330,7 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
       detail << ")";
       return detail.str();
     };
-    if (api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
+    if (backend_->get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
         !stats.has_feedback) {
       side_ok[motor.descriptor.side] = false;
       side_error[motor.descriptor.side] =
@@ -462,12 +462,12 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
 }
 
 bool SafetyRuntime::refresh_transport_health(std::string& error) {
-  if (!api_.controller_get_transport_health) return true;
+  if (!backend_->has_transport_health()) return true;
   bool healthy = true;
   for (uint8_t side = 0; side < 2; ++side) {
     if (!active_sides_[side]) continue;
     ArticoreDriverTransportHealth native{};
-    const auto rc = api_.controller_get_transport_health(controllers_[side], &native);
+    const auto rc = backend_->get_transport_health(controllers_[side], &native);
     std::lock_guard<std::mutex> lock(state_mutex_);
     auto& output = sides_[side];
     if (rc != 0) {
@@ -635,7 +635,7 @@ ArticoreSafetyHealth SafetyRuntime::health() const {
     ArticoreFeedbackStats live_stats{};
     output.feedback_age_ns =
         state_ != ARTICORE_DISCONNECTED &&
-                api_.motor_get_feedback_stats(motor.descriptor.motor,
+                backend_->get_feedback_stats(motor.descriptor.motor,
                                               &live_stats) == 0 &&
                 live_stats.has_feedback
             ? live_stats.age_ns

@@ -8,7 +8,7 @@
 #include <thread>
 
 #include "damiao/runtime.hpp"
-#include "damiao/socketcan_bus.hpp"
+#include "damiao/socketcan_fd_bus.hpp"
 
 #if defined(__linux__)
 #include <cerrno>
@@ -19,7 +19,7 @@
 
 namespace damiao {
 
-class SocketCanBusTestPeer {
+class SocketCanFdBusTestPeer {
  public:
   static std::shared_ptr<SocketCanFdBus> adopt_fd(
       int fd, std::chrono::milliseconds send_timeout) {
@@ -66,7 +66,7 @@ void verify_blocked_fd_send_is_bounded() {
           "fill the test transmit queue");
 
   constexpr auto send_timeout = std::chrono::milliseconds(15);
-  auto bus = damiao::SocketCanBusTestPeer::adopt_fd(sockets[0], send_timeout);
+  auto bus = damiao::SocketCanFdBusTestPeer::adopt_fd(sockets[0], send_timeout);
   sockets[0] = -1;
   damiao::Controller controller(bus, "blocked SocketCAN-FD endpoint");
   auto motor = controller.add_damiao_motor(0x01, 0x11, "4340P");
@@ -150,19 +150,14 @@ void verify_blocked_fd_send_is_bounded() {
 int main() {
   damiao::CanFrame frame{0x123, {1, 2, 3, 4, 5, 6, 7, 8}};
   frame.dlc = 8;
-  const auto raw = damiao::SocketCanCodec::encode_classic(frame);
-  require(raw.can_id == 0x123, "classic standard can id");
-  require(raw.can_dlc == 8, "classic dlc");
-  require(raw.data == (std::array<uint8_t, 8>{1, 2, 3, 4, 5, 6, 7, 8}), "classic payload");
-
   damiao::CanFrame ext{0x1ABCDE, {8, 7, 6, 5, 4, 3, 2, 1}};
   ext.dlc = 8;
   ext.is_extended = true;
-  const auto raw_ext = damiao::SocketCanCodec::encode_classic(ext);
+  const auto raw_ext = damiao::SocketCanCodec::encode_fd(ext);
   require((raw_ext.can_id & damiao::SocketCanCodec::kCanEffFlag) != 0, "extended flag");
   require((raw_ext.can_id & damiao::SocketCanCodec::kCanEffMask) == 0x1ABCDE, "extended id");
 
-  const auto decoded = damiao::SocketCanCodec::decode_classic(raw_ext);
+  const auto decoded = damiao::SocketCanCodec::decode_fd(raw_ext);
   require(decoded.id == 0x1ABCDE, "decoded id");
   require(decoded.is_extended, "decoded extended flag");
   require(decoded.dlc == 8, "decoded dlc");
@@ -191,6 +186,6 @@ int main() {
   verify_blocked_fd_send_is_bounded();
 #endif
 
-  std::cout << "socketcan codec tests passed\n";
+  std::cout << "socketcan-fd tests passed\n";
   return 0;
 }

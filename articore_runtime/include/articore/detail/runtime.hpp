@@ -20,7 +20,82 @@
 #include "articore/runtime_abi.h"
 #include "articore/detail/robot_model.hpp"
 
+// Private callback adapter retained only for deterministic native tests. The
+// installed product ABI no longer exposes caller-assembled Motor resources.
+using ArticoreControllerCallFn = int32_t (*)(void*);
+using ArticoreGroupSendPosVelFn = int32_t (*)(
+    void*, const ArticorePosVelCommand*, uint32_t);
+using ArticoreGroupSendMitFn = int32_t (*)(
+    void*, const ArticoreMitCommand*, uint32_t);
+using ArticoreControllerFeedbackFn = int32_t (*)(
+    void*, uint32_t, ArticoreFeedbackReport*, uint32_t*, uint32_t);
+using ArticoreMotorGetStateFn = int32_t (*)(void*, ArticoreMotorState*);
+using ArticoreMotorGetFeedbackStatsFn = int32_t (*)(
+    void*, ArticoreFeedbackStats*);
+using ArticoreControllerTransportHealthFn = int32_t (*)(
+    void*, ArticoreDriverTransportHealth*);
+using ArticoreLastErrorFn = const char* (*)(void);
+using ArticoreMotorEnsureModeFn = int32_t (*)(void*, uint32_t, uint32_t);
+using ArticoreMotorSetCanTimeoutFn = int32_t (*)(void*, uint32_t);
+
+struct ArticoreMotorApi {
+  ArticoreGroupSendPosVelFn group_send_pos_vel;
+  ArticoreGroupSendMitFn group_send_mit;
+  ArticoreControllerCallFn controller_disable_all;
+  ArticoreControllerFeedbackFn controller_request_feedback_all_ex;
+  ArticoreMotorGetStateFn motor_get_state;
+  ArticoreMotorGetFeedbackStatsFn motor_get_feedback_stats;
+  ArticoreLastErrorFn last_error_message;
+  ArticoreControllerTransportHealthFn controller_get_transport_health;
+  ArticoreControllerCallFn motor_disable;
+};
+
+struct ArticoreMotorMaintenanceApi {
+  uint32_t struct_size;
+  ArticoreControllerCallFn motor_clear_error;
+  ArticoreControllerCallFn motor_set_zero_position;
+  ArticoreMotorEnsureModeFn motor_ensure_mode;
+  ArticoreMotorSetCanTimeoutFn motor_set_can_timeout_ms;
+  uint32_t communication_timeout_ms;
+};
+
 namespace articore {
+
+class MotorBackend {
+ public:
+  virtual ~MotorBackend() = default;
+
+  virtual int32_t send_pos_vel(
+      void* group, const ArticorePosVelCommand* commands, uint32_t count) = 0;
+  virtual int32_t send_mit(
+      void* group, const ArticoreMitCommand* commands, uint32_t count) = 0;
+  virtual int32_t disable_all(void* controller) = 0;
+  virtual int32_t request_feedback(
+      void* controller, uint32_t timeout_ms, ArticoreFeedbackReport* report,
+      uint32_t* missing, uint32_t capacity) = 0;
+  virtual int32_t get_state(void* motor, ArticoreMotorState* state) = 0;
+  virtual int32_t get_feedback_stats(
+      void* motor, ArticoreFeedbackStats* stats) = 0;
+  virtual int32_t get_transport_health(
+      void* controller, ArticoreDriverTransportHealth* health) = 0;
+  virtual bool has_transport_health() const { return true; }
+  virtual int32_t disable_motor(void* motor) = 0;
+  virtual const char* last_error_message() const = 0;
+
+  virtual bool can_enable_all() const { return false; }
+  virtual int32_t enable_all(void*) { return -1; }
+  virtual bool can_enable_motor() const { return false; }
+  virtual int32_t enable_motor(void*) { return -1; }
+  virtual bool can_clear_error() const { return false; }
+  virtual int32_t clear_error(void*) { return -1; }
+  virtual bool can_set_zero() const { return false; }
+  virtual int32_t set_zero(void*) { return -1; }
+  virtual bool can_ensure_mode() const { return false; }
+  virtual int32_t ensure_mode(void*, uint32_t, uint32_t) { return -1; }
+  virtual bool can_set_timeout() const { return false; }
+  virtual int32_t set_timeout_ms(void*, uint32_t) { return -1; }
+  virtual uint32_t communication_timeout_ms() const { return 0; }
+};
 
 // Damiao POS_VEL interprets the second float as a motion speed limit. Once the
 // final position has physically arrived, zero keeps the position target armed
@@ -97,6 +172,18 @@ inline void advance_periodic_deadline(
 
 class SafetyRuntime {
  public:
+  SafetyRuntime(ArticoreRuntimeConfig config,
+                std::shared_ptr<MotorBackend> backend,
+                void* controller_group,
+                void* left_controller,
+                void* right_controller,
+                std::vector<ArticoreMotorDescriptor> motors,
+                bool require_gripper_product_profiles = false,
+                std::vector<ArticoreRuntimeTransportCapabilities>
+                    transport_capabilities = {},
+                uint32_t internal_control_rate_override = 0);
+  // Callback constructor retained only for deterministic native unit tests.
+  // Yunyi product creation uses the native C++ MotorBackend overload above.
   SafetyRuntime(ArticoreRuntimeConfig config,
                 ArticoreMotorApi api,
                 void* controller_group,
@@ -478,7 +565,6 @@ class SafetyRuntime {
                              const std::vector<std::string>& failed_motors,
                              bool latch_fault);
   int32_t run_motor_maintenance(ArticoreRuntimeOperation operation,
-                                ArticoreControllerCallFn callback,
                                 ArticoreControlMode mode);
   static bool finite(float value);
   MotorRecord* resolve_motor_role(const std::string& role);
@@ -494,12 +580,9 @@ class SafetyRuntime {
   // The optional constructor override exists only in this private header for
   // deterministic native tests.
   uint32_t control_hz_ = 400;
-  ArticoreMotorApi api_{};
-  ArticoreMotorMaintenanceApi maintenance_api_{};
+  std::shared_ptr<MotorBackend> backend_;
   void* controller_group_ = nullptr;
   void* controllers_[2]{};
-  ArticoreControllerCallFn controller_enable_all_ = nullptr;
-  ArticoreControllerCallFn motor_enable_ = nullptr;
   bool require_gripper_product_profiles_ = false;
   bool active_sides_[2]{};
   std::vector<MotorRecord> motors_;

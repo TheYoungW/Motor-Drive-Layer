@@ -318,7 +318,7 @@ void SafetyRuntime::submit_gripper_mit(const ArticoreMitCommand* commands,
       std::lock_guard<std::mutex> state_lock(state_mutex_);
       require_state_for_command(true);
     }
-    if (api_.group_send_mit(controller_group_, commands, count) != 0) {
+    if (backend_->send_mit(controller_group_, commands, count) != 0) {
       error = motor_error("gripper group send failed");
       send_failed = true;
     } else {
@@ -526,7 +526,7 @@ void SafetyRuntime::seed_gripper_targets_from_feedback(bool activate) {
   for (auto& motor : motors_) {
     if (!motor.descriptor.is_gripper) continue;
     ArticoreMotorState state{};
-    if (api_.motor_get_state(motor.descriptor.motor, &state) == 0 && state.has_value) {
+    if (backend_->get_state(motor.descriptor.motor, &state) == 0 && state.has_value) {
       motor.last_position = state.pos;
       motor.has_position = true;
       motor.command_position = state.pos;
@@ -561,9 +561,9 @@ bool SafetyRuntime::prepare_gripper_commands_locked(
     if (intentionally_disabled.count(motor.descriptor.motor)) continue;
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
-    if (api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
+    if (backend_->get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
         !stats.has_feedback ||
-        api_.motor_get_state(motor.descriptor.motor, &state) != 0 ||
+        backend_->get_state(motor.descriptor.motor, &state) != 0 ||
         !state.has_value) {
       ++motor.consecutive_feedback_failures;
       // Missing feedback follows the Runtime-wide graded policy. Keep the
@@ -800,7 +800,7 @@ bool SafetyRuntime::run_gripper_control_once(std::string& error) {
   const auto now = Clock::now();
   if (!prepare_gripper_commands_locked(now, commands, error)) return false;
   if (commands.empty()) return true;
-  if (api_.group_send_mit(controller_group_, commands.data(),
+  if (backend_->send_mit(controller_group_, commands.data(),
                           static_cast<uint32_t>(commands.size())) != 0) {
     error = motor_error("gripper control batch failed");
     return false;
@@ -835,9 +835,9 @@ bool SafetyRuntime::send_gripper_hold_once(std::string& error) {
     if (found == motors_.end()) continue;
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
-    if (api_.motor_get_feedback_stats(command.motor, &stats) != 0 ||
+    if (backend_->get_feedback_stats(command.motor, &stats) != 0 ||
         !stats.has_feedback ||
-        api_.motor_get_state(command.motor, &state) != 0 || !state.has_value) {
+        backend_->get_state(command.motor, &state) != 0 || !state.has_value) {
       ++found->consecutive_feedback_failures;
       sendable.push_back(command);
       continue;
@@ -931,7 +931,7 @@ bool SafetyRuntime::send_gripper_hold_once(std::string& error) {
         }
       }
       if (side_commands.empty()) continue;
-      if (api_.group_send_mit(controller_group_, side_commands.data(),
+      if (backend_->send_mit(controller_group_, side_commands.data(),
                               static_cast<uint32_t>(side_commands.size())) != 0) {
         sent = false;
         if (!error.empty()) error += "; ";
@@ -939,7 +939,7 @@ bool SafetyRuntime::send_gripper_hold_once(std::string& error) {
                  " protective gripper hold send failed";
       }
     }
-  } else if (api_.group_send_mit(
+  } else if (backend_->send_mit(
                  controller_group_, sendable.data(),
                  static_cast<uint32_t>(sendable.size())) != 0) {
     sent = false;

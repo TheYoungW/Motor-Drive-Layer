@@ -1,6 +1,0 @@
-4e1ad91fa5b646f667e2326f0b752012851bbc8881348a4a55fe83d8a4854981  v1.0.0/linux/libdm_device.so
-4a73c8ec7d64342f0d0a1156d5102f519c5f176fb23696740f254fe6492c3f2a  v1.1.0/linux/arm64/libdm_device.so
-bec4ca4421f5366c90fa11cc34f2f683ed71a6372e15c265e7e4b17e720607dd  v1.1.0/linux/x86_64/libdm_device.so
-39fa19eeb285134047722e57f05b91c212b1de3c323d47b1e7f627069463402d  v1.1.0/macos/arm64/libdm_device.dylib
-558cded5f955d49eab68dbffb788a4e08b17bfd06e4758643ffc1bab712e78fa  v1.1.0/macos/x86_64/libdm_device.dylib
-dec6d79f25aee0422aa1908ad6cc68161e14408726265da8adbfffdc74645176  v1.1.0/windows/msvc/dm_device.dll

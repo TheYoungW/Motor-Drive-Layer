@@ -15,60 +15,19 @@ target_include_directories(
     $<INSTALL_INTERFACE:include>
 )
 
-# C++ 运行时实现：包含控制器、协议编解码和各类总线后端。
+# Yunyi 的内部 C++ Motor 核心。协议、Motor、Controller 和双通道分组仍
+# 分层维护，但不再构建独立 C ABI 动态库。
 set(
   DAMIAO_RUNTIME_SOURCES
   src/runtime.cpp
-  src/dm_serial_codec.cpp
-  src/socketcan_bus.cpp
-  src/dm_device_bus.cpp
-  src/dm_device_shim.cpp
+  src/socketcan_fd_bus.cpp
 )
-
-# Windows 与 POSIX 系统使用各自的串口底层实现。
-if(WIN32)
-  list(APPEND DAMIAO_RUNTIME_SOURCES src/dm_serial_bus_windows.cpp)
-else()
-  list(APPEND DAMIAO_RUNTIME_SOURCES src/dm_serial_bus_posix.cpp)
-endif()
 
 add_library(damiao_runtime STATIC ${DAMIAO_RUNTIME_SOURCES})
 add_library(damiao::runtime ALIAS damiao_runtime)
 target_compile_features(damiao_runtime PUBLIC cxx_std_17)
-target_link_libraries(damiao_runtime PUBLIC damiao::cpp ${CMAKE_DL_LIBS})
-target_include_directories(damiao_runtime PRIVATE ../third_party/dm_device/v1.1.0)
+target_link_libraries(damiao_runtime PUBLIC damiao::cpp)
 set_target_properties(damiao_runtime PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-# C ABI 动态库：封装 C++ 运行时，供 Python ctypes 等外部调用者加载。
-add_library(motor_abi SHARED src/motor_abi.cpp)
-add_library(motorbridge::motor_abi ALIAS motor_abi)
-target_compile_features(motor_abi PRIVATE cxx_std_17)
-target_include_directories(
-  motor_abi
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
-target_link_libraries(motor_abi PRIVATE damiao::runtime)
-set_target_properties(motor_abi PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-if(UNIX AND NOT APPLE)
-  set_target_properties(
-    motor_abi PROPERTIES
-    BUILD_RPATH "\$ORIGIN/dm_device"
-    INSTALL_RPATH "\$ORIGIN/dm_device"
-  )
-endif()
-
-include(GNUInstallDirs)
-install(
-  TARGETS motor_abi
-  EXPORT MotorDriveLayerTargets
-  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
-install(FILES include/motor_abi.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/motor)
-install(FILES include/motor_abi.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 # 测试目标：仅在 BUILD_TESTING 开启时参与构建并注册到 CTest。
 if(BUILD_TESTING)
@@ -84,31 +43,7 @@ if(BUILD_TESTING)
   target_link_libraries(damiao_runtime_test PRIVATE damiao::runtime)
   add_test(NAME damiao_runtime_test COMMAND damiao_runtime_test)
 
-  add_executable(motor_abi_smoke_test tests/abi_smoke_test.cpp)
-  target_include_directories(motor_abi_smoke_test PRIVATE include)
-  target_link_libraries(motor_abi_smoke_test PRIVATE motor_abi)
-  add_test(NAME motor_abi_smoke_test COMMAND motor_abi_smoke_test)
-
-  add_executable(dm_serial_codec_test tests/dm_serial_codec_test.cpp)
-  target_link_libraries(dm_serial_codec_test PRIVATE damiao::runtime)
-  add_test(NAME dm_serial_codec_test COMMAND dm_serial_codec_test)
-
-  add_executable(socketcan_codec_test tests/socketcan_codec_test.cpp)
-  target_link_libraries(socketcan_codec_test PRIVATE damiao::runtime)
-  add_test(NAME socketcan_codec_test COMMAND socketcan_codec_test)
-
-  add_executable(dm_device_test tests/dm_device_test.cpp)
-  add_library(mock_dm_device_v10 SHARED tests/mock_dm_device_v10.cpp)
-  add_library(mock_dm_device_v11 SHARED tests/mock_dm_device_v11.cpp)
-  target_include_directories(mock_dm_device_v10 PRIVATE ../third_party/dm_device/v1.1.0)
-  target_include_directories(mock_dm_device_v11 PRIVATE ../third_party/dm_device/v1.1.0)
-  set_target_properties(mock_dm_device_v10 mock_dm_device_v11 PROPERTIES
-    WINDOWS_EXPORT_ALL_SYMBOLS ON)
-  target_include_directories(dm_device_test PRIVATE src)
-  target_compile_definitions(dm_device_test PRIVATE
-    MOCK_DM_DEVICE_V10_PATH="$<TARGET_FILE:mock_dm_device_v10>"
-    MOCK_DM_DEVICE_V11_PATH="$<TARGET_FILE:mock_dm_device_v11>")
-  add_dependencies(dm_device_test mock_dm_device_v10 mock_dm_device_v11)
-  target_link_libraries(dm_device_test PRIVATE damiao::runtime)
-  add_test(NAME dm_device_test COMMAND dm_device_test)
+  add_executable(socketcan_fd_test tests/socketcan_fd_test.cpp)
+  target_link_libraries(socketcan_fd_test PRIVATE damiao::runtime)
+  add_test(NAME socketcan_fd_test COMMAND socketcan_fd_test)
 endif()

@@ -12,6 +12,113 @@
 
 namespace articore {
 
+namespace {
+
+class FunctionMotorBackend final : public MotorBackend {
+ public:
+  FunctionMotorBackend(ArticoreMotorApi api,
+                       ArticoreControllerCallFn controller_enable_all,
+                       ArticoreControllerCallFn motor_enable,
+                       ArticoreMotorMaintenanceApi maintenance)
+      : api_(api), controller_enable_all_(controller_enable_all),
+        motor_enable_(motor_enable), maintenance_(maintenance) {}
+
+  int32_t send_pos_vel(void* group, const ArticorePosVelCommand* commands,
+                       uint32_t count) override {
+    return api_.group_send_pos_vel(group, commands, count);
+  }
+  int32_t send_mit(void* group, const ArticoreMitCommand* commands,
+                   uint32_t count) override {
+    return api_.group_send_mit(group, commands, count);
+  }
+  int32_t disable_all(void* controller) override {
+    return api_.controller_disable_all(controller);
+  }
+  int32_t request_feedback(
+      void* controller, uint32_t timeout_ms, ArticoreFeedbackReport* report,
+      uint32_t* missing, uint32_t capacity) override {
+    return api_.controller_request_feedback_all_ex(
+        controller, timeout_ms, report, missing, capacity);
+  }
+  int32_t get_state(void* motor, ArticoreMotorState* state) override {
+    return api_.motor_get_state(motor, state);
+  }
+  int32_t get_feedback_stats(
+      void* motor, ArticoreFeedbackStats* stats) override {
+    return api_.motor_get_feedback_stats(motor, stats);
+  }
+  int32_t get_transport_health(
+      void* controller, ArticoreDriverTransportHealth* health) override {
+    return api_.controller_get_transport_health
+        ? api_.controller_get_transport_health(controller, health) : 0;
+  }
+  bool has_transport_health() const override {
+    return api_.controller_get_transport_health != nullptr;
+  }
+  int32_t disable_motor(void* motor) override {
+    return api_.motor_disable(motor);
+  }
+  const char* last_error_message() const override {
+    return api_.last_error_message ? api_.last_error_message() : "Motor error";
+  }
+  bool can_enable_all() const override { return controller_enable_all_ != nullptr; }
+  int32_t enable_all(void* controller) override {
+    return controller_enable_all_(controller);
+  }
+  bool can_enable_motor() const override { return motor_enable_ != nullptr; }
+  int32_t enable_motor(void* motor) override { return motor_enable_(motor); }
+  bool can_clear_error() const override {
+    return maintenance_.motor_clear_error != nullptr;
+  }
+  int32_t clear_error(void* motor) override {
+    return maintenance_.motor_clear_error(motor);
+  }
+  bool can_set_zero() const override {
+    return maintenance_.motor_set_zero_position != nullptr;
+  }
+  int32_t set_zero(void* motor) override {
+    return maintenance_.motor_set_zero_position(motor);
+  }
+  bool can_ensure_mode() const override {
+    return maintenance_.motor_ensure_mode != nullptr;
+  }
+  int32_t ensure_mode(void* motor, uint32_t mode,
+                      uint32_t timeout_ms) override {
+    return maintenance_.motor_ensure_mode(motor, mode, timeout_ms);
+  }
+  bool can_set_timeout() const override {
+    return maintenance_.motor_set_can_timeout_ms != nullptr;
+  }
+  int32_t set_timeout_ms(void* motor, uint32_t timeout_ms) override {
+    return maintenance_.motor_set_can_timeout_ms(motor, timeout_ms);
+  }
+  uint32_t communication_timeout_ms() const override {
+    return maintenance_.communication_timeout_ms;
+  }
+
+ private:
+  ArticoreMotorApi api_{};
+  ArticoreControllerCallFn controller_enable_all_ = nullptr;
+  ArticoreControllerCallFn motor_enable_ = nullptr;
+  ArticoreMotorMaintenanceApi maintenance_{};
+};
+
+std::shared_ptr<MotorBackend> make_function_backend(
+    ArticoreMotorApi api, ArticoreControllerCallFn controller_enable_all,
+    ArticoreControllerCallFn motor_enable,
+    ArticoreMotorMaintenanceApi maintenance) {
+  if (!api.group_send_pos_vel || !api.group_send_mit ||
+      !api.controller_disable_all || !api.controller_request_feedback_all_ex ||
+      !api.motor_get_state || !api.motor_get_feedback_stats ||
+      !api.last_error_message || !api.motor_disable) {
+    throw std::invalid_argument("Articore runtime motor API is incomplete");
+  }
+  return std::make_shared<FunctionMotorBackend>(
+      api, controller_enable_all, motor_enable, maintenance);
+}
+
+}  // namespace
+
 using detail::age_ns;
 using detail::copy_text;
 
@@ -32,21 +139,30 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
                                  transport_capabilities,
                              ArticoreMotorMaintenanceApi maintenance_api,
                              uint32_t internal_control_rate_override)
-    : config_(config), api_(api), maintenance_api_(maintenance_api),
+    : SafetyRuntime(
+          config,
+          make_function_backend(api, controller_enable_all, motor_enable,
+                                maintenance_api),
+          controller_group, left_controller, right_controller,
+          std::move(motors), require_gripper_product_profiles,
+          std::move(transport_capabilities), internal_control_rate_override) {}
+
+SafetyRuntime::SafetyRuntime(
+    ArticoreRuntimeConfig config, std::shared_ptr<MotorBackend> backend,
+    void* controller_group, void* left_controller, void* right_controller,
+    std::vector<ArticoreMotorDescriptor> motors,
+    bool require_gripper_product_profiles,
+    std::vector<ArticoreRuntimeTransportCapabilities> transport_capabilities,
+    uint32_t internal_control_rate_override)
+    : config_(config), backend_(std::move(backend)),
       controller_group_(controller_group),
-      controller_enable_all_(controller_enable_all), motor_enable_(motor_enable),
       require_gripper_product_profiles_(require_gripper_product_profiles) {
   controllers_[0] = left_controller;
   controllers_[1] = right_controller;
   if (!controller_group_) {
     throw std::invalid_argument("Articore runtime requires a controller group");
   }
-  if (!api_.group_send_pos_vel || !api_.group_send_mit ||
-      !api_.controller_disable_all || !api_.controller_request_feedback_all_ex ||
-      !api_.motor_get_state || !api_.motor_get_feedback_stats ||
-      !api_.last_error_message || !api_.motor_disable) {
-    throw std::invalid_argument("Articore runtime motor API is incomplete");
-  }
+  if (!backend_) throw std::invalid_argument("Articore runtime requires a Motor backend");
   if (config_.command_timeout_ms == 0 || config_.enable_grace_ms == 0 ||
       config_.safe_hold_hz == 0 ||
       config_.feedback_check_hz == 0 || config_.feedback_failure_threshold == 0 ||

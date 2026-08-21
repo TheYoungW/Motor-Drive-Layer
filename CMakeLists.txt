@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
-project(motorbridge_native VERSION 0.10.39 LANGUAGES CXX)
+project(motorbridge_native VERSION 0.11.0 LANGUAGES CXX)
+
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR "The Yunyi Runtime supports Linux SocketCAN-FD only")
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,47 +33,7 @@ install(
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/MotorDriveLayer"
 )
 
-set(MOTOR_DM_DEVICE_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/dm_device")
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
-   CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
-  install(
-    FILES third_party/dm_device/v1.1.0/linux/arm64/libdm_device.so
-    DESTINATION "${MOTOR_DM_DEVICE_INSTALL_DIR}/v1.1.0"
-  )
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
-       CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
-  install(
-    FILES third_party/dm_device/v1.0.0/linux/libdm_device.so
-    DESTINATION "${MOTOR_DM_DEVICE_INSTALL_DIR}/v1.0.0"
-  )
-  install(
-    FILES third_party/dm_device/v1.1.0/linux/x86_64/libdm_device.so
-    DESTINATION "${MOTOR_DM_DEVICE_INSTALL_DIR}/v1.1.0"
-  )
-  install(
-    FILES third_party/libstdcxx/linux/x86_64/libstdc++.so.6
-    DESTINATION "${MOTOR_DM_DEVICE_INSTALL_DIR}"
-  )
-elseif(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
-  install(
-    FILES third_party/dm_device/v1.1.0/macos/arm64/libdm_device.dylib
-    DESTINATION "${MOTOR_DM_DEVICE_INSTALL_DIR}/v1.1.0"
-  )
-elseif(APPLE)
-  install(
-    FILES third_party/dm_device/v1.1.0/macos/x86_64/libdm_device.dylib
-    DESTINATION "${MOTOR_DM_DEVICE_INSTALL_DIR}/v1.1.0"
-  )
-elseif(WIN32)
-  install(
-    FILES third_party/dm_device/v1.1.0/windows/msvc/dm_device.dll
-    DESTINATION "${CMAKE_INSTALL_BINDIR}/dm_device/v1.1.0"
-  )
-endif()
-install(
-  FILES LICENSE packaging/pypi/LICENSES/DM_DEVICE_RUNTIME_NOTICE
-  DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/MotorDriveLayer"
-)
+install(FILES LICENSE DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/MotorDriveLayer")
 install(
   FILES
     "${CMAKE_CURRENT_BINARY_DIR}/MotorDriveLayerConfig.cmake"

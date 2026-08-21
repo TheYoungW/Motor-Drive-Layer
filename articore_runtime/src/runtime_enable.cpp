@@ -32,7 +32,7 @@ bool SafetyRuntime::request_feedback_parallel(
       result.missing.assign(std::max<uint32_t>(motor_count, 1),
                             std::numeric_limits<uint32_t>::max());
       result.report.struct_size = sizeof(result.report);
-      result.code = api_.controller_request_feedback_all_ex(
+      result.code = backend_->request_feedback(
           controllers_[side], timeout_ms, &result.report,
           result.missing.data(), static_cast<uint32_t>(result.missing.size()));
       const auto reported = std::min<std::size_t>(
@@ -43,7 +43,7 @@ bool SafetyRuntime::request_feedback_parallel(
                       std::numeric_limits<uint32_t>::max()),
           result.missing.end());
       if (result.code != 0) {
-        const char* detail = api_.last_error_message();
+        const char* detail = backend_->last_error_message();
         if (detail && detail[0]) result.error = detail;
       }
     });
@@ -68,7 +68,7 @@ bool SafetyRuntime::request_feedback_parallel(
         ArticoreMotorState state{};
         const uint32_t id = motor.motor_identity_configured
             ? motor.configured_can_id
-            : (api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+            : (backend_->get_state(motor.descriptor.motor, &state) == 0 &&
                        state.has_value
                    ? state.can_id
                    : 0);
@@ -130,10 +130,10 @@ bool SafetyRuntime::validate_fresh_feedback_snapshot(
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
     const bool has_stats =
-        api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
+        backend_->get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
         stats.has_feedback;
     const bool has_state =
-        api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+        backend_->get_state(motor.descriptor.motor, &state) == 0 &&
         state.has_value;
     if (has_state) {
       snapshot.has_can_id = true;
@@ -324,11 +324,11 @@ bool SafetyRuntime::confirm_enabled_feedback(
       ArticoreFeedbackStats stats{};
       ArticoreMotorState state{};
       const std::string name(motor.descriptor.name);
-      if (api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
+      if (backend_->get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
           !stats.has_feedback ||
           stats.age_ns > static_cast<uint64_t>(config_.feedback_max_age_ms) *
                              1'000'000ULL ||
-          api_.motor_get_state(motor.descriptor.motor, &state) != 0 ||
+          backend_->get_state(motor.descriptor.motor, &state) != 0 ||
           !state.has_value) {
         all_enabled = false;
         if (state_error.empty()) {
@@ -348,7 +348,7 @@ bool SafetyRuntime::confirm_enabled_feedback(
       }
       if (state.status_code != 1) {
         all_enabled = false;
-        if (motor_enable_ &&
+        if (backend_->can_enable_motor() &&
             retried_motors.insert(motor.descriptor.motor).second) {
           retry_by_side[motor.descriptor.side].push_back(&motor);
         }
@@ -369,8 +369,8 @@ bool SafetyRuntime::confirm_enabled_feedback(
       if (retry_by_side[side].empty()) continue;
       retry_workers.emplace_back([&, side] {
         for (const auto* motor : retry_by_side[side]) {
-          if (motor_enable_(motor->descriptor.motor) == 0) continue;
-          const char* detail = api_.last_error_message();
+          if (backend_->enable_motor(motor->descriptor.motor) == 0) continue;
+          const char* detail = backend_->last_error_message();
           retry_results[side].error =
               std::string(side == 0 ? "CH0/" : "CH1/") +
               motor->descriptor.name + ": one-shot enable retry failed";
@@ -419,10 +419,10 @@ void SafetyRuntime::update_enable_report(
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
     const bool has_stats =
-        api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
+        backend_->get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
         stats.has_feedback;
     const bool has_state =
-        api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+        backend_->get_state(motor.descriptor.motor, &state) == 0 &&
         state.has_value;
     output.has_feedback = has_stats && has_state ? 1 : 0;
     output.feedback_fresh = output.has_feedback &&
@@ -504,9 +504,9 @@ bool SafetyRuntime::send_initial_hold(ArticoreControlMode mode,
                                       std::string& error) {
   std::lock_guard<std::mutex> command_lock(command_mutex_);
   const int32_t arm_result = mode == ARTICORE_MODE_PV
-      ? api_.group_send_pos_vel(controller_group_, arm_mailbox_.pv.data(),
+      ? backend_->send_pos_vel(controller_group_, arm_mailbox_.pv.data(),
                                 static_cast<uint32_t>(arm_mailbox_.pv.size()))
-      : api_.group_send_mit(controller_group_, arm_mailbox_.mit.data(),
+      : backend_->send_mit(controller_group_, arm_mailbox_.mit.data(),
                            static_cast<uint32_t>(arm_mailbox_.mit.size()));
   if (arm_result != 0) {
     error = motor_error("initial arm hold send failed");
@@ -520,7 +520,7 @@ bool SafetyRuntime::send_initial_hold(ArticoreControlMode mode,
     last_sent_pv_.clear();
   }
   if (!safe_grippers_.empty() &&
-      api_.group_send_mit(controller_group_, safe_grippers_.data(),
+      backend_->send_mit(controller_group_, safe_grippers_.data(),
                           static_cast<uint32_t>(safe_grippers_.size())) != 0) {
     error = motor_error("initial gripper hold send failed");
     return false;
@@ -564,7 +564,7 @@ ArticoreMotorPowerState SafetyRuntime::cached_motor_power_state(
   for (const auto& motor : motors_) {
     if (selected && &motor != selected) continue;
     ArticoreMotorState state{};
-    if (api_.motor_get_state(motor.descriptor.motor, &state) != 0 ||
+    if (backend_->get_state(motor.descriptor.motor, &state) != 0 ||
         !state.has_value || state.status_code > 1) {
       return ARTICORE_MOTOR_POWER_UNKNOWN;
     }
@@ -678,7 +678,7 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
       throw std::runtime_error(
           "motor enable batch requires READY or PARTIALLY_ENABLED");
     }
-    if (enabled && !motor_enable_) {
+    if (enabled && !backend_->can_enable_motor()) {
       throw std::runtime_error("motor enable batch is unavailable");
     }
     if (hardware_transition_) {
@@ -726,10 +726,10 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
       ArticoreFeedbackStats stats{};
       ArticoreMotorState state{};
       const bool fresh =
-          api_.motor_get_feedback_stats(motor->descriptor.motor, &stats) == 0 &&
+          backend_->get_feedback_stats(motor->descriptor.motor, &stats) == 0 &&
           stats.has_feedback && stats.age_ns <= max_age;
       const bool readable =
-          api_.motor_get_state(motor->descriptor.motor, &state) == 0 &&
+          backend_->get_state(motor->descriptor.motor, &state) == 0 &&
           state.has_value;
       if (!fresh || !readable ||
           state.status_code != (expected_enabled ? 1 : 0)) {
@@ -748,7 +748,7 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
                                   : preflight_error);
     }
     for (std::size_t i = 0; i < selected.size(); ++i) {
-      if (api_.motor_get_state(selected[i]->descriptor.motor, &initial[i]) != 0 ||
+      if (backend_->get_state(selected[i]->descriptor.motor, &initial[i]) != 0 ||
           !initial[i].has_value || !finite(initial[i].pos)) {
         throw std::runtime_error(
             stable_motor_role(*selected[i]) +
@@ -764,7 +764,7 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
       std::lock_guard<std::mutex> lock(state_mutex_);
       for (const auto& motor : motors_) {
         ArticoreMotorState state{};
-        if (api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+        if (backend_->get_state(motor.descriptor.motor, &state) == 0 &&
             state.has_value && state.status_code == 0) {
           intentionally_disabled_motors_.insert(motor.descriptor.motor);
         }
@@ -787,7 +787,7 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
         // Include it in rollback before calling so the transaction remains
         // fail-closed even for ambiguous transport outcomes.
         newly_enabled.push_back(motor);
-        if (motor_enable_(motor->descriptor.motor) != 0) {
+        if (backend_->enable_motor(motor->descriptor.motor) != 0) {
           throw std::runtime_error(
               stable_motor_role(*motor) + ": " +
               motor_error("motor enable failed"));
@@ -817,9 +817,9 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
               config_.safe_pv_velocity_limit});
         }
       }
-      if ((!pv_holds.empty() && api_.group_send_pos_vel(
+      if ((!pv_holds.empty() && backend_->send_pos_vel(
               controller_group_, pv_holds.data(), pv_holds.size()) != 0) ||
-          (!mit_holds.empty() && api_.group_send_mit(
+          (!mit_holds.empty() && backend_->send_mit(
               controller_group_, mit_holds.data(), mit_holds.size()) != 0)) {
         throw std::runtime_error(
             motor_error("motor enable current-position hold failed"));
@@ -833,7 +833,7 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
       }
     } else {
       for (auto* motor : selected) {
-        if (api_.motor_disable(motor->descriptor.motor) == 0) {
+        if (backend_->disable_motor(motor->descriptor.motor) == 0) {
           command_sent.insert(motor->descriptor.motor);
         } else {
           transaction_ok = false;
@@ -847,9 +847,9 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
       if (!confirmed) {
         for (auto* motor : selected) {
           ArticoreMotorState state{};
-          if (api_.motor_get_state(motor->descriptor.motor, &state) == 0 &&
+          if (backend_->get_state(motor->descriptor.motor, &state) == 0 &&
               state.has_value && state.status_code == 0) continue;
-          if (api_.motor_disable(motor->descriptor.motor) == 0) {
+          if (backend_->disable_motor(motor->descriptor.motor) == 0) {
             command_sent.insert(motor->descriptor.motor);
           }
         }
@@ -869,7 +869,7 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
     if (enabled && !newly_enabled.empty()) {
       report.rollback_attempted = 1;
       for (auto* motor : newly_enabled) {
-        if (api_.motor_disable(motor->descriptor.motor) == 0) {
+        if (backend_->disable_motor(motor->descriptor.motor) == 0) {
           rollback_sent.insert(motor->descriptor.motor);
         }
       }
@@ -878,9 +878,9 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
       for (auto* motor : newly_enabled) {
         ArticoreFeedbackStats stats{};
         ArticoreMotorState state{};
-        if (api_.motor_get_feedback_stats(motor->descriptor.motor, &stats) != 0 ||
+        if (backend_->get_feedback_stats(motor->descriptor.motor, &stats) != 0 ||
             !stats.has_feedback || stats.age_ns > max_age ||
-            api_.motor_get_state(motor->descriptor.motor, &state) != 0 ||
+            backend_->get_state(motor->descriptor.motor, &state) != 0 ||
             !state.has_value || state.status_code != 0) {
           rollback_confirmed = false;
         }
@@ -905,10 +905,10 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
     const bool has_stats =
-        api_.motor_get_feedback_stats(motor->descriptor.motor, &stats) == 0 &&
+        backend_->get_feedback_stats(motor->descriptor.motor, &stats) == 0 &&
         stats.has_feedback;
     const bool has_state =
-        api_.motor_get_state(motor->descriptor.motor, &state) == 0 &&
+        backend_->get_state(motor->descriptor.motor, &state) == 0 &&
         state.has_value;
     output.has_feedback = has_stats && has_state ? 1 : 0;
     output.feedback_fresh = output.has_feedback && stats.age_ns <= max_age;
@@ -1019,7 +1019,7 @@ void SafetyRuntime::enable(ArticoreControlMode mode) {
 
   // Direct C++ users may omit the native enable callback. Preserve the 1.3
   // contract for them while the exported runtime ABI always supplies it.
-  if (!controller_enable_all_) {
+  if (!backend_->can_enable_all()) {
     try {
       {
         std::lock_guard<std::mutex> command_lock(command_mutex_);
@@ -1063,9 +1063,9 @@ void SafetyRuntime::enable(ArticoreControlMode mode) {
     for (uint8_t side = 0; side < 2; ++side) {
       if (!active_sides_[side]) continue;
       enable_workers.emplace_back([&, side] {
-        side_results[side].code = controller_enable_all_(controllers_[side]);
+        side_results[side].code = backend_->enable_all(controllers_[side]);
         if (side_results[side].code != 0) {
-          const char* detail = api_.last_error_message();
+          const char* detail = backend_->last_error_message();
           if (detail && detail[0]) side_results[side].error = detail;
         }
       });
@@ -1172,7 +1172,7 @@ bool SafetyRuntime::disable_hardware(bool request_feedback,
         workers.emplace_back([&, side] {
           for (auto* motor : targets) {
             if (motor->descriptor.side != side) continue;
-            if (api_.motor_disable(motor->descriptor.motor) == 0) {
+            if (backend_->disable_motor(motor->descriptor.motor) == 0) {
               side_results[side].sent.push_back(motor->descriptor.motor);
               continue;
             }
@@ -1213,10 +1213,10 @@ bool SafetyRuntime::disable_hardware(bool request_feedback,
           ArticoreFeedbackStats stats{};
           ArticoreMotorState state{};
           const bool has_stats =
-              api_.motor_get_feedback_stats(motor->descriptor.motor, &stats) == 0 &&
+              backend_->get_feedback_stats(motor->descriptor.motor, &stats) == 0 &&
               stats.has_feedback;
           const bool has_state =
-              api_.motor_get_state(motor->descriptor.motor, &state) == 0 &&
+              backend_->get_state(motor->descriptor.motor, &state) == 0 &&
               state.has_value;
           const bool specifically_missing = has_state && std::any_of(
               missing.begin(), missing.end(), [&](const MissingMotor& item) {
@@ -1268,7 +1268,7 @@ bool SafetyRuntime::disable_hardware(bool request_feedback,
         for (auto* motor : final_targets) {
           ArticoreMotorState state{};
           const uint32_t id =
-              api_.motor_get_state(motor->descriptor.motor, &state) == 0 &&
+              backend_->get_state(motor->descriptor.motor, &state) == 0 &&
                       state.has_value
                   ? state.can_id
                   : 0;
@@ -1298,7 +1298,7 @@ bool SafetyRuntime::disable_hardware(bool request_feedback,
     for (auto* motor : targets) {
       if (!motor->descriptor.is_gripper) continue;
       ArticoreMotorState state{};
-      if (api_.motor_get_state(motor->descriptor.motor, &state) == 0 &&
+      if (backend_->get_state(motor->descriptor.motor, &state) == 0 &&
           state.has_value && state.status_code == 0) {
         motor->gripper_state = ARTICORE_GRIPPER_DISABLED;
       }
@@ -1316,8 +1316,8 @@ bool SafetyRuntime::establish_disable_barrier(std::string& error) {
   // ahead of it in the USB/CAN FIFO, so disable frames submitted afterwards
   // cannot be followed by an old Runtime motion frame.
   const int32_t dispatch = mode_ == ARTICORE_MODE_MIT
-      ? api_.group_send_mit(controller_group_, nullptr, 0)
-      : api_.group_send_pos_vel(controller_group_, nullptr, 0);
+      ? backend_->send_mit(controller_group_, nullptr, 0)
+      : backend_->send_pos_vel(controller_group_, nullptr, 0);
   if (dispatch != 0) {
     error = motor_error("controller group drain failed");
     return false;
@@ -1375,10 +1375,10 @@ void SafetyRuntime::update_disable_report(
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
     const bool has_stats =
-        api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
+        backend_->get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
         stats.has_feedback;
     const bool has_state =
-        api_.motor_get_state(motor.descriptor.motor, &state) == 0 && state.has_value;
+        backend_->get_state(motor.descriptor.motor, &state) == 0 && state.has_value;
     output.has_feedback = has_stats && has_state ? 1 : 0;
     output.feedback_fresh = output.has_feedback && stats.age_ns <= max_age;
     if (has_state) {
@@ -1668,7 +1668,7 @@ void SafetyRuntime::recover() {
     disable_confirmed_ = true;
   }
 
-  if (!maintenance_api_.motor_clear_error) {
+  if (!backend_->can_clear_error()) {
     fail_recovery("clear recoverable faults", ARTICORE_OPERATION_UNSUPPORTED,
                   "native clear-fault callback is unavailable",
                   all_motor_names());
@@ -1683,7 +1683,7 @@ void SafetyRuntime::recover() {
     clear_workers.emplace_back([&, side] {
       for (const auto& motor : motors_) {
         if (motor.descriptor.side != side) continue;
-        if (maintenance_api_.motor_clear_error(motor.descriptor.motor) == 0) {
+        if (backend_->clear_error(motor.descriptor.motor) == 0) {
           continue;
         }
         clear_results[side].failed.emplace_back(motor.descriptor.name);
@@ -1721,11 +1721,11 @@ void SafetyRuntime::recover() {
       ArticoreFeedbackStats stats{};
       ArticoreMotorState state{};
       const bool healthy =
-          api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
+          backend_->get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
           stats.has_feedback &&
           stats.age_ns <= static_cast<uint64_t>(config_.feedback_max_age_ms) *
                               1'000'000ULL &&
-          api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+          backend_->get_state(motor.descriptor.motor, &state) == 0 &&
           state.has_value && finite(state.pos) && finite(state.vel) &&
           state.status_code == 0;
       if (!healthy) failed_motors.emplace_back(motor.descriptor.name);
@@ -1740,7 +1740,7 @@ void SafetyRuntime::recover() {
   for (const auto& motor : motors_) {
     if (motor.descriptor.is_gripper) continue;
     ArticoreMotorState state{};
-    if (api_.motor_get_state(motor.descriptor.motor, &state) != 0 ||
+    if (backend_->get_state(motor.descriptor.motor, &state) != 0 ||
         !state.has_value || !finite(state.pos)) {
       fail_recovery("dual-arm health validation", ARTICORE_OPERATION_FEEDBACK,
                     std::string(motor.descriptor.name) +
@@ -1838,11 +1838,11 @@ void SafetyRuntime::recover() {
       ArticoreFeedbackStats stats{};
       ArticoreMotorState state{};
       const bool reached =
-          api_.motor_get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
+          backend_->get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
           stats.has_feedback &&
           stats.age_ns <= static_cast<uint64_t>(config_.feedback_max_age_ms) *
                               1'000'000ULL &&
-          api_.motor_get_state(motor.descriptor.motor, &state) == 0 &&
+          backend_->get_state(motor.descriptor.motor, &state) == 0 &&
           state.has_value && state.status_code == 1 && finite(state.pos) &&
           finite(state.vel) &&
           std::fabs(state.pos) <= kRecoveryPositionToleranceRad &&

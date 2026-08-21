@@ -21,14 +21,16 @@ constexpr auto kDefaultMultiMotorTxGap = std::chrono::microseconds(200);
 bool matches_feedback_arbitration_id(uint32_t arbitration_id,
                                      uint16_t configured_feedback_id,
                                      uint16_t motor_id) {
-  const auto expected_can_id = static_cast<uint16_t>(motor_id & 0x0FU);
-  const auto configured_standard_feedback_id =
-      static_cast<uint16_t>(0x10U | expected_can_id);
-  const auto dm_device_feedback_id =
-      static_cast<uint32_t>(0x200U | expected_can_id);
+  const auto compact_id = static_cast<uint16_t>(motor_id & 0x0FU);
+  const auto configured_feedback = static_cast<uint16_t>(0x10U | compact_id);
+  // DM-USB2FDCAN with gs_usb exposes arm feedback as 0x200 | motor_id on
+  // SocketCAN-FD, while the gripper and some firmware revisions use the
+  // configured 0x10 | motor_id form. This is a wire-protocol identity alias;
+  // it does not depend on or call the removed DM Device SDK.
+  const auto socketcanfd_feedback = static_cast<uint32_t>(0x200U | compact_id);
   return arbitration_id == configured_feedback_id ||
-         (configured_feedback_id == configured_standard_feedback_id &&
-          arbitration_id == dm_device_feedback_id);
+         (configured_feedback_id == configured_feedback &&
+          arbitration_id == socketcanfd_feedback);
 }
 
 void validate_register(uint8_t rid, RegisterDataType expected_type, bool writing) {
@@ -971,8 +973,8 @@ FeedbackBatchReport Controller::request_feedback_all_report(
     return report;
   }
 
-  // A few serial bridge firmwares occasionally drop the final request or
-  // response in a burst.  Give the normal batch time to complete, then retry
+  // Some USB-CAN firmware revisions occasionally drop the final request or
+  // response in a burst. Give the normal batch time to complete, then retry
   // only the motors that are still missing while preserving the caller's one
   // shared deadline.
   const auto retry_at =

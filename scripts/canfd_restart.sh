@@ -87,7 +87,7 @@ EOF
 done
 
 if [[ ${#IFS_LIST[@]} -eq 0 ]]; then
-  IFS_LIST=(can0 can1)
+  IFS_LIST=(can-left can-right)
 fi
 
 restart_one() {

@@ -7,11 +7,7 @@
 #include "articore/runtime_abi.h"
 
 int main() {
-  const auto create_ex = &articore_runtime_create_ex;
-  const auto create_ex2 = &articore_runtime_create_ex2;
-  const auto create_ex3 = &articore_runtime_create_ex3;
   const auto create_yunyi = &articore_runtime_create_yunyi;
-  const auto create_product = &articore_runtime_create_product;
   const auto configure_mode = &articore_runtime_configure_mode;
   const auto clear_faults = &articore_runtime_clear_faults;
   const auto set_zero = &articore_runtime_set_zero;
@@ -198,7 +194,8 @@ int main() {
       ARTICORE_CAP_PRODUCT_SPEED_SETTING |
       ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING |
       ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE |
-      ARTICORE_CAP_PV_MAX_SPEED_ONLY;
+      ARTICORE_CAP_PV_MAX_SPEED_ONLY |
+      ARTICORE_CAP_DIRECT_CPP_MOTOR_CORE;
   bool product_gripper_levels_valid = true;
   for (const int32_t level : {1, 5, 10}) {
     product_gripper_levels_valid = product_gripper_levels_valid &&
@@ -299,8 +296,7 @@ int main() {
       std::strcmp(
           articore_runtime_last_error(),
           "Cartesian interpolation must be POINT_TO_POINT or LINEAR") == 0;
-  if (!create_ex || !create_ex2 || !create_ex3 || !create_yunyi ||
-      !create_product ||
+  if (!create_yunyi ||
       !configure_mode || !clear_faults || !set_zero || !disconnect ||
       !product_positions || !product_positions_v2 ||
       !set_product_speed || !get_product_speed ||
@@ -328,7 +324,7 @@ int main() {
       !gravity_status || !health_v2 || !estop ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x00020026U ||
+      version != 0x00020027U ||
       (capabilities & required_with_circular) != required_with_circular ||
       !product_gripper_levels_valid ||
       !product_gripper_direct_valid ||

@@ -364,15 +364,15 @@ int main() {
     require(integrity_motor->latest_state().has_value(),
             "strict identity matching accepts the configured feedback frame");
 
-    auto dm_device_identity = feedback_frame(
+    auto socketcanfd_identity = feedback_frame(
         0x204, 0x04, 0x01, 0.01f, 0.0f, 0.0f,
         damiao::model_limits("4310"));
-    dm_device_identity.channel = 1;
-    integrity_bus->push_rx(dm_device_identity);
+    socketcanfd_identity.channel = 1;
+    integrity_bus->push_rx(socketcanfd_identity);
     integrity_controller.poll_feedback_once();
     require(integrity_motor->latest_state().has_value() &&
                 integrity_motor->latest_state()->arbitration_id == 0x204,
-            "strict identity matching accepts the DM Device Dual feedback ID");
+            "strict identity matching accepts DM-USB2FDCAN SocketCAN-FD feedback");
 
     auto mixed_payload = feedback_frame(
         0x14, 0x04, 0x01, 2.0f, 0.0f, 0.0f,

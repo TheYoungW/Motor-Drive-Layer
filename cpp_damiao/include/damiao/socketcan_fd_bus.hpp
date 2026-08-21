@@ -10,13 +10,7 @@
 
 namespace damiao {
 
-class SocketCanBusTestPeer;
-
-struct SocketCanRawFrame {
-  uint32_t can_id = 0;
-  uint8_t can_dlc = 0;
-  std::array<uint8_t, 8> data{};
-};
+class SocketCanFdBusTestPeer;
 
 struct SocketCanFdRawFrame {
   uint32_t can_id = 0;
@@ -32,35 +26,8 @@ class SocketCanCodec {
   static constexpr uint32_t kCanSffMask = 0x000007FFU;
   static constexpr uint8_t kCanFdBrs = 0x01U;
 
-  static SocketCanRawFrame encode_classic(const CanFrame& frame);
-  static CanFrame decode_classic(const SocketCanRawFrame& raw);
   static SocketCanFdRawFrame encode_fd(const CanFrame& frame, bool enable_brs = true);
   static CanFrame decode_fd(const SocketCanFdRawFrame& raw);
-};
-
-class SocketCanBus final : public CanBus {
- public:
-  static std::shared_ptr<SocketCanBus> open(const std::string& interface);
-  ~SocketCanBus() override;
-
-  SocketCanBus(const SocketCanBus&) = delete;
-  SocketCanBus& operator=(const SocketCanBus&) = delete;
-
-  void send(const CanFrame& frame) override;
-  std::optional<CanFrame> receive_for(std::chrono::milliseconds timeout) override;
-  void shutdown() override;
-  TransportCapabilities capabilities() const override;
-
- private:
-  friend class SocketCanBusTestPeer;
-
-  SocketCanBus(int fd, std::string interface,
-               std::chrono::milliseconds send_timeout);
-
-  int fd_;
-  std::string interface_;
-  std::chrono::milliseconds send_timeout_;
-  std::mutex mutex_;
 };
 
 class SocketCanFdBus final : public CanBus {
@@ -78,7 +45,7 @@ class SocketCanFdBus final : public CanBus {
   TransportCapabilities capabilities() const override;
 
  private:
-  friend class SocketCanBusTestPeer;
+  friend class SocketCanFdBusTestPeer;
 
   SocketCanFdBus(int fd, std::string interface, bool enable_brs,
                  std::chrono::milliseconds send_timeout);

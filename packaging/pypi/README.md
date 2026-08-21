@@ -2,10 +2,8 @@
 
 This distribution contains the compiled Motor-Drive-Layer libraries only:
 
-- `libmotor_abi.so`: generic transport, controller, motor and Damiao C ABI.
-- `libarticore_runtime.so`: fixed Yunyi dual-arm Runtime, robot model and
-  gravity-compensation C ABI.
-- Redistributable DM Device runtime dependencies for the target platform.
+- `libarticore_runtime.so`: fixed Yunyi dual-arm Runtime, direct C++ Motor core,
+  robot model and gravity-compensation C ABI.
 
 It intentionally installs no Python module and exports no Python API. Python product SDKs own
 their `ctypes` declarations, value types and user-facing interfaces. In particular,
@@ -18,6 +16,13 @@ Motor handle, mapping table, gripper profile, gravity binding, or control rate.
 Product trajectories are likewise planned and executed entirely by the C++
 Runtime through the stable trajectory C ABI; the wheel contains no Python
 interpolator or realtime playback loop.
+
+Version 0.11.0 / Runtime ABI 2.39 simplifies the native architecture to the
+only supported Yunyi product. `libarticore_runtime.so` directly owns the
+layered C++ Motor core and its two SocketCAN-FD+BRS channels. The separate
+Motor C ABI, caller-assembled Runtime factories, classic SocketCAN, serial and
+DM Device SDK transports, and vendor binary payloads are removed. Product API
+calls remain on the stable Runtime C ABI used by Articore-SDK.
 
 Version 0.10.27 doubles the built-in `yunyi_gripper_v1` command strength at
 every public force level (1 through 10), without changing the product C ABI.
@@ -127,9 +132,7 @@ The payload is installed under:
 ```text
 motor_drive_layer_native/
 └── lib/
-    ├── libmotor_abi.so
-    ├── libarticore_runtime.so
-    └── dm_device/
+    └── libarticore_runtime.so
 ```
 
 Use the headers and CMake package from the native SDK artifact for C/C++ development. Install

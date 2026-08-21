@@ -1,19 +1,18 @@
 # cpp_damiao
 
-`cpp_damiao` is the configuration-agnostic C++17 Damiao driver and stable C ABI used by external SDKs.
+`cpp_damiao` is the internal layered C++17 Motor core used directly by the Yunyi product Runtime.
 
 ## Scope
 
 - Damiao protocol frame packing and decoding.
-- Generic `CanBus` abstraction.
+- Small `CanBus` seam for deterministic unit tests and the production SocketCAN-FD backend.
 - Runtime with background RX polling, per-motor state cache, feedback counters, configurable TX pacing, register acknowledgements, and lifecycle cleanup.
 - Persistent multi-controller workers for parallel MIT and POS_VEL batch dispatch.
-- Linux Damiao serial, SocketCAN, SocketCAN-FD, and optional DM_Device transports.
-- Shared C ABI library for C++, ROS 2 and external language bindings.
-- Unit, codec, runtime, and ABI smoke tests without hardware.
+- Linux SocketCAN-FD+BRS transport only.
+- Unit, codec and Runtime tests without hardware.
 
-The C++ library does not parse product configuration and does not contain robot-specific ports,
-joint lists, IDs, models, or loop rates. Callers pass those values through the ABI or C++ API.
+The C++ library does not parse product configuration. `articore_runtime/` supplies Yunyi's fixed
+channels, joint list, IDs, models and policies through direct C++ construction.
 
 ## Build and test
 
@@ -23,22 +22,22 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-The unified build produces public `libmotor_abi.so` and
-`articore_runtime/libarticore_runtime.so` libraries on Linux. The static
-`libdamiao_runtime.a` and `libarticore_runtime_core.a` targets are internal.
+The unified build produces only the public
+`articore_runtime/libarticore_runtime.so` library on Linux. The static Motor
+and Runtime-core libraries are internal implementation units.
 
 ## Minimal C++ usage
 
 ```cpp
-#include "damiao/dm_serial_bus.hpp"
+#include "damiao/socketcan_fd_bus.hpp"
 #include "damiao/runtime.hpp"
 
 int main() {
-  auto bus = damiao::DmSerialBus::open("/dev/ttyACM0", 1000000);
+  auto bus = damiao::SocketCanFdBus::open("can-left", true);
   damiao::Controller controller(bus);
   controller.set_tx_gap(std::chrono::microseconds(200));
 
-  auto motor = controller.add_damiao_motor(0x01, 0x201, "4340P");
+  auto motor = controller.add_damiao_motor(0x01, 0x11, "4340P");
   const auto state = motor->request_fresh_state(std::chrono::milliseconds(50));
   controller.shutdown();
 }
@@ -53,7 +52,7 @@ the controller to override the automatic default. `enable_all()` and `disable_al
 separate 2 ms inter-motor delay by default, configurable through
 `MOTOR_DRIVE_LAYER_BULK_OP_GAP_MS`.
 
-Linux SocketCAN and SocketCAN-FD sockets use non-blocking writes with a 20 ms bounded wait when
+Linux SocketCAN-FD sockets use non-blocking writes with a 20 ms bounded wait when
 the kernel transmit queue is full. A timeout raises a transport error, updates
 `TransportHealth::send_errors`/`last_error`, and allows controller shutdown to continue. Set
 `MOTOR_DRIVE_LAYER_SOCKETCAN_SEND_TIMEOUT_MS` before opening the bus to configure 1--60000 ms.
@@ -69,7 +68,7 @@ motor ID that did not provide a fresh sample.
 
 `MotorHandle::feedback_stats()` returns whether sensor feedback has been observed, the number of decoded sensor frames, and the age of the latest frame. Register replies and write acknowledgements do not increment the sensor counter.
 
-The C ABI exposes the same information through `motor_handle_get_feedback_stats` and accepts caller-provided pacing through `motor_controller_set_tx_gap_us`.
+The product Runtime reads the same cache directly without crossing another ABI.
 
 ## Parallel controller batches
 
@@ -85,25 +84,16 @@ group.send_pos_vel({
 });
 ```
 
-The equivalent C ABI is `motor_controller_group_new` plus
-`motor_controller_group_send_mit`/`motor_controller_group_send_pos_vel`. Controllers and motor
-handles must outlive the group. On failure, the call waits for all workers and reports the
-controller index, endpoint, motor ID, and underlying error. Per-controller pacing can overlap;
-transport-specific shared vendor locks remain responsible for vendor-library thread safety.
+Controllers and motor handles must outlive the group. On failure, the call waits for all workers
+and reports the controller index, endpoint, motor ID, and underlying error. Per-controller
+SocketCAN-FD pacing can overlap.
 
-Every `CanBus` exposes `TransportCapabilities`; `Controller::transport_capabilities()` and the C
-ABI return the active instance's transport name, canonical payload size, physical channel count,
+Every `CanBus` exposes `TransportCapabilities`; `Controller::transport_capabilities()` returns the
+active instance's transport name, canonical payload size, physical channel count,
 CAN-FD, active CAN-FD BRS, parallel-batch, reconnect, process-session reuse, and hardware RX
 timestamp flags. The legacy capability struct remains ABI-stable; new callers use the
 size-versioned V2 query for `can_fd_brs`.
-The generic pacing wrapper also records `TransportHealth`; `Controller::transport_health()` and
-the C ABI expose live connection state, TX/RX counters, activity ages, and transport errors.
-
-For DM_Device v1.0, the shim retains the opened legacy context/device and callbacks at process
-scope after the final client closes. It still closes channel resources and removes every client;
-the retained vendor objects avoid the official Linux runtime's failure to reopen device index 0
-after a full in-process teardown. The operating system reclaims the retained vendor objects at
-process exit; invoking the vendor destructor from static teardown can race libusb thread cleanup.
-DM_Device v1.1 keeps its documented full teardown behavior.
+The pacing wrapper also records `TransportHealth`; `Controller::transport_health()` exposes live
+connection state, TX/RX counters, activity ages, and transport errors.
 
 Default C++ tests never open a real motor device.

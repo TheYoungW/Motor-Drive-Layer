@@ -459,7 +459,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (2U << 16) | 38U;
+  return (2U << 16) | 39U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -517,7 +517,8 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_PRODUCT_SPEED_SETTING |
          ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING |
          ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE |
-         ARTICORE_CAP_PV_MAX_SPEED_ONLY;
+         ARTICORE_CAP_PV_MAX_SPEED_ONLY |
+         ARTICORE_CAP_DIRECT_CPP_MOTOR_CORE;
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -632,109 +633,6 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_control_mode(
   });
 }
 
-ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create(
-    const ArticoreRuntimeConfig* config,
-    const ArticoreMotorApi* motor_api,
-    void* controller_group,
-    void* left_controller,
-    void* right_controller,
-    const ArticoreMotorDescriptor* motors,
-    uint32_t motor_count) {
-  return articore_runtime_create_ex(
-      config, motor_api, controller_group, left_controller, right_controller,
-      motors, motor_count, nullptr, nullptr);
-}
-
-ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex(
-    const ArticoreRuntimeConfig* config,
-    const ArticoreMotorApi* motor_api,
-    void* controller_group,
-    void* left_controller,
-    void* right_controller,
-    const ArticoreMotorDescriptor* motors,
-    uint32_t motor_count,
-    ArticoreControllerCallFn controller_enable_all,
-    ArticoreControllerCallFn motor_enable) {
-  return articore_runtime_create_ex2(
-      config, motor_api, controller_group, left_controller, right_controller,
-      motors, motor_count, controller_enable_all, motor_enable, nullptr, 0);
-}
-
-ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex2(
-    const ArticoreRuntimeConfig* config,
-    const ArticoreMotorApi* motor_api,
-    void* controller_group,
-    void* left_controller,
-    void* right_controller,
-    const ArticoreMotorDescriptor* motors,
-    uint32_t motor_count,
-    ArticoreControllerCallFn controller_enable_all,
-    ArticoreControllerCallFn motor_enable,
-    const ArticoreRuntimeTransportCapabilities* transport_capabilities,
-    uint32_t transport_capability_count) {
-  return articore_runtime_create_ex3(
-      config, motor_api, nullptr, controller_group, left_controller,
-      right_controller, motors, motor_count, controller_enable_all,
-      motor_enable, transport_capabilities, transport_capability_count);
-}
-
-ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_ex3(
-    const ArticoreRuntimeConfig* config,
-    const ArticoreMotorApi* motor_api,
-    const ArticoreMotorMaintenanceApi* maintenance_api,
-    void* controller_group,
-    void* left_controller,
-    void* right_controller,
-    const ArticoreMotorDescriptor* motors,
-    uint32_t motor_count,
-    ArticoreControllerCallFn controller_enable_all,
-    ArticoreControllerCallFn motor_enable,
-    const ArticoreRuntimeTransportCapabilities* transport_capabilities,
-    uint32_t transport_capability_count) {
-  if (!config || !motor_api || (!motors && motor_count > 0)) {
-    g_last_error = "invalid Articore runtime creation arguments";
-    return nullptr;
-  }
-  if (!transport_capabilities && transport_capability_count > 0) {
-    g_last_error = "transport capabilities pointer is null";
-    return nullptr;
-  }
-  try {
-    ArticoreMotorMaintenanceApi maintenance{};
-    if (maintenance_api) {
-      constexpr std::size_t kMaintenanceV29Size =
-          offsetof(ArticoreMotorMaintenanceApi, motor_set_can_timeout_ms);
-      if (maintenance_api->struct_size < kMaintenanceV29Size) {
-        throw std::invalid_argument("maintenance API struct_size is too small");
-      }
-      std::memcpy(
-          &maintenance, maintenance_api,
-          std::min<std::size_t>(maintenance_api->struct_size,
-                                sizeof(maintenance)));
-      maintenance.struct_size = sizeof(maintenance);
-    }
-    std::vector<ArticoreMotorDescriptor> descriptors(motors, motors + motor_count);
-    std::vector<ArticoreRuntimeTransportCapabilities> capabilities;
-    if (transport_capability_count > 0) {
-      capabilities.assign(
-          transport_capabilities,
-          transport_capabilities + transport_capability_count);
-    }
-    auto value = std::make_unique<articore::SafetyRuntime>(
-        *config, *motor_api, controller_group, left_controller, right_controller,
-        std::move(descriptors), controller_enable_all, motor_enable, true,
-        std::move(capabilities), maintenance);
-    g_last_error = "ok";
-    return new ArticoreRuntime(std::move(value));
-  } catch (const std::exception& error) {
-    g_last_error = error.what();
-    return nullptr;
-  } catch (...) {
-    g_last_error = "unknown Articore runtime creation error";
-    return nullptr;
-  }
-}
-
 ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_yunyi(
     int32_t requested_mode, int32_t with_grippers) {
   if (requested_mode != ARTICORE_MODE_PV &&
@@ -756,15 +654,6 @@ ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_yunyi(
     g_last_error = error.what();
     return nullptr;
   }
-}
-
-ARTICORE_RUNTIME_API ArticoreRuntime* articore_runtime_create_product(
-    const char* product_id, int32_t requested_mode, int32_t with_grippers) {
-  if (!product_id || std::strcmp(product_id, "yunyi_v1_0") != 0) {
-    g_last_error = "only the yunyi_v1_0 dual-arm product is supported";
-    return nullptr;
-  }
-  return articore_runtime_create_yunyi(requested_mode, with_grippers);
 }
 
 ARTICORE_RUNTIME_API void articore_runtime_free(ArticoreRuntime* runtime) {
@@ -1461,11 +1350,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_state(
     uint64_t sequence = std::numeric_limits<uint64_t>::max();
     for (uint32_t i = 0; i < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++i) {
       const auto& joint = product.joints[i];
-      MotorState motor{};
-      MotorFeedbackStats stats{};
-      if (motor_handle_get_state(joint.motor, &motor) != 0 ||
+      ArticoreMotorState motor{};
+      ArticoreFeedbackStats stats{};
+      if (!articore::read_yunyi_motor_state(joint.motor, motor, stats) ||
           !motor.has_value ||
-          motor_handle_get_feedback_stats(joint.motor, &stats) != 0 ||
           !stats.has_feedback) {
         throw std::runtime_error(
             "complete product feedback is unavailable for joint " +
@@ -1484,11 +1372,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_state(
     if (product.with_grippers) {
       const auto health = safety.health();
       for (uint32_t side = 0; side < 2; ++side) {
-        MotorState motor{};
-        MotorFeedbackStats stats{};
-        if (motor_handle_get_state(product.grippers[side], &motor) != 0 ||
-            !motor.has_value ||
-            motor_handle_get_feedback_stats(product.grippers[side], &stats) != 0 ||
+        ArticoreMotorState motor{};
+        ArticoreFeedbackStats stats{};
+        if (!articore::read_yunyi_motor_state(
+                product.grippers[side], motor, stats) || !motor.has_value ||
             !stats.has_feedback) {
           throw std::runtime_error(
               "complete product gripper feedback is unavailable");
@@ -1549,10 +1436,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_state_v2(
 
     for (uint32_t i = 0; i < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++i) {
       const auto& joint = product.joints[i];
-      MotorState motor{};
-      MotorFeedbackStats stats{};
-      const bool cached = motor_handle_get_state_snapshot(
-          joint.motor, &motor, &stats) == 0;
+      ArticoreMotorState motor{};
+      ArticoreFeedbackStats stats{};
+      const bool cached = articore::read_yunyi_motor_state(
+          joint.motor, motor, stats);
       auto& arm = i < ARTICORE_PRODUCT_ARM_DOF ? output.left : output.right;
       const uint32_t index = i % ARTICORE_PRODUCT_ARM_DOF;
       const uint32_t bit = 1U << index;
@@ -1586,10 +1473,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_state_v2(
     if (product.with_grippers) {
       const auto health = safety.health();
       for (uint32_t side = 0; side < 2; ++side) {
-        MotorState motor{};
-        MotorFeedbackStats stats{};
-        const bool cached = motor_handle_get_state_snapshot(
-            product.grippers[side], &motor, &stats) == 0;
+        ArticoreMotorState motor{};
+        ArticoreFeedbackStats stats{};
+        const bool cached = articore::read_yunyi_motor_state(
+            product.grippers[side], motor, stats);
         const bool feedback_present =
             cached && motor.has_value && stats.has_feedback;
         const bool power_valid = feedback_present &&
@@ -1666,10 +1553,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_state_v3(
 
     for (uint32_t i = 0; i < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++i) {
       const auto& joint = product.joints[i];
-      MotorState motor{};
-      MotorFeedbackStats stats{};
-      const bool cached = motor_handle_get_state_snapshot(
-          joint.motor, &motor, &stats) == 0;
+      ArticoreMotorState motor{};
+      ArticoreFeedbackStats stats{};
+      const bool cached = articore::read_yunyi_motor_state(
+          joint.motor, motor, stats);
       auto& arm = i < ARTICORE_PRODUCT_ARM_DOF ? output.left : output.right;
       const uint32_t index = i % ARTICORE_PRODUCT_ARM_DOF;
       const uint32_t bit = 1U << index;
@@ -1713,10 +1600,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_state_v3(
     if (product.with_grippers) {
       const auto health = safety.health();
       for (uint32_t side = 0; side < 2; ++side) {
-        MotorState motor{};
-        MotorFeedbackStats stats{};
-        const bool cached = motor_handle_get_state_snapshot(
-            product.grippers[side], &motor, &stats) == 0;
+        ArticoreMotorState motor{};
+        ArticoreFeedbackStats stats{};
+        const bool cached = articore::read_yunyi_motor_state(
+            product.grippers[side], motor, stats);
         const bool feedback_present =
             cached && motor.has_value && stats.has_feedback;
         const bool fresh = feedback_present && stats.age_ns <= fresh_limit;
@@ -1824,11 +1711,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_pose(
     for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
       const auto& joint = product.joints[
           side * ARTICORE_PRODUCT_ARM_DOF + index];
-      MotorState motor{};
-      MotorFeedbackStats stats{};
-      if (motor_handle_get_state(joint.motor, &motor) != 0 ||
+      ArticoreMotorState motor{};
+      ArticoreFeedbackStats stats{};
+      if (!articore::read_yunyi_motor_state(joint.motor, motor, stats) ||
           !motor.has_value ||
-          motor_handle_get_feedback_stats(joint.motor, &stats) != 0 ||
           !stats.has_feedback) {
         throw std::runtime_error(
             "complete pose feedback is unavailable for " +

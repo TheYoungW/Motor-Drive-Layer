@@ -3,12 +3,13 @@
 #include <array>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 #include "articore/runtime_abi.h"
-#include "motor_abi.h"
 #include "articore/detail/robot_model.hpp"
 #include "articore/detail/runtime.hpp"
+#include "damiao/runtime.hpp"
 
 namespace articore {
 
@@ -19,7 +20,7 @@ inline constexpr float kYunyiDefaultSpeedPercent = 70.0f;
 // this structure crosses the public ABI or needs to be assembled by Python.
 struct YunyiRuntimeResources {
   struct Joint {
-    MotorHandle* motor = nullptr;
+    damiao::MotorHandle* motor = nullptr;
     float direction = 1.0f;
     float lower = 0.0f;
     float upper = 0.0f;
@@ -35,23 +36,30 @@ struct YunyiRuntimeResources {
   };
 
   YunyiRuntimeResources() = default;
-  ~YunyiRuntimeResources();
 
   YunyiRuntimeResources(const YunyiRuntimeResources&) = delete;
   YunyiRuntimeResources& operator=(const YunyiRuntimeResources&) = delete;
 
-  MotorController* controllers[2]{};
-  MotorControllerGroup* group = nullptr;
-  std::vector<MotorHandle*> motors;
-  std::array<MotorHandle*, ARTICORE_PRODUCT_DUAL_ARM_DOF> arm_motors{};
+  std::array<std::unique_ptr<damiao::Controller>, 2> controllers;
+  std::unique_ptr<damiao::ControllerGroup> group;
+  std::unordered_map<damiao::MotorHandle*, std::shared_ptr<damiao::MotorHandle>>
+      motor_owners;
+  std::array<damiao::MotorHandle*, ARTICORE_PRODUCT_DUAL_ARM_DOF> arm_motors{};
   std::array<Joint, ARTICORE_PRODUCT_DUAL_ARM_DOF> joints{};
-  std::array<MotorHandle*, 2> grippers{};
+  std::array<damiao::MotorHandle*, 2> grippers{};
   std::array<std::unique_ptr<RobotModel>, 2> pose_models;
   std::array<std::mutex, 2> pose_mutexes;
   bool with_grippers = true;
   float default_mit_reference_velocity = kYunyiOrdinaryMaximumVelocity;
   float default_pv_reference_velocity = kYunyiOrdinaryMaximumVelocity;
 };
+
+// Reads the Motor core cache directly. These helpers keep all conversion from
+// native C++ state to the public product ABI in the product layer; there is no
+// intermediate Motor C ABI or second shared library.
+bool read_yunyi_motor_state(
+    damiao::MotorHandle* motor, ArticoreMotorState& state,
+    ArticoreFeedbackStats& stats) noexcept;
 
 struct YunyiRuntimeBundle {
   std::unique_ptr<SafetyRuntime> runtime;
