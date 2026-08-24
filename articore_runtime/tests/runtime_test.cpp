@@ -4012,6 +4012,7 @@ articore::NativeTrajectoryRequest trajectory_request(
   for (const auto& motor : motors) {
     if (motor.is_gripper) continue;
     articore::NativeTrajectoryJoint joint;
+    joint.role = motor.name;
     joint.motor = motor.motor;
     joint.lower_position = -2.0f;
     joint.upper_position = 2.0f;
@@ -4034,6 +4035,103 @@ articore::NativeTrajectoryRequest trajectory_request(
   end.positions = {0.2f, 0.8f};
   request.waypoints = {start, end};
   return request;
+}
+
+void test_trajectory_errors_use_product_roles_and_allow_inward_recovery() {
+  require(articore::yunyi_joint_role(3) == "left/l-joint4" &&
+              articore::yunyi_joint_role(9) == "right/r-joint3",
+          "product trajectory indices map to stable one-based joint roles");
+
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  driver.motors[motors[0].motor].position = 2.2f;
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+  auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  const auto product_request = [&] {
+    auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.4);
+    request.joints[0].role = articore::yunyi_joint_role(3);
+    request.joints[1].role = articore::yunyi_joint_role(9);
+    request.waypoints.front().positions = {2.2f, 1.0f};
+    return request;
+  };
+
+  auto start_invalid = product_request();
+  std::string start_error;
+  try {
+    runtime.start_trajectory(std::move(start_invalid));
+  } catch (const std::exception& error) {
+    start_error = error.what();
+  }
+  require(start_error.find("trajectory start waypoint") != std::string::npos &&
+              start_error.find("left/l-joint4") != std::string::npos &&
+              start_error.find("joint 0") == std::string::npos &&
+              start_error.find("position=2.2") != std::string::npos &&
+              start_error.find("allowed=[-2, 2] rad") != std::string::npos,
+          "start-limit errors identify the product joint, value and limits");
+
+  auto target_invalid = product_request();
+  target_invalid.allow_out_of_limit_start_recovery = true;
+  target_invalid.waypoints.back().positions = {1.8f, 3.0f};
+  std::string target_error;
+  try {
+    runtime.start_trajectory(std::move(target_invalid));
+  } catch (const std::exception& error) {
+    target_error = error.what();
+  }
+  require(target_error.find("trajectory target waypoint") != std::string::npos &&
+              target_error.find("right/r-joint3") != std::string::npos &&
+              target_error.find("joint 1") == std::string::npos,
+          "target-limit errors use the mapped product joint role");
+
+  auto outward = product_request();
+  outward.allow_out_of_limit_start_recovery = true;
+  outward.waypoints.back().positions = {2.3f, 0.8f};
+  std::string outward_error;
+  try {
+    runtime.start_trajectory(std::move(outward));
+  } catch (const std::exception& error) {
+    outward_error = error.what();
+  }
+  require(outward_error.find("cannot recover an out-of-limit start") !=
+                  std::string::npos &&
+              outward_error.find("left/l-joint4") != std::string::npos &&
+              outward_error.find("start_position=2.2") != std::string::npos,
+          "an outward target is rejected with the current recovery position");
+
+  auto outward_segment = product_request();
+  outward_segment.allow_out_of_limit_start_recovery = true;
+  outward_segment.waypoints.back().positions = {1.8f, 0.8f};
+  outward_segment.waypoints.front().velocity_valid_mask = 1U;
+  outward_segment.waypoints.front().velocities[0] = 0.2f;
+  std::string segment_error;
+  try {
+    runtime.start_trajectory(std::move(outward_segment));
+  } catch (const std::exception& error) {
+    segment_error = error.what();
+  }
+  require(segment_error.find("expands out-of-limit recovery") !=
+                  std::string::npos &&
+              segment_error.find("left/l-joint4") != std::string::npos,
+          "segment extrema cannot increase the initial limit violation");
+
+  auto inward = product_request();
+  inward.allow_out_of_limit_start_recovery = true;
+  inward.waypoints.back().positions = {1.8f, 0.8f};
+  const auto id = runtime.start_trajectory(std::move(inward));
+  require(id != 0 &&
+              runtime.trajectory_status().state == ARTICORE_TRAJECTORY_RUNNING,
+          "an out-of-limit start may execute a monotonic return to legal range");
+  runtime.cancel_trajectory();
+  runtime.disable();
 }
 
 void test_native_quintic_trajectory_executes_at_worker_rate() {
@@ -5032,6 +5130,7 @@ int main() {
     RUN_TEST(test_raw_mit_targets_remain_direct_after_ordinary_position_control);
     RUN_TEST(test_ordinary_mit_position_reinitializes_after_reenable);
     RUN_TEST(test_deadline_skips_missed_periods_and_reenable_seeds_feedback);
+    RUN_TEST(test_trajectory_errors_use_product_roles_and_allow_inward_recovery);
     RUN_TEST(test_native_quintic_trajectory_executes_at_worker_rate);
     RUN_TEST(test_planned_reference_transaction_does_not_use_lagging_feedback);
     RUN_TEST(test_native_trajectory_completion_waits_for_physical_arrival);

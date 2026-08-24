@@ -161,10 +161,32 @@ Polynomial as_polynomial(const std::array<double, 6>& coefficients) {
   return Polynomial(coefficients.begin(), coefficients.end());
 }
 
+std::string joint_role(const NativeTrajectoryJoint& joint) {
+  return joint.role.empty() ? "unknown product joint" : joint.role;
+}
+
+std::string waypoint_context(std::size_t index, std::size_t count) {
+  if (index == 0) return "trajectory start waypoint";
+  if (index + 1 == count) return "trajectory target waypoint";
+  return "trajectory waypoint " + std::to_string(index + 1);
+}
+
+std::string position_limit_error(
+    const std::string& context, const NativeTrajectoryJoint& joint,
+    double position) {
+  std::ostringstream message;
+  message << context << " exceeds product position limits: "
+          << joint_role(joint) << " position=" << position
+          << " rad, allowed=[" << joint.lower_position << ", "
+          << joint.upper_position << "] rad";
+  return message.str();
+}
+
 void validate_segment_extrema(
     double duration_s,
     const std::vector<std::array<double, 6>>& coefficients,
     const std::vector<NativeTrajectoryJoint>& joints,
+    const std::vector<int8_t>& recovery_directions,
     uint32_t segment_index) {
   for (std::size_t joint_index = 0; joint_index < joints.size(); ++joint_index) {
     const auto& joint = joints[joint_index];
@@ -177,14 +199,30 @@ void validate_segment_extrema(
     const auto position_roots = roots_on_unit_interval(velocity_u);
     position_candidates.insert(position_candidates.end(),
                                position_roots.begin(), position_roots.end());
+    const double segment_start = evaluate(position, 0.0);
+    const bool recovering_below = recovery_directions[joint_index] > 0 &&
+        segment_start < joint.lower_position;
+    const bool recovering_above = recovery_directions[joint_index] < 0 &&
+        segment_start > joint.upper_position;
+    const double allowed_lower = recovering_below
+        ? segment_start : joint.lower_position;
+    const double allowed_upper = recovering_above
+        ? segment_start : joint.upper_position;
     for (const double u : position_candidates) {
       const double value = evaluate(position, u);
-      if (value < joint.lower_position - kLimitTolerance ||
-          value > joint.upper_position + kLimitTolerance) {
-        throw std::invalid_argument(
-            "trajectory segment " + std::to_string(segment_index) +
-            " joint " + std::to_string(joint_index) +
-            " exceeds product position limits inside the segment");
+      if (value < allowed_lower - kLimitTolerance ||
+          value > allowed_upper + kLimitTolerance) {
+        std::ostringstream message;
+        message << "trajectory segment " << segment_index + 1;
+        if (recovering_below || recovering_above) {
+          message << " expands out-of-limit recovery: ";
+        } else {
+          message << " exceeds product position limits: ";
+        }
+        message << joint_role(joint) << " position=" << value
+                << " rad, allowed=[" << allowed_lower << ", "
+                << allowed_upper << "] rad inside the segment";
+        throw std::invalid_argument(message.str());
       }
     }
 
@@ -196,17 +234,21 @@ void validate_segment_extrema(
       const double value =
           evaluate(velocity_u, u) / duration_s;
       if (std::abs(value) > joint.velocity_limit + kLimitTolerance) {
-        throw std::invalid_argument(
-            "trajectory segment " + std::to_string(segment_index) +
-            " joint " + std::to_string(joint_index) +
-            " exceeds product velocity limits inside the segment");
+        std::ostringstream message;
+        message << "trajectory segment " << segment_index + 1 << ": "
+                << joint_role(joint) << " velocity=" << value
+                << " rad/s exceeds product limit=" << joint.velocity_limit
+                << " rad/s inside the segment";
+        throw std::invalid_argument(message.str());
       }
       if (joint.pv_velocity_limit > 0.0f &&
           std::abs(value) > joint.pv_velocity_limit + kLimitTolerance) {
-        throw std::invalid_argument(
-            "trajectory segment " + std::to_string(segment_index) +
-            " joint " + std::to_string(joint_index) +
-            " exceeds its PV velocity limit inside the segment");
+        std::ostringstream message;
+        message << "trajectory segment " << segment_index + 1 << ": "
+                << joint_role(joint) << " velocity=" << value
+                << " rad/s exceeds PV limit=" << joint.pv_velocity_limit
+                << " rad/s inside the segment";
+        throw std::invalid_argument(message.str());
       }
     }
 
@@ -219,10 +261,13 @@ void validate_segment_extrema(
       const double value = evaluate(acceleration_u, u) /
           (duration_s * duration_s);
       if (std::abs(value) > joint.acceleration_limit + kLimitTolerance) {
-        throw std::invalid_argument(
-            "trajectory segment " + std::to_string(segment_index) +
-            " joint " + std::to_string(joint_index) +
-            " exceeds product acceleration limits inside the segment");
+        std::ostringstream message;
+        message << "trajectory segment " << segment_index + 1 << ": "
+                << joint_role(joint) << " acceleration=" << value
+                << " rad/s^2 exceeds product limit="
+                << joint.acceleration_limit
+                << " rad/s^2 inside the segment";
+        throw std::invalid_argument(message.str());
       }
     }
   }
@@ -305,8 +350,8 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
         joint.acceleration_limit <= 0.0f || !finite(joint.torque_limit) ||
         joint.torque_limit <= 0.0f) {
       throw std::invalid_argument(
-          "trajectory contains invalid joint configuration at index " +
-          std::to_string(index));
+          "trajectory contains invalid joint configuration for " +
+          joint_role(joint));
     }
     if (request.mode == ARTICORE_MODE_MIT) {
       if (!finite(joint.mit_kp) || joint.mit_kp < 0.0f ||
@@ -316,23 +361,23 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
           std::abs(joint.mit_feedforward_torque) >
               joint.torque_limit) {
         throw std::invalid_argument(
-            "trajectory contains invalid MIT configuration at joint " +
-            std::to_string(index));
+            "trajectory contains invalid MIT configuration for " +
+            joint_role(joint));
       }
     } else {
       if (!finite(joint.pv_velocity_limit) ||
           joint.pv_velocity_limit <= 0.0f ||
           joint.pv_velocity_limit > joint.velocity_limit) {
         throw std::invalid_argument(
-            "trajectory contains invalid PV velocity limit at joint " +
-            std::to_string(index));
+            "trajectory contains invalid PV velocity limit for " +
+            joint_role(joint));
       }
       if (!finite(joint.pv_hold_velocity_limit) ||
           joint.pv_hold_velocity_limit < 0.0f ||
           joint.pv_hold_velocity_limit > joint.pv_velocity_limit) {
         throw std::invalid_argument(
-            "trajectory contains invalid PV final-hold velocity limit at joint " +
-            std::to_string(index));
+            "trajectory contains invalid PV final-hold velocity limit for " +
+            joint_role(joint));
       }
     }
   }
@@ -340,6 +385,12 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
   const uint32_t valid_joint_bits = joint_count == 32
       ? std::numeric_limits<uint32_t>::max()
       : (uint32_t{1} << joint_count) - 1U;
+  std::vector<int8_t> recovery_directions(joint_count, 0);
+  std::vector<bool> recovered(joint_count, false);
+  std::vector<float> recovery_start_positions(
+      joint_count, std::numeric_limits<float>::quiet_NaN());
+  std::vector<float> previous_positions(
+      joint_count, std::numeric_limits<float>::quiet_NaN());
   const double time_origin = request.waypoints.front().time_s;
   if (!std::isfinite(time_origin) || time_origin < 0.0) {
     throw std::invalid_argument(
@@ -368,27 +419,67 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
     for (std::size_t joint_index = 0; joint_index < joint_count; ++joint_index) {
       const auto& joint = request.joints[joint_index];
       const float position = waypoint.positions[joint_index];
-      if (!finite(position) || position < joint.lower_position ||
-          position > joint.upper_position) {
+      const auto context = waypoint_context(waypoint_index, waypoint_count);
+      if (!finite(position)) {
         throw std::invalid_argument(
-            "trajectory waypoint exceeds product position limits at joint " +
-            std::to_string(joint_index));
+            context + " contains a non-finite position for " +
+            joint_role(joint));
       }
+      const bool below = position < joint.lower_position;
+      const bool above = position > joint.upper_position;
+      if (waypoint_index == 0 && (below || above)) {
+        if (!request.allow_out_of_limit_start_recovery) {
+          throw std::invalid_argument(
+              position_limit_error(context, joint, position));
+        }
+        recovery_directions[joint_index] = below ? 1 : -1;
+        recovery_start_positions[joint_index] = position;
+      } else if (below || above) {
+        const bool final_waypoint = waypoint_index + 1 == waypoint_count;
+        const bool can_continue_recovery =
+            request.allow_out_of_limit_start_recovery &&
+            recovery_directions[joint_index] != 0 &&
+            !recovered[joint_index] && !final_waypoint;
+        const float previous = previous_positions[joint_index];
+        const bool moves_inward = recovery_directions[joint_index] > 0
+            ? position >= previous - static_cast<float>(kLimitTolerance)
+            : position <= previous + static_cast<float>(kLimitTolerance);
+        if (!can_continue_recovery || !moves_inward) {
+          std::ostringstream message;
+          message << context;
+          if (recovery_directions[joint_index] != 0) {
+            message << " cannot recover an out-of-limit start: ";
+          } else {
+            message << " exceeds product position limits: ";
+          }
+          message << joint_role(joint) << " position=" << position;
+          if (recovery_directions[joint_index] != 0) {
+            message << " rad, start_position="
+                    << recovery_start_positions[joint_index]
+                    << " rad, previous_position=" << previous;
+          }
+          message << " rad, allowed=[" << joint.lower_position << ", "
+                  << joint.upper_position << "] rad";
+          throw std::invalid_argument(message.str());
+        }
+      } else if (recovery_directions[joint_index] != 0 &&
+                 waypoint_index > 0) {
+        recovered[joint_index] = true;
+      }
+      previous_positions[joint_index] = position;
       const uint32_t bit = uint32_t{1} << joint_index;
       if ((waypoint.velocity_valid_mask & bit) != 0 &&
           (!finite(waypoint.velocities[joint_index]) ||
            std::abs(waypoint.velocities[joint_index]) > joint.velocity_limit)) {
         throw std::invalid_argument(
-            "trajectory waypoint velocity is invalid at joint " +
-            std::to_string(joint_index));
+            context + " velocity is invalid for " + joint_role(joint));
       }
       if ((waypoint.acceleration_valid_mask & bit) != 0 &&
           (!finite(waypoint.accelerations[joint_index]) ||
            std::abs(waypoint.accelerations[joint_index]) >
                joint.acceleration_limit)) {
         throw std::invalid_argument(
-            "trajectory waypoint acceleration is invalid at joint " +
-            std::to_string(joint_index));
+            context + " acceleration is invalid for " + joint_role(joint));
       }
     }
   }
@@ -455,7 +546,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
           segment.duration_s));
     }
     validate_segment_extrema(segment.duration_s, segment.coefficients,
-                             request.joints,
+                             request.joints, recovery_directions,
                              static_cast<uint32_t>(segment_index));
     segments.push_back(std::move(segment));
   }
@@ -503,15 +594,15 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
         backend_->get_state(joint.motor, &state) != 0 || !state.has_value ||
         !finite(state.pos) || !finite(state.vel) || state.status_code > 1) {
       throw std::runtime_error(
-          "trajectory start requires fresh fault-free feedback at joint " +
-          std::to_string(joint_index));
+          "trajectory start requires fresh fault-free feedback at " +
+          joint_role(joint));
     }
     const bool disabled = intentionally_disabled.count(joint.motor) != 0;
     if ((!disabled && state.status_code != 1) ||
         (disabled && state.status_code != 0)) {
       throw std::runtime_error(
-          "trajectory start power feedback disagrees with Runtime at joint " +
-          std::to_string(joint_index));
+          "trajectory start power feedback disagrees with Runtime at " +
+          joint_role(joint));
     }
     if (replace_trajectory_id == 0 && !planned_reference_transaction) {
       const float requested_start =
@@ -519,7 +610,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
       if (std::abs(state.pos - requested_start) > kStartPositionTolerance) {
         throw std::invalid_argument(
             "trajectory first waypoint is not synchronized with current "
-            "feedback at joint " + std::to_string(joint_index));
+            "feedback at " + joint_role(joint));
       }
       const float actual_velocity =
           joint.direction * state.vel * joint.velocity_feedback_scale;
@@ -529,7 +620,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
           kStartVelocityTolerance) {
         throw std::invalid_argument(
             "trajectory first waypoint velocity is not synchronized with "
-            "current feedback at joint " + std::to_string(joint_index));
+            "current feedback at " + joint_role(joint));
       }
     }
   }
@@ -652,8 +743,8 @@ NativeTrajectorySample SafetyRuntime::planned_arm_sample(
     if (!joint.motor || !finite(joint.direction) ||
         std::abs(joint.direction) != 1.0f) {
       throw std::invalid_argument(
-          "planned arm reference contains an invalid joint at index " +
-          std::to_string(index));
+          "planned arm reference contains an invalid joint for " +
+          joint_role(joint));
     }
     if (!arm_mailbox_.pv.empty()) {
       const auto found = std::find_if(
@@ -663,8 +754,8 @@ NativeTrajectorySample SafetyRuntime::planned_arm_sample(
           });
       if (found == arm_mailbox_.pv.end()) {
         throw std::runtime_error(
-            "current planned PV reference is incomplete at joint " +
-            std::to_string(index));
+            "current planned PV reference is incomplete at " +
+            joint_role(joint));
       }
       result.positions.push_back(joint.direction * found->target_position);
       result.velocities.push_back(0.0f);
@@ -679,8 +770,8 @@ NativeTrajectorySample SafetyRuntime::planned_arm_sample(
         !finite(joint.velocity_command_scale) ||
         joint.velocity_command_scale <= 0.0f) {
       throw std::runtime_error(
-          "current planned MIT reference is incomplete at joint " +
-          std::to_string(index));
+          "current planned MIT reference is incomplete at " +
+          joint_role(joint));
     }
     result.positions.push_back(joint.direction * found->target_position);
     result.velocities.push_back(
@@ -843,9 +934,10 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
       arrival.intentionally_disabled =
           intentionally_disabled_motors_.count(joint.motor) != 0;
       const auto role = motor_roles_.find(joint.motor);
-      arrival.role = role == motor_roles_.end()
-          ? "joint " + std::to_string(index)
-          : role->second;
+      arrival.role = !joint.role.empty()
+          ? joint.role
+          : role == motor_roles_.end() ? "unknown product joint"
+                                       : role->second;
       arrivals.push_back(std::move(arrival));
     }
   }

@@ -115,7 +115,10 @@ void validate_product_position(
     uint32_t index) {
   if (position < joint.lower || position > joint.upper) {
     throw std::invalid_argument(
-        "joint " + std::to_string(index) + " exceeds product position limits");
+        articore::yunyi_joint_role(index) + " position=" +
+        std::to_string(position) + " rad exceeds product limits, allowed=[" +
+        std::to_string(joint.lower) + ", " +
+        std::to_string(joint.upper) + "] rad");
   }
 }
 
@@ -1082,6 +1085,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_start_trajectory(
          index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
       const auto& product_joint = product.joints[index];
       articore::NativeTrajectoryJoint joint;
+      joint.role = articore::yunyi_joint_role(index);
       joint.motor = product_joint.motor;
       joint.direction = product_joint.direction;
       joint.velocity_command_scale = product_joint.velocity_command_scale;
@@ -1372,8 +1376,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_state(
           !motor.has_value ||
           !stats.has_feedback) {
         throw std::runtime_error(
-            "complete product feedback is unavailable for joint " +
-            std::to_string(i));
+            "complete product feedback is unavailable for " +
+            articore::yunyi_joint_role(i));
       }
       auto& arm = i < ARTICORE_PRODUCT_ARM_DOF ? output.left : output.right;
       const uint32_t index = i % ARTICORE_PRODUCT_ARM_DOF;

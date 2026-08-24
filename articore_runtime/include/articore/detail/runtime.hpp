@@ -105,7 +105,16 @@ class MotorBackend {
 inline constexpr float kNativePvFinalHoldVelocityLimit = 0.0f;
 inline constexpr float kNativePvSettlingVelocityLimit = 0.05f;
 
+inline std::string yunyi_joint_role(uint32_t index) {
+  const uint32_t side = index / ARTICORE_PRODUCT_ARM_DOF;
+  const uint32_t joint = index % ARTICORE_PRODUCT_ARM_DOF;
+  return std::string(side == ARTICORE_ROBOT_LEFT ? "left/l-joint"
+                                                 : "right/r-joint") +
+      std::to_string(joint + 1);
+}
+
 struct NativeTrajectoryJoint {
+  std::string role;
   void* motor = nullptr;
   float direction = 1.0f;
   float velocity_command_scale = 1.0f;
@@ -137,6 +146,7 @@ struct NativeTrajectoryWaypoint {
 struct NativeTrajectoryRequest {
   ArticoreControlMode mode = ARTICORE_MODE_MIT;
   ArticoreRuntimeOperation operation = ARTICORE_OPERATION_START_TRAJECTORY;
+  bool allow_out_of_limit_start_recovery = false;
   std::vector<NativeTrajectoryJoint> joints;
   std::vector<NativeTrajectoryWaypoint> waypoints;
   // Product-owned optional endpoint verification. The callback receives one

@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -14,11 +15,7 @@ namespace articore {
 namespace {
 
 std::string product_joint_role(uint32_t index) {
-  const uint32_t side = index / ARTICORE_PRODUCT_ARM_DOF;
-  const uint32_t joint = index % ARTICORE_PRODUCT_ARM_DOF;
-  return std::string(side == ARTICORE_ROBOT_LEFT ? "left/l-joint"
-                                                 : "right/r-joint") +
-      std::to_string(joint + 1);
+  return yunyi_joint_role(index);
 }
 
 void read_product_arm_snapshot(
@@ -103,9 +100,12 @@ std::array<double, ARTICORE_PRODUCT_ARM_DOF> solve_ik(
     const auto& joint = product.joints[offset + index];
     if (!std::isfinite(ik.q[index]) || ik.q[index] < joint.lower ||
         ik.q[index] > joint.upper) {
-      throw std::invalid_argument(
-          std::string(context) + " IK result exceeds product limits at " +
-          product_joint_role(offset + index));
+      std::ostringstream message;
+      message << context << " IK result exceeds product position limits: "
+              << product_joint_role(offset + index) << " position="
+              << ik.q[index] << " rad, allowed=[" << joint.lower << ", "
+              << joint.upper << "] rad";
+      throw std::invalid_argument(message.str());
     }
     result[index] = ik.q[index];
   }
@@ -132,8 +132,9 @@ std::array<double, ARTICORE_PRODUCT_ARM_DOF> solve_endpoint_ik(
 
 NativeTrajectoryJoint trajectory_joint(
     const YunyiRuntimeResources::Joint& source,
-    float scale, float start_velocity) {
+    uint32_t product_index, float scale, float start_velocity) {
   NativeTrajectoryJoint joint;
+  joint.role = yunyi_joint_role(product_index);
   joint.motor = source.motor;
   joint.direction = source.direction;
   joint.velocity_command_scale = source.velocity_command_scale;
@@ -209,10 +210,11 @@ NativeCartesianPlan assemble_cartesian_plan(
   auto& trajectory = plan.trajectory;
   trajectory.mode = mode;
   trajectory.operation = operation;
+  trajectory.allow_out_of_limit_start_recovery = true;
   trajectory.joints.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
   for (uint32_t index = 0; index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
     trajectory.joints.push_back(trajectory_joint(
-        product.joints[index], scale, start_velocities[index]));
+        product.joints[index], index, scale, start_velocities[index]));
   }
 
   const uint32_t all_joints =
@@ -452,7 +454,8 @@ std::vector<NativeTrajectoryJoint> product_cartesian_joints(
   std::vector<NativeTrajectoryJoint> joints;
   joints.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
   for (uint32_t index = 0; index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
-    joints.push_back(trajectory_joint(product.joints[index], 1.0f, 0.0f));
+    joints.push_back(trajectory_joint(
+        product.joints[index], index, 1.0f, 0.0f));
   }
   return joints;
 }
