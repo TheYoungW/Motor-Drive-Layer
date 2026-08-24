@@ -23,6 +23,17 @@ Product trajectories are likewise planned and executed entirely by the C++
 Runtime through the stable trajectory C ABI; the wheel contains no Python
 interpolator or realtime playback loop.
 
+Version 0.12.2 / Runtime ABI 3.1 standardizes explicit Cartesian path starts.
+`articore_runtime_move_linear_v2()` accepts start and end poses, while
+`articore_runtime_move_circular()` is the standard start/via/end call. Runtime
+validates the declared start against the current planned pose within 5 mm and
+0.035 rad immediately before atomic installation. The previous auto-start
+circular symbol remains for binary compatibility; new SDKs do not use it.
+The same release changes the Yunyi multi-motor TX gap from 200 µs to 120 µs.
+A 300-second real-hardware PV hold test sustained 500 Hz updates across all
+16 Motors and 8,000 feedback frames/s with zero SocketCAN backlog, drops or
+CAN errors.
+
 Version 0.12.1 / Runtime ABI 3.0 fixes loaded J4 tracking in native PV
 Cartesian motion. The Yunyi product profile uses `KP_APR=100` and `KI_APR=0`
 for both 4340P J4 Motors. Runtime reads the actual register value, writes and

@@ -45,12 +45,34 @@ NativeCartesianPlan build_cartesian_plan(
     float speed_percent,
     ArticoreCartesianInterpolation interpolation);
 
-NativeCartesianPlan build_circular_plan(
-    SafetyRuntime& safety,
+NativeCartesianPlan build_linear_plan_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
+    const NativeTrajectorySample& reference,
     const float* start_pose,
+    const float* end_pose,
+    float speed_percent);
+
+void validate_cartesian_start_pose(
+    bool with_grippers,
+    uint32_t side,
+    const NativeTrajectorySample& reference,
+    const ArticoreRobotPose& start_pose,
+    const char* motion_name);
+
+void validate_cartesian_start_pose(
+    bool with_grippers,
+    uint32_t side,
+    const NativeTrajectorySample& reference,
+    const float* start_pose,
+    const char* motion_name);
+
+NativeCartesianPlan build_circular_plan_from_reference(
+    YunyiRuntimeResources& product,
+    ArticoreControlMode mode,
+    uint32_t side,
+    const NativeTrajectorySample& reference,
     const float* via_pose,
     const float* end_pose,
     float speed_percent);
@@ -60,6 +82,7 @@ NativeCartesianPlan build_circular_plan_from_reference(
     ArticoreControlMode mode,
     uint32_t side,
     const NativeTrajectorySample& reference,
+    const float* start_pose,
     const float* via_pose,
     const float* end_pose,
     float speed_percent);

@@ -16,7 +16,7 @@ namespace {
 constexpr auto kRegisterWriteAckTimeout = std::chrono::milliseconds(50);
 constexpr auto kRegisterWriteRetryGap = std::chrono::milliseconds(20);
 constexpr auto kBulkFeedbackRetryDelay = std::chrono::milliseconds(5);
-constexpr auto kDefaultMultiMotorTxGap = std::chrono::microseconds(200);
+constexpr auto kDefaultMultiMotorTxGap = std::chrono::microseconds(120);
 
 bool matches_feedback_arbitration_id(uint32_t arbitration_id,
                                      uint16_t configured_feedback_id,

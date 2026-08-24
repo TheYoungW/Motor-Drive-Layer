@@ -228,12 +228,25 @@ class Runtime final {
   }
 
   uint64_t move_linear(uint32_t side,
-                       const std::array<float, 6>& target_pose,
+                       const std::array<float, 6>& start_pose,
+                       const std::array<float, 6>& end_pose,
                        float speed_percent = 100.0f) {
     uint64_t motion_id = 0;
     detail::check(
+        articore_runtime_move_linear_v2(
+            checked(), side, start_pose.data(), end_pose.data(),
+            speed_percent, &motion_id),
+        "move_linear_v2");
+    return motion_id;
+  }
+
+  uint64_t move_linear_from_current(
+      uint32_t side, const std::array<float, 6>& end_pose,
+      float speed_percent = 100.0f) {
+    uint64_t motion_id = 0;
+    detail::check(
         articore_runtime_move_linear(
-            checked(), side, target_pose.data(), speed_percent, &motion_id),
+            checked(), side, end_pose.data(), speed_percent, &motion_id),
         "move_linear");
     return motion_id;
   }
@@ -253,7 +266,7 @@ class Runtime final {
     return motion_id;
   }
 
-  uint64_t move_circular(
+  uint64_t move_circular_from_current(
       uint32_t side,
       const std::array<float, 6>& via_pose,
       const std::array<float, 6>& end_pose,

@@ -35,7 +35,7 @@ and Runtime-core libraries are internal implementation units.
 int main() {
   auto bus = damiao::SocketCanFdBus::open("can-left", true);
   damiao::Controller controller(bus);
-  controller.set_tx_gap(std::chrono::microseconds(200));
+  controller.set_tx_gap(std::chrono::microseconds(120));
 
   auto motor = controller.add_damiao_motor(0x01, 0x11, "4340P");
   const auto state = motor->request_fresh_state(std::chrono::milliseconds(50));
@@ -44,8 +44,8 @@ int main() {
 ```
 
 The port, baud rate, IDs, and model above are examples supplied by the caller. The one-motor
-example sets a 200 µs TX interval explicitly. Without an explicit or environment override, a
-controller starts with no artificial TX delay and automatically applies a 200 µs minimum interval
+example sets a 120 µs TX interval explicitly. Without an explicit or environment override, a
+controller starts with no artificial TX delay and automatically applies a 120 µs minimum interval
 between all outgoing frames when its second motor is added. Call `Controller::set_tx_gap()` after
 adding motors to change the current value, or set `MOTOR_DRIVE_LAYER_TX_GAP_US` before constructing
 the controller to override the automatic default. `enable_all()` and `disable_all()` also use a

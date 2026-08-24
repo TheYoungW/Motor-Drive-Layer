@@ -178,6 +178,12 @@ void SafetyRuntime::install_joint_position(
   std::lock_guard<std::mutex> command_lock(command_mutex_);
   std::lock_guard<std::mutex> state_lock(state_mutex_);
   require_state_for_command();
+  if (trajectory_control_.state == ARTICORE_TRAJECTORY_COMPLETED) {
+    terminate_trajectory_locked(
+        ARTICORE_TRAJECTORY_CANCELLED,
+        std::string("completed trajectory replaced by ordinary ") + label +
+            " position command");
+  }
   if (mode_ != requested_mode) {
     throw std::runtime_error(
         std::string("ordinary ") + label +

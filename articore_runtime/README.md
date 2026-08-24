@@ -539,8 +539,16 @@ Runtime ABI 3.0 removes the temporary dual factory ABI. The only product
 factory is `articore_runtime_create_yunyi(mode, with_grippers, runtime_out)`;
 it returns an `ArticoreOperationError` and writes the opaque handle through the
 output pointer. Neither the old two-argument pointer-returning function nor an
-`_v2` alias is exported. Articore-SDK requires ABI 3.0 and binds this one
+`_v2` alias is exported. The SDK release paired with ABI 3.0 binds this one
 signature directly.
+
+Runtime ABI 3.1 adds the standard explicit-start linear call
+`articore_runtime_move_linear_v2(start_pose, end_pose, ...)` and restores the
+existing explicit `articore_runtime_move_circular(start_pose, via_pose,
+end_pose, ...)` as the standard circular product interface. Both validate the
+declared start against one current planned reference before atomic install;
+the existing motion remains untouched on mismatch. The auto-start circular
+v2 symbol remains exported only for compatibility.
 
 motor-drive-layer 0.10.39 hardens native PV Cartesian completion and final
 hold. The public 0.02 rad / 0.05 rad/s arrival window remains compatible, but

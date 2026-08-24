@@ -122,8 +122,10 @@ code is installed by the resulting wheel.
 ## Transport behavior
 
 A Controller uses no artificial TX delay for one motor. Adding a second motor enables a default
-200 µs minimum interval between outgoing frames. Set `MOTOR_DRIVE_LAYER_TX_GAP_US` or use the
-native configuration API to change it.
+120 µs minimum interval between outgoing frames. Set `MOTOR_DRIVE_LAYER_TX_GAP_US` or use the
+native configuration API to change it. The Yunyi product default completed a 300-second,
+16-motor PV hold test at 500 Hz with an 8,000-frame/s feedback rate, zero SocketCAN backlog and no
+CAN errors.
 
 Linux SocketCAN-FD sockets are non-blocking. When the kernel TX queue stays full, a
 send fails after 20 ms by default, is recorded in transport health and propagates into Runtime
@@ -175,11 +177,12 @@ CI additionally checks that the PyPI wheel contains no Python source, that the p
 loads as the only native payload, and that the robot model works without a Pinocchio runtime
 dependency.
 
-Runtime ABI 3.0 has one product factory:
+Runtime ABI 3.1 retains the single product factory introduced by ABI 3.0:
 `articore_runtime_create_yunyi(mode, with_grippers, runtime_out)`. It returns a
 stable operation status and writes the opaque handle through an output pointer.
 The old pointer-returning signature and temporary `_v2` alias are removed;
-Articore-SDK binds only this ABI 3.0 signature.
+Articore-SDK binds only this factory signature. ABI 3.1 additionally makes
+explicit start poses standard for linear and circular Cartesian paths.
 
 Hardware acceptance remains opt-in. Inspect the scripts under `scripts/` and provide explicit
 motor mappings and acknowledgement flags before running them.

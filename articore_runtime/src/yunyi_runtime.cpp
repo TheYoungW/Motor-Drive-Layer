@@ -19,10 +19,15 @@ constexpr const char* kModels[8] = {
     "8009", "8009", "4340P", "4340P", "4310", "4310", "4310", "4310"};
 constexpr float kKp[7] = {190, 190, 70, 125, 10, 22, 28};
 constexpr float kKd[7] = {4.55f, 4.5f, 2, 2.9f, .7f, .89f, .84f};
+// Both model joint1 axes use +Y. The right physical motor direction is the
+// inverse mapping that keeps product-level joint angles symmetric.
 constexpr float kDirection[2][7] = {
     {1, 1, 1, -1, -1, 1, 1},
-    {1, 1, 1, 1, -1, -1, 1},
+    {-1, 1, 1, 1, -1, -1, 1},
 };
+static_assert(kDirection[ARTICORE_ROBOT_RIGHT][0] == -1.0f,
+              "right joint1 motor direction must preserve the shared +Y "
+              "model convention");
 constexpr float kLower[2][7] = {
     {-2.745f, -.3489f, -2.5294f, -.1744f, -2.0933f, -.785f, -1.3956f},
     {-2.745f, -2.2678f, -2.5294f, -.1744f, -2.0933f, -.785f, -1.3956f},
@@ -485,7 +490,7 @@ YunyiRuntimeBundle create_yunyi_runtime(
   }
 
   const ArticoreRuntimeConfig config{
-      0, 250, 2000, 100, 100, 3, 300, 1, 50, 0.2f, 0,
+      0, 250, 2000, 100, 100, 3, 100, 1, 50, 0.2f, 0,
       ARTICORE_GRIPPER_FAULT_HOLD};
   auto runtime = std::make_unique<SafetyRuntime>(
       config, std::make_shared<YunyiMotorBackend>(), resources.get(),

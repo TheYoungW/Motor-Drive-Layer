@@ -117,8 +117,10 @@ python3 -m build --wheel --outdir builds/wheels/current packaging/pypi
 
 ## 通信行为
 
-单电机 Controller 默认不增加发送延迟；添加第二个电机后，默认启用 200 µs 的最小帧间隔。
-可通过 `MOTOR_DRIVE_LAYER_TX_GAP_US` 或原生配置接口修改。
+单电机 Controller 默认不增加发送延迟；添加第二个电机后，默认启用 120 µs 的最小帧间隔。
+可通过 `MOTOR_DRIVE_LAYER_TX_GAP_US` 或原生配置接口修改。Yunyi 产品默认值已经完成
+300 秒、16 电机、500 Hz 的 PV 保持真机测试：反馈稳定为 8,000 帧/秒，SocketCAN 队列
+无积压且无 CAN 错误。
 
 Linux SocketCAN-FD socket 使用非阻塞模式。内核发送队列持续满时，默认 20 ms
 后返回错误，写入通信健康状态并传递给 Runtime 故障处理。可用
@@ -263,8 +265,8 @@ Kp=Kd=0。通信降级时仍应用 Runtime 的 25% 增益缩放。
 
 Runtime ABI 2.28 增加 `product_cartesian_point_to_point` 与原生
 `articore_runtime_move_pose()`。目标格式为 `[x, y, z, roll, pitch, yaw]`（米、弧度），
-调用在底层完成 IK、产品限位及五次多项式段内极值校验后立即返回，实际运动由 Runtime
-内部控制线程异步执行。新的合法点目标会从当前多项式运动状态原子覆盖旧点目标；新目标
+调用在底层完成 IK、产品限位及关节路径校验后立即返回，实际运动由 Runtime
+内部控制线程异步执行。新的合法点目标会从当前规划运动状态原子覆盖旧点目标；新目标
 校验失败时旧运动继续。显式多路点轨迹仍保持严格顺序且不会被此接口覆盖。该功能是关节
 空间点到点，不保证笛卡尔直线。
 全部产品笛卡尔运动接口仅支持 PV 产品模式；MIT 产品 Runtime 会在规划前拒绝调用，且不会
@@ -275,8 +277,8 @@ Runtime ABI 2.29 增加 `product_cartesian_linear`、统一的
 直线模式让 XYZ 始终位于起点到目标点的线段上，姿态采用最短路径四元数 SLERP。Runtime
 按不大于 5 mm / 0.035 rad 的间距生成路径样本并连续求 IK；路径不可达、IK 分支跳变或任一
 关节越界时会在安装前拒绝，新目标不会覆盖旧运动。实时控制线程只执行预先生成的关节
-多项式，不在 500 Hz 周期内求 IK。PTP 与直线单目标运动可以互相原子覆盖，显式多路点
-轨迹仍保持独立。
+采样，并在每个底层周期发送普通 PV 帧，不在 500 Hz 周期内求 IK。PTP 与直线单目标运动
+可以互相原子覆盖，显式多路点轨迹仍保持独立。
 
 Runtime ABI 2.30 增加 `product_cartesian_circular` 和
 `articore_runtime_move_circular()`。调用方传入三份完整的
@@ -342,7 +344,12 @@ motor-drive-layer 0.10.39 修复 Yunyi 原生 PV 笛卡尔运动的终点保持�
 0.02 rad / 0.05 rad/s 的公开到位窗口，但会先以低速继续收敛，并对笛卡尔终点执行
 2.5 mm / 0.01 rad 的原生 FK 核验；核验通过后安装持续发送的零速最终位置帧，再用 200 ms
 新鲜反馈确认稳定。`COMPLETED` 后仍持续监控反馈，持续失稳会重新进入等待稳定状态并写入
-health。该修复不修改电机 Flash、零点或 PV 固件增益，也没有在五次轨迹上叠加普通步进器。
+health。该修复不修改电机 Flash、零点或 PV 固件增益。
+
+当前产品笛卡尔运动不再使用五次多项式。PTP 将最近种子 IK 得到的关节终点作为普通 PV
+参考执行；Linear 和 Circular 先在规划阶段生成连续笛卡尔样本并逐点求 IK，Runtime 再以
+500 Hz 分段线性推进关节参考并发送 PV 帧。显式 `start_trajectory()` 多路点轨迹接口仍保持
+五次插值，ABI、运动状态、取消、覆盖、终点核验和安全处理语义不变。
 
 ## 安全
 
@@ -368,10 +375,11 @@ ctest --test-dir builds/cmake/default --output-on-failure
 CI 还会验证 wheel 不含 Python 源码、唯一的产品 Runtime 动态库可加载，以及机器人模型不依赖
 Pinocchio 动态库。
 
-Runtime ABI 3.0 只保留一个产品工厂：
+Runtime ABI 3.1 延续 ABI 3.0 的唯一产品工厂：
 `articore_runtime_create_yunyi(mode, with_grippers, runtime_out)`。函数返回稳定操作状态码，并
 通过输出指针写入 Runtime 句柄。旧的两参数指针返回签名和临时 `_v2` 别名都已删除；
-Articore-SDK 固定要求 ABI 3.0，只绑定这一种签名。
+Articore-SDK 只绑定这一种工厂签名。ABI 3.1 另外统一了直线和圆弧运动的显式起点语义：
+Linear 使用 start/end，Circular 使用 start/via/end；起点不匹配时不覆盖当前运动。
 
 真机验收脚本位于 `scripts/`，必须先检查脚本，并显式提供电机映射和确认参数。
 

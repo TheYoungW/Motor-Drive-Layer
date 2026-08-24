@@ -74,7 +74,7 @@ const std::array<JointSpec, kDof> kLeft = {
 };
 
 const std::array<JointSpec, kDof> kRight = {
-    JointSpec{{0, -1, 0}, {5e-05, -.16699, .63371},
+    JointSpec{{0, 1, 0}, {5e-05, -.16699, .63371},
      {{1, 0, 0, 0, .9659258262890676, .2588190451025233, 0, -.2588190451025233, .9659258262890676}},
      .48001, {{.0023086, -.047309, -.00070626}}, {{.00052943, -9.5749e-08, 1.5354e-07, -9.5749e-08, .00035158, -5.477e-06, 1.5354e-07, -5.477e-06, .00031895}}, -2.745, 2.745},
     JointSpec{{1, 0, 0}, {-5e-05, -.058, 0},
@@ -316,6 +316,22 @@ void RobotModel::aba(const double* q, uint32_t q_count, const double* dq,
 void RobotModel::ik(const ArticoreRobotPose* target, const double* initial_q,
                     uint32_t initial_q_count, const ArticoreIkOptions* options,
                     ArticoreIkResult* result) const {
+  ik_impl(
+      target, initial_q, initial_q_count, options, result, false);
+}
+
+void RobotModel::ik_nearest(
+    const ArticoreRobotPose* target, const double* initial_q,
+    uint32_t initial_q_count, const ArticoreIkOptions* options,
+    ArticoreIkResult* result) const {
+  ik_impl(
+      target, initial_q, initial_q_count, options, result, true);
+}
+
+void RobotModel::ik_impl(
+    const ArticoreRobotPose* target, const double* initial_q,
+    uint32_t initial_q_count, const ArticoreIkOptions* options,
+    ArticoreIkResult* result, bool prefer_nearest_success) const {
   if (!target || target->struct_size < sizeof(*target))
     throw std::invalid_argument("IK target pose is null or too small");
   if (!result || result->struct_size < sizeof(*result))
@@ -382,8 +398,16 @@ void RobotModel::ik(const ArticoreRobotPose* target, const double* initial_q,
     return attempt;
   };
   Attempt best = solve(seed);
+  auto seed_distance = [&](const Eigen::VectorXd& q) {
+    return (q - seed).squaredNorm();
+  };
+  double best_seed_distance = best.success
+      ? seed_distance(best.q)
+      : std::numeric_limits<double>::infinity();
   std::mt19937_64 rng(options ? options->random_seed : 0);
-  for (uint32_t retry = 0; retry < max_retries && !best.success; ++retry) {
+  for (uint32_t retry = 0;
+       retry < max_retries && (!best.success || prefer_nearest_success);
+       ++retry) {
     Eigen::VectorXd random_q(kDof);
     for (uint32_t i = 0; i < kDof; ++i) {
       std::uniform_real_distribution<double> distribution(
@@ -391,7 +415,17 @@ void RobotModel::ik(const ArticoreRobotPose* target, const double* initial_q,
       random_q[i] = distribution(rng);
     }
     Attempt candidate = solve(random_q);
-    if (candidate.error < best.error) best = std::move(candidate);
+    if (candidate.success && prefer_nearest_success) {
+      const double candidate_seed_distance = seed_distance(candidate.q);
+      if (!best.success || candidate_seed_distance < best_seed_distance ||
+          (std::abs(candidate_seed_distance - best_seed_distance) < 1e-12 &&
+           candidate.error < best.error)) {
+        best = std::move(candidate);
+        best_seed_distance = candidate_seed_distance;
+      }
+    } else if (!best.success && candidate.error < best.error) {
+      best = std::move(candidate);
+    }
   }
   const uint32_t size = result->struct_size;
   *result = {};

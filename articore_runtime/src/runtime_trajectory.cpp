@@ -157,6 +157,10 @@ std::array<double, 6> quintic_coefficients(
   };
 }
 
+std::array<double, 6> sampled_pv_coefficients(double p0, double p1) {
+  return {p0, p1 - p0, 0.0, 0.0, 0.0, 0.0};
+}
+
 Polynomial as_polynomial(const std::array<double, 6>& coefficients) {
   return Polynomial(coefficients.begin(), coefficients.end());
 }
@@ -310,6 +314,11 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
   const std::size_t waypoint_count = request.waypoints.size();
   if (request.mode != ARTICORE_MODE_MIT && request.mode != ARTICORE_MODE_PV) {
     throw std::invalid_argument("trajectory control mode is invalid");
+  }
+  if (request.execution == NativeTrajectoryExecution::SampledPv &&
+      request.mode != ARTICORE_MODE_PV) {
+    throw std::invalid_argument(
+        "sampled PV execution requires PV control mode");
   }
   if (joint_count == 0 || joint_count > 32) {
     throw std::invalid_argument("trajectory joint count is invalid");
@@ -539,11 +548,16 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
     segment.duration_s = end.time_s - start.time_s;
     segment.coefficients.reserve(joint_count);
     for (std::size_t joint_index = 0; joint_index < joint_count; ++joint_index) {
-      segment.coefficients.push_back(quintic_coefficients(
-          start.positions[joint_index], start.velocities[joint_index],
-          start.accelerations[joint_index], end.positions[joint_index],
-          end.velocities[joint_index], end.accelerations[joint_index],
-          segment.duration_s));
+      if (request.execution == NativeTrajectoryExecution::SampledPv) {
+        segment.coefficients.push_back(sampled_pv_coefficients(
+            start.positions[joint_index], end.positions[joint_index]));
+      } else {
+        segment.coefficients.push_back(quintic_coefficients(
+            start.positions[joint_index], start.velocities[joint_index],
+            start.accelerations[joint_index], end.positions[joint_index],
+            end.velocities[joint_index], end.accelerations[joint_index],
+            segment.duration_s));
+      }
     }
     validate_segment_extrema(segment.duration_s, segment.coefficients,
                              request.joints, recovery_directions,
@@ -1340,7 +1354,10 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
 
 void SafetyRuntime::terminate_trajectory_locked(
     ArticoreTrajectoryState state, const std::string& error) {
-  if (trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING) return;
+  if (trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING &&
+      trajectory_control_.state != ARTICORE_TRAJECTORY_COMPLETED) {
+    return;
+  }
   trajectory_control_.state = state;
   trajectory_control_.error = error;
   if (state == ARTICORE_TRAJECTORY_FAULT) {

@@ -912,8 +912,8 @@ int main() {
   require(default_gap_times.size() == 2,
           "default multi-motor TX-gap test sends two frames");
   require(default_gap_times[1] - default_gap_times[0] >=
-              std::chrono::microseconds(190),
-          "multi-motor controller defaults to a 200 us TX gap");
+              std::chrono::microseconds(110),
+          "multi-motor controller defaults to a 120 us TX gap");
   default_gap_controller.close_bus();
 
   auto resilient_bus = std::make_shared<FakeBus>();

@@ -1043,16 +1043,20 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_cartesian(
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear(
     ArticoreRuntime* runtime, uint32_t side, const float* target_pose,
     float speed_percent, uint64_t* motion_id);
+/* Standard linear path with an explicit, validated geometric start pose. */
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_v2(
+    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+    const float* end_pose, float speed_percent, uint64_t* motion_id);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_cartesian_motion_status(
     ArticoreRuntime* runtime, ArticoreCartesianMotionStatus* status);
 ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_cartesian_motion(
     ArticoreRuntime* runtime);
-/* Compatibility circular call with an explicit start pose. */
+/* Standard circular path with an explicit, validated geometric start pose. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* via_pose, const float* end_pose, float speed_percent,
     uint64_t* motion_id);
-/* Circular PV motion from the current planned pose through via_pose to end_pose. */
+/* Compatibility auto-start circular motion. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular_v2(
     ArticoreRuntime* runtime, uint32_t side, const float* via_pose,
     const float* end_pose, float speed_percent, uint64_t* motion_id);

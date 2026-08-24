@@ -143,9 +143,15 @@ struct NativeTrajectoryWaypoint {
   uint32_t acceleration_valid_mask = 0;
 };
 
+enum class NativeTrajectoryExecution {
+  Quintic,
+  SampledPv,
+};
+
 struct NativeTrajectoryRequest {
   ArticoreControlMode mode = ARTICORE_MODE_MIT;
   ArticoreRuntimeOperation operation = ARTICORE_OPERATION_START_TRAJECTORY;
+  NativeTrajectoryExecution execution = NativeTrajectoryExecution::Quintic;
   bool allow_out_of_limit_start_recovery = false;
   std::vector<NativeTrajectoryJoint> joints;
   std::vector<NativeTrajectoryWaypoint> waypoints;

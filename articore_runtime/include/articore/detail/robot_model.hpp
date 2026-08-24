@@ -44,8 +44,18 @@ class RobotModel final {
   void ik(const ArticoreRobotPose* target, const double* initial_q,
           uint32_t initial_q_count, const ArticoreIkOptions* options,
           ArticoreIkResult* result) const;
+  // Product PTP planning searches the configured retry budget and selects the
+  // successful solution nearest to the measured/planned seed.
+  void ik_nearest(const ArticoreRobotPose* target, const double* initial_q,
+                  uint32_t initial_q_count,
+                  const ArticoreIkOptions* options,
+                  ArticoreIkResult* result) const;
 
  private:
+  void ik_impl(const ArticoreRobotPose* target, const double* initial_q,
+               uint32_t initial_q_count, const ArticoreIkOptions* options,
+               ArticoreIkResult* result,
+               bool prefer_nearest_success) const;
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

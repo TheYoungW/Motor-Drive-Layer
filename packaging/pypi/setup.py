@@ -21,12 +21,6 @@ def _resolve_articore_runtime_path() -> Path:
             repo_root
             / "builds"
             / "cmake"
-            / "direct-socketcanfd"
-            / "articore_runtime"
-            / lib_name,
-            repo_root
-            / "builds"
-            / "cmake"
             / "default"
             / "articore_runtime"
             / lib_name,
@@ -36,6 +30,12 @@ def _resolve_articore_runtime_path() -> Path:
             / "default"
             / "articore_runtime"
             / "Release"
+            / lib_name,
+            repo_root
+            / "builds"
+            / "cmake"
+            / "direct-socketcanfd"
+            / "articore_runtime"
             / lib_name,
             repo_root / "builds" / "cmake" / "ci" / "articore_runtime" / lib_name,
             repo_root / "build" / "articore_runtime" / lib_name,

@@ -73,6 +73,52 @@ bool test_side(uint32_t side, const char* prefix,
   return ok;
 }
 
+bool test_first_joint_positive_direction_is_mirrored() {
+  ArticoreRobotModel* left =
+      articore_robot_model_create("yunyi_v1_0", ARTICORE_ROBOT_LEFT);
+  ArticoreRobotModel* right =
+      articore_robot_model_create("yunyi_v1_0", ARTICORE_ROBOT_RIGHT);
+  if (!left || !right) {
+    articore_robot_model_free(left);
+    articore_robot_model_free(right);
+    return false;
+  }
+
+  std::array<double, 7> zero{};
+  auto positive_joint1 = zero;
+  positive_joint1[0] = 0.1;
+  ArticoreRobotPose left_zero{};
+  ArticoreRobotPose left_positive{};
+  ArticoreRobotPose right_zero{};
+  ArticoreRobotPose right_positive{};
+  for (auto* pose : {&left_zero, &left_positive, &right_zero,
+                     &right_positive}) {
+    pose->struct_size = sizeof(*pose);
+  }
+  const bool fk_ok =
+      articore_robot_model_fk(left, zero.data(), zero.size(), &left_zero) == 0 &&
+      articore_robot_model_fk(left, positive_joint1.data(),
+                              positive_joint1.size(), &left_positive) == 0 &&
+      articore_robot_model_fk(right, zero.data(), zero.size(), &right_zero) == 0 &&
+      articore_robot_model_fk(right, positive_joint1.data(),
+                              positive_joint1.size(), &right_positive) == 0;
+  articore_robot_model_free(left);
+  articore_robot_model_free(right);
+  if (!fk_ok) return false;
+
+  std::array<double, 3> left_delta{};
+  std::array<double, 3> right_delta{};
+  for (size_t axis = 0; axis < 3; ++axis) {
+    left_delta[axis] = left_positive.position[axis] - left_zero.position[axis];
+    right_delta[axis] =
+        right_positive.position[axis] - right_zero.position[axis];
+  }
+  return left_delta[0] < 0.0 && right_delta[0] < 0.0 &&
+      near(left_delta[0], right_delta[0], 1e-7) &&
+      near(left_delta[1], -right_delta[1], 1e-7) &&
+      near(left_delta[2], right_delta[2], 1e-7);
+}
+
 }  // namespace
 
 int main() {
@@ -81,7 +127,8 @@ int main() {
                   0.18147106361002283}) ||
       !test_side(ARTICORE_ROBOT_RIGHT, "r",
                  {0.0017044146523629705, -0.23188869792476557,
-                  0.18147150461594638})) {
+                  0.18147150461594638}) ||
+      !test_first_joint_positive_direction_is_mirrored()) {
     std::cerr << "native robot model ABI test failed: "
               << articore_runtime_last_error() << "\n";
     return 1;

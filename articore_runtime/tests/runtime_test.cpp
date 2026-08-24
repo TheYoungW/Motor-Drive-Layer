@@ -4213,6 +4213,82 @@ void test_native_quintic_trajectory_executes_at_worker_rate() {
   runtime.disable();
 }
 
+void test_sampled_pv_trajectory_uses_direct_linear_references() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  driver.emulated_pv_feedback_period = 2;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+  auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  auto request = trajectory_request(motors, ARTICORE_MODE_PV, 1.0);
+  request.execution = articore::NativeTrajectoryExecution::SampledPv;
+  const auto id = runtime.start_trajectory(std::move(request));
+  require(id != 0, "sampled PV motion receives a stable id");
+  std::this_thread::sleep_for(200ms);
+  const auto sample = runtime.trajectory_sample();
+  require(sample.active && sample.positions.size() == 2 &&
+              sample.velocities.size() == 2,
+          "sampled PV motion exposes its current direct reference");
+  require(sample.positions[0] > 0.025f && sample.positions[0] < 0.060f,
+          "sampled PV advances approximately linearly with elapsed time");
+  require(std::abs(sample.velocities[0] - 0.2f) < 0.01f,
+          "sampled PV reports the constant segment velocity");
+  require(wait_for([&] {
+            return runtime.trajectory_status().state ==
+                ARTICORE_TRAJECTORY_COMPLETED;
+          }, 1500ms), "sampled PV motion retains native completion semantics");
+  runtime.disable();
+}
+
+void test_completed_trajectory_releases_hold_for_ordinary_pv() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  driver.emulated_pv_feedback_period = 2;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+  auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  runtime.start_trajectory(
+      trajectory_request(motors, ARTICORE_MODE_PV));
+  require(wait_for([&] {
+            return runtime.trajectory_status().state ==
+                ARTICORE_TRAJECTORY_COMPLETED;
+          }, 1000ms), "native trajectory reaches its completed hold");
+
+  ArticoreJointPvTarget targets[] = {
+      {sizeof(ArticoreJointPvTarget), motors[0].motor, -0.1f},
+      {sizeof(ArticoreJointPvTarget), motors[1].motor, 0.5f},
+  };
+  runtime.set_joint_pv(targets, 2, 1.0f);
+  require(runtime.trajectory_status().state == ARTICORE_TRAJECTORY_CANCELLED,
+          "ordinary PV atomically releases a completed trajectory hold");
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_pv.size() == 2 &&
+                driver.last_pv[0].target_position < 0.15f &&
+                driver.last_pv[1].target_position < 0.75f;
+          }, 500ms),
+          "ordinary PV advances after replacing the completed trajectory");
+  runtime.disable();
+}
+
 void test_planned_reference_transaction_does_not_use_lagging_feedback() {
   FakeDriver driver;
   g_driver = &driver;
@@ -4617,6 +4693,53 @@ void test_cartesian_linear_math_uses_straight_xyz_and_shortest_slerp() {
           "SLERP treats q and -q as the same orientation and takes the shortest path");
 }
 
+void test_explicit_cartesian_start_pose_reports_linear_and_circular_errors() {
+  articore::NativeTrajectorySample reference;
+  reference.positions.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+
+  articore::RobotModel model("yunyi_v1_0", ARTICORE_ROBOT_LEFT, true);
+  const std::array<double, ARTICORE_PRODUCT_ARM_DOF> q{};
+  ArticoreRobotPose pose{};
+  pose.struct_size = sizeof(pose);
+  model.fk(q.data(), q.size(), &pose);
+  std::array<float, ARTICORE_PRODUCT_POSE_DOF> start{
+      static_cast<float>(pose.position[0]),
+      static_cast<float>(pose.position[1]),
+      static_cast<float>(pose.position[2]),
+      static_cast<float>(std::atan2(pose.rotation[7], pose.rotation[8])),
+      static_cast<float>(std::asin(-pose.rotation[6])),
+      static_cast<float>(std::atan2(pose.rotation[3], pose.rotation[0])),
+  };
+
+  articore::validate_cartesian_start_pose(
+      true, ARTICORE_ROBOT_LEFT, reference, start.data(), "linear");
+  articore::validate_cartesian_start_pose(
+      true, ARTICORE_ROBOT_LEFT, reference, start.data(), "circular");
+
+  auto mismatched = start;
+  mismatched[0] += 0.006f;
+  require_throws(
+      [&] {
+        articore::validate_cartesian_start_pose(
+            true, ARTICORE_ROBOT_LEFT, reference, mismatched.data(),
+            "linear");
+      },
+      "linear start_pose does not match current planned pose: "
+      "position_error=",
+      "linear start mismatch reports its geometric position error");
+  require_throws(
+      [&] {
+        articore::validate_cartesian_start_pose(
+            true, ARTICORE_ROBOT_LEFT, reference, mismatched.data(),
+            "circular");
+      },
+      "circular start_pose does not match current planned pose: "
+      "position_error=",
+      "circular start mismatch uses the same explicit-start semantics");
+}
+
 void test_product_cartesian_endpoint_ik_search_is_global_and_deterministic() {
   articore::RobotModel model("yunyi_v1_0", ARTICORE_ROBOT_LEFT);
   const std::array<double, ARTICORE_PRODUCT_ARM_DOF> reachable_q{
@@ -4670,6 +4793,66 @@ void test_product_cartesian_endpoint_ik_search_is_global_and_deterministic() {
                     return std::abs(lhs - rhs) < 1e-15;
                   }),
           "fixed-seed endpoint IK returns the same solution on repeated calls");
+}
+
+void test_product_ptp_ik_selects_solution_nearest_live_seed() {
+  articore::RobotModel model(
+      "yunyi_v1_0", ARTICORE_ROBOT_LEFT, true);
+  const std::array<double, ARTICORE_PRODUCT_ARM_DOF> seed{
+      0.2759971618652344, -0.00019073486328125,
+      -0.10547828674316406, 0.14858436584472656,
+      0.045205116271972656, -0.5731668472290039,
+      -0.14972877502441406};
+  ArticoreRobotPose target{};
+  target.struct_size = sizeof(target);
+  target.position[0] = 0.396108;
+  target.position[1] = 0.222123;
+  target.position[2] = 0.214248;
+  const double roll = -0.274087;
+  const double pitch = -1.072499;
+  const double yaw = 0.191059;
+  const double sr = std::sin(roll);
+  const double cr = std::cos(roll);
+  const double sp = std::sin(pitch);
+  const double cp = std::cos(pitch);
+  const double sy = std::sin(yaw);
+  const double cy = std::cos(yaw);
+  const double rotation[9] = {
+      cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr,
+      sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr,
+      -sp, cp * sr, cp * cr};
+  std::copy(std::begin(rotation), std::end(rotation), target.rotation);
+
+  const auto local_options = articore::product_cartesian_ik_options(
+      articore::CartesianIkSearch::LocalPath);
+  ArticoreIkResult local{};
+  local.struct_size = sizeof(local);
+  model.ik(
+      &target, seed.data(), seed.size(), &local_options, &local);
+  require(local.success &&
+              std::abs(local.q[2] - seed[2]) > 1.5 &&
+              std::abs(local.q[4] - seed[4]) > 1.5,
+          "reported live PTP target reproduces the distant J3/J5 local branch");
+
+  const auto global_options = articore::product_cartesian_ik_options(
+      articore::CartesianIkSearch::GlobalEndpoint);
+  ArticoreIkResult nearest{};
+  nearest.struct_size = sizeof(nearest);
+  model.ik_nearest(
+      &target, seed.data(), seed.size(), &global_options, &nearest);
+  require(nearest.success && nearest.error_norm < 1e-4,
+          "nearest-seed endpoint search retains full IK accuracy");
+  require(std::abs(nearest.q[2] - seed[2]) < 0.1 &&
+              std::abs(nearest.q[4] - seed[4]) < 0.1,
+          "nearest-seed endpoint search removes unnecessary J3/J5 rotation");
+  double local_distance = 0.0;
+  double nearest_distance = 0.0;
+  for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
+    local_distance += std::pow(local.q[index] - seed[index], 2);
+    nearest_distance += std::pow(nearest.q[index] - seed[index], 2);
+  }
+  require(nearest_distance < 0.2 * local_distance,
+          "PTP ranks valid endpoint branches by distance to the live seed");
 }
 
 void test_product_pose_selects_gripper_tool_center() {
@@ -5132,6 +5315,8 @@ int main() {
     RUN_TEST(test_deadline_skips_missed_periods_and_reenable_seeds_feedback);
     RUN_TEST(test_trajectory_errors_use_product_roles_and_allow_inward_recovery);
     RUN_TEST(test_native_quintic_trajectory_executes_at_worker_rate);
+    RUN_TEST(test_sampled_pv_trajectory_uses_direct_linear_references);
+    RUN_TEST(test_completed_trajectory_releases_hold_for_ordinary_pv);
     RUN_TEST(test_planned_reference_transaction_does_not_use_lagging_feedback);
     RUN_TEST(test_native_trajectory_completion_waits_for_physical_arrival);
     RUN_TEST(test_pv_trajectory_settles_arrived_joints_independently);
@@ -5140,7 +5325,9 @@ int main() {
     RUN_TEST(test_native_trajectory_uses_raw_mit_and_cancel_is_idempotent);
     RUN_TEST(test_native_point_target_replacement_is_validated_and_atomic);
     RUN_TEST(test_cartesian_linear_math_uses_straight_xyz_and_shortest_slerp);
+    RUN_TEST(test_explicit_cartesian_start_pose_reports_linear_and_circular_errors);
     RUN_TEST(test_product_cartesian_endpoint_ik_search_is_global_and_deterministic);
+    RUN_TEST(test_product_ptp_ik_selects_solution_nearest_live_seed);
     RUN_TEST(test_product_pose_selects_gripper_tool_center);
     RUN_TEST(test_cartesian_linear_samples_support_continuous_native_ik);
     RUN_TEST(test_three_point_circular_arc_geometry_and_degenerate_rejection);

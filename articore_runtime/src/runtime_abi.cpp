@@ -142,6 +142,23 @@ int32_t record_move_pose_error(
   return code;
 }
 
+bool same_planned_reference(
+    const articore::NativeTrajectorySample& before,
+    const articore::NativeTrajectorySample& after) {
+  if (before.active != after.active ||
+      before.trajectory_id != after.trajectory_id ||
+      before.operation != after.operation ||
+      before.positions.size() != after.positions.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < before.positions.size(); ++index) {
+    if (std::abs(before.positions[index] - after.positions[index]) > 1e-4f) {
+      return false;
+    }
+  }
+  return true;
+}
+
 int32_t move_cartesian_impl(
     ArticoreRuntime* runtime, uint32_t side, const float* target_pose,
     float speed_percent, ArticoreCartesianInterpolation interpolation,
@@ -207,6 +224,69 @@ int32_t move_cartesian_impl(
   }
 }
 
+int32_t move_linear_v2_impl(
+    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+    const float* end_pose, float speed_percent, uint64_t* motion_id) {
+  try {
+    if (!runtime) throw std::invalid_argument("runtime is null");
+    if (!motion_id) throw std::invalid_argument("motion_id output is null");
+    std::lock_guard<std::mutex> motion_lock(runtime->move_pose_mutex);
+    auto& safety = checked(runtime);
+    auto& product = checked_yunyi(runtime);
+    const auto joints = articore::product_cartesian_joints(product);
+
+    articore::NativeTrajectorySample reference;
+    {
+      auto snapshot = safety.begin_command_transaction();
+      reference = safety.planned_arm_sample(joints, snapshot);
+    }
+    auto plan = articore::build_linear_plan_from_reference(
+        product, runtime->product_mode, side, reference, start_pose, end_pose,
+        speed_percent);
+
+    auto transaction = safety.begin_command_transaction();
+    const auto current = safety.planned_arm_sample(joints, transaction);
+    articore::validate_cartesian_start_pose(
+        product.with_grippers, side, current, start_pose, "linear");
+    if (!same_planned_reference(reference, current)) {
+      throw std::invalid_argument(
+          "linear current planned reference changed while planning; "
+          "the existing motion was not replaced");
+    }
+
+    const uint64_t new_id = safety.start_trajectory(
+        plan.trajectory, plan.replace_trajectory_id, &transaction);
+    runtime->superseded_move_pose_id = plan.replace_trajectory_id;
+    runtime->move_pose_id = new_id;
+    runtime->move_pose_side = side;
+    runtime->cartesian_interpolation = ARTICORE_CARTESIAN_LINEAR;
+    runtime->move_pose_speed_percent = speed_percent;
+    std::copy(end_pose, end_pose + ARTICORE_PRODUCT_POSE_DOF,
+              runtime->move_pose_target.begin());
+    *motion_id = new_id;
+    safety.record_operation_result(
+        ARTICORE_OPERATION_MOVE_LINEAR, ARTICORE_OPERATION_OK);
+    g_last_error = "ok";
+    return ARTICORE_OPERATION_OK;
+  } catch (const std::invalid_argument& error) {
+    if (runtime && runtime->runtime) {
+      runtime->runtime->record_operation_result(
+          ARTICORE_OPERATION_MOVE_LINEAR,
+          ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
+    }
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  } catch (const std::exception& error) {
+    if (runtime && runtime->runtime) {
+      runtime->runtime->record_operation_result(
+          ARTICORE_OPERATION_MOVE_LINEAR,
+          ARTICORE_OPERATION_INVALID_STATE, error.what());
+    }
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_STATE;
+  }
+}
+
 int32_t move_circular_impl(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* via_pose, const float* end_pose, float speed_percent,
@@ -215,31 +295,30 @@ int32_t move_circular_impl(
     if (!runtime) throw std::invalid_argument("runtime is null");
     if (!motion_id) throw std::invalid_argument("motion_id output is null");
     std::lock_guard<std::mutex> motion_lock(runtime->move_pose_mutex);
-    auto plan = articore::build_circular_plan(
-        checked(runtime), checked_yunyi(runtime), runtime->product_mode,
-        side, start_pose, via_pose, end_pose, speed_percent);
+    auto& safety = checked(runtime);
+    auto& product = checked_yunyi(runtime);
+    const auto joints = articore::product_cartesian_joints(product);
 
-    uint64_t new_id = 0;
-    for (uint32_t attempt = 0; attempt < 12; ++attempt) {
-      try {
-        new_id = checked(runtime).start_trajectory(
-            plan.trajectory, plan.replace_trajectory_id);
-        break;
-      } catch (const std::invalid_argument& error) {
-        const std::string message = error.what();
-        if (message.find("inside the segment") == std::string::npos ||
-            plan.trajectory.waypoints.back().time_s >= 60.0) {
-          throw;
-        }
-        for (auto& waypoint : plan.trajectory.waypoints) {
-          waypoint.time_s *= 1.35;
-        }
-      }
+    articore::NativeTrajectorySample reference;
+    {
+      auto snapshot = safety.begin_command_transaction();
+      reference = safety.planned_arm_sample(joints, snapshot);
     }
-    if (new_id == 0) {
+    auto plan = articore::build_circular_plan_from_reference(
+        product, runtime->product_mode, side, reference, start_pose,
+        via_pose, end_pose, speed_percent);
+
+    auto transaction = safety.begin_command_transaction();
+    const auto current = safety.planned_arm_sample(joints, transaction);
+    articore::validate_cartesian_start_pose(
+        product.with_grippers, side, current, start_pose, "circular");
+    if (!same_planned_reference(reference, current)) {
       throw std::invalid_argument(
-          "circular motion could not satisfy product limits at any safe duration");
+          "circular current planned reference changed while planning; "
+          "the existing motion was not replaced");
     }
+    const uint64_t new_id = safety.start_trajectory(
+        plan.trajectory, plan.replace_trajectory_id, &transaction);
 
     runtime->superseded_move_pose_id = plan.replace_trajectory_id;
     runtime->move_pose_id = new_id;
@@ -249,7 +328,7 @@ int32_t move_circular_impl(
     std::copy(end_pose, end_pose + ARTICORE_PRODUCT_POSE_DOF,
               runtime->move_pose_target.begin());
     *motion_id = new_id;
-    checked(runtime).record_operation_result(
+    safety.record_operation_result(
         ARTICORE_OPERATION_MOVE_CIRCULAR, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
     return ARTICORE_OPERATION_OK;
@@ -477,7 +556,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (3U << 16);
+  return (3U << 16) | 1U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -1218,6 +1297,13 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear(
       ARTICORE_CARTESIAN_LINEAR, motion_id);
 }
 
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_v2(
+    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+    const float* end_pose, float speed_percent, uint64_t* motion_id) {
+  return move_linear_v2_impl(
+      runtime, side, start_pose, end_pose, speed_percent, motion_id);
+}
+
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* via_pose, const float* end_pose, float speed_percent,
@@ -1329,7 +1415,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_move_pose(
     if (runtime->move_pose_id != 0) {
       const auto trajectory = checked(runtime).trajectory_status();
       if (trajectory.trajectory_id == runtime->move_pose_id &&
-          trajectory.state == ARTICORE_TRAJECTORY_RUNNING) {
+          (trajectory.state == ARTICORE_TRAJECTORY_RUNNING ||
+           trajectory.state == ARTICORE_TRAJECTORY_COMPLETED)) {
         checked(runtime).cancel_trajectory();
       }
     }
