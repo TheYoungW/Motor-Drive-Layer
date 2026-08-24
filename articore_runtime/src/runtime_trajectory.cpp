@@ -713,8 +713,6 @@ bool SafetyRuntime::prepare_trajectory_cycle(
   elapsed = std::clamp(elapsed, 0.0, trajectory_control_.duration_s);
   const bool at_final_reference =
       elapsed >= trajectory_control_.duration_s;
-  const bool use_final_hold_limit =
-      at_final_reference && trajectory_control_.final_hold_limit_active;
   const bool use_stationary_hold =
       at_final_reference && trajectory_control_.stationary_hold_active;
   std::size_t segment_index = trajectory_control_.active_segment;
@@ -764,11 +762,15 @@ bool SafetyRuntime::prepare_trajectory_cycle(
           joint.direction * joint.mit_feedforward_torque *
               joint.torque_command_scale};
     } else {
+      const bool use_joint_final_hold_limit =
+          at_final_reference &&
+          (trajectory_control_.final_hold_limit_mask &
+           (uint32_t{1} << joint_index)) != 0;
       arm_mailbox_.pv[joint_index] = ArticorePosVelCommand{
           joint.motor, joint.direction * position,
           use_stationary_hold
               ? joint.pv_hold_velocity_limit
-              : use_final_hold_limit
+              : use_joint_final_hold_limit
               ? std::min(joint.pv_velocity_limit,
                          kNativePvSettlingVelocityLimit)
               : joint.pv_velocity_limit};
@@ -858,6 +860,10 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
   bool all_feedback_new = true;
   bool any_feedback_new = !feedback_initialized;
   bool has_active_joint = false;
+  uint32_t active_joint_mask = 0;
+  uint32_t available_joint_mask = 0;
+  uint32_t arrived_joint_mask = 0;
+  uint32_t position_arrived_mask = 0;
   std::vector<uint64_t> current_updates(arrivals.size(), 0);
   std::vector<float> actual_positions(
       arrivals.size(), std::numeric_limits<float>::quiet_NaN());
@@ -878,6 +884,7 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
     const auto& arrival = arrivals[index];
     if (arrival.intentionally_disabled) continue;
     has_active_joint = true;
+    active_joint_mask |= uint32_t{1} << index;
     ArticoreFeedbackStats stats{};
     ArticoreMotorState state{};
     const bool available =
@@ -893,6 +900,7 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
       if (unavailable_role.empty()) unavailable_role = arrival.role;
       continue;
     }
+    available_joint_mask |= uint32_t{1} << index;
     current_updates[index] = stats.update_count;
     if (feedback_initialized &&
         index < previous_updates.size() &&
@@ -910,9 +918,13 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
     if (position_error > position_tolerance) {
       all_arrived = false;
       all_positions_arrived = false;
+    } else {
+      position_arrived_mask |= uint32_t{1} << index;
     }
     if (speed > velocity_tolerance) {
       all_arrived = false;
+    } else if (position_error <= position_tolerance) {
+      arrived_joint_mask |= uint32_t{1} << index;
     }
     const float final_position_tolerance = is_loaded_joint4_role(arrival.role)
         ? kPvLoadedJointFinalPositionTolerance
@@ -1049,6 +1061,17 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
       if (!feedback_initialized || any_feedback_new) {
         trajectory_control_.settling_feedback_updates = current_updates;
         trajectory_control_.settling_feedback_initialized = true;
+        // Once one PV joint has physically arrived, let it settle at the
+        // low-speed limit independently while slower loaded joints continue
+        // converging. Restore the normal limit only if that joint leaves the
+        // position arrival window.
+        trajectory_control_.final_hold_limit_mask &=
+            position_arrived_mask | ~available_joint_mask;
+        trajectory_control_.final_hold_limit_mask |= arrived_joint_mask;
+        trajectory_control_.final_hold_limit_active =
+            active_joint_mask != 0 &&
+            (trajectory_control_.final_hold_limit_mask & active_joint_mask) ==
+                active_joint_mask;
       }
       const bool fresh_arrival_feedback =
           all_arrived && (!feedback_initialized || any_feedback_new);
@@ -1150,6 +1173,10 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
       trajectory_control_.state = ARTICORE_TRAJECTORY_COMPLETED;
       trajectory_control_.error.clear();
       trajectory_control_.final_hold_limit_active = true;
+      trajectory_control_.final_hold_limit_mask =
+          trajectory_control_.joints.size() >= 32
+              ? std::numeric_limits<uint32_t>::max()
+              : (uint32_t{1} << trajectory_control_.joints.size()) - 1U;
       trajectory_control_.stationary_hold_active = true;
       if (mode == ARTICORE_MODE_PV &&
           arm_mailbox_.pv.size() == trajectory_control_.joints.size()) {

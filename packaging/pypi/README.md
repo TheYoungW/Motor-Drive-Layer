@@ -23,6 +23,17 @@ Product trajectories are likewise planned and executed entirely by the C++
 Runtime through the stable trajectory C ABI; the wheel contains no Python
 interpolator or realtime playback loop.
 
+Version 0.12.1 / Runtime ABI 3.0 fixes loaded J4 tracking in native PV
+Cartesian motion. The Yunyi product profile uses `KP_APR=100` and `KI_APR=0`
+for both 4340P J4 Motors. Runtime reads the actual register value, writes and
+stores the product value only when it differs, then verifies the readback; it
+does not repeatedly erase Motor flash. MIT gains, other Motors and their
+existing PV loop values are unchanged. This release also fixes the native
+worker at its internal 500 Hz cadence, lets physically arrived PV joints enter
+low-speed settling independently, applies a consistent 5 rad/s product
+velocity ceiling, and adds opt-in native planned/reference/feedback tracing
+for hardware diagnosis without adding a public ABI.
+
 Version 0.12.0 / Runtime ABI 3.0 removes the temporary dual factory ABI. The
 only factory is `articore_runtime_create_yunyi(mode, with_grippers,
 runtime_out)`: it returns an `ArticoreOperationError` and writes the opaque

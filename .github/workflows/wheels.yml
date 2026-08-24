@@ -67,7 +67,7 @@ jobs:
           from importlib.metadata import distribution, version
           from pathlib import Path
 
-          assert version("motor-drive-layer") == "0.12.0"
+          assert version("motor-drive-layer") == "0.12.1"
           assert importlib.util.find_spec("motor_drive_layer") is None
           dist = distribution("motor-drive-layer")
           entries = {str(item): item for item in dist.files or ()}

@@ -818,8 +818,84 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     }
   }
   commit_gripper_commands_sent(gripper_commands, now);
+  record_control_trace(now, mode, pv_data,
+                       mode == ARTICORE_MODE_PV ? command_count : 0U);
   if (trajectory_completing) update_trajectory_completion(now);
   return true;
+}
+
+void SafetyRuntime::record_control_trace(
+    Clock::time_point now, ArticoreControlMode mode,
+    const ArticorePosVelCommand* pv_commands, uint32_t pv_count) {
+  if (control_trace_path_.empty() ||
+      control_trace_.size() >= control_trace_.capacity()) {
+    return;
+  }
+
+  ControlTraceSample sample;
+  sample.sequence = ++control_trace_sequence_;
+  sample.timestamp_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          now.time_since_epoch()).count());
+  sample.planned_positions.fill(std::numeric_limits<float>::quiet_NaN());
+  sample.planned_velocities.fill(std::numeric_limits<float>::quiet_NaN());
+  sample.command_positions.fill(std::numeric_limits<float>::quiet_NaN());
+  sample.pv_velocity_limits.fill(std::numeric_limits<float>::quiet_NaN());
+  sample.actual_positions.fill(std::numeric_limits<float>::quiet_NaN());
+  sample.actual_velocities.fill(std::numeric_limits<float>::quiet_NaN());
+
+  std::vector<NativeTrajectoryJoint> joints;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    sample.runtime_state = state_;
+    sample.motion_state = trajectory_control_.state;
+    sample.trajectory_id = trajectory_control_.id;
+    sample.progress = trajectory_control_.duration_s > 0.0
+        ? static_cast<float>(std::clamp(
+              trajectory_control_.elapsed_s / trajectory_control_.duration_s,
+              0.0, 1.0))
+        : 0.0f;
+    joints = trajectory_control_.joints;
+    const auto planned = trajectory_sample_locked(now);
+    const auto planned_count = std::min<std::size_t>(
+        ARTICORE_PRODUCT_DUAL_ARM_DOF,
+        std::min(planned.positions.size(), planned.velocities.size()));
+    for (std::size_t index = 0; index < planned_count; ++index) {
+      sample.planned_positions[index] = planned.positions[index];
+      sample.planned_velocities[index] = planned.velocities[index];
+      sample.planned_valid_mask |= uint32_t{1} << index;
+    }
+  }
+
+  const auto joint_count = std::min<std::size_t>(
+      ARTICORE_PRODUCT_DUAL_ARM_DOF, joints.size());
+  for (std::size_t index = 0; index < joint_count; ++index) {
+    const auto& joint = joints[index];
+    if (mode == ARTICORE_MODE_PV && pv_commands && pv_count > 0) {
+      const auto command = std::find_if(
+          pv_commands, pv_commands + pv_count,
+          [&](const ArticorePosVelCommand& value) {
+            return value.motor == joint.motor;
+          });
+      if (command != pv_commands + pv_count) {
+        sample.command_positions[index] =
+            joint.direction * command->target_position;
+        sample.pv_velocity_limits[index] = command->velocity_limit;
+        sample.command_valid_mask |= uint32_t{1} << index;
+      }
+    }
+    ArticoreMotorState actual{};
+    ArticoreFeedbackStats stats{};
+    if (backend_->get_state(joint.motor, &actual) == 0 && actual.has_value &&
+        backend_->get_feedback_stats(joint.motor, &stats) == 0 &&
+        stats.has_feedback && finite(actual.pos) && finite(actual.vel)) {
+      sample.actual_positions[index] = joint.direction * actual.pos;
+      sample.actual_velocities[index] =
+          joint.direction * actual.vel * joint.velocity_feedback_scale;
+      sample.actual_valid_mask |= uint32_t{1} << index;
+    }
+  }
+  control_trace_.push_back(std::move(sample));
 }
 
 }  // namespace articore

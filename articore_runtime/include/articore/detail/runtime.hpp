@@ -457,7 +457,26 @@ class SafetyRuntime {
     bool settling_feedback_initialized = false;
     bool stationary_hold_active = false;
     bool final_hold_limit_active = false;
+    uint32_t final_hold_limit_mask = 0;
     std::string error;
+  };
+
+  struct ControlTraceSample {
+    uint64_t sequence = 0;
+    uint64_t timestamp_ns = 0;
+    int32_t runtime_state = ARTICORE_DISCONNECTED;
+    int32_t motion_state = ARTICORE_TRAJECTORY_IDLE;
+    uint64_t trajectory_id = 0;
+    float progress = 0.0f;
+    std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> planned_positions{};
+    std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> planned_velocities{};
+    std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> command_positions{};
+    std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> pv_velocity_limits{};
+    std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> actual_positions{};
+    std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> actual_velocities{};
+    uint32_t planned_valid_mask = 0;
+    uint32_t command_valid_mask = 0;
+    uint32_t actual_valid_mask = 0;
   };
 
   void worker_loop();
@@ -474,6 +493,10 @@ class SafetyRuntime {
                                    const std::string& error);
   NativeTrajectorySample trajectory_sample_locked(Clock::time_point now) const;
   void fault_trajectory(const std::string& error);
+  void record_control_trace(Clock::time_point now, ArticoreControlMode mode,
+                            const ArticorePosVelCommand* pv_commands,
+                            uint32_t pv_count);
+  void write_control_trace() noexcept;
   bool prepare_mit_torque_limited_commands(
       const std::vector<ArticoreMitCommand>& requested,
       std::vector<ArticoreMitCommand>& applied,
@@ -579,7 +602,7 @@ class SafetyRuntime {
   // Product control scheduling is deliberately absent from the stable ABI.
   // The optional constructor override exists only in this private header for
   // deterministic native tests.
-  uint32_t control_hz_ = 400;
+  uint32_t control_hz_ = 500;
   std::shared_ptr<MotorBackend> backend_;
   void* controller_group_ = nullptr;
   void* controllers_[2]{};
@@ -661,6 +684,10 @@ class SafetyRuntime {
   ArticoreDisableReport last_disable_report_{};
   ArticoreConnectReport last_connect_report_{};
   ArticoreMitTorqueLimitStats mit_torque_limit_stats_{};
+  std::string control_trace_path_;
+  std::vector<ControlTraceSample> control_trace_;
+  uint64_t control_trace_sequence_ = 0;
+  bool control_trace_written_ = false;
 };
 
 }  // namespace articore

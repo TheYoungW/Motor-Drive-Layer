@@ -1,0 +1,76 @@
+{
+  "environment": {
+    "motor_drive_layer": "0.12.0 plus local diagnostic/fix",
+    "runtime_abi": "3.0",
+    "robot": "yunyi_v1_0",
+    "side": "left",
+    "control_mode": "PV",
+    "motion": "PTP",
+    "speed_percent": 100,
+    "with_grippers": true
+  },
+  "pose": {
+    "reported_start": [0.079761505, 0.366678715, 0.0357632, 0.546720803, -0.132921576, -0.313994825],
+    "target": [0.307545, 0.021073, 0.203161, -0.345181, -1.157594, -0.422116],
+    "final_measured": [0.308947, 0.0229077, 0.202246, -0.329854, -1.15724, -0.432773],
+    "final_xyz_error_mm": 2.484
+  },
+  "baseline": {
+    "runtime_running_s": 3.97255,
+    "planned_motion_s": 0.72218,
+    "progress_100_settling_s": 3.24837,
+    "runtime_sample_hz": 499.93,
+    "planned_dq_direction_reversals_over_0_01": [0, 0, 0, 0, 0, 0, 0],
+    "actual_dq_direction_reversals_over_0_01": [2, 7, 0, 0, 5, 3, 15],
+    "planned_command_q_max_difference_rad": [0, 0, 0, 0, 0, 0, 0],
+    "joint4_reference_peak_rad_s": 1.88000,
+    "joint4_actual_peak_rad_s": 0.70574,
+    "joint4_error_at_planned_endpoint_rad": -0.45706
+  },
+  "final_runtime": {
+    "product_pv_velocity_limits_rad_s": [5, 5, 5, 5, 5, 5, 5],
+    "per_joint_settling": true,
+    "joint4_pv_position_kp": 100,
+    "joint4_pv_position_ki": 0,
+    "joint4_gain_readback_verified_on_both_sides": true,
+    "joint4_gain_stored_to_motor_flash_on_both_sides": true,
+    "control_rate_hz": 499.82,
+    "diagnostic_ptp_running_s": 2.4329,
+    "diagnostic_ptp_planned_s": 0.7304,
+    "diagnostic_ptp_settling_s": 1.7025,
+    "joint4_error_at_planned_endpoint_rad": -0.31515,
+    "joint4_actual_peak_rad_s": 1.05250,
+    "joint4_actual_position_direction_reversals": 0,
+    "right_joint4_static_max_tracking_error_rad": 0.000352,
+    "completed_hold_duration_s": 3.00205,
+    "completed_hold_position_peak_to_peak_deg": [0, 0, 0, 0, 0, 0, 0],
+    "completed_hold_actual_dq_peak_rad_s": [0.004885, 0.004885, 0.002442, 0.002442, 0.002442, 0.002442, 0.002442],
+    "completed_hold_direction_reversals_over_0_01": [0, 0, 0, 0, 0, 0, 0]
+  },
+  "joint4_register_ab": {
+    "factory_common_values": {
+      "KP_ASR": 0.00384,
+      "KI_ASR": 0.002,
+      "KP_APR": 54,
+      "KI_APR": 0,
+      "ACC": 2,
+      "DEC": -2
+    },
+    "kp_apr_65_running_s": 3.4045,
+    "kp_apr_80_running_s": 2.9141,
+    "kp_apr_100_running_s": 2.4329,
+    "acc_dec_8_running_s": 4.0004,
+    "result": "loaded J4 PV position-loop Kp was too conservative; ACC/DEC and KI were not the limiting parameters"
+  },
+  "conclusion": {
+    "planner_reference_reversed": false,
+    "command_reference_reversed": false,
+    "physical_post_completion_hold_stable": true,
+    "dominant_running_phase": "progress=100% physical settling",
+    "remaining_small_dq_sign_changes": "velocity feedback quantization while measured position is unchanged",
+    "pv_joint4_kp_apr_tuning_required": true,
+    "pv_joint4_ki_apr_tuning_required": false,
+    "mit_kp_kd_affected": false,
+    "zero_calibration_fault_detected": false
+  }
+}

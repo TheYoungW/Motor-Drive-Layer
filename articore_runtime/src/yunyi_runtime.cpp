@@ -1,5 +1,6 @@
 #include "articore/detail/yunyi_runtime.hpp"
 
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -30,7 +31,10 @@ constexpr float kUpper[2][7] = {
     {2.745f, 2.2678f, 2.5294f, 2.2678f, 2.0933f, .785f, 1.3956f},
     {2.745f, .3489f, 2.5294f, 2.2678f, 2.0933f, .785f, 1.3956f},
 };
-constexpr float kVelocityLimit[7] = {16, 16, 5, 5, 20, 20, 20};
+// Cartesian speed percentage uses the same 5 rad/s product maximum exposed by
+// ordinary PV control. Protocol encoding ranges are separate and must not be
+// treated as safe product motion limits.
+constexpr float kVelocityLimit[7] = {5, 5, 5, 5, 5, 5, 5};
 // Conservative logical-coordinate trajectory limits. These are native product
 // policy, not user-tunable scheduler parameters.
 constexpr float kAccelerationLimit[7] = {10, 10, 8, 8, 20, 20, 20};
@@ -41,6 +45,8 @@ constexpr float kLogicalVelocityRange[2][7] = {
 constexpr float kNativeVelocityRange[7] = {45, 45, 10, 10, 30, 30, 30};
 constexpr float kLogicalTorqueRange[7] = {40, 40, 27, 27, 7, 7, 7};
 constexpr float kNativeTorqueRange[7] = {54, 54, 28, 28, 10, 10, 10};
+constexpr uint8_t kPvPositionKpRegister = 27;
+constexpr float kJoint4PvPositionKp = 100.0f;
 
 thread_local std::string g_motor_error = "ok";
 
@@ -237,8 +243,25 @@ int32_t motor_set_zero(void* motor) {
 int32_t motor_ensure_mode(void* motor, uint32_t mode, uint32_t timeout_ms) {
   if (!motor) return -1;
   return native_call([&] {
-    static_cast<damiao::MotorHandle*>(motor)->ensure_mode(
-        mode, std::chrono::milliseconds(timeout_ms));
+    auto* handle = static_cast<damiao::MotorHandle*>(motor);
+    handle->ensure_mode(mode, std::chrono::milliseconds(timeout_ms));
+    if (mode == 2U && handle->motor_id() == 4U &&
+        handle->model() == "4340P") {
+      const auto timeout = std::chrono::milliseconds(timeout_ms);
+      const float current = handle->get_register_f32(
+          kPvPositionKpRegister, timeout);
+      if (std::abs(current - kJoint4PvPositionKp) > 1.0e-4f) {
+        handle->write_register_f32(
+            kPvPositionKpRegister, kJoint4PvPositionKp);
+        handle->store_parameters();
+      }
+      const float configured = handle->get_register_f32(
+          kPvPositionKpRegister, timeout);
+      if (std::abs(configured - kJoint4PvPositionKp) > 1.0e-4f) {
+        throw std::runtime_error(
+            "J4 PV position-loop Kp readback verification failed");
+      }
+    }
   });
 }
 

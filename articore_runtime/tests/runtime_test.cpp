@@ -2967,7 +2967,7 @@ void test_repeated_runtime_lifecycle() {
   }
 }
 
-void test_native_scheduler_selects_rate_from_transport_capabilities() {
+void test_native_scheduler_is_fixed_at_500_hz() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
@@ -2976,22 +2976,22 @@ void test_native_scheduler_selects_rate_from_transport_capabilities() {
   articore::SafetyRuntime legacy_dual(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
       g_right_controller, motors);
-  require(legacy_dual.control_hz() == 400,
-          "legacy dual runtime ignores the public placeholder");
+  require(legacy_dual.control_hz() == 500,
+          "legacy dual runtime uses the fixed native cadence");
 
   articore::SafetyRuntime socketcanfd_brs_dual(
       cfg, api(), reinterpret_cast<void*>(0x101), g_left_controller,
       g_right_controller, motors, nullptr, nullptr, false,
       transport_capabilities("socketcanfd", true, true));
   require(socketcanfd_brs_dual.control_hz() == 500,
-          "native scheduler selects its verified SocketCAN-FD+BRS cadence");
+          "SocketCAN-FD+BRS runtime uses the fixed native cadence");
 
   std::vector<ArticoreMotorDescriptor> single_motors{motors[0]};
   articore::SafetyRuntime single(
       cfg, api(), reinterpret_cast<void*>(0x102), g_left_controller, nullptr,
       single_motors);
-  require(single.control_hz() == 400,
-          "single-side scheduling is selected internally");
+  require(single.control_hz() == 500,
+          "single-side runtime uses the fixed native cadence");
 }
 
 void test_single_side_runtime_and_gripper() {
@@ -3434,9 +3434,9 @@ void test_ordinary_mit_position_uses_constant_reference_speed() {
         });
     require(first_moving != driver.arm_mit_history.end(),
             "ordinary MIT position starts moving from fresh feedback");
-    require(first_moving->at(0).target_position <= 0.00251f &&
-                first_moving->at(1).target_position <= 1.00251f,
-            "first 400 Hz reference advances by at most velocity/control_hz");
+    require(first_moving->at(0).target_position <= 0.00201f &&
+                first_moving->at(1).target_position <= 1.00201f,
+            "first 500 Hz reference advances by at most velocity/control_hz");
     require(first_moving->at(0).target_velocity == 0.0f &&
                 first_moving->at(0).stiffness == 20.0f &&
                 first_moving->at(0).damping == 3.0f &&
@@ -3446,8 +3446,8 @@ void test_ordinary_mit_position_uses_constant_reference_speed() {
         driver.arm_mit_history.end() - first_moving);
     require(available >= 100,
             "ordinary MIT position produced one hundred moving references");
-    require(std::abs(first_moving[99][0].target_position - 0.25f) < 0.003f,
-            "one hundred 400 Hz cycles at 1 rad/s advance about 0.25 rad");
+    require(std::abs(first_moving[99][0].target_position - 0.20f) < 0.003f,
+            "one hundred 500 Hz cycles at 1 rad/s advance about 0.20 rad");
   }
   require(runtime.health().state == ARTICORE_RUNNING,
           "one-shot ordinary MIT position is persistent beyond the watchdog");
@@ -3473,8 +3473,8 @@ void test_ordinary_mit_position_uses_constant_reference_speed() {
     require(first_reached != driver.arm_mit_history.end(),
             "ordinary MIT position records the exact final target");
     const auto moving_cycles = first_reached - first_moving + 1;
-    require(moving_cycles >= 399 && moving_cycles <= 401,
-            "1 rad at 1 rad/s takes approximately 400 native 400 Hz cycles");
+    require(moving_cycles >= 499 && moving_cycles <= 501,
+            "1 rad at 1 rad/s takes approximately 500 native 500 Hz cycles");
   }
 }
 
@@ -3594,15 +3594,15 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
           return frame[0].target_position > 0.0f;
         });
     require(first_moving != driver.pv_history.end() &&
-                first_moving->at(0).target_position <= 0.00251f &&
-                first_moving->at(1).target_position <= 1.00251f &&
+                first_moving->at(0).target_position <= 0.00201f &&
+                first_moving->at(1).target_position <= 1.00201f &&
                 first_moving->at(0).velocity_limit == 1.0f,
             "ordinary PV starts from feedback with one shared reference speed");
     const auto available = static_cast<std::size_t>(
         driver.pv_history.end() - first_moving);
     require(available >= 100 &&
-                std::abs(first_moving[99][0].target_position - 0.25f) < 0.003f,
-            "ordinary PV advances about 0.25 rad in one hundred 400 Hz cycles");
+                std::abs(first_moving[99][0].target_position - 0.20f) < 0.003f,
+            "ordinary PV advances about 0.20 rad in one hundred 500 Hz cycles");
   }
   require(runtime.health().state == ARTICORE_RUNNING,
           "one-shot ordinary PV remains active beyond the watchdog");
@@ -3628,7 +3628,7 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
     std::lock_guard<std::mutex> lock(driver.mutex);
     require(std::abs((before_reverse -
                       driver.pv_history[reverse_baseline][0].target_position) -
-                     0.0025f) < 0.0002f,
+                     0.002f) < 0.0002f,
             "ordinary PV discards the old endpoint and preserves current q");
   }
 
@@ -3648,7 +3648,7 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     const auto& sent = driver.pv_history[speed_baseline];
-    require(std::abs((before_speed - sent[0].target_position) - 0.005f) <
+    require(std::abs((before_speed - sent[0].target_position) - 0.004f) <
                     0.0002f &&
                 sent[0].velocity_limit == 2.0f &&
                 sent[1].velocity_limit == 2.0f,
@@ -3728,7 +3728,7 @@ void test_ordinary_mit_position_reversal_and_speed_update_are_continuous() {
     std::lock_guard<std::mutex> lock(driver.mutex);
     after_reverse = driver.arm_mit_history[reverse_baseline][0].target_position;
   }
-  require(std::abs((before_reverse - after_reverse) - 0.0025f) < 0.0002f,
+  require(std::abs((before_reverse - after_reverse) - 0.002f) < 0.0002f,
           "target reversal continues from current reference at 1 rad/s");
 
   std::size_t speed_baseline = 0;
@@ -3748,10 +3748,10 @@ void test_ordinary_mit_position_reversal_and_speed_update_are_continuous() {
     std::lock_guard<std::mutex> lock(driver.mutex);
     const auto& next = driver.arm_mit_history[speed_baseline];
     require(std::abs((before_speed_change - next[0].target_position) -
-                     0.005f) < 0.0002f &&
+                     0.004f) < 0.0002f &&
                 std::abs((driver.arm_mit_history[speed_baseline - 1][1]
                               .target_position -
-                          next[1].target_position) - 0.005f) < 0.0002f,
+                          next[1].target_position) - 0.004f) < 0.0002f,
             "shared 2 rad/s update is atomic for both arm sides");
   }
 
@@ -3885,8 +3885,8 @@ void test_ordinary_mit_position_reinitializes_after_reenable() {
           return frame[0].target_position > 0.4f;
         });
     require(first != driver.arm_mit_history.end() &&
-                std::abs(first->at(0).target_position - 0.4025f) < 0.0002f &&
-                std::abs(first->at(1).target_position - (-0.3975f)) < 0.0002f,
+                std::abs(first->at(0).target_position - 0.402f) < 0.0002f &&
+                std::abs(first->at(1).target_position - (-0.398f)) < 0.0002f,
             "reenable discards the old reference and reinitializes both arms "
             "from complete fresh feedback");
   }
@@ -4141,6 +4141,48 @@ void test_native_trajectory_completion_waits_for_physical_arrival() {
   const auto health = runtime.health_v2();
   require(health.last_operation_error[0] == '\0',
           "successful physical arrival does not create a health error");
+  runtime.disable();
+}
+
+void test_pv_trajectory_settles_arrived_joints_independently() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+  auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  runtime.start_trajectory(
+      trajectory_request(motors, ARTICORE_MODE_PV, 0.4));
+  std::this_thread::sleep_for(440ms);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    auto& arrived = driver.motors[reinterpret_cast<void*>(0x201)];
+    auto& lagging = driver.motors[reinterpret_cast<void*>(0x202)];
+    arrived.position = 0.2f;
+    arrived.velocity = 0.0f;
+    lagging.position = 0.5f;
+    lagging.velocity = 0.1f;
+    ++arrived.update_count;
+    ++lagging.update_count;
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_pv.size() == 2 &&
+                std::abs(driver.last_pv[0].velocity_limit -
+                         articore::kNativePvSettlingVelocityLimit) < 1e-6f &&
+                std::abs(driver.last_pv[1].velocity_limit - 2.0f) < 1e-6f;
+          }),
+          "an arrived PV joint enters low-speed settling without waiting for "
+          "a slower joint");
+  require(runtime.trajectory_status().state == ARTICORE_TRAJECTORY_RUNNING,
+          "independent joint settling does not report whole-arm completion");
   runtime.disable();
 }
 
@@ -4905,7 +4947,7 @@ int main() {
     RUN_TEST(test_gripper_control_waits_for_atomic_enable_confirmation);
     RUN_TEST(test_atomic_enable_failure_rolls_back_and_fault_disable_is_allowed);
     RUN_TEST(test_repeated_runtime_lifecycle);
-    RUN_TEST(test_native_scheduler_selects_rate_from_transport_capabilities);
+    RUN_TEST(test_native_scheduler_is_fixed_at_500_hz);
     RUN_TEST(test_single_side_runtime_and_gripper);
     RUN_TEST(test_normal_gripper_uses_arm_control_rate);
     RUN_TEST(test_gripper_health_reads_live_feedback_age);
@@ -4924,6 +4966,7 @@ int main() {
     RUN_TEST(test_native_quintic_trajectory_executes_at_worker_rate);
     RUN_TEST(test_planned_reference_transaction_does_not_use_lagging_feedback);
     RUN_TEST(test_native_trajectory_completion_waits_for_physical_arrival);
+    RUN_TEST(test_pv_trajectory_settles_arrived_joints_independently);
     RUN_TEST(test_completed_pv_hold_is_rechecked_and_restabilizes);
     RUN_TEST(test_native_trajectory_arrival_timeout_is_reported_in_health);
     RUN_TEST(test_native_trajectory_uses_raw_mit_and_cancel_is_idempotent);

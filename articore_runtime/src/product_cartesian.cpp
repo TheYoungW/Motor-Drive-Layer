@@ -13,6 +13,14 @@
 namespace articore {
 namespace {
 
+std::string product_joint_role(uint32_t index) {
+  const uint32_t side = index / ARTICORE_PRODUCT_ARM_DOF;
+  const uint32_t joint = index % ARTICORE_PRODUCT_ARM_DOF;
+  return std::string(side == ARTICORE_ROBOT_LEFT ? "left/l-joint"
+                                                 : "right/r-joint") +
+      std::to_string(joint + 1);
+}
+
 void read_product_arm_snapshot(
     SafetyRuntime& safety,
     YunyiRuntimeResources& product,
@@ -25,14 +33,14 @@ void read_product_arm_snapshot(
     if (!read_yunyi_motor_state(joint.motor, motor, stats) || !motor.has_value ||
         !stats.has_feedback || stats.age_ns > safety.feedback_max_age_ns()) {
       throw std::runtime_error(
-          "Cartesian motion requires fresh feedback at joint " +
-          std::to_string(index));
+          "Cartesian motion requires fresh feedback at " +
+          product_joint_role(index));
     }
     if (motor.status_code > 1 || !std::isfinite(motor.pos) ||
         !std::isfinite(motor.vel)) {
       throw std::runtime_error(
-          "Cartesian motion requires fault-free finite feedback at joint " +
-          std::to_string(index));
+          "Cartesian motion requires fault-free finite feedback at " +
+          product_joint_role(index));
     }
     positions[index] = joint.direction * motor.pos;
     velocities[index] = joint.direction * motor.vel *
@@ -96,8 +104,8 @@ std::array<double, ARTICORE_PRODUCT_ARM_DOF> solve_ik(
     if (!std::isfinite(ik.q[index]) || ik.q[index] < joint.lower ||
         ik.q[index] > joint.upper) {
       throw std::invalid_argument(
-          std::string(context) + " IK result exceeds product limits at joint " +
-          std::to_string(offset + index));
+          std::string(context) + " IK result exceeds product limits at " +
+          product_joint_role(offset + index));
     }
     result[index] = ik.q[index];
   }

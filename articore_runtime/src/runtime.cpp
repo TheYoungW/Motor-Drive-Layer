@@ -3,7 +3,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -264,7 +267,6 @@ SafetyRuntime::SafetyRuntime(
         "Articore runtime requires a controller for every active side");
   }
   std::array<bool, 2> capability_present{};
-  std::array<bool, 2> socketcanfd_brs{};
   for (const auto& capability : transport_capabilities) {
     if (capability.struct_size <
         sizeof(ArticoreRuntimeTransportCapabilities)) {
@@ -284,11 +286,6 @@ SafetyRuntime::SafetyRuntime(
       throw std::invalid_argument(
           "Articore transport capability name is not NUL-terminated");
     }
-    const auto length = static_cast<std::size_t>(
-        terminator - capability.transport);
-    socketcanfd_brs[capability.side] =
-        std::string(capability.transport, length) == "socketcanfd" &&
-        capability.can_fd != 0 && capability.can_fd_brs != 0;
   }
   if (!transport_capabilities.empty()) {
     for (uint8_t side = 0; side < 2; ++side) {
@@ -298,17 +295,16 @@ SafetyRuntime::SafetyRuntime(
       }
     }
   }
-  // Scheduling belongs entirely to the native product implementation. The
-  // public ABI config placeholders never select or reveal this cadence.
-  control_hz_ = 400;
-  if (active_sides_[0] && active_sides_[1]) {
-    const bool dual_socketcanfd_brs =
-        capability_present[0] && capability_present[1] &&
-        socketcanfd_brs[0] && socketcanfd_brs[1];
-    control_hz_ = dual_socketcanfd_brs ? 500U : 400U;
-  }
+  // Product control always runs at the fixed native 500 Hz cadence.
+  control_hz_ = 500;
   if (internal_control_rate_override != 0) {
     control_hz_ = internal_control_rate_override;
+  }
+  if (const char* path = std::getenv("ARTICORE_RUNTIME_CONTROL_TRACE")) {
+    if (path[0] != '\0') {
+      control_trace_path_ = path;
+      control_trace_.reserve(static_cast<std::size_t>(control_hz_) * 60U);
+    }
   }
   const auto arm_count = static_cast<std::size_t>(std::count_if(
       motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
@@ -626,12 +622,53 @@ void SafetyRuntime::stop_worker() {
   }
   wakeup_.notify_all();
   if (worker_.joinable()) worker_.join();
+  write_control_trace();
   std::lock_guard<std::mutex> lock(state_mutex_);
   state_ = ARTICORE_DISCONNECTED;
   safety_reason_.clear();
   for (auto& side : sides_) {
     side.connected = false;
     side.healthy = false;
+  }
+}
+
+void SafetyRuntime::write_control_trace() noexcept {
+  if (control_trace_written_ || control_trace_path_.empty()) return;
+  control_trace_written_ = true;
+  try {
+    std::ofstream output(control_trace_path_, std::ios::out | std::ios::trunc);
+    if (!output) return;
+    output << "sequence,timestamp_ns,runtime_state,motion_state,trajectory_id,progress";
+    constexpr const char* roles[ARTICORE_PRODUCT_DUAL_ARM_DOF] = {
+        "l-joint1", "l-joint2", "l-joint3", "l-joint4", "l-joint5",
+        "l-joint6", "l-joint7", "r-joint1", "r-joint2", "r-joint3",
+        "r-joint4", "r-joint5", "r-joint6", "r-joint7"};
+    for (const char* role : roles) output << ",planned_q_" << role;
+    for (const char* role : roles) output << ",planned_dq_" << role;
+    for (const char* role : roles) output << ",command_q_" << role;
+    for (const char* role : roles) output << ",pv_velocity_limit_" << role;
+    for (const char* role : roles) output << ",actual_q_" << role;
+    for (const char* role : roles) output << ",actual_dq_" << role;
+    output << ",planned_valid_mask,command_valid_mask,actual_valid_mask\n";
+    output << std::setprecision(9);
+    for (const auto& sample : control_trace_) {
+      output << sample.sequence << ',' << sample.timestamp_ns << ','
+             << sample.runtime_state << ',' << sample.motion_state << ','
+             << sample.trajectory_id << ',' << sample.progress;
+      const auto write_values = [&](const auto& values) {
+        for (float value : values) output << ',' << value;
+      };
+      write_values(sample.planned_positions);
+      write_values(sample.planned_velocities);
+      write_values(sample.command_positions);
+      write_values(sample.pv_velocity_limits);
+      write_values(sample.actual_positions);
+      write_values(sample.actual_velocities);
+      output << ',' << sample.planned_valid_mask << ','
+             << sample.command_valid_mask << ',' << sample.actual_valid_mask
+             << '\n';
+    }
+  } catch (...) {
   }
 }
 
