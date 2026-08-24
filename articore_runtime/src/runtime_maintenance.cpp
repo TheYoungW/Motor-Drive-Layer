@@ -91,7 +91,7 @@ int32_t SafetyRuntime::finish_maintenance(
 
 int32_t SafetyRuntime::maintenance_precheck(
     ArticoreRuntimeOperation operation, std::string& error,
-    std::vector<std::string>& failed_motors) {
+    std::vector<std::string>& failed_motors, bool require_stationary) {
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     last_operation_ = operation;
@@ -155,7 +155,13 @@ int32_t SafetyRuntime::maintenance_precheck(
       failed_motors.emplace_back(motor.descriptor.name);
       return ARTICORE_OPERATION_NOT_DISABLED;
     }
-    if (!finite(state.vel) ||
+    if (!finite(state.vel)) {
+      error = std::string(motor.descriptor.name) +
+              ": velocity feedback is not finite";
+      failed_motors.emplace_back(motor.descriptor.name);
+      return ARTICORE_OPERATION_FEEDBACK;
+    }
+    if (require_stationary &&
         std::fabs(state.vel) > kStationaryVelocityRadPerSecond) {
       error = std::string(motor.descriptor.name) +
               ": motor is not stationary";
@@ -167,12 +173,14 @@ int32_t SafetyRuntime::maintenance_precheck(
 }
 
 int32_t SafetyRuntime::run_motor_maintenance(
-    ArticoreRuntimeOperation operation, ArticoreControlMode mode) {
+    ArticoreRuntimeOperation operation, ArticoreControlMode mode,
+    bool require_stationary) {
   std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
   std::unique_lock<std::mutex> command_lock(command_mutex_);
   std::string error;
   std::vector<std::string> failed;
-  const int32_t precheck = maintenance_precheck(operation, error, failed);
+  const int32_t precheck = maintenance_precheck(
+      operation, error, failed, require_stationary);
   if (precheck != ARTICORE_OPERATION_OK) {
     return finish_maintenance(operation, precheck, error, failed,
                               precheck == ARTICORE_OPERATION_TRANSPORT ||
@@ -268,7 +276,8 @@ int32_t SafetyRuntime::run_motor_maintenance(
         state.has_value;
     const bool disabled = readable && state.status_code == 0;
     const bool stationary = readable && finite(state.vel) &&
-        std::fabs(state.vel) <= kStationaryVelocityRadPerSecond;
+        (!require_stationary ||
+         std::fabs(state.vel) <= kStationaryVelocityRadPerSecond);
     const bool zeroed = operation != ARTICORE_OPERATION_SET_ZERO ||
         (readable && finite(state.pos) &&
          std::fabs(state.pos) <= kZeroPositionToleranceRad);
@@ -295,15 +304,30 @@ int32_t SafetyRuntime::configure_mode(ArticoreControlMode mode) {
                             "unsupported control mode");
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
   }
-  return run_motor_maintenance(ARTICORE_OPERATION_CONFIGURE_MODE, mode);
+  return run_motor_maintenance(
+      ARTICORE_OPERATION_CONFIGURE_MODE, mode, true);
+}
+
+int32_t SafetyRuntime::configure_mode_for_connect(ArticoreControlMode mode) {
+  if (mode != ARTICORE_MODE_PV && mode != ARTICORE_MODE_MIT) {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+    std::lock_guard<std::mutex> command_lock(command_mutex_);
+    record_operation_result(ARTICORE_OPERATION_CONFIGURE_MODE,
+                            ARTICORE_OPERATION_INVALID_ARGUMENT,
+                            "unsupported control mode");
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  }
+  return run_motor_maintenance(
+      ARTICORE_OPERATION_CONFIGURE_MODE, mode, false);
 }
 
 int32_t SafetyRuntime::clear_faults() {
-  return run_motor_maintenance(ARTICORE_OPERATION_CLEAR_FAULTS, mode_);
+  return run_motor_maintenance(
+      ARTICORE_OPERATION_CLEAR_FAULTS, mode_, true);
 }
 
 int32_t SafetyRuntime::set_zero() {
-  return run_motor_maintenance(ARTICORE_OPERATION_SET_ZERO, mode_);
+  return run_motor_maintenance(ARTICORE_OPERATION_SET_ZERO, mode_, true);
 }
 
 }  // namespace articore

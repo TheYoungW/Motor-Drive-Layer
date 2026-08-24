@@ -680,7 +680,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_connect(ArticoreRuntime* runtime) 
   try {
     checked(runtime).connect();
     if (runtime->yunyi) {
-      const auto configured = checked(runtime).configure_mode(
+      const auto configured = checked(runtime).configure_mode_for_connect(
           runtime->product_mode);
       if (configured != ARTICORE_OPERATION_OK) {
         g_last_error = checked(runtime).health_v2().last_operation_error;

@@ -217,6 +217,7 @@ class SafetyRuntime {
                                           bool enabled);
   ArticoreMotorPowerState motor_power_state(const std::string& motor_name);
   int32_t configure_mode(ArticoreControlMode mode);
+  int32_t configure_mode_for_connect(ArticoreControlMode mode);
   int32_t clear_faults();
   int32_t set_zero();
   void record_operation_result(ArticoreRuntimeOperation operation,
@@ -581,14 +582,16 @@ class SafetyRuntime {
   void mark_motor_faulted(void* motor);
   int32_t maintenance_precheck(ArticoreRuntimeOperation operation,
                                std::string& error,
-                               std::vector<std::string>& failed_motors);
+                               std::vector<std::string>& failed_motors,
+                               bool require_stationary);
   int32_t finish_maintenance(ArticoreRuntimeOperation operation,
                              int32_t code,
                              const std::string& error,
                              const std::vector<std::string>& failed_motors,
                              bool latch_fault);
   int32_t run_motor_maintenance(ArticoreRuntimeOperation operation,
-                                ArticoreControlMode mode);
+                                ArticoreControlMode mode,
+                                bool require_stationary);
   static bool finite(float value);
   MotorRecord* resolve_motor_role(const std::string& role);
   std::string stable_motor_role(const MotorRecord& motor) const;

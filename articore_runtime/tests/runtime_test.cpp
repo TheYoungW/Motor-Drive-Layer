@@ -888,6 +888,67 @@ void test_runtime_maintenance_keeps_ready_and_reports_partial_failure() {
           "failed recover falls back to confirmed disable and records motor identity");
 }
 
+void test_connect_mode_configuration_accepts_moving_disabled_feedback() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  std::strncpy(motors[0].name, "left/l-joint5",
+               sizeof(motors[0].name) - 1);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  driver.motors[motors[0].motor].velocity = 0.1f;
+
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, enable_all, enable_motor, false, {},
+      maintenance_api());
+  const auto controls = joint_configs(motors);
+  runtime.configure_joints(controls.data(),
+                           static_cast<uint32_t>(controls.size()));
+
+  runtime.connect();
+  require(runtime.configure_mode_for_connect(ARTICORE_MODE_PV) ==
+              ARTICORE_OPERATION_OK &&
+              runtime.health().state == ARTICORE_READY &&
+              runtime.motor_power_state("") ==
+                  ARTICORE_MOTOR_POWER_DISABLED,
+          "connect configures a moving but physically disabled product");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.configure_mode_calls == motors.size() &&
+                driver.enable_calls[0] == 0 && driver.enable_calls[1] == 0 &&
+                driver.pv_history.empty() && driver.mit_history.empty(),
+            "moving connect remains read-only and sends no position command");
+  }
+
+  require(runtime.configure_mode(ARTICORE_MODE_PV) ==
+              ARTICORE_OPERATION_NOT_STATIONARY &&
+              std::string(runtime.health_v2().last_operation_error).find(
+                  "left/l-joint5") != std::string::npos,
+          "explicit maintenance mode changes still require stationary motors");
+
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].position = 0.42f;
+    driver.motors[motors[0].motor].velocity = 0.0f;
+    driver.motors[motors[1].motor].position = -0.37f;
+  }
+  runtime.enable(ARTICORE_MODE_PV);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return !driver.pv_history.empty();
+          }),
+          "enable sends an initial hold after moving connect");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto& hold = driver.pv_history.front();
+    require(hold.size() == 2 &&
+                std::abs(hold[0].target_position - 0.42f) < 1e-6f &&
+                std::abs(hold[1].target_position + 0.37f) < 1e-6f,
+            "enable seeds its hold from the latest actual positions");
+  }
+  runtime.disable();
+}
+
 void test_disconnect_is_terminal_and_idempotent() {
   FakeDriver driver;
   g_driver = &driver;
@@ -4910,6 +4971,7 @@ int main() {
     RUN_TEST(test_motor_power_batch_latches_fault_when_rollback_is_unconfirmed);
     RUN_TEST(test_partial_mit_filters_disabled_motors_before_torque_validation);
     RUN_TEST(test_runtime_maintenance_keeps_ready_and_reports_partial_failure);
+    RUN_TEST(test_connect_mode_configuration_accepts_moving_disabled_feedback);
     RUN_TEST(test_disconnect_is_terminal_and_idempotent);
     RUN_TEST(test_connect_failure_names_missing_installed_motor_and_can_id);
     RUN_TEST(test_connect_report_classifies_zero_feedback_and_transport_failures);
