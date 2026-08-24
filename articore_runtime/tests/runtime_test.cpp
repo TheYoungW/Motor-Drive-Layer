@@ -3800,26 +3800,33 @@ void test_raw_mit_targets_remain_direct_after_ordinary_position_control() {
     std::lock_guard<std::mutex> lock(driver.mutex);
     baseline = driver.arm_mit_history.size();
   }
+  const auto is_raw_frame = [&](const std::vector<ArticoreMitCommand>& frame) {
+    return frame.size() == 2 &&
+        frame[0].target_position == raw[0].target_position &&
+        frame[0].target_velocity == raw[0].target_velocity &&
+        frame[1].target_position == raw[1].target_position &&
+        frame[1].target_velocity == raw[1].target_velocity;
+  };
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
-            return driver.arm_mit_history.size() > baseline;
+            return std::any_of(driver.arm_mit_history.begin() + baseline,
+                               driver.arm_mit_history.end(), is_raw_frame);
           }, 50ms),
           "raw MIT replaces ordinary position control on the next cycle");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
-    const auto& sent = driver.arm_mit_history[baseline];
-    require(sent[0].target_position == raw[0].target_position &&
-                sent[0].target_velocity == raw[0].target_velocity &&
-                sent[1].target_position == raw[1].target_position &&
-                sent[1].target_velocity == raw[1].target_velocity &&
-                sent[1].stiffness == raw[1].stiffness &&
-                sent[1].damping == raw[1].damping &&
-                sent[1].feedforward_torque == raw[1].feedforward_torque &&
-                sent[0].stiffness < raw[0].stiffness &&
-                std::abs(sent[0].stiffness / raw[0].stiffness -
-                         sent[0].damping / raw[0].damping) < 1e-6f &&
-                std::abs(sent[0].stiffness / raw[0].stiffness -
-                         sent[0].feedforward_torque /
+    const auto found = std::find_if(
+        driver.arm_mit_history.begin() + baseline,
+        driver.arm_mit_history.end(), is_raw_frame);
+    require(found != driver.arm_mit_history.end() &&
+                found->at(1).stiffness == raw[1].stiffness &&
+                found->at(1).damping == raw[1].damping &&
+                found->at(1).feedforward_torque == raw[1].feedforward_torque &&
+                found->at(0).stiffness < raw[0].stiffness &&
+                std::abs(found->at(0).stiffness / raw[0].stiffness -
+                         found->at(0).damping / raw[0].damping) < 1e-6f &&
+                std::abs(found->at(0).stiffness / raw[0].stiffness -
+                         found->at(0).feedforward_torque /
                              raw[0].feedforward_torque) < 1e-6f,
             "raw MIT q/dq remains direct while the per-cycle limiter scales "
             "Kp/Kd/tau together only when required");
