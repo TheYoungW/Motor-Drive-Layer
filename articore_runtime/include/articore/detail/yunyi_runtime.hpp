@@ -13,8 +13,26 @@
 
 namespace articore {
 
-inline constexpr float kYunyiOrdinaryMaximumVelocity = 5.0f;
-inline constexpr float kYunyiDefaultSpeedPercent = 70.0f;
+// Ordinary PV uses a product-tuned range derived from real-hardware tracking
+// data. Keep legacy MIT scaling separate: MIT and Cartesian motion do not
+// inherit this PV-only tuning.
+inline constexpr float kYunyiOrdinaryPvMaximumVelocity = 3.0f;
+// The public 0..100 scale remains a direct linear mapping onto 0..3 rad/s.
+// Product feedback selects 50 percent (1.5 rad/s) as the ordinary default.
+inline constexpr float kYunyiDefaultPvSpeedPercent = 50.0f;
+inline constexpr float kYunyiLegacyOrdinaryMitMaximumVelocity = 5.0f;
+inline constexpr float kYunyiLegacyDefaultMitSpeedPercent = 70.0f;
+static_assert(kYunyiOrdinaryPvMaximumVelocity == 3.0f,
+              "ordinary PV 100 percent must map to 3 rad/s");
+inline constexpr float kYunyiDefaultPvReferenceVelocity =
+    kYunyiOrdinaryPvMaximumVelocity *
+    kYunyiDefaultPvSpeedPercent / 100.0f;
+static_assert(kYunyiDefaultPvReferenceVelocity > 1.49999f &&
+                  kYunyiDefaultPvReferenceVelocity < 1.50001f,
+    "ordinary PV must default to the product-selected 1.5 rad/s reference velocity");
+static_assert(kYunyiLegacyOrdinaryMitMaximumVelocity == 5.0f &&
+                  kYunyiLegacyDefaultMitSpeedPercent == 70.0f,
+              "legacy ordinary MIT speed scaling must remain unchanged");
 
 // Complete native ownership for the only supported robot product. Nothing in
 // this structure crosses the public ABI or needs to be assembled by Python.
@@ -50,8 +68,10 @@ struct YunyiRuntimeResources {
   std::array<std::unique_ptr<RobotModel>, 2> pose_models;
   std::array<std::mutex, 2> pose_mutexes;
   bool with_grippers = true;
-  float default_mit_reference_velocity = kYunyiOrdinaryMaximumVelocity;
-  float default_pv_reference_velocity = kYunyiOrdinaryMaximumVelocity;
+  float default_mit_reference_velocity =
+      kYunyiLegacyOrdinaryMitMaximumVelocity;
+  float default_pv_reference_velocity =
+      kYunyiOrdinaryPvMaximumVelocity;
 };
 
 // Reads the Motor core cache directly. These helpers keep all conversion from

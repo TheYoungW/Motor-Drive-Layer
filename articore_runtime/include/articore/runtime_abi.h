@@ -1000,7 +1000,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_speed(
     ArticoreRuntime* runtime, float speed_percent);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_speed(
     ArticoreRuntime* runtime, float* speed_percent);
-/* PV ordinary-motion maximum: 0..100, default 70, 100 maps to 5 rad/s. */
+/* PV reference speed: 0..100 maps linearly to 0..3 rad/s; default 50. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
     ArticoreRuntime* runtime, float max_speed_percent);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(

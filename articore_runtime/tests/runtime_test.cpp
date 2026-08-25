@@ -3716,6 +3716,30 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
             "ordinary PV atomically applies one 2 rad/s speed to both arms");
   }
 
+  runtime.update_joint_pv_velocity(1.0f, 3.0f);
+  float before_decoupled_speed = 0.0f;
+  std::size_t decoupled_speed_baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    before_decoupled_speed = driver.pv_history.back()[0].target_position;
+    decoupled_speed_baseline = driver.pv_history.size();
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.pv_history.size() > decoupled_speed_baseline;
+          }, 50ms),
+          "decoupled ordinary PV update is visible on the next native cycle");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto& sent = driver.pv_history[decoupled_speed_baseline];
+    require(std::abs((before_decoupled_speed - sent[0].target_position) -
+                     0.002f) < 0.0002f &&
+                sent[0].velocity_limit == 3.0f &&
+                sent[1].velocity_limit == 3.0f,
+            "ordinary PV separates the 1 rad/s reference slew from the "
+            "3 rad/s drive velocity ceiling");
+  }
+
   ArticorePosVelCommand raw[] = {
       {motors[0].motor, 0.75f, 0.7f},
       {motors[1].motor, 1.25f, 0.8f},

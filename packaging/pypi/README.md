@@ -23,6 +23,15 @@ Product trajectories are likewise planned and executed entirely by the C++
 Runtime through the stable trajectory C ABI; the wheel contains no Python
 interpolator or realtime playback loop.
 
+Version 0.12.3 keeps Yunyi ordinary PV control at 500 Hz and maps the public
+0..100 speed setting linearly to a 0..3 rad/s reference slew. The product
+default is 50 (1.5 rad/s, or 0.003 rad per control period), while the Damiao
+`v_des` ceiling remains 3 rad/s so the drive retains catch-up headroom. PV
+reference slew and drive velocity limit are represented separately throughout
+the Runtime. Hardware diagnostics cover reference slew, hold velocity and
+temporary PV gain sweeps without exposing register tuning through the product
+SDK.
+
 Version 0.12.2 / Runtime ABI 3.1 standardizes explicit Cartesian path starts.
 `articore_runtime_move_linear_v2()` accepts start and end poses, while
 `articore_runtime_move_circular()` is the standard start/via/end call. Runtime

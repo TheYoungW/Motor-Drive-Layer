@@ -177,6 +177,45 @@ if(BUILD_TESTING)
     PRIVATE ../cpp_damiao/include
   )
   add_executable(
+    articore_runtime_hardware_pv_reference_slew_diagnostic EXCLUDE_FROM_ALL
+    tests/hardware_pv_reference_slew_diagnostic.cpp
+    src/yunyi_runtime.cpp
+  )
+  target_link_libraries(
+    articore_runtime_hardware_pv_reference_slew_diagnostic
+    PRIVATE articore_runtime_core damiao::runtime
+  )
+  target_include_directories(
+    articore_runtime_hardware_pv_reference_slew_diagnostic
+    PRIVATE ../cpp_damiao/include
+  )
+  add_executable(
+    articore_runtime_hardware_pv_hold_velocity_diagnostic EXCLUDE_FROM_ALL
+    tests/hardware_pv_hold_velocity_diagnostic.cpp
+    src/yunyi_runtime.cpp
+  )
+  target_link_libraries(
+    articore_runtime_hardware_pv_hold_velocity_diagnostic
+    PRIVATE articore_runtime_core damiao::runtime
+  )
+  target_include_directories(
+    articore_runtime_hardware_pv_hold_velocity_diagnostic
+    PRIVATE ../cpp_damiao/include
+  )
+  add_executable(
+    articore_runtime_hardware_pv_gain_sweep_diagnostic EXCLUDE_FROM_ALL
+    tests/hardware_pv_gain_sweep_diagnostic.cpp
+    src/yunyi_runtime.cpp
+  )
+  target_link_libraries(
+    articore_runtime_hardware_pv_gain_sweep_diagnostic
+    PRIVATE articore_runtime_core damiao::runtime
+  )
+  target_include_directories(
+    articore_runtime_hardware_pv_gain_sweep_diagnostic
+    PRIVATE ../cpp_damiao/include
+  )
+  add_executable(
     articore_runtime_hardware_500hz_smoke EXCLUDE_FROM_ALL
     tests/hardware_500hz_smoke.cpp
   )

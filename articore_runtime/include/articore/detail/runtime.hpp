@@ -269,6 +269,13 @@ class SafetyRuntime {
   void set_joint_pv(const ArticoreJointPvTarget* targets,
                     uint32_t count,
                     float max_reference_velocity);
+  // Keeps the control-rate reference slew separate from the Damiao PV
+  // velocity ceiling. This lets product tuning leave catch-up headroom at the
+  // drive without changing the user-visible motion-speed limit.
+  void set_joint_pv(const ArticoreJointPvTarget* targets,
+                    uint32_t count,
+                    float max_reference_velocity,
+                    float pv_velocity_limit);
   void set_joint_mit_speed(const ArticoreJointMitTarget* targets,
                            uint32_t count, float speed_percent);
   void set_joint_pv_speed(const ArticoreJointPvTarget* targets,
@@ -277,6 +284,8 @@ class SafetyRuntime {
   // reference. Raw frames, native trajectories, and Cartesian plans are not
   // ordinary position references and remain unchanged.
   void update_joint_position_velocity(float max_reference_velocity);
+  void update_joint_pv_velocity(float max_reference_velocity,
+                                float pv_velocity_limit);
   void submit_gripper_mit(const ArticoreMitCommand* commands, uint32_t count);
   void set_gripper_openings(const ArticoreGripperTarget* targets,
                             uint32_t count);
@@ -422,6 +431,7 @@ class SafetyRuntime {
     // command vector and matching user endpoints in final_positions.
     bool joint_position = false;
     float max_reference_velocity = 0.0f;
+    float pv_velocity_limit = 0.0f;
     std::vector<ArticorePosVelCommand> pv;
     std::vector<ArticoreMitCommand> mit;
     std::vector<float> final_positions;
@@ -554,7 +564,8 @@ class SafetyRuntime {
   void install_joint_position(
       ArticoreControlMode mode,
       const std::vector<std::pair<void*, float>>& targets,
-      float max_reference_velocity);
+      float max_reference_velocity,
+      float pv_velocity_limit = 0.0f);
   float ordinary_velocity_from_percent(ArticoreControlMode mode,
                                        float speed_percent) const;
   bool enter_safe_hold_from_feedback(const std::string& reason,

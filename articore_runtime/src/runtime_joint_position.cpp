@@ -51,9 +51,16 @@ void SafetyRuntime::set_joint_mit(
 void SafetyRuntime::set_joint_pv(
     const ArticoreJointPvTarget* targets, uint32_t count,
     float max_reference_velocity) {
+  set_joint_pv(targets, count, max_reference_velocity,
+               max_reference_velocity);
+}
+
+void SafetyRuntime::set_joint_pv(
+    const ArticoreJointPvTarget* targets, uint32_t count,
+    float max_reference_velocity, float pv_velocity_limit) {
   install_joint_position(
       ARTICORE_MODE_PV, collect_targets(targets, count, "PV"),
-      max_reference_velocity);
+      max_reference_velocity, pv_velocity_limit);
 }
 
 float SafetyRuntime::ordinary_velocity_from_percent(
@@ -119,6 +126,7 @@ void SafetyRuntime::update_joint_position_velocity(
   }
 
   arm_mailbox_.max_reference_velocity = max_reference_velocity;
+  arm_mailbox_.pv_velocity_limit = max_reference_velocity;
   for (auto& command : arm_mailbox_.pv) {
     command.velocity_limit = std::max(
         config_.safe_pv_velocity_limit, max_reference_velocity);
@@ -126,14 +134,54 @@ void SafetyRuntime::update_joint_position_velocity(
   wakeup_.notify_all();
 }
 
+void SafetyRuntime::update_joint_pv_velocity(
+    float max_reference_velocity, float pv_velocity_limit) {
+  if (!finite(max_reference_velocity) || max_reference_velocity < 0.0f) {
+    throw std::invalid_argument(
+        "max_reference_velocity must be finite and non-negative");
+  }
+  if (!finite(pv_velocity_limit) || pv_velocity_limit < 0.0f) {
+    throw std::invalid_argument(
+        "pv_velocity_limit must be finite and non-negative");
+  }
+
+  std::lock_guard<std::mutex> command_lock(command_mutex_);
+  if (!arm_mailbox_.valid || !arm_mailbox_.joint_position) return;
+  if (arm_mailbox_.pv.empty()) {
+    throw std::runtime_error(
+        "PV reference velocity update requires an active ordinary PV command");
+  }
+  for (const auto& command : arm_mailbox_.pv) {
+    const auto& limits = joint_config(command.motor);
+    if (max_reference_velocity > limits.velocity_limit ||
+        pv_velocity_limit > limits.velocity_limit) {
+      throw std::invalid_argument(
+          "ordinary PV velocity exceeds joint safety limit");
+    }
+  }
+
+  arm_mailbox_.max_reference_velocity = max_reference_velocity;
+  arm_mailbox_.pv_velocity_limit = pv_velocity_limit;
+  for (auto& command : arm_mailbox_.pv) {
+    command.velocity_limit = std::max(
+        config_.safe_pv_velocity_limit, pv_velocity_limit);
+  }
+  wakeup_.notify_all();
+}
+
 void SafetyRuntime::install_joint_position(
     ArticoreControlMode requested_mode,
     const std::vector<std::pair<void*, float>>& targets,
-    float max_reference_velocity) {
+    float max_reference_velocity, float pv_velocity_limit) {
   const char* const label = mode_name(requested_mode);
   if (!finite(max_reference_velocity) || max_reference_velocity < 0.0f) {
     throw std::invalid_argument(
         "max_reference_velocity must be finite and non-negative");
+  }
+  if (requested_mode == ARTICORE_MODE_PV &&
+      (!finite(pv_velocity_limit) || pv_velocity_limit < 0.0f)) {
+    throw std::invalid_argument(
+        "pv_velocity_limit must be finite and non-negative");
   }
 
   const auto expected = static_cast<std::size_t>(std::count_if(
@@ -169,6 +217,12 @@ void SafetyRuntime::install_joint_position(
       throw std::invalid_argument(
           std::string(motor->descriptor.name) + ": shared " + label +
           " reference velocity exceeds joint safety limit");
+    }
+    if (requested_mode == ARTICORE_MODE_PV &&
+        pv_velocity_limit > limits.velocity_limit) {
+      throw std::invalid_argument(
+          std::string(motor->descriptor.name) +
+          ": PV velocity limit exceeds joint safety limit");
     }
     validate_position_velocity_torque(
         motor_handle, target_position, 0.0f, 0.0f);
@@ -210,6 +264,7 @@ void SafetyRuntime::install_joint_position(
   next.submitted_at = now;
   next.joint_position = true;
   next.max_reference_velocity = max_reference_velocity;
+  next.pv_velocity_limit = pv_velocity_limit;
   next.final_positions.reserve(targets.size());
   if (requested_mode == ARTICORE_MODE_PV) {
     next.pv.reserve(targets.size());
@@ -266,7 +321,7 @@ void SafetyRuntime::install_joint_position(
       next.pv.push_back(ArticorePosVelCommand{
           motor_handle, current_position,
           std::max(config_.safe_pv_velocity_limit,
-                   max_reference_velocity)});
+                   pv_velocity_limit)});
     } else {
       const auto& config = joint_config(motor_handle);
       next.mit.push_back(ArticoreMitCommand{

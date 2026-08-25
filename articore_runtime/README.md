@@ -503,9 +503,12 @@ CAN traffic or connected state, and never include grippers.
 Runtime ABI 2.35 adds `ARTICORE_CAP_PRODUCT_SPEED_SETTING`,
 `articore_runtime_set_speed()`, and `articore_runtime_get_speed()`. A product
 Runtime owns one persistent ordinary-joint-motion setting in the inclusive
-range 0..100, defaulting to 70. For all 14 arm joints, 100 maps to a shared
-5 rad/s reference cap, so the default maps to 3.5 rad/s. Updating the setting
-also updates an active ordinary MIT/PV position reference. The additive
+range 0..100. PV 100 maps linearly to a 3 rad/s reference slew. Real-hardware
+product feedback selects the default 50, which maps to 1.5 rad/s and
+0.003 rad per 500 Hz cycle. The Damiao PV `v_des` ceiling remains 3 rad/s so
+the drive has catch-up headroom. Legacy MIT compatibility scaling remains
+default 70 and 100 maps to 5 rad/s. Updating the setting also updates an active
+ordinary MIT/PV position reference. The additive
 `articore_runtime_set_joint_positions_v2()` uses the stored value, while the
 legacy explicit-speed symbol remains available. Raw frames, native
 trajectories, and Cartesian motions retain their independent explicit limits.
@@ -513,7 +516,8 @@ trajectories, and Cartesian motions retain their independent explicit limits.
 Runtime ABI 2.36 corrects the preferred public terminology to an ordinary
 motion maximum-speed setting. `ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING`,
 `articore_runtime_set_max_speed()`, and `articore_runtime_get_max_speed()` are
-the canonical API. The 0..100 scale, default 70, 5 rad/s maximum, and live
+the canonical API. The 0..100 scale, default 50, 3 rad/s PV
+maximum, and live
 ordinary-reference update semantics are unchanged. ABI 2.35
 `set_speed/get_speed` remain exported compatibility aliases; new bindings
 should expose only the max-speed names.
@@ -527,8 +531,10 @@ all use the same selection. No additional public flange-pose getter is added.
 
 Runtime ABI 2.38 adds `ARTICORE_CAP_PV_MAX_SPEED_ONLY`. Product SDKs expose
 one ordinary PV path: `set_max_speed(0..100)` configures the persistent limit
-(default 70), and position commands contain positions only. Runtime advances
-the reference incrementally at its private rate. Per-command ordinary speed
+(default 50; 100 maps to a 3 rad/s reference slew), and position
+commands contain positions only. The Damiao `v_des` ceiling remains 3 rad/s;
+the default therefore advances the 500 Hz reference by 0.003 rad
+per cycle while retaining drive catch-up headroom. Per-command ordinary speed
 and raw direct-PV entry points are no longer product SDK APIs; their existing C
 symbols remain exported only for binary compatibility. The max-speed names are
 PV-only from ABI 2.38 onward; MIT retains its existing per-command ordinary

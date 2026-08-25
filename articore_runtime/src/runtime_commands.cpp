@@ -662,7 +662,10 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
         ? arm_mailbox_.pv.size() : arm_mailbox_.mit.size();
     if (command_size != arm_mailbox_.final_positions.size() ||
         !finite(arm_mailbox_.max_reference_velocity) ||
-        arm_mailbox_.max_reference_velocity < 0.0f) {
+        arm_mailbox_.max_reference_velocity < 0.0f ||
+        (mode == ARTICORE_MODE_PV &&
+         (!finite(arm_mailbox_.pv_velocity_limit) ||
+          arm_mailbox_.pv_velocity_limit < 0.0f))) {
       throw std::runtime_error(
           "ordinary joint position state is internally inconsistent");
     }
@@ -678,7 +681,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
             error_to_target, -max_delta, max_delta);
         command.velocity_limit = std::max(
             config_.safe_pv_velocity_limit,
-            arm_mailbox_.max_reference_velocity);
+            arm_mailbox_.pv_velocity_limit);
       }
     } else {
       for (std::size_t i = 0; i < arm_mailbox_.mit.size(); ++i) {
