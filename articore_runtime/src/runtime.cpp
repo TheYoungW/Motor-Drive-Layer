@@ -494,6 +494,16 @@ void SafetyRuntime::connect() {
         (error.empty() ? std::string("incomplete motor feedback") : error));
   }
 
+  bool physical_disable_confirmed = true;
+  for (const auto& motor : motors_) {
+    ArticoreMotorState motor_state{};
+    if (backend_->get_state(motor.descriptor.motor, &motor_state) != 0 ||
+        !motor_state.has_value || motor_state.status_code != 0) {
+      physical_disable_confirmed = false;
+      break;
+    }
+  }
+
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     report.success = 1;
@@ -505,7 +515,7 @@ void SafetyRuntime::connect() {
     last_connect_report_ = report;
     state_ = emergency_stop_latched_ ? ARTICORE_FAULT : ARTICORE_READY;
     fault_latched_ = emergency_stop_latched_;
-    disable_confirmed_ = true;
+    disable_confirmed_ = physical_disable_confirmed;
     if (emergency_stop_latched_) {
       fault_reason_ = "emergency stop requested";
     } else {

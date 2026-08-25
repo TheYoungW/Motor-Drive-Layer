@@ -75,7 +75,9 @@ int32_t SafetyRuntime::finish_maintenance(
     } else if (latch_fault) {
       state_ = ARTICORE_FAULT;
       fault_latched_ = true;
-      disable_confirmed_ = true;
+      // A failed maintenance transaction cannot claim physical disable unless
+      // a separate disable barrier has actually verified every installed Motor.
+      disable_confirmed_ = false;
       fault_reason_ = std::string(operation_name(operation)) + " failed: " + error;
       for (const auto& name : failed_motors) {
         if (std::find(motor_faults_.begin(), motor_faults_.end(), name) ==
@@ -105,10 +107,6 @@ int32_t SafetyRuntime::maintenance_precheck(
       error = std::string(operation_name(operation)) +
               " requires Runtime READY";
       return ARTICORE_OPERATION_INVALID_STATE;
-    }
-    if (!disable_confirmed_) {
-      error = "physical disable is not confirmed";
-      return ARTICORE_OPERATION_NOT_DISABLED;
     }
     hardware_transition_ = true;
   }
@@ -172,30 +170,12 @@ int32_t SafetyRuntime::maintenance_precheck(
   return ARTICORE_OPERATION_OK;
 }
 
-int32_t SafetyRuntime::run_motor_maintenance(
-    ArticoreRuntimeOperation operation, ArticoreControlMode mode,
-    bool require_stationary) {
-  std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
-  std::unique_lock<std::mutex> command_lock(command_mutex_);
-  std::string error;
-  std::vector<std::string> failed;
-  const int32_t precheck = maintenance_precheck(
-      operation, error, failed, require_stationary);
-  if (precheck != ARTICORE_OPERATION_OK) {
-    return finish_maintenance(operation, precheck, error, failed,
-                              precheck == ARTICORE_OPERATION_TRANSPORT ||
-                                  precheck == ARTICORE_OPERATION_FEEDBACK);
-  }
-
-  const bool configure = operation == ARTICORE_OPERATION_CONFIGURE_MODE;
-  const bool supported = configure ? backend_->can_ensure_mode()
-      : operation == ARTICORE_OPERATION_CLEAR_FAULTS
-          ? backend_->can_clear_error() : backend_->can_set_zero();
-  if (!supported) {
-    return finish_maintenance(
-        operation, ARTICORE_OPERATION_UNSUPPORTED,
-        "the Runtime was created without native maintenance callbacks", failed,
-        false);
+int32_t SafetyRuntime::configure_hardware_mode(
+    ArticoreControlMode mode, std::string& error,
+    std::vector<std::string>& failed_motors) {
+  if (!backend_->can_ensure_mode()) {
+    error = "the Runtime was created without native mode configuration callbacks";
+    return ARTICORE_OPERATION_UNSUPPORTED;
   }
 
   struct SideResult {
@@ -208,28 +188,15 @@ int32_t SafetyRuntime::run_motor_maintenance(
     workers.emplace_back([&, side] {
       for (const auto& motor : motors_) {
         if (motor.descriptor.side != side) continue;
-        int32_t rc = 0;
-        if (configure) {
-          // The product control mode applies only to the fourteen arm joints.
-          // Yunyi grippers always run MIT because a position/velocity gripper
-          // can keep driving into an obstructed target and stall. The Motor core
-          // uses MIT=1 and POS_VEL=2.
-          const uint32_t native_mode =
-              motor.descriptor.is_gripper || mode == ARTICORE_MODE_MIT
-                  ? 1U : 2U;
-          rc = backend_->ensure_mode(
-              motor.descriptor.motor, native_mode,
-              config_.disable_feedback_timeout_ms);
-          if (rc == 0 && backend_->can_set_timeout() &&
-              backend_->communication_timeout_ms() > 0) {
-            rc = backend_->set_timeout_ms(
-                motor.descriptor.motor,
-                backend_->communication_timeout_ms());
-          }
-        } else if (operation == ARTICORE_OPERATION_CLEAR_FAULTS) {
-          rc = backend_->clear_error(motor.descriptor.motor);
-        } else {
-          rc = backend_->set_zero(motor.descriptor.motor);
+        const uint32_t native_mode =
+            motor.descriptor.is_gripper || mode == ARTICORE_MODE_MIT ? 1U : 2U;
+        int32_t rc = backend_->ensure_mode(
+            motor.descriptor.motor, native_mode,
+            config_.disable_feedback_timeout_ms);
+        if (rc == 0 && backend_->can_set_timeout() &&
+            backend_->communication_timeout_ms() > 0) {
+          rc = backend_->set_timeout_ms(
+              motor.descriptor.motor, backend_->communication_timeout_ms());
         }
         if (rc == 0) continue;
         results[side].failed.emplace_back(motor.descriptor.name);
@@ -241,15 +208,86 @@ int32_t SafetyRuntime::run_motor_maintenance(
   }
   for (auto& worker : workers) worker.join();
   for (const auto& result : results) {
-    failed.insert(failed.end(), result.failed.begin(), result.failed.end());
+    failed_motors.insert(failed_motors.end(), result.failed.begin(),
+                         result.failed.end());
     for (std::size_t index = 0; index < result.errors.size(); ++index) {
       if (!error.empty()) error += "; ";
       error += result.failed[index] + ": " + result.errors[index];
     }
   }
-  if (!failed.empty()) {
-    return finish_maintenance(operation, ARTICORE_OPERATION_MOTOR_COMMAND,
-                              error, failed, true);
+  return failed_motors.empty() ? ARTICORE_OPERATION_OK
+                               : ARTICORE_OPERATION_MOTOR_COMMAND;
+}
+
+int32_t SafetyRuntime::run_motor_maintenance(
+    ArticoreRuntimeOperation operation, ArticoreControlMode mode,
+    bool require_stationary) {
+  std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+  std::unique_lock<std::mutex> command_lock(command_mutex_);
+  std::string error;
+  std::vector<std::string> failed;
+  const int32_t precheck = maintenance_precheck(
+      operation, error, failed, require_stationary);
+  if (precheck != ARTICORE_OPERATION_OK) {
+    return finish_maintenance(operation, precheck, error, failed,
+                              precheck == ARTICORE_OPERATION_TRANSPORT ||
+                                  precheck == ARTICORE_OPERATION_FEEDBACK ||
+                                  precheck == ARTICORE_OPERATION_NOT_DISABLED);
+  }
+
+  const bool configure = operation == ARTICORE_OPERATION_CONFIGURE_MODE;
+  if (configure) {
+    const int32_t configured = configure_hardware_mode(mode, error, failed);
+    if (configured != ARTICORE_OPERATION_OK) {
+      return finish_maintenance(
+          operation, configured, error, failed,
+          configured == ARTICORE_OPERATION_MOTOR_COMMAND);
+    }
+  }
+
+  const bool supported = operation == ARTICORE_OPERATION_CLEAR_FAULTS
+      ? backend_->can_clear_error() : backend_->can_set_zero();
+  if (!configure && !supported) {
+    return finish_maintenance(
+        operation, ARTICORE_OPERATION_UNSUPPORTED,
+        "the Runtime was created without native maintenance callbacks", failed,
+        false);
+  }
+
+  if (!configure) {
+    struct SideResult {
+      std::vector<std::string> failed;
+      std::vector<std::string> errors;
+    } results[2];
+    std::vector<std::thread> workers;
+    for (uint8_t side = 0; side < 2; ++side) {
+      if (!active_sides_[side]) continue;
+      workers.emplace_back([&, side] {
+        for (const auto& motor : motors_) {
+          if (motor.descriptor.side != side) continue;
+          const int32_t rc = operation == ARTICORE_OPERATION_CLEAR_FAULTS
+              ? backend_->clear_error(motor.descriptor.motor)
+              : backend_->set_zero(motor.descriptor.motor);
+          if (rc == 0) continue;
+          results[side].failed.emplace_back(motor.descriptor.name);
+          const char* detail = backend_->last_error_message();
+          results[side].errors.emplace_back(
+              detail && detail[0] ? detail : "native motor command failed");
+        }
+      });
+    }
+    for (auto& worker : workers) worker.join();
+    for (const auto& result : results) {
+      failed.insert(failed.end(), result.failed.begin(), result.failed.end());
+      for (std::size_t index = 0; index < result.errors.size(); ++index) {
+        if (!error.empty()) error += "; ";
+        error += result.failed[index] + ": " + result.errors[index];
+      }
+    }
+    if (!failed.empty()) {
+      return finish_maintenance(operation, ARTICORE_OPERATION_MOTOR_COMMAND,
+                                error, failed, true);
+    }
   }
 
   std::vector<MissingMotor> missing;

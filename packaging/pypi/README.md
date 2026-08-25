@@ -30,6 +30,17 @@ and circular calls alone return asynchronous IDs and support status,
 cancellation, and native FIFO queuing. The wheel contains no Python IK,
 interpolation, playback loop, or queue worker.
 
+Version 0.12.5 repairs the product recovery state machine without changing the
+Runtime ABI. Connect now derives physical-disable confirmation from fresh Motor
+feedback. A connect-time mode-configuration failure caused by any enabled Motor
+latches `FAULT`, keeps `disable_confirmed=false`, names the Motor in health, and
+remains recoverable. `recover()` is a complete transaction from every live
+Runtime state: it establishes feedback when needed, freezes old commands,
+disables the product, clears recoverable faults, validates both channels,
+configures the product mode, returns the 14 arm joints to calibrated zero at
+low speed, and finishes with confirmed whole-product disable. `disconnect()`
+therefore cannot skip physical disable after a failed connect.
+
 Version 0.12.4 keeps Yunyi ordinary PV control at 500 Hz and maps the public
 0..100 speed setting linearly to a 0..2 rad/s reference slew. The SDK default
 is 50 (1 rad/s, or 0.002 rad per control period), while the Damiao `v_des`

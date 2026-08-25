@@ -949,6 +949,124 @@ void test_connect_mode_configuration_accepts_moving_disabled_feedback() {
   runtime.disable();
 }
 
+void test_connect_enabled_motor_fault_is_recoverable_from_ready() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  std::strncpy(motors[0].name, "left/l-joint1",
+               sizeof(motors[0].name) - 1);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  driver.motors[motors[0].motor].status = 1;
+  driver.motors[motors[0].motor].position = 0.03f;
+  driver.emulate_arm_feedback = true;
+
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, enable_all, enable_motor, false, {},
+      maintenance_api());
+  const auto controls = joint_configs(motors);
+  runtime.configure_joints(controls.data(),
+                           static_cast<uint32_t>(controls.size()));
+
+  runtime.connect();
+  require(runtime.health().state == ARTICORE_READY &&
+              runtime.health().disable_confirmed == 0,
+          "connect derives physical-disable confirmation from Motor feedback");
+  require(runtime.configure_mode_for_connect(ARTICORE_MODE_PV) ==
+              ARTICORE_OPERATION_NOT_DISABLED,
+          "connect mode configuration rejects one physically enabled Motor");
+  auto health = runtime.health_v2();
+  require(health.health.state == ARTICORE_FAULT &&
+              health.health.disable_confirmed == 0 &&
+              health.operation_failed_motor_count == 1 &&
+              std::string(health.operation_failed_motors[0]) ==
+                  "left/l-joint1" &&
+              std::string(health.last_operation_error).find(
+                  "motor is not physically disabled") != std::string::npos,
+          "connect configuration failure becomes a named recoverable fault");
+
+  runtime.recover();
+  health = runtime.health_v2();
+  require(health.health.state == ARTICORE_READY &&
+              health.health.disable_confirmed == 1 &&
+              health.last_operation == ARTICORE_OPERATION_RECOVER &&
+              health.last_operation_code == ARTICORE_OPERATION_OK,
+          "recover completes from a connect-time physical-enable mismatch");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(std::all_of(
+                driver.motors.begin(), driver.motors.end(),
+                [](const auto& entry) { return entry.second.status == 0; }) &&
+                std::abs(driver.motors[motors[0].motor].position) <= 0.02f &&
+                driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0 &&
+                driver.configure_mode_calls == motors.size(),
+            "recover configures mode, returns zero, and confirms product disable");
+  }
+
+  // READY is deliberately recoverable too: recover is a product transaction,
+  // not an exception-handler that depends on a narrow safety-state whitelist.
+  runtime.recover();
+  require(runtime.health().state == ARTICORE_READY &&
+              runtime.health().disable_confirmed == 1,
+          "recover is callable from an already READY Runtime");
+}
+
+void test_disconnect_disables_after_connect_configuration_failure() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  driver.motors[motors[0].motor].status = 1;
+
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, enable_all, enable_motor, false, {},
+      maintenance_api());
+  const auto controls = joint_configs(motors);
+  runtime.configure_joints(controls.data(),
+                           static_cast<uint32_t>(controls.size()));
+  runtime.connect();
+  require(runtime.configure_mode_for_connect(ARTICORE_MODE_PV) ==
+              ARTICORE_OPERATION_NOT_DISABLED &&
+              runtime.health().disable_confirmed == 0,
+          "connect configuration leaves physical disable unconfirmed");
+
+  runtime.disconnect();
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.disable_calls[0] > 0 && driver.disable_calls[1] > 0 &&
+                std::all_of(
+                    driver.motors.begin(), driver.motors.end(),
+                    [](const auto& entry) { return entry.second.status == 0; }),
+            "disconnect does not skip disable after connect configuration failure");
+  }
+}
+
+void test_recover_connects_a_live_disconnected_runtime() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  driver.motors[motors[0].motor].status = 1;
+  driver.emulate_arm_feedback = true;
+
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, enable_all, enable_motor, false, {},
+      maintenance_api());
+  const auto controls = joint_configs(motors);
+  runtime.configure_joints(controls.data(),
+                           static_cast<uint32_t>(controls.size()));
+
+  runtime.recover();
+  const auto health = runtime.health_v2();
+  require(health.health.state == ARTICORE_READY &&
+              health.health.disable_confirmed == 1 &&
+              health.last_operation == ARTICORE_OPERATION_RECOVER &&
+              health.last_operation_code == ARTICORE_OPERATION_OK,
+          "recover establishes feedback and completes from DISCONNECTED");
+}
+
 void test_disconnect_is_terminal_and_idempotent() {
   FakeDriver driver;
   g_driver = &driver;
@@ -5370,6 +5488,9 @@ int main() {
     RUN_TEST(test_partial_mit_filters_disabled_motors_before_torque_validation);
     RUN_TEST(test_runtime_maintenance_keeps_ready_and_reports_partial_failure);
     RUN_TEST(test_connect_mode_configuration_accepts_moving_disabled_feedback);
+    RUN_TEST(test_connect_enabled_motor_fault_is_recoverable_from_ready);
+    RUN_TEST(test_disconnect_disables_after_connect_configuration_failure);
+    RUN_TEST(test_recover_connects_a_live_disconnected_runtime);
     RUN_TEST(test_disconnect_is_terminal_and_idempotent);
     RUN_TEST(test_connect_failure_names_missing_installed_motor_and_can_id);
     RUN_TEST(test_connect_report_classifies_zero_feedback_and_transport_failures);

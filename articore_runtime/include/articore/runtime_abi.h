@@ -1176,7 +1176,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_last_disable_report(
     ArticoreRuntime* runtime, ArticoreDisableReport* report);
 /* Idempotent, latched current-position hold; only recover() clears it. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_estop(ArticoreRuntime* runtime);
-/* Clear recoverable faults, return to calibrated zero, then disable. */
+/* From any live Runtime state: disable, clear recoverable faults, return to
+ * calibrated zero, then finish physically disabled. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_recover(ArticoreRuntime* runtime);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_health(
     ArticoreRuntime* runtime, ArticoreSafetyHealth* health);

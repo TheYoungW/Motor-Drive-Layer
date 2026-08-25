@@ -641,6 +641,9 @@ class SafetyRuntime {
   int32_t run_motor_maintenance(ArticoreRuntimeOperation operation,
                                 ArticoreControlMode mode,
                                 bool require_stationary);
+  int32_t configure_hardware_mode(
+      ArticoreControlMode mode, std::string& error,
+      std::vector<std::string>& failed_motors);
   static bool finite(float value);
   MotorRecord* resolve_motor_role(const std::string& role);
   std::string stable_motor_role(const MotorRecord& motor) const;

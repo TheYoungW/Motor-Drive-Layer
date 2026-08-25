@@ -1620,22 +1620,39 @@ void SafetyRuntime::recover() {
     throw std::runtime_error(detail);
   };
 
+  bool connect_before_recovery = false;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     last_operation_ = ARTICORE_OPERATION_RECOVER;
     last_operation_code_ = ARTICORE_OPERATION_OK;
     last_operation_error_.clear();
     operation_failed_motors_.clear();
-    const bool recoverable_state = state_ == ARTICORE_DEGRADED ||
-        state_ == ARTICORE_SAFE_STOP ||
-        (state_ == ARTICORE_FAULT && fault_latched_);
-    if (!recoverable_state || hardware_transition_) {
+    if (stopping_) {
       last_operation_code_ = ARTICORE_OPERATION_INVALID_STATE;
       last_operation_error_ =
-          "recover requires DEGRADED, SAFE_STOP, or latched FAULT";
-      throw std::runtime_error(
-          "recover is only valid from DEGRADED, SAFE_STOP, or latched FAULT");
+          "recover cannot use a terminally disconnected Runtime";
+      throw std::runtime_error(last_operation_error_);
     }
+    if (hardware_transition_) {
+      last_operation_code_ = ARTICORE_OPERATION_INVALID_STATE;
+      last_operation_error_ =
+          "recover cannot overlap another hardware transaction";
+      throw std::runtime_error(last_operation_error_);
+    }
+    connect_before_recovery = state_ == ARTICORE_DISCONNECTED;
+  }
+
+  if (connect_before_recovery) {
+    try {
+      connect();
+    } catch (const std::exception& exception) {
+      fail_recovery("connect", ARTICORE_OPERATION_FEEDBACK,
+                    exception.what(), all_motor_names());
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     // Freeze the worker before the first recovery action. No old user target
     // may be sent while the product is being cleared, checked, or homed.
     state_ = ARTICORE_FAULT;
@@ -1734,6 +1751,17 @@ void SafetyRuntime::recover() {
                   error.empty() ? "complete fresh disabled feedback is required"
                                 : error,
                   failed_motors);
+  }
+
+  failed_motors.clear();
+  error.clear();
+  const int32_t configure_result =
+      configure_hardware_mode(mode_, error, failed_motors);
+  if (configure_result != ARTICORE_OPERATION_OK) {
+    fail_recovery(
+        "configure control mode", configure_result,
+        error.empty() ? "native control-mode configuration failed" : error,
+        failed_motors);
   }
 
   float maximum_distance = 0.0f;

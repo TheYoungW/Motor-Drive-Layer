@@ -388,8 +388,10 @@ standard emergency-stop reason in health, and latches until an explicit
 with continuous current-position holding.
 
 Runtime ABI 2.17 defines `articore_runtime_recover()` as a complete native
-whole-product transaction: stop old commands and disable, clear recoverable
-faults on both channels, validate transports and fresh disabled feedback,
+whole-product transaction callable from every live Runtime state: establish
+feedback if needed, stop old commands and disable, clear recoverable faults on
+both channels, validate transports and fresh disabled feedback, configure the
+product control mode,
 enable only for a fixed low-speed return of all 14 arm joints to their
 previously calibrated zero, then disable and verify every installed motor.
 Every failed stage attempts the same full-product disable and records the
