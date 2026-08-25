@@ -211,7 +211,7 @@ enum ArticoreRuntimeOperation {
   ARTICORE_OPERATION_START_TRAJECTORY = 11,
   ARTICORE_OPERATION_CANCEL_TRAJECTORY = 12,
   ARTICORE_OPERATION_MOVE_POSE = 13,
-  ARTICORE_OPERATION_CANCEL_MOVE_POSE = 14,
+  ARTICORE_OPERATION_CANCEL_CARTESIAN_MOTION = 14,
   ARTICORE_OPERATION_MOVE_LINEAR = 15,
   ARTICORE_OPERATION_MOVE_CIRCULAR = 16,
 };
@@ -230,6 +230,8 @@ enum ArticoreTrajectoryState {
   ARTICORE_TRAJECTORY_COMPLETED = 2,
   ARTICORE_TRAJECTORY_CANCELLED = 3,
   ARTICORE_TRAJECTORY_FAULT = 4,
+  /* Accepted and fully planned, waiting for earlier FIFO motions to finish. */
+  ARTICORE_TRAJECTORY_QUEUED = 5,
 };
 
 enum ArticoreCartesianInterpolation {
@@ -398,22 +400,6 @@ typedef struct ArticoreTrajectoryStatus {
   float progress;
   char error[512];
 } ArticoreTrajectoryStatus;
-
-typedef struct ArticoreMovePoseStatus {
-  // state uses ArticoreTrajectoryState.
-  uint32_t struct_size;
-  int32_t state;
-  uint64_t motion_id;
-  // Non-zero after a newer valid pose replaced a running point target.
-  uint64_t superseded_motion_id;
-  uint32_t side;
-  float speed_percent;
-  double elapsed_s;
-  double duration_s;
-  float progress;
-  float target_pose[ARTICORE_PRODUCT_POSE_DOF];
-  char error[512];
-} ArticoreMovePoseStatus;
 
 typedef struct ArticoreCartesianMotionStatus {
   uint32_t struct_size;
@@ -1000,7 +986,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_speed(
     ArticoreRuntime* runtime, float speed_percent);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_speed(
     ArticoreRuntime* runtime, float* speed_percent);
-/* PV reference speed: 0..100 maps linearly to 0..3 rad/s; default 50. */
+/* PV reference speed: 0..100 maps linearly to 0..2 rad/s; default 50. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
     ArticoreRuntime* runtime, float max_speed_percent);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(
@@ -1028,18 +1014,14 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_trajectory_status(
 ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_trajectory(
     ArticoreRuntime* runtime);
 
-/* Asynchronous PV point-to-point motion; pose is [x,y,z,roll,pitch,yaw]. */
+/* Point-to-point command. Runtime performs endpoint IK, then uses the ordinary
+ * 500 Hz PV reference step. It has no motion ID, status, or cancellation API. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(
     ArticoreRuntime* runtime, uint32_t side, const float* target_pose,
-    float speed_percent, uint64_t* motion_id);
-ARTICORE_RUNTIME_API int32_t articore_runtime_get_move_pose_status(
-    ArticoreRuntime* runtime, ArticoreMovePoseStatus* status);
-ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_move_pose(
-    ArticoreRuntime* runtime);
-/* PV Cartesian motion. Linear orientation uses shortest-path quaternion SLERP. */
-ARTICORE_RUNTIME_API int32_t articore_runtime_move_cartesian(
-    ArticoreRuntime* runtime, uint32_t side, const float* target_pose,
-    float speed_percent, int32_t interpolation, uint64_t* motion_id);
+    float speed_percent);
+/* Asynchronous FIFO Cartesian trajectories. New linear and circular plans
+ * are appended after the current queue tail and never replace it.
+ * Linear orientation uses shortest-path quaternion SLERP. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear(
     ArticoreRuntime* runtime, uint32_t side, const float* target_pose,
     float speed_percent, uint64_t* motion_id);
@@ -1049,6 +1031,11 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_v2(
     const float* end_pose, float speed_percent, uint64_t* motion_id);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_cartesian_motion_status(
     ArticoreRuntime* runtime, ArticoreCartesianMotionStatus* status);
+/* Query one returned motion ID; unlike the legacy getter, this is independent
+ * of later FIFO submissions. */
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_cartesian_motion_status_v2(
+    ArticoreRuntime* runtime, uint64_t motion_id,
+    ArticoreCartesianMotionStatus* status);
 ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_cartesian_motion(
     ArticoreRuntime* runtime);
 /* Standard circular path with an explicit, validated geometric start pose. */

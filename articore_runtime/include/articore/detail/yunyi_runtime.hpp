@@ -13,23 +13,26 @@
 
 namespace articore {
 
-// Ordinary PV uses a product-tuned range derived from real-hardware tracking
-// data. Keep legacy MIT scaling separate: MIT and Cartesian motion do not
-// inherit this PV-only tuning.
-inline constexpr float kYunyiOrdinaryPvMaximumVelocity = 3.0f;
-// The public 0..100 scale remains a direct linear mapping onto 0..3 rad/s.
-// Product feedback selects 50 percent (1.5 rad/s) as the ordinary default.
+// Ordinary PV uses the reference-slew range selected by real-hardware tracking
+// and settling tests. The Damiao POS_VEL V field is a separate drive ceiling;
+// never scale it down with the public percentage.
+inline constexpr float kYunyiOrdinaryPvMaximumVelocity = 2.0f;
+inline constexpr float kYunyiPvDriveVelocityLimit = 3.0f;
+// The public 0..100 scale maps linearly onto 0..2 rad/s. Product calls keep
+// 50 percent as the ordinary default, or 1 rad/s.
 inline constexpr float kYunyiDefaultPvSpeedPercent = 50.0f;
 inline constexpr float kYunyiLegacyOrdinaryMitMaximumVelocity = 5.0f;
 inline constexpr float kYunyiLegacyDefaultMitSpeedPercent = 70.0f;
-static_assert(kYunyiOrdinaryPvMaximumVelocity == 3.0f,
-              "ordinary PV 100 percent must map to 3 rad/s");
+static_assert(kYunyiOrdinaryPvMaximumVelocity == 2.0f,
+              "ordinary PV 100 percent must map to 2 rad/s");
+static_assert(kYunyiPvDriveVelocityLimit == 3.0f,
+              "ordinary PV must retain the independent 3 rad/s drive ceiling");
 inline constexpr float kYunyiDefaultPvReferenceVelocity =
     kYunyiOrdinaryPvMaximumVelocity *
     kYunyiDefaultPvSpeedPercent / 100.0f;
-static_assert(kYunyiDefaultPvReferenceVelocity > 1.49999f &&
-                  kYunyiDefaultPvReferenceVelocity < 1.50001f,
-    "ordinary PV must default to the product-selected 1.5 rad/s reference velocity");
+static_assert(kYunyiDefaultPvReferenceVelocity > 0.99999f &&
+                  kYunyiDefaultPvReferenceVelocity < 1.00001f,
+              "ordinary PV must default to a 1 rad/s reference velocity");
 static_assert(kYunyiLegacyOrdinaryMitMaximumVelocity == 5.0f &&
                   kYunyiLegacyDefaultMitSpeedPercent == 70.0f,
               "legacy ordinary MIT speed scaling must remain unchanged");

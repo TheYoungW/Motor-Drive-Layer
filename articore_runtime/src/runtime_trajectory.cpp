@@ -308,8 +308,13 @@ double sample_acceleration(const std::array<double, 6>& coefficients,
 
 uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
                                          uint64_t replace_trajectory_id,
-                                         CommandTransaction* transaction) {
+                                         CommandTransaction* transaction,
+                                         bool enqueue) {
   const bool planned_reference_transaction = transaction != nullptr;
+  if (enqueue && replace_trajectory_id != 0) {
+    throw std::invalid_argument(
+        "a queued trajectory cannot replace a running trajectory");
+  }
   const std::size_t joint_count = request.joints.size();
   const std::size_t waypoint_count = request.waypoints.size();
   if (request.mode != ARTICORE_MODE_MIT && request.mode != ARTICORE_MODE_PV) {
@@ -318,7 +323,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
   if (request.execution == NativeTrajectoryExecution::SampledPv &&
       request.mode != ARTICORE_MODE_PV) {
     throw std::invalid_argument(
-        "sampled PV execution requires PV control mode");
+        "PV trajectory execution requires PV control mode");
   }
   if (joint_count == 0 || joint_count > 32) {
     throw std::invalid_argument("trajectory joint count is invalid");
@@ -576,7 +581,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
   std::set<void*> intentionally_disabled;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
-    require_state_for_command(false, replace_trajectory_id != 0);
+    require_state_for_command(false, enqueue || replace_trajectory_id != 0);
     if (state_ == ARTICORE_DEGRADED) {
       throw std::runtime_error(
           "cannot start a trajectory while Runtime is degraded");
@@ -585,7 +590,8 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
       throw std::runtime_error(
           "trajectory mode does not match the active Runtime mode");
     }
-    if (trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING &&
+    if (!enqueue &&
+        trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING &&
         (replace_trajectory_id == 0 ||
          trajectory_control_.id != replace_trajectory_id)) {
       throw std::runtime_error("a trajectory is already running");
@@ -595,6 +601,9 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
          trajectory_control_.id != replace_trajectory_id)) {
       throw std::runtime_error(
           "trajectory changed while preparing its replacement");
+    }
+    if (enqueue && trajectory_queue_.size() >= 64) {
+      throw std::runtime_error("Cartesian motion queue is full");
     }
     intentionally_disabled = intentionally_disabled_motors_;
   }
@@ -643,9 +652,10 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
   uint64_t id = 0;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
-    require_state_for_command(false, replace_trajectory_id != 0);
+    require_state_for_command(false, enqueue || replace_trajectory_id != 0);
     if (mode_ != request.mode ||
-        (trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING &&
+        (!enqueue &&
+         trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING &&
          (replace_trajectory_id == 0 ||
           trajectory_control_.id != replace_trajectory_id)) ||
         (replace_trajectory_id != 0 &&
@@ -654,22 +664,38 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
       throw std::runtime_error(
           "Runtime state changed while starting trajectory");
     }
-    clear_pending_arm_mailbox();
-    arm_mailbox_ = ArmMailbox{};
-    trajectory_control_ = TrajectoryControl{};
-    trajectory_control_.state = ARTICORE_TRAJECTORY_RUNNING;
-    trajectory_control_.id = next_trajectory_id_++;
-    trajectory_control_.waypoint_count =
+    if (enqueue && trajectory_queue_.size() >= 64) {
+      throw std::runtime_error("Cartesian motion queue is full");
+    }
+
+    TrajectoryControl prepared;
+    prepared.state = ARTICORE_TRAJECTORY_QUEUED;
+    prepared.id = next_trajectory_id_++;
+    prepared.waypoint_count =
         static_cast<uint32_t>(waypoint_count);
-    trajectory_control_.duration_s = duration_s;
-    trajectory_control_.started_at = now;
-    trajectory_control_.operation = request.operation;
-    trajectory_control_.joints = std::move(request.joints);
-    trajectory_control_.segments = std::move(segments);
-    trajectory_control_.final_convergence_check =
+    prepared.duration_s = duration_s;
+    prepared.operation = request.operation;
+    prepared.execution = request.execution;
+    prepared.joints = std::move(request.joints);
+    prepared.segments = std::move(segments);
+    prepared.final_convergence_check =
         std::move(request.final_convergence_check);
-    id = trajectory_control_.id;
-    next_control_tick_ = now;
+    id = prepared.id;
+
+    const bool active =
+        trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING;
+    if (enqueue && active) {
+      trajectory_queue_.push_back(std::move(prepared));
+    } else {
+      if (trajectory_control_.id != 0 &&
+          trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING) {
+        archive_trajectory_locked(trajectory_control_);
+      }
+      clear_pending_arm_mailbox();
+      arm_mailbox_ = ArmMailbox{};
+      activate_trajectory_locked(std::move(prepared), now);
+      next_control_tick_ = now;
+    }
   }
   wakeup_.notify_all();
   return id;
@@ -683,6 +709,90 @@ NativeTrajectorySample SafetyRuntime::trajectory_sample() const {
 
 SafetyRuntime::CommandTransaction SafetyRuntime::begin_command_transaction() {
   return CommandTransaction(command_mutex_);
+}
+
+NativeTrajectorySample SafetyRuntime::trajectory_final_sample_locked(
+    const TrajectoryControl& trajectory) const {
+  NativeTrajectorySample result;
+  if (trajectory.segments.empty() || trajectory.joints.empty()) return result;
+  const auto& coefficients = trajectory.segments.back().coefficients;
+  if (coefficients.size() != trajectory.joints.size()) return result;
+  result.active = true;
+  result.trajectory_id = trajectory.id;
+  result.operation = trajectory.operation;
+  result.positions.reserve(coefficients.size());
+  for (const auto& joint : coefficients) {
+    result.positions.push_back(
+        static_cast<float>(sample_polynomial(joint, 1.0)));
+  }
+  result.velocities.assign(coefficients.size(), 0.0f);
+  result.accelerations.assign(coefficients.size(), 0.0f);
+  return result;
+}
+
+NativeTrajectorySample SafetyRuntime::planned_trajectory_tail_sample(
+    const std::vector<NativeTrajectoryJoint>& joints,
+    const CommandTransaction& transaction) const {
+  if (!transaction.owns_lock() || transaction.mutex() != &command_mutex_) {
+    throw std::logic_error(
+        "planned trajectory tail requires the Runtime command transaction");
+  }
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    if (!trajectory_queue_.empty()) {
+      auto result = trajectory_final_sample_locked(trajectory_queue_.back());
+      if (result.active) return result;
+    }
+    if (trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING ||
+        trajectory_control_.state == ARTICORE_TRAJECTORY_COMPLETED) {
+      auto result = trajectory_final_sample_locked(trajectory_control_);
+      if (result.active) return result;
+    }
+  }
+  return planned_arm_sample(joints, transaction);
+}
+
+void SafetyRuntime::activate_trajectory_locked(
+    TrajectoryControl trajectory, Clock::time_point now) {
+  trajectory.state = ARTICORE_TRAJECTORY_RUNNING;
+  trajectory.active_segment = 0;
+  trajectory.elapsed_s = 0.0;
+  trajectory.started_at = now;
+  trajectory.settling_started_at = Clock::time_point{};
+  trajectory.settling_stable_started_at = Clock::time_point{};
+  trajectory.hold_unstable_started_at = Clock::time_point{};
+  trajectory.settled_feedback_samples = 0;
+  trajectory.settling_feedback_initialized = false;
+  trajectory.stationary_hold_active = false;
+  trajectory.final_hold_limit_active = false;
+  trajectory.final_hold_limit_mask = 0;
+  trajectory.error.clear();
+  trajectory_control_ = std::move(trajectory);
+}
+
+ArticoreTrajectoryStatus SafetyRuntime::trajectory_status_locked(
+    const TrajectoryControl& trajectory) const {
+  ArticoreTrajectoryStatus result{};
+  result.struct_size = sizeof(result);
+  result.state = trajectory.state;
+  result.trajectory_id = trajectory.id;
+  result.active_segment = trajectory.active_segment;
+  result.waypoint_count = trajectory.waypoint_count;
+  result.elapsed_s = trajectory.elapsed_s;
+  result.duration_s = trajectory.duration_s;
+  result.progress = trajectory.duration_s > 0.0
+      ? static_cast<float>(std::clamp(
+            trajectory.elapsed_s / trajectory.duration_s, 0.0, 1.0))
+      : 0.0f;
+  detail::copy_text(result.error, trajectory.error);
+  return result;
+}
+
+void SafetyRuntime::archive_trajectory_locked(
+    const TrajectoryControl& trajectory) {
+  if (trajectory.id == 0) return;
+  trajectory_history_.push_back(trajectory_status_locked(trajectory));
+  while (trajectory_history_.size() > 128) trajectory_history_.pop_front();
 }
 
 NativeTrajectorySample SafetyRuntime::trajectory_sample_locked(
@@ -1294,6 +1404,13 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
       trajectory_control_.hold_unstable_started_at = Clock::time_point{};
       trajectory_control_.settling_position_min = actual_positions;
       trajectory_control_.settling_position_max = actual_positions;
+      if (!trajectory_queue_.empty()) {
+        archive_trajectory_locked(trajectory_control_);
+        auto next = std::move(trajectory_queue_.front());
+        trajectory_queue_.pop_front();
+        activate_trajectory_locked(std::move(next), now);
+        next_control_tick_ = now;
+      }
       return;
     }
 
@@ -1354,12 +1471,20 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
 
 void SafetyRuntime::terminate_trajectory_locked(
     ArticoreTrajectoryState state, const std::string& error) {
-  if (trajectory_control_.state != ARTICORE_TRAJECTORY_RUNNING &&
-      trajectory_control_.state != ARTICORE_TRAJECTORY_COMPLETED) {
-    return;
+  const bool active =
+      trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING ||
+      trajectory_control_.state == ARTICORE_TRAJECTORY_COMPLETED;
+  if (active) {
+    trajectory_control_.state = state;
+    trajectory_control_.error = error;
   }
-  trajectory_control_.state = state;
-  trajectory_control_.error = error;
+  for (auto& queued : trajectory_queue_) {
+    queued.state = ARTICORE_TRAJECTORY_CANCELLED;
+    queued.error = "queued motion cancelled: " + error;
+    archive_trajectory_locked(queued);
+  }
+  trajectory_queue_.clear();
+  if (!active) return;
   if (state == ARTICORE_TRAJECTORY_FAULT) {
     last_operation_ = trajectory_control_.operation;
     last_operation_code_ = ARTICORE_OPERATION_FEEDBACK;
@@ -1396,21 +1521,28 @@ void SafetyRuntime::cancel_trajectory() {
 }
 
 ArticoreTrajectoryStatus SafetyRuntime::trajectory_status() const {
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  return trajectory_status_locked(trajectory_control_);
+}
+
+ArticoreTrajectoryStatus SafetyRuntime::trajectory_status(
+    uint64_t trajectory_id) const {
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  if (trajectory_control_.id == trajectory_id) {
+    return trajectory_status_locked(trajectory_control_);
+  }
+  for (const auto& queued : trajectory_queue_) {
+    if (queued.id == trajectory_id) return trajectory_status_locked(queued);
+  }
+  for (auto it = trajectory_history_.rbegin();
+       it != trajectory_history_.rend(); ++it) {
+    if (it->trajectory_id == trajectory_id) return *it;
+  }
   ArticoreTrajectoryStatus result{};
   result.struct_size = sizeof(result);
-  std::lock_guard<std::mutex> state_lock(state_mutex_);
-  result.state = trajectory_control_.state;
-  result.trajectory_id = trajectory_control_.id;
-  result.active_segment = trajectory_control_.active_segment;
-  result.waypoint_count = trajectory_control_.waypoint_count;
-  result.elapsed_s = trajectory_control_.elapsed_s;
-  result.duration_s = trajectory_control_.duration_s;
-  result.progress = trajectory_control_.duration_s > 0.0
-      ? static_cast<float>(std::clamp(
-            trajectory_control_.elapsed_s / trajectory_control_.duration_s,
-            0.0, 1.0))
-      : 0.0f;
-  detail::copy_text(result.error, trajectory_control_.error);
+  result.state = ARTICORE_TRAJECTORY_IDLE;
+  result.trajectory_id = trajectory_id;
+  detail::copy_text(result.error, "trajectory id is not available");
   return result;
 }
 

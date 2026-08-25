@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
 #include "articore/runtime_abi.h"
@@ -7,11 +8,28 @@
 
 namespace articore {
 
+// Linear/circular path timing retains its Cartesian reference ceiling. PTP
+// resolves endpoint IK and then uses ordinary PV reference stepping. The
+// Damiao POS_VEL V field remains a separate drive-level limit.
+inline constexpr float kYunyiCartesianMaximumVelocity = 3.0f;
+inline constexpr float kYunyiCartesianPvDriveVelocityLimit = 3.0f;
+
+inline float product_cartesian_reference_velocity_limit(
+    float joint_hard_velocity_limit, float speed_scale) {
+  return std::min(
+      joint_hard_velocity_limit, kYunyiCartesianMaximumVelocity) * speed_scale;
+}
+
+inline float product_pv_drive_velocity_limit(
+    float joint_hard_velocity_limit) {
+  return std::min(
+      joint_hard_velocity_limit, kYunyiCartesianPvDriveVelocityLimit);
+}
+
 struct YunyiRuntimeResources;
 
 struct NativeCartesianPlan {
   NativeTrajectoryRequest trajectory;
-  uint64_t replace_trajectory_id = 0;
 };
 
 enum class CartesianIkSearch {
@@ -36,14 +54,21 @@ inline ArticoreIkOptions product_cartesian_ik_options(
 std::vector<NativeTrajectoryJoint> product_cartesian_joints(
     const YunyiRuntimeResources& product);
 
-NativeCartesianPlan build_cartesian_plan(
-    SafetyRuntime& safety,
+std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
+solve_point_to_point_target_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
-    const float* target_pose,
-    float speed_percent,
-    ArticoreCartesianInterpolation interpolation);
+    const NativeTrajectorySample& reference,
+    const float* target_pose);
+
+NativeCartesianPlan build_linear_plan_from_reference(
+    YunyiRuntimeResources& product,
+    ArticoreControlMode mode,
+    uint32_t side,
+    const NativeTrajectorySample& reference,
+    const float* end_pose,
+    float speed_percent);
 
 NativeCartesianPlan build_linear_plan_from_reference(
     YunyiRuntimeResources& product,

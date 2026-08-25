@@ -4237,6 +4237,76 @@ void test_native_quintic_trajectory_executes_at_worker_rate() {
   runtime.disable();
 }
 
+void test_native_trajectory_fifo_executes_without_replacement() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  const auto first_id = runtime.start_trajectory(
+      trajectory_request(motors, ARTICORE_MODE_PV, 0.4), 0, nullptr, true);
+  auto second = trajectory_request(motors, ARTICORE_MODE_PV, 0.4);
+  second.waypoints.front().positions = {0.2f, 0.8f};
+  second.waypoints.back().positions = {0.4f, 0.6f};
+  auto transaction = runtime.begin_command_transaction();
+  const auto tail = runtime.planned_trajectory_tail_sample(
+      second.joints, transaction);
+  require(tail.active && tail.trajectory_id == first_id &&
+              std::abs(tail.positions[0] - 0.2f) < 1e-6f &&
+              std::abs(tail.positions[1] - 0.8f) < 1e-6f,
+          "FIFO planning reads the first motion endpoint, not its live sample");
+  const auto second_id = runtime.start_trajectory(
+      std::move(second), 0, &transaction, true);
+  transaction.unlock();
+  require(second_id != first_id &&
+              runtime.trajectory_status(second_id).state ==
+                  ARTICORE_TRAJECTORY_QUEUED,
+          "a second native motion is queued without replacing the first");
+
+  require(wait_for([&] {
+            return runtime.trajectory_status(second_id).state ==
+                ARTICORE_TRAJECTORY_COMPLETED;
+          }, 2500ms),
+          "FIFO worker starts the second motion only after first arrival");
+  require(runtime.trajectory_status(first_id).state ==
+              ARTICORE_TRAJECTORY_COMPLETED,
+          "the completed first motion remains queryable after handoff");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(std::abs(driver.last_pv[0].target_position - 0.4f) < 1e-5f &&
+                std::abs(driver.last_pv[1].target_position - 0.6f) < 1e-5f,
+            "FIFO execution reaches the second endpoint at 500 Hz");
+  }
+
+  auto third = trajectory_request(motors, ARTICORE_MODE_PV, 0.5);
+  third.waypoints.front().positions = {0.4f, 0.6f};
+  third.waypoints.back().positions = {0.6f, 0.4f};
+  const auto third_id = runtime.start_trajectory(
+      std::move(third), 0, nullptr, true);
+  auto fourth = trajectory_request(motors, ARTICORE_MODE_PV, 0.5);
+  fourth.waypoints.front().positions = {0.6f, 0.4f};
+  fourth.waypoints.back().positions = {0.8f, 0.2f};
+  auto fourth_transaction = runtime.begin_command_transaction();
+  const auto fourth_id = runtime.start_trajectory(
+      std::move(fourth), 0, &fourth_transaction, true);
+  fourth_transaction.unlock();
+  runtime.cancel_trajectory();
+  require(runtime.trajectory_status(third_id).state ==
+              ARTICORE_TRAJECTORY_CANCELLED &&
+              runtime.trajectory_status(fourth_id).state ==
+                  ARTICORE_TRAJECTORY_CANCELLED,
+          "cancellation stops the active motion and clears every queued motion");
+}
+
 void test_sampled_pv_trajectory_uses_direct_linear_references() {
   FakeDriver driver;
   g_driver = &driver;
@@ -5077,6 +5147,29 @@ void test_product_cartesian_motion_is_pv_only() {
       "MIT product Runtime cannot start PTP, linear or circular Cartesian motion");
 }
 
+void test_product_cartesian_trajectory_speed_limits() {
+  require(
+      std::abs(articore::kYunyiCartesianMaximumVelocity - 3.0f) < 1e-7f,
+      "linear and circular Cartesian path ceiling remains 3 rad/s");
+  require(
+      std::abs(articore::product_cartesian_reference_velocity_limit(
+                   5.0f, 1.0f) -
+               3.0f) < 1e-7f &&
+          std::abs(articore::product_cartesian_reference_velocity_limit(
+                       5.0f, 0.5f) -
+                   1.5f) < 1e-7f,
+      "Cartesian 0..100 speed maps linearly onto 0..3 rad/s");
+  require(
+      std::abs(articore::product_cartesian_reference_velocity_limit(
+                   2.0f, 1.0f) -
+               2.0f) < 1e-7f,
+      "Cartesian product speed never exceeds a lower joint hard limit");
+  require(
+      std::abs(articore::product_pv_drive_velocity_limit(5.0f) -
+               3.0f) < 1e-7f,
+      "PV drive velocity remains fixed at 3 rad/s independently of trajectory timing");
+}
+
 void test_circular_arc_samples_support_continuous_native_ik() {
   articore::RobotModel model("yunyi_v1_0", ARTICORE_ROBOT_LEFT);
   std::array<double, ARTICORE_PRODUCT_ARM_DOF> start_q{};
@@ -5339,6 +5432,7 @@ int main() {
     RUN_TEST(test_deadline_skips_missed_periods_and_reenable_seeds_feedback);
     RUN_TEST(test_trajectory_errors_use_product_roles_and_allow_inward_recovery);
     RUN_TEST(test_native_quintic_trajectory_executes_at_worker_rate);
+    RUN_TEST(test_native_trajectory_fifo_executes_without_replacement);
     RUN_TEST(test_sampled_pv_trajectory_uses_direct_linear_references);
     RUN_TEST(test_completed_trajectory_releases_hold_for_ordinary_pv);
     RUN_TEST(test_planned_reference_transaction_does_not_use_lagging_feedback);
@@ -5356,6 +5450,7 @@ int main() {
     RUN_TEST(test_cartesian_linear_samples_support_continuous_native_ik);
     RUN_TEST(test_three_point_circular_arc_geometry_and_degenerate_rejection);
     RUN_TEST(test_product_cartesian_motion_is_pv_only);
+    RUN_TEST(test_product_cartesian_trajectory_speed_limits);
     RUN_TEST(test_circular_arc_samples_support_continuous_native_ik);
     RUN_TEST(test_native_trajectory_checks_segment_extrema_and_partial_power);
     RUN_TEST(test_gravity_compensation_is_an_exclusive_hand_guiding_mode);

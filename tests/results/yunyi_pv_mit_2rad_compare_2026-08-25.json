@@ -1,0 +1,79 @@
+{
+  "environment": {
+    "robot": "yunyi_v1_0",
+    "side": "left",
+    "control_rate_hz": 500,
+    "reference_velocity_rad_s": 2.0,
+    "reference_step_rad_per_cycle": 0.004,
+    "same_joint_start_and_target": true,
+    "comparison_window_s": 0.174,
+    "comparison_window_definition": "A-to-B command ramp plus 32 ms after the ramp"
+  },
+  "pv": {
+    "drive_velocity_limit_rad_s": 3.0,
+    "actual_peak_velocity_rad_s_by_joint": [
+      0.92307705,
+      1.06959701,
+      0.38827801,
+      0.25152588,
+      1.03296661,
+      1.06227112,
+      0.89621484
+    ],
+    "position_highpass_10hz_peak_to_peak_rad_by_joint": [
+      0.001795,
+      0.002021,
+      0.001382,
+      0.001324,
+      0.003698,
+      0.005395,
+      0.007756
+    ],
+    "completed": true
+  },
+  "mit": {
+    "kp_by_joint": [190.0, 190.0, 70.0, 125.0, 10.0, 22.0, 28.0],
+    "kd_by_joint": [4.55, 4.5, 2.0, 2.9, 0.7, 0.89, 0.84],
+    "actual_peak_velocity_rad_s_by_joint": [
+      1.74358964,
+      2.12454224,
+      3.50427341,
+      1.27716732,
+      1.7704519,
+      2.00488424,
+      1.89255214
+    ],
+    "position_highpass_10hz_peak_to_peak_rad_by_joint": [
+      0.005244,
+      0.006171,
+      0.003244,
+      0.006012,
+      0.007418,
+      0.012789,
+      0.011054
+    ],
+    "abort": {
+      "reason": "measured velocity exceeded the 3.5 rad/s diagnostic limit",
+      "joint": 3,
+      "measured_velocity_rad_s": 3.50427341,
+      "time_after_reference_ramp_s": 0.032
+    },
+    "completed": false
+  },
+  "comparison": {
+    "j6_position_ripple_mit_to_pv_ratio": 2.37,
+    "j7_position_ripple_mit_to_pv_ratio": 1.43,
+    "pv_internal_position_loop_is_sole_cause": false,
+    "confirmed_common_factors": [
+      "500 Hz constant position-reference step",
+      "robot mechanics, payload and feedback path"
+    ],
+    "not_yet_comparable": "MIT was safety-aborted before target settling, so completed endpoint hunting cannot be compared across modes",
+    "interpretation": "MIT reproduced and amplified the in-motion J6/J7 position ripple, ruling out PV KP/KI as the sole cause. This does not rule out Runtime reference generation because the same hard-step generator is shared by PV and MIT."
+  },
+  "final_hardware_state": {
+    "motor_mode": "PV",
+    "returned_to_pre_test_joint_position_with_pv_reference_velocity_rad_s": 0.5,
+    "axes": "disabled"
+  }
+}

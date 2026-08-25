@@ -36,10 +36,10 @@ constexpr float kUpper[2][7] = {
     {2.745f, 2.2678f, 2.5294f, 2.2678f, 2.0933f, .785f, 1.3956f},
     {2.745f, .3489f, 2.5294f, 2.2678f, 2.0933f, .785f, 1.3956f},
 };
-// Cartesian motion retains its independently planned 5 rad/s joint limit.
-// Ordinary PV percentage scaling is intentionally lower and is defined by
-// kYunyiOrdinaryPvMaximumVelocity. Protocol encoding ranges are separate and
-// must not be treated as safe product motion limits.
+// Per-joint hard safety limit for native trajectory validation. Public
+// ordinary-PV and Cartesian percentage commands both apply their separate
+// 3 rad/s product command ceilings before reaching this limit. Protocol
+// encoding ranges are separate and must not be treated as product limits.
 constexpr float kVelocityLimit[7] = {5, 5, 5, 5, 5, 5, 5};
 // Conservative logical-coordinate trajectory limits. These are native product
 // policy, not user-tunable scheduler parameters.

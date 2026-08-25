@@ -1,0 +1,158 @@
+{
+  "environment": {
+    "robot": "yunyi_v1_0",
+    "side": "left",
+    "control_mode": "PV",
+    "control_rate_hz": 500,
+    "drive_velocity_limit_rad_s": 3.0
+  },
+  "candidate_sweep": {
+    "reference_slew_rad_s": [
+      0.75,
+      1.0,
+      1.25,
+      1.5,
+      2.0,
+      3.0
+    ],
+    "confirm_reference_slew_rad_s": [
+      0.45,
+      0.5,
+      0.55,
+      0.45,
+      0.5,
+      0.55
+    ],
+    "abort_velocity_rad_s": 3.5,
+    "result": "candidate sweep retained for evidence; final product selection uses the actual-angle metric and sets 100 percent to 2 rad/s"
+  },
+  "move_pose_100_percent_ab": {
+    "same_reported_start_and_target": true,
+    "before_3_rad_s": {
+      "arrival_time_s": 2.39583,
+      "actual_peak_velocity_rad_s": 2.23443222,
+      "tracking_error_peak_rad": 0.527212441,
+      "settling_velocity_direction_reversals": 170,
+      "completed_hold_position_peak_to_peak_max_rad": 0.006484985,
+      "completed_hold_velocity_peak_rad_s": 0.0708179474,
+      "completed_hold_velocity_direction_reversals": 34,
+      "trace": "ptp_100_before_3rad_2026-08-25.csv.gz"
+    },
+    "after_0_5_rad_s": {
+      "arrival_time_s": 2.89742,
+      "command_step_max_rad_per_cycle": 0.001000003,
+      "commanded_drive_velocity_limit_rad_s": 3.0,
+      "actual_peak_velocity_rad_s": 0.749694824,
+      "tracking_error_peak_rad": 0.195100605,
+      "settling_velocity_direction_reversals": 35,
+      "completed_hold_position_peak_to_peak_max_rad": 0.005722045,
+      "completed_hold_velocity_peak_rad_s": 0.061050415,
+      "completed_hold_velocity_direction_reversals": 17,
+      "trace": "ptp_100_after_0_5rad_2026-08-25.csv.gz"
+    }
+  },
+  "jitter_priority_followup": {
+    "metric": "actual velocity direction reversals above 0.01 rad/s after the command ramp and before physical arrival",
+    "same_move_pose_path": true,
+    "results": [
+      {
+        "reference_velocity_rad_s": 0.5,
+        "arrival_time_s": 3.061258334,
+        "settling_direction_reversals": 35,
+        "hold_direction_reversals": 17,
+        "peak_tracking_error_rad": 0.195100605
+      },
+      {
+        "reference_velocity_rad_s": 0.65,
+        "arrival_time_s": 2.681294506,
+        "settling_direction_reversals": 77,
+        "hold_direction_reversals": 31,
+        "peak_tracking_error_rad": 0.245213985
+      },
+      {
+        "reference_velocity_rad_s": 0.75,
+        "arrival_time_s": 2.695304208,
+        "settling_direction_reversals": 78,
+        "hold_direction_reversals": 7,
+        "peak_tracking_error_rad": 0.273277163
+      },
+      {
+        "reference_velocity_rad_s": 1.0,
+        "arrival_time_s": 2.72197095,
+        "settling_direction_reversals": 152,
+        "hold_direction_reversals": 9,
+        "peak_tracking_error_rad": 0.333397806
+      },
+      {
+        "reference_velocity_rad_s": 2.0,
+        "arrival_time_s": 2.523925345,
+        "settling_direction_reversals": 204,
+        "hold_direction_reversals": 14,
+        "peak_tracking_error_rad": 0.472075522
+      }
+    ],
+    "result": "velocity reversal count was rejected as the primary jitter metric because the product requirement is physical angle vibration"
+  },
+  "actual_angle_priority_analysis": {
+    "metric": "high-pass filtered measured encoder angle during physical motion",
+    "highpass_5hz_peak_to_peak_max_deg": [
+      {"reference_velocity_rad_s": 0.5, "joint": 7, "value_deg": 0.269},
+      {"reference_velocity_rad_s": 0.65, "joint": 7, "value_deg": 0.246},
+      {"reference_velocity_rad_s": 0.75, "joint": 7, "value_deg": 0.225},
+      {"reference_velocity_rad_s": 1.0, "joint": 1, "value_deg": 0.312},
+      {"reference_velocity_rad_s": 2.0, "joint": 6, "value_deg": 0.692}
+    ],
+    "hold_high_frequency_peak_to_peak_range_deg": [0.044, 0.061],
+    "interpretation": "2 rad/s has more in-motion physical angle ripple than slower candidates; the product decision nevertheless keeps 2 rad/s as the 100-percent design point and uses 50 percent as the 1 rad/s SDK default"
+  },
+  "temporary_2_rad_s_j6_j7_gain_ab": {
+    "gains_persisted": false,
+    "profiles": [
+      {
+        "label": "baseline_a1",
+        "kp_asr": 0.00372,
+        "ki_asr": 0.002,
+        "settling_direction_reversals_two_legs": 301
+      },
+      {
+        "label": "ki_0.0015",
+        "kp_asr": 0.00372,
+        "ki_asr": 0.0015,
+        "settling_direction_reversals_two_legs": 328
+      },
+      {
+        "label": "kp_0.0045",
+        "kp_asr": 0.0045,
+        "ki_asr": 0.002,
+        "settling_direction_reversals_two_legs": 319
+      },
+      {
+        "label": "kp_0.0045_ki_0.0015",
+        "kp_asr": 0.0045,
+        "ki_asr": 0.0015,
+        "settling_direction_reversals_two_legs": 311
+      },
+      {
+        "label": "baseline_a2",
+        "kp_asr": 0.00372,
+        "ki_asr": 0.002,
+        "settling_direction_reversals_two_legs": 298
+      }
+    ],
+    "result": "no tested J6/J7 KP_ASR or KI_ASR change improved 2 rad/s settling jitter; original gains restored"
+  },
+  "conclusion": {
+    "selected_maximum_reference_velocity_rad_s": 2.0,
+    "selected_maximum_step_rad_per_500hz_cycle": 0.004,
+    "sdk_default_speed_percent": 50,
+    "sdk_default_reference_velocity_rad_s": 1.0,
+    "sdk_default_step_rad_per_500hz_cycle": 0.002,
+    "arrival_time_increase_s": 0.50159,
+    "actual_peak_velocity_reduction_percent": 66.45,
+    "tracking_error_peak_reduction_percent": 62.99,
+    "settling_reversal_reduction_percent": 79.41,
+    "drive_velocity_limit_unchanged_rad_s": 3.0,
+    "linear_circular_path_timing_limit_unchanged_rad_s": 3.0,
+    "final_state": "returned_to_original_pose_disabled_and_disconnected"
+  }
+}

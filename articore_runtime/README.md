@@ -1,5 +1,64 @@
 # Articore native safety runtime
 
+## Yunyi PV control semantics
+
+This section is the normative product rule for ordinary joint PV commands and
+Cartesian point-to-point motion. Do not introduce a second PTP execution model
+or combine the two independent speed quantities below.
+
+### One PV position execution path
+
+Yunyi has one product PV position behavior. At every 500 Hz Runtime control
+cycle, each joint reference advances independently toward its final target:
+
+```text
+step_velocity = 2 rad/s * user_percent / 100
+max_step = step_velocity / 500 Hz
+q_ref_next = q_ref + clamp(q_target - q_ref, -max_step, +max_step)
+```
+
+The public `0..100` value controls only this Runtime position-reference step.
+It is persistent for ordinary PV through `set_max_speed()`; 100 is the
+product 2 rad/s ceiling (0.004 rad per 500 Hz cycle). The SDK default remains
+50, or 1 rad/s and 0.002 rad per cycle.
+
+### Damiao POS_VEL V field
+
+The velocity value transmitted in a Damiao POS_VEL frame is a separate drive
+ceiling. Its Yunyi product default and moving value is 3 rad/s. Changing the
+public `0..100` step percentage must not scale this V field. Keeping it at
+3 rad/s gives the drive catch-up headroom independently of the Runtime step.
+
+Cartesian PTP retains this same 3 rad/s V ceiling after its reference reaches
+the target, exactly like an ordinary persistent PV position command. It must
+not substitute a PTP-only settling or hold V value. Protective safety holds
+remain a separate Runtime safety mechanism.
+
+### Cartesian point-to-point
+
+Cartesian PTP performs exactly one additional operation: endpoint IK converts
+the requested tool pose into a joint target. After IK, it must execute that
+complete joint target with the same per-joint PV step rule and the same fixed
+3 rad/s Damiao V ceiling as ordinary PV. Cartesian PTP must not introduce a
+second synchronized joint ramp, quintic interpolation, or percentage-scaled
+drive velocity ceiling.
+
+Cartesian linear and circular operations still require their geometric path
+sampling and retain their independent 3 rad/s path-timing ceiling. Their public
+percentage remains separate from the Damiao V field.
+
+### Required verification
+
+Every change to PV or Cartesian PTP must verify both quantities independently:
+
+- commanded `q_ref` changes by no more than
+  `2 * percent / 100 / 500` rad per cycle, independently for each joint;
+- moving POS_VEL frames retain a 3 rad/s V ceiling for every percentage;
+- the same joint start, target and percentage produce the same PTP reference
+  sequence whether the target came directly from joint space or from IK;
+- J1/J2 gain changes are evaluated only after these reference semantics have
+  been confirmed.
+
 This directory contains the native Yunyi V1.0 dual-arm product Runtime. It directly links and owns
 the repository's layered C++ Motor core; no intermediate Motor C ABI or second shared library is
 used. SDK users do not assemble Controllers, Motors, mappings, profiles, or product identifiers.
@@ -428,9 +487,10 @@ Runtime ABI 2.28 adds
 `ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT` and the native
 `articore_runtime_move_pose()` transaction. The target is
 `[x, y, z, roll, pitch, yaw]` in metres/radians and execution is asynchronous.
-The C++ Runtime performs IK, product-limit and quintic-extrema validation, then
-executes at its private control rate. A valid newer point target atomically
-replaces the running point target from its current polynomial state; an invalid
+The C++ Runtime performs endpoint IK and product-limit validation, then applies
+the same independent per-joint 500 Hz position-reference step used by ordinary
+PV. A valid newer point target atomically replaces the running point target
+from its current PV reference; an invalid
 replacement leaves the old target running. Explicit multi-waypoint
 trajectories remain strict and are never replaced by this API. This is
 joint-space point-to-point motion, not Cartesian-linear interpolation.
@@ -555,6 +615,17 @@ end_pose, ...)` as the standard circular product interface. Both validate the
 declared start against one current planned reference before atomic install;
 the existing motion remains untouched on mismatch. The auto-start circular
 v2 symbol remains exported only for compatibility.
+
+Runtime ABI 3.2 keeps point-to-point and path lifecycle semantics separate.
+`articore_runtime_move_pose()` performs endpoint IK and installs an ordinary PV
+position target. It has no motion ID, status getter, or cancellation API, and
+its SDK default 50 advances the 500 Hz reference at 1 rad/s. Linear and circular
+calls alone return asynchronous motion IDs and append immutable plans to the
+native FIFO. `ARTICORE_TRAJECTORY_QUEUED` distinguishes waiting path plans;
+feedback-confirmed completion atomically activates the next plan, and
+`articore_runtime_cancel_cartesian_motion()` cancels the active path plus queued
+paths. Lifecycle and safety stops use the same path queue-clearing rule. No
+Python IK, interpolation, playback loop, or queue worker is required.
 
 motor-drive-layer 0.10.39 hardens native PV Cartesian completion and final
 hold. The public 0.02 rad / 0.05 rad/s arrival window remains compatible, but

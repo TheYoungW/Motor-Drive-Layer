@@ -184,6 +184,14 @@ The old pointer-returning signature and temporary `_v2` alias are removed;
 Articore-SDK binds only this factory signature. ABI 3.1 additionally makes
 explicit start poses standard for linear and circular Cartesian paths.
 
+Runtime ABI 3.2 keeps `move_pose()` as a point command with no motion ID,
+status, or cancellation API. C++ performs endpoint IK and ordinary PV advances
+the joint reference at 500 Hz. Its speed scale maps 100 to 2 rad/s and the SDK
+default 50 to 1 rad/s, while the Damiao POS_VEL velocity ceiling remains fixed
+at 3 rad/s. Linear and circular calls alone expose asynchronous motion IDs,
+status, cancellation, and FIFO queuing. Python performs no IK, interpolation,
+realtime playback, or queue scheduling.
+
 Hardware acceptance remains opt-in. Inspect the scripts under `scripts/` and provide explicit
 motor mappings and acknowledgement flags before running them.
 
@@ -196,7 +204,3 @@ packaging/pypi/           Binary-only wheel assembly; no Python runtime module
 scripts/                  Build, diagnostic and hardware-acceptance helpers
 tests/                    Native CMake package consumer tests
 ```
-
-## License
-
-Motor-Drive-Layer is MIT licensed.

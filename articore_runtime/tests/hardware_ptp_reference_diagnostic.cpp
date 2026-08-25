@@ -89,37 +89,51 @@ void wait_until_enabled_and_stationary(ArticoreRuntime* runtime,
   throw std::runtime_error("arm feedback did not become enabled and stationary");
 }
 
-uint64_t run_ptp(ArticoreRuntime* runtime, const Pose& target,
-                 float speed_percent, const char* label) {
-  uint64_t motion_id = 0;
+void run_ptp(ArticoreRuntime* runtime, const Pose& target,
+             float speed_percent, const char* label) {
   check(articore_runtime_move_pose(runtime, ARTICORE_ROBOT_LEFT,
-                                   target.data(), speed_percent, &motion_id),
+                                   target.data(), speed_percent),
         label);
-  std::cout << "stage=" << label << " motion_id=" << motion_id
+  std::cout << "stage=" << label
             << " speed_percent=" << speed_percent << std::endl;
 
+  const auto started = std::chrono::steady_clock::now();
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::seconds(30);
+  uint32_t stable_samples = 0;
   while (std::chrono::steady_clock::now() < deadline) {
     check_health(runtime);
-    ArticoreMovePoseStatus status{};
-    status.struct_size = sizeof(status);
-    check(articore_runtime_get_move_pose_status(runtime, &status),
-          "get_move_pose_status");
-    if (status.motion_id != motion_id) {
-      throw std::runtime_error("point-to-point status changed motion id");
+    const Pose actual = read_left_pose(runtime);
+    float position_error_squared = 0.0f;
+    float maximum_orientation_error = 0.0f;
+    for (uint32_t index = 0; index < 3; ++index) {
+      const float error = actual[index] - target[index];
+      position_error_squared += error * error;
     }
-    if (status.state == ARTICORE_TRAJECTORY_COMPLETED) {
-      std::cout << "stage=" << label << "_completed motion_id=" << motion_id
-                << " elapsed_s=" << status.elapsed_s
-                << " duration_s=" << status.duration_s << std::endl;
-      return motion_id;
+    for (uint32_t index = 3; index < ARTICORE_PRODUCT_POSE_DOF; ++index) {
+      maximum_orientation_error = std::max(
+          maximum_orientation_error,
+          std::abs(std::remainder(actual[index] - target[index],
+                                  2.0f * 3.14159265358979323846f)));
     }
-    if (status.state == ARTICORE_TRAJECTORY_FAULT ||
-        status.state == ARTICORE_TRAJECTORY_CANCELLED) {
-      throw std::runtime_error(
-          std::string(label) + " terminated: " +
-          (status.error[0] ? status.error : "unknown motion error"));
+
+    ArticoreProductStateV2 state{};
+    state.struct_size = sizeof(state);
+    check(articore_runtime_get_state_v2(runtime, &state), "get_state_v2");
+    float maximum_speed = 0.0f;
+    for (float velocity : state.left.velocities) {
+      maximum_speed = std::max(maximum_speed, std::abs(velocity));
+    }
+    const bool arrived = std::sqrt(position_error_squared) <= 0.005f &&
+                         maximum_orientation_error <= 0.02f &&
+                         maximum_speed <= 0.05f;
+    stable_samples = arrived ? stable_samples + 1 : 0;
+    if (stable_samples >= 100) {
+      const double elapsed_s = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - started).count();
+      std::cout << "stage=" << label << "_arrived"
+                << " elapsed_s=" << elapsed_s << std::endl;
+      return;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
@@ -167,8 +181,7 @@ int main(int argc, char** argv) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     print_pose("measured_reported_start", read_left_pose(runtime));
 
-    const uint64_t diagnostic_id =
-        run_ptp(runtime, kTarget, diagnostic_speed, "diagnostic_ptp");
+    run_ptp(runtime, kTarget, diagnostic_speed, "diagnostic_ptp");
     std::this_thread::sleep_for(std::chrono::seconds(3));
     print_pose("measured_target", read_left_pose(runtime));
 
@@ -180,10 +193,9 @@ int main(int argc, char** argv) {
     enabled = false;
     check(articore_runtime_disconnect(runtime), "disconnect");
     connected = false;
-    std::cout << "diagnostic_motion_id=" << diagnostic_id << std::endl;
+    std::cout << "diagnostic_complete=true" << std::endl;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
-    articore_runtime_cancel_move_pose(runtime);
     if (enabled) articore_runtime_disable(runtime);
     if (connected) articore_runtime_disconnect(runtime);
     articore_runtime_free(runtime);

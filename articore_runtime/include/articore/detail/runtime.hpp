@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -104,6 +105,12 @@ class MotorBackend {
 // leaves the arrival window.
 inline constexpr float kNativePvFinalHoldVelocityLimit = 0.0f;
 inline constexpr float kNativePvSettlingVelocityLimit = 0.05f;
+
+inline float advance_pv_position_reference(
+    float current_position, float target_position, float max_delta) {
+  const float error = target_position - current_position;
+  return current_position + std::clamp(error, -max_delta, max_delta);
+}
 
 inline std::string yunyi_joint_role(uint32_t index) {
   const uint32_t side = index / ARTICORE_PRODUCT_ARM_DOF;
@@ -249,19 +256,24 @@ class SafetyRuntime {
   void submit_mit_ex(const ArticoreMitCommand* commands,
                      uint32_t count,
                      ArticoreCommandLifetime lifetime);
-  // replace_trajectory_id=0 preserves strict trajectory semantics and rejects
-  // a concurrent plan. A non-zero value atomically replaces exactly that
-  // running plan after the new request has passed all validation.
+  // Generic trajectories retain strict replacement semantics. Product
+  // linear/circular calls set enqueue=true after planning against the FIFO
+  // tail; point-to-point uses the ordinary PV position path instead.
   using CommandTransaction = std::unique_lock<std::mutex>;
   CommandTransaction begin_command_transaction();
   uint64_t start_trajectory(NativeTrajectoryRequest request,
                             uint64_t replace_trajectory_id = 0,
-                            CommandTransaction* transaction = nullptr);
+                            CommandTransaction* transaction = nullptr,
+                            bool enqueue = false);
   NativeTrajectorySample trajectory_sample() const;
   NativeTrajectorySample planned_arm_sample(
       const std::vector<NativeTrajectoryJoint>& joints,
       const CommandTransaction& transaction) const;
+  NativeTrajectorySample planned_trajectory_tail_sample(
+      const std::vector<NativeTrajectoryJoint>& joints,
+      const CommandTransaction& transaction) const;
   ArticoreTrajectoryStatus trajectory_status() const;
+  ArticoreTrajectoryStatus trajectory_status(uint64_t trajectory_id) const;
   void cancel_trajectory();
   void set_joint_mit(const ArticoreJointMitTarget* targets,
                      uint32_t count,
@@ -473,6 +485,7 @@ class SafetyRuntime {
     Clock::time_point settling_stable_started_at{};
     Clock::time_point hold_unstable_started_at{};
     ArticoreRuntimeOperation operation = ARTICORE_OPERATION_START_TRAJECTORY;
+    NativeTrajectoryExecution execution = NativeTrajectoryExecution::Quintic;
     std::vector<NativeTrajectoryJoint> joints;
     std::vector<TrajectorySegment> segments;
     std::function<bool(const std::vector<float>&, std::string&)>
@@ -518,11 +531,20 @@ class SafetyRuntime {
   void update_trajectory_completion(Clock::time_point now);
   void terminate_trajectory_locked(ArticoreTrajectoryState state,
                                    const std::string& error);
+  void activate_trajectory_locked(TrajectoryControl trajectory,
+                                  Clock::time_point now);
+  void archive_trajectory_locked(const TrajectoryControl& trajectory);
+  ArticoreTrajectoryStatus trajectory_status_locked(
+      const TrajectoryControl& trajectory) const;
+  NativeTrajectorySample trajectory_final_sample_locked(
+      const TrajectoryControl& trajectory) const;
   NativeTrajectorySample trajectory_sample_locked(Clock::time_point now) const;
   void fault_trajectory(const std::string& error);
   void record_control_trace(Clock::time_point now, ArticoreControlMode mode,
                             const ArticorePosVelCommand* pv_commands,
-                            uint32_t pv_count);
+                            uint32_t pv_count,
+                            const ArticoreMitCommand* mit_commands,
+                            uint32_t mit_count);
   void write_control_trace() noexcept;
   bool prepare_mit_torque_limited_commands(
       const std::vector<ArticoreMitCommand>& requested,
@@ -645,6 +667,8 @@ class SafetyRuntime {
   std::vector<GravityArm> gravity_arms_;
   GravityControl gravity_control_;
   TrajectoryControl trajectory_control_;
+  std::deque<TrajectoryControl> trajectory_queue_;
+  std::deque<ArticoreTrajectoryStatus> trajectory_history_;
   uint64_t next_trajectory_id_ = 1;
   mutable std::mutex state_mutex_;
   mutable std::mutex command_mutex_;

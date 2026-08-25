@@ -28,6 +28,20 @@ int main() {
   static_assert(std::is_same_v<decltype(static_cast<JointPositionSpeedSetter>(
                                    &articore::Runtime::set_joint_positions)),
                                JointPositionSpeedSetter>);
+  using MovePose = void (articore::Runtime::*)(
+      uint32_t, const std::array<float, 6>&, float);
+  static_assert(std::is_same_v<decltype(&articore::Runtime::move_pose),
+                               MovePose>);
+  using MoveLinear = uint64_t (articore::Runtime::*)(
+      uint32_t, const std::array<float, 6>&,
+      const std::array<float, 6>&, float);
+  static_assert(std::is_same_v<decltype(&articore::Runtime::move_linear),
+                               MoveLinear>);
+  using MoveCircular = uint64_t (articore::Runtime::*)(
+      uint32_t, const std::array<float, 6>&,
+      const std::array<float, 6>&, const std::array<float, 6>&, float);
+  static_assert(std::is_same_v<decltype(&articore::Runtime::move_circular),
+                               MoveCircular>);
 
   // This target is a cross-platform compile/link smoke test for the public
   // RAII wrapper. Runtime behavior and invalid construction are exercised by

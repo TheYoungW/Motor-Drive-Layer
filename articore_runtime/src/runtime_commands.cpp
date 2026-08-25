@@ -675,10 +675,9 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     if (mode == ARTICORE_MODE_PV) {
       for (std::size_t i = 0; i < arm_mailbox_.pv.size(); ++i) {
         auto& command = arm_mailbox_.pv[i];
-        const float error_to_target =
-            arm_mailbox_.final_positions[i] - command.target_position;
-        command.target_position += std::clamp(
-            error_to_target, -max_delta, max_delta);
+        command.target_position = advance_pv_position_reference(
+            command.target_position, arm_mailbox_.final_positions[i],
+            max_delta);
         command.velocity_limit = std::max(
             config_.safe_pv_velocity_limit,
             arm_mailbox_.pv_velocity_limit);
@@ -686,10 +685,9 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     } else {
       for (std::size_t i = 0; i < arm_mailbox_.mit.size(); ++i) {
         auto& command = arm_mailbox_.mit[i];
-        const float error_to_target =
-            arm_mailbox_.final_positions[i] - command.target_position;
-        command.target_position += std::clamp(
-            error_to_target, -max_delta, max_delta);
+        command.target_position = advance_pv_position_reference(
+            command.target_position, arm_mailbox_.final_positions[i],
+            max_delta);
         command.target_velocity = 0.0f;
         command.feedforward_torque = 0.0f;
       }
@@ -821,15 +819,18 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     }
   }
   commit_gripper_commands_sent(gripper_commands, now);
-  record_control_trace(now, mode, pv_data,
-                       mode == ARTICORE_MODE_PV ? command_count : 0U);
+  record_control_trace(
+      now, mode, pv_data,
+      mode == ARTICORE_MODE_PV ? command_count : 0U,
+      mit_data, mode == ARTICORE_MODE_MIT ? command_count : 0U);
   if (trajectory_completing) update_trajectory_completion(now);
   return true;
 }
 
 void SafetyRuntime::record_control_trace(
     Clock::time_point now, ArticoreControlMode mode,
-    const ArticorePosVelCommand* pv_commands, uint32_t pv_count) {
+    const ArticorePosVelCommand* pv_commands, uint32_t pv_count,
+    const ArticoreMitCommand* mit_commands, uint32_t mit_count) {
   if (control_trace_path_.empty() ||
       control_trace_.size() >= control_trace_.capacity()) {
     return;
@@ -884,6 +885,17 @@ void SafetyRuntime::record_control_trace(
         sample.command_positions[index] =
             joint.direction * command->target_position;
         sample.pv_velocity_limits[index] = command->velocity_limit;
+        sample.command_valid_mask |= uint32_t{1} << index;
+      }
+    } else if (mode == ARTICORE_MODE_MIT && mit_commands && mit_count > 0) {
+      const auto command = std::find_if(
+          mit_commands, mit_commands + mit_count,
+          [&](const ArticoreMitCommand& value) {
+            return value.motor == joint.motor;
+          });
+      if (command != mit_commands + mit_count) {
+        sample.command_positions[index] =
+            joint.direction * command->target_position;
         sample.command_valid_mask |= uint32_t{1} << index;
       }
     }

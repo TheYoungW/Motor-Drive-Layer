@@ -12,37 +12,14 @@
 #include "articore/detail/yunyi_runtime.hpp"
 
 namespace articore {
+static_assert(
+    kYunyiCartesianPvDriveVelocityLimit == kYunyiPvDriveVelocityLimit,
+    "Cartesian and ordinary PV must share the same drive velocity ceiling");
+
 namespace {
 
 std::string product_joint_role(uint32_t index) {
   return yunyi_joint_role(index);
-}
-
-void read_product_arm_snapshot(
-    SafetyRuntime& safety,
-    YunyiRuntimeResources& product,
-    std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>& positions,
-    std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>& velocities) {
-  for (uint32_t index = 0; index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
-    const auto& joint = product.joints[index];
-    ArticoreMotorState motor{};
-    ArticoreFeedbackStats stats{};
-    if (!read_yunyi_motor_state(joint.motor, motor, stats) || !motor.has_value ||
-        !stats.has_feedback || stats.age_ns > safety.feedback_max_age_ns()) {
-      throw std::runtime_error(
-          "Cartesian motion requires fresh feedback at " +
-          product_joint_role(index));
-    }
-    if (motor.status_code > 1 || !std::isfinite(motor.pos) ||
-        !std::isfinite(motor.vel)) {
-      throw std::runtime_error(
-          "Cartesian motion requires fault-free finite feedback at " +
-          product_joint_role(index));
-    }
-    positions[index] = joint.direction * motor.pos;
-    velocities[index] = joint.direction * motor.vel *
-        joint.velocity_feedback_scale;
-  }
 }
 
 ArticoreRobotPose robot_pose_from_rpy(const float* values) {
@@ -144,7 +121,7 @@ std::array<double, ARTICORE_PRODUCT_ARM_DOF> solve_endpoint_ik(
 
 NativeTrajectoryJoint trajectory_joint(
     const YunyiRuntimeResources::Joint& source,
-    uint32_t product_index, float scale, float start_velocity) {
+    uint32_t product_index) {
   NativeTrajectoryJoint joint;
   joint.role = yunyi_joint_role(product_index);
   joint.motor = source.motor;
@@ -160,12 +137,10 @@ NativeTrajectoryJoint trajectory_joint(
   joint.mit_kp = source.kp;
   joint.mit_kd = source.kd;
   joint.mit_feedforward_torque = 0.0f;
-  joint.pv_velocity_limit = std::max(
-      source.velocity_limit * scale,
-      std::min(source.velocity_limit, std::abs(start_velocity) + 0.01f));
-  // DM PV exposes position plus a velocity limit, not MIT Kp/Kd. Use the
-  // requested product limit while moving, then cap the stationary endpoint
-  // correction so a loaded elbow cannot repeatedly overshoot the same target.
+  // The 0..100 value scales native trajectory timing. Damiao's POS_VEL V
+  // field is a separate product ceiling and remains 3 rad/s.
+  joint.pv_velocity_limit = product_pv_drive_velocity_limit(
+      source.velocity_limit);
   joint.pv_hold_velocity_limit = std::min(
       joint.pv_velocity_limit, kNativePvFinalHoldVelocityLimit);
   return joint;
@@ -173,7 +148,8 @@ NativeTrajectoryJoint trajectory_joint(
 
 std::vector<double> plan_timestamps(
     const std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>>& path,
-    const YunyiRuntimeResources& product, float scale) {
+    const YunyiRuntimeResources& product, float scale,
+    float maximum_reference_velocity) {
   std::vector<double> timestamps(path.size(), 0.0);
   for (std::size_t waypoint = 1; waypoint < path.size(); ++waypoint) {
     double segment_duration = 0.002;
@@ -181,7 +157,9 @@ std::vector<double> plan_timestamps(
          joint_index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++joint_index) {
       const auto& joint = product.joints[joint_index];
       const double velocity = std::max(
-          0.01, static_cast<double>(joint.velocity_limit * scale));
+          0.01, static_cast<double>(
+                    std::min(joint.velocity_limit,
+                             maximum_reference_velocity) * scale));
       const double step = std::abs(static_cast<double>(
           path[waypoint][joint_index] -
           path[waypoint - 1][joint_index]));
@@ -210,21 +188,21 @@ NativeCartesianPlan assemble_cartesian_plan(
     ArticoreControlMode mode,
     ArticoreRuntimeOperation operation,
     float speed_percent,
-    uint64_t replace_trajectory_id,
-    uint32_t completion_side) {
+    uint32_t completion_side,
+    float maximum_reference_velocity = kYunyiCartesianMaximumVelocity) {
   NativeCartesianPlan plan;
-  plan.replace_trajectory_id = replace_trajectory_id;
   const float scale = speed_percent / 100.0f;
-  const auto timestamps = plan_timestamps(path, product, scale);
+  const auto timestamps = plan_timestamps(
+      path, product, scale, maximum_reference_velocity);
   auto& trajectory = plan.trajectory;
   trajectory.mode = mode;
   trajectory.operation = operation;
-  trajectory.execution = NativeTrajectoryExecution::SampledPv;
+  trajectory.execution = NativeTrajectoryExecution::Quintic;
   trajectory.allow_out_of_limit_start_recovery = true;
   trajectory.joints.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
   for (uint32_t index = 0; index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
     trajectory.joints.push_back(trajectory_joint(
-        product.joints[index], index, scale, start_velocities[index]));
+        product.joints[index], index));
   }
 
   const uint32_t all_joints =
@@ -426,11 +404,22 @@ NativeCartesianPlan build_linear_plan_common(
 
   return assemble_cartesian_plan(
       path, start_velocities, start_accelerations, product, mode,
-      ARTICORE_OPERATION_MOVE_LINEAR, speed_percent,
-      reference.active ? reference.trajectory_id : 0, side);
+      ARTICORE_OPERATION_MOVE_LINEAR, speed_percent, side);
 }
 
 }  // namespace
+
+NativeCartesianPlan build_linear_plan_from_reference(
+    YunyiRuntimeResources& product,
+    ArticoreControlMode mode,
+    uint32_t side,
+    const NativeTrajectorySample& reference,
+    const float* end_pose_values,
+    float speed_percent) {
+  return build_linear_plan_common(
+      product, mode, side, reference, nullptr, end_pose_values,
+      speed_percent);
+}
 
 NativeCartesianPlan build_linear_plan_from_reference(
     YunyiRuntimeResources& product,
@@ -446,94 +435,37 @@ NativeCartesianPlan build_linear_plan_from_reference(
       speed_percent);
 }
 
-NativeCartesianPlan build_cartesian_plan(
-    SafetyRuntime& safety,
+std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
+solve_point_to_point_target_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
-    const float* target_pose,
-    float speed_percent,
-    ArticoreCartesianInterpolation interpolation) {
+    const NativeTrajectorySample& reference,
+    const float* target_pose_values) {
   cartesian::require_pv_mode(mode);
   if (side != ARTICORE_ROBOT_LEFT && side != ARTICORE_ROBOT_RIGHT) {
     throw std::invalid_argument(
         "Cartesian motion side must be LEFT(0) or RIGHT(1)");
   }
-  if (!std::isfinite(speed_percent) || speed_percent <= 0.0f ||
-      speed_percent > 100.0f) {
-    throw std::invalid_argument(
-        "Cartesian motion speed_percent must be in (0,100]");
-  }
-  if (interpolation != ARTICORE_CARTESIAN_POINT_TO_POINT &&
-      interpolation != ARTICORE_CARTESIAN_LINEAR) {
-    throw std::invalid_argument("Cartesian interpolation is invalid");
-  }
-  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> feedback_positions{};
-  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> feedback_velocities{};
-  read_product_arm_snapshot(
-      safety, product, feedback_positions, feedback_velocities);
+  require_cartesian_reference(reference, "point-to-point");
+
+  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> start_positions{};
+  std::copy(reference.positions.begin(), reference.positions.end(),
+            start_positions.begin());
 
   const uint32_t side_offset = side * ARTICORE_PRODUCT_ARM_DOF;
-  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> start_positions =
-      feedback_positions;
-  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> start_velocities =
-      feedback_velocities;
-  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> start_accelerations{};
-  NativeCartesianPlan plan;
-  const auto active = safety.trajectory_sample();
-  if (active.active) {
-    if (active.operation != ARTICORE_OPERATION_MOVE_POSE &&
-        active.operation != ARTICORE_OPERATION_MOVE_LINEAR &&
-        active.operation != ARTICORE_OPERATION_MOVE_CIRCULAR) {
-      throw std::runtime_error(
-          "Cartesian motion cannot replace an explicit multi-waypoint trajectory");
-    }
-    if (active.positions.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF ||
-        active.velocities.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF ||
-        active.accelerations.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF) {
-      throw std::runtime_error("active Cartesian plan is incomplete");
-    }
-    std::copy(active.positions.begin(), active.positions.end(),
-              start_positions.begin());
-    std::copy(active.velocities.begin(), active.velocities.end(),
-              start_velocities.begin());
-    std::copy(active.accelerations.begin(), active.accelerations.end(),
-              start_accelerations.begin());
-    plan.replace_trajectory_id = active.trajectory_id;
-  }
-
-  if (interpolation == ARTICORE_CARTESIAN_LINEAR) {
-    NativeTrajectorySample reference = active;
-    if (!reference.active) {
-      reference.positions.assign(
-          start_positions.begin(), start_positions.end());
-      reference.velocities.assign(
-          start_velocities.begin(), start_velocities.end());
-      reference.accelerations.assign(
-          start_accelerations.begin(), start_accelerations.end());
-    }
-    return build_linear_plan_common(
-        product, mode, side, reference, nullptr, target_pose, speed_percent);
-  }
-
+  const auto target = robot_pose_from_rpy(target_pose_values);
+  const auto start_q = reference_q(reference, side);
   RobotModel planning_model("yunyi_v1_0", side, product.with_grippers);
-  const auto target = robot_pose_from_rpy(target_pose);
-  std::array<double, ARTICORE_PRODUCT_ARM_DOF> start_q{};
-  for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
-    start_q[index] = start_positions[side_offset + index];
-  }
   const auto target_q = solve_endpoint_ik(
-      planning_model, product, side, target, start_q, "Cartesian target");
-  std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>> path{
-      start_positions, start_positions};
-  for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
-    path.back()[side_offset + index] = static_cast<float>(target_q[index]);
-  }
+      planning_model, product, side, target, start_q,
+      "Cartesian point-to-point target");
 
-  return assemble_cartesian_plan(
-      path, start_velocities, start_accelerations, product, mode,
-      ARTICORE_OPERATION_MOVE_POSE,
-      speed_percent, plan.replace_trajectory_id, side);
+  auto result = start_positions;
+  for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
+    result[side_offset + index] = static_cast<float>(target_q[index]);
+  }
+  return result;
 }
 
 std::vector<NativeTrajectoryJoint> product_cartesian_joints(
@@ -541,8 +473,7 @@ std::vector<NativeTrajectoryJoint> product_cartesian_joints(
   std::vector<NativeTrajectoryJoint> joints;
   joints.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
   for (uint32_t index = 0; index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
-    joints.push_back(trajectory_joint(
-        product.joints[index], index, 1.0f, 0.0f));
+    joints.push_back(trajectory_joint(product.joints[index], index));
   }
   return joints;
 }
@@ -683,8 +614,7 @@ NativeCartesianPlan build_circular_plan_common(
 
   return assemble_cartesian_plan(
       path, start_velocities, start_accelerations, product, mode,
-      ARTICORE_OPERATION_MOVE_CIRCULAR, speed_percent,
-      reference.active ? reference.trajectory_id : 0, side);
+      ARTICORE_OPERATION_MOVE_CIRCULAR, speed_percent, side);
 }
 
 }  // namespace

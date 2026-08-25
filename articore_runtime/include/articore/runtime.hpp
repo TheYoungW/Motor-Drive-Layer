@@ -204,27 +204,13 @@ class Runtime final {
         articore_runtime_cancel_trajectory(checked()), "cancel_trajectory");
   }
 
-  uint64_t move_pose(uint32_t side, const std::array<float, 6>& target_pose,
-                     float speed_percent = 100.0f) {
-    uint64_t motion_id = 0;
+  void move_pose(uint32_t side,
+                 const std::array<float, 6>& target_pose,
+                 float speed_percent = 50.0f) {
     detail::check(
         articore_runtime_move_pose(
-            checked(), side, target_pose.data(), speed_percent, &motion_id),
+            checked(), side, target_pose.data(), speed_percent),
         "move_pose");
-    return motion_id;
-  }
-
-  uint64_t move_cartesian(
-      uint32_t side, const std::array<float, 6>& target_pose,
-      ArticoreCartesianInterpolation interpolation,
-      float speed_percent = 100.0f) {
-    uint64_t motion_id = 0;
-    detail::check(
-        articore_runtime_move_cartesian(
-            checked(), side, target_pose.data(), speed_percent,
-            static_cast<int32_t>(interpolation), &motion_id),
-        "move_cartesian");
-    return motion_id;
   }
 
   uint64_t move_linear(uint32_t side,
@@ -280,26 +266,23 @@ class Runtime final {
     return motion_id;
   }
 
-  ArticoreMovePoseStatus move_pose_status() const {
-    ArticoreMovePoseStatus result{};
-    result.struct_size = sizeof(result);
-    detail::check(
-        articore_runtime_get_move_pose_status(checked(), &result),
-        "get_move_pose_status");
-    return result;
-  }
-
-  void cancel_move_pose() {
-    detail::check(
-        articore_runtime_cancel_move_pose(checked()), "cancel_move_pose");
-  }
-
   ArticoreCartesianMotionStatus cartesian_motion_status() const {
     ArticoreCartesianMotionStatus result{};
     result.struct_size = sizeof(result);
     detail::check(
         articore_runtime_get_cartesian_motion_status(checked(), &result),
         "get_cartesian_motion_status");
+    return result;
+  }
+
+  ArticoreCartesianMotionStatus cartesian_motion_status(
+      uint64_t motion_id) const {
+    ArticoreCartesianMotionStatus result{};
+    result.struct_size = sizeof(result);
+    detail::check(
+        articore_runtime_get_cartesian_motion_status_v2(
+            checked(), motion_id, &result),
+        "get_cartesian_motion_status_v2");
     return result;
   }
 
