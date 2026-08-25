@@ -332,6 +332,15 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
       waypoint_count > ARTICORE_MAX_TRAJECTORY_WAYPOINTS) {
     throw std::invalid_argument("trajectory requires 2..10000 waypoints");
   }
+  if (request.approach_segment_count >= waypoint_count) {
+    throw std::invalid_argument(
+        "trajectory approach segment count is invalid");
+  }
+  if (request.approach_segment_count != 0 &&
+      request.mode != ARTICORE_MODE_PV) {
+    throw std::invalid_argument(
+        "trajectory approach requires PV control mode");
+  }
 
   std::set<void*> unique_motors;
   const auto expected_arm_count = static_cast<std::size_t>(std::count_if(
@@ -553,7 +562,8 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
     segment.duration_s = end.time_s - start.time_s;
     segment.coefficients.reserve(joint_count);
     for (std::size_t joint_index = 0; joint_index < joint_count; ++joint_index) {
-      if (request.execution == NativeTrajectoryExecution::SampledPv) {
+      if (segment_index < request.approach_segment_count ||
+          request.execution == NativeTrajectoryExecution::SampledPv) {
         segment.coefficients.push_back(sampled_pv_coefficients(
             start.positions[joint_index], end.positions[joint_index]));
       } else {
@@ -674,12 +684,19 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
     prepared.waypoint_count =
         static_cast<uint32_t>(waypoint_count);
     prepared.duration_s = duration_s;
+    prepared.approach_segment_count = request.approach_segment_count;
+    prepared.approach_duration_s = request.approach_segment_count == 0
+        ? 0.0
+        : segments[request.approach_segment_count - 1].start_s +
+              segments[request.approach_segment_count - 1].duration_s;
     prepared.operation = request.operation;
     prepared.execution = request.execution;
     prepared.joints = std::move(request.joints);
     prepared.segments = std::move(segments);
     prepared.final_convergence_check =
         std::move(request.final_convergence_check);
+    prepared.approach_convergence_check =
+        std::move(request.approach_convergence_check);
     id = prepared.id;
 
     const bool active =
@@ -766,6 +783,7 @@ void SafetyRuntime::activate_trajectory_locked(
   trajectory.stationary_hold_active = false;
   trajectory.final_hold_limit_active = false;
   trajectory.final_hold_limit_mask = 0;
+  trajectory.approach_complete = trajectory.approach_segment_count == 0;
   trajectory.error.clear();
   trajectory_control_ = std::move(trajectory);
 }
@@ -807,6 +825,10 @@ NativeTrajectorySample SafetyRuntime::trajectory_sample_locked(
   double elapsed = std::chrono::duration<double>(
       now - trajectory_control_.started_at).count();
   elapsed = std::clamp(elapsed, 0.0, trajectory_control_.duration_s);
+  if (!trajectory_control_.approach_complete &&
+      trajectory_control_.approach_segment_count != 0) {
+    elapsed = std::min(elapsed, trajectory_control_.approach_duration_s);
+  }
   std::size_t segment_index = trajectory_control_.active_segment;
   while (segment_index + 1 < trajectory_control_.segments.size() &&
          elapsed >= trajectory_control_.segments[segment_index].start_s +
@@ -926,10 +948,19 @@ bool SafetyRuntime::prepare_trajectory_cycle(
   double elapsed = std::chrono::duration<double>(
       now - trajectory_control_.started_at).count();
   elapsed = std::clamp(elapsed, 0.0, trajectory_control_.duration_s);
+  const bool at_approach_reference =
+      !trajectory_control_.approach_complete &&
+      trajectory_control_.approach_segment_count != 0 &&
+      elapsed >= trajectory_control_.approach_duration_s;
+  if (at_approach_reference) {
+    elapsed = trajectory_control_.approach_duration_s;
+  }
   const bool at_final_reference =
       elapsed >= trajectory_control_.duration_s;
+  const bool at_settling_reference =
+      at_approach_reference || at_final_reference;
   const bool use_stationary_hold =
-      at_final_reference && trajectory_control_.stationary_hold_active;
+      at_settling_reference && trajectory_control_.stationary_hold_active;
   std::size_t segment_index = trajectory_control_.active_segment;
   while (segment_index + 1 < trajectory_control_.segments.size() &&
          elapsed >= trajectory_control_.segments[segment_index].start_s +
@@ -978,7 +1009,7 @@ bool SafetyRuntime::prepare_trajectory_cycle(
               joint.torque_command_scale};
     } else {
       const bool use_joint_final_hold_limit =
-          at_final_reference &&
+          at_settling_reference &&
           (trajectory_control_.final_hold_limit_mask &
            (uint32_t{1} << joint_index)) != 0;
       arm_mailbox_.pv[joint_index] = ArticorePosVelCommand{
@@ -994,7 +1025,7 @@ bool SafetyRuntime::prepare_trajectory_cycle(
 
   trajectory_control_.active_segment = static_cast<uint32_t>(segment_index);
   trajectory_control_.elapsed_s = elapsed;
-  completing = at_final_reference;
+  completing = at_settling_reference;
   return true;
 }
 
@@ -1009,6 +1040,7 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
   uint64_t trajectory_id = 0;
   ArticoreControlMode mode = ARTICORE_MODE_PV;
   bool monitoring_completed_hold = false;
+  bool waiting_at_approach = false;
   std::vector<uint64_t> previous_updates;
   bool feedback_initialized = false;
   std::function<bool(const std::vector<float>&, std::string&)>
@@ -1023,6 +1055,12 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
     }
     monitoring_completed_hold =
         trajectory_control_.state == ARTICORE_TRAJECTORY_COMPLETED;
+    waiting_at_approach =
+        !monitoring_completed_hold &&
+        !trajectory_control_.approach_complete &&
+        trajectory_control_.approach_segment_count != 0 &&
+        trajectory_control_.elapsed_s >=
+            trajectory_control_.approach_duration_s;
     if (!monitoring_completed_hold &&
         trajectory_control_.settling_started_at == Clock::time_point{}) {
       trajectory_control_.settling_started_at = now;
@@ -1044,9 +1082,14 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
     previous_updates = trajectory_control_.settling_feedback_updates;
     feedback_initialized =
         trajectory_control_.settling_feedback_initialized;
-    final_convergence_check = trajectory_control_.final_convergence_check;
-    const auto& final_coefficients =
-        trajectory_control_.segments.back().coefficients;
+    final_convergence_check = waiting_at_approach
+        ? trajectory_control_.approach_convergence_check
+        : trajectory_control_.final_convergence_check;
+    const auto& final_coefficients = waiting_at_approach
+        ? trajectory_control_
+              .segments[trajectory_control_.approach_segment_count - 1]
+              .coefficients
+        : trajectory_control_.segments.back().coefficients;
     arrivals.reserve(trajectory_control_.joints.size());
     for (std::size_t index = 0;
          index < trajectory_control_.joints.size(); ++index) {
@@ -1182,9 +1225,16 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
         trajectory_control_.id != trajectory_id) {
       return;
     }
-    trajectory_control_.elapsed_s = trajectory_control_.duration_s;
-    trajectory_control_.active_segment =
-        static_cast<uint32_t>(trajectory_control_.segments.size() - 1);
+    if (waiting_at_approach) {
+      trajectory_control_.elapsed_s =
+          trajectory_control_.approach_duration_s;
+      trajectory_control_.active_segment =
+          trajectory_control_.approach_segment_count - 1;
+    } else {
+      trajectory_control_.elapsed_s = trajectory_control_.duration_s;
+      trajectory_control_.active_segment =
+          static_cast<uint32_t>(trajectory_control_.segments.size() - 1);
+    }
 
     if (monitoring_completed_hold) {
       if (!has_active_joint) return;
@@ -1386,6 +1436,24 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
     }
 
     if (completed) {
+      if (waiting_at_approach) {
+        trajectory_control_.approach_complete = true;
+        trajectory_control_.started_at =
+            now - std::chrono::duration_cast<Clock::duration>(
+                      std::chrono::duration<double>(
+                          trajectory_control_.approach_duration_s));
+        trajectory_control_.settling_started_at = Clock::time_point{};
+        trajectory_control_.settling_stable_started_at = Clock::time_point{};
+        trajectory_control_.hold_unstable_started_at = Clock::time_point{};
+        trajectory_control_.settled_feedback_samples = 0;
+        trajectory_control_.settling_feedback_initialized = false;
+        trajectory_control_.stationary_hold_active = false;
+        trajectory_control_.final_hold_limit_active = false;
+        trajectory_control_.final_hold_limit_mask = 0;
+        trajectory_control_.error.clear();
+        next_control_tick_ = now;
+        return;
+      }
       trajectory_control_.state = ARTICORE_TRAJECTORY_COMPLETED;
       trajectory_control_.error.clear();
       trajectory_control_.final_hold_limit_active = true;
@@ -1421,7 +1489,10 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
             now - trajectory_control_.settling_started_at).count() >=
         arrival_timeout_s) {
       std::ostringstream stream;
-      stream << "trajectory arrival timed out after " << arrival_timeout_s
+      stream << (waiting_at_approach
+                     ? "trajectory approach arrival timed out after "
+                     : "trajectory arrival timed out after ")
+             << arrival_timeout_s
              << " s"
              << "; stationary_hold="
              << (trajectory_control_.stationary_hold_active ? "true" : "false")

@@ -28,6 +28,7 @@ int main() {
   const auto trajectory_status = &articore_runtime_get_trajectory_status;
   const auto cancel_trajectory = &articore_runtime_cancel_trajectory;
   const auto move_pose = &articore_runtime_move_pose;
+  const auto move_poses = &articore_runtime_move_poses;
   const auto move_linear = &articore_runtime_move_linear;
   const auto move_linear_v2 = &articore_runtime_move_linear_v2;
   const auto cartesian_motion_status =
@@ -50,6 +51,10 @@ int main() {
       ArticoreRuntime*, uint32_t, const float*, float);
   static_assert(std::is_same_v<
       std::remove_cv_t<decltype(move_pose)>, MovePose>);
+  using MovePoses = int32_t (*)(
+      ArticoreRuntime*, const float*, const float*, float);
+  static_assert(std::is_same_v<
+      std::remove_cv_t<decltype(move_poses)>, MovePoses>);
   using MoveLinear = int32_t (*)(
       ArticoreRuntime*, uint32_t, const float*, float, uint64_t*);
   static_assert(std::is_same_v<
@@ -327,7 +332,7 @@ int main() {
       !start_trajectory || !trajectory_status || !cancel_trajectory ||
       !move_pose || !move_linear || !move_linear_v2 ||
       !cartesian_motion_status ||
-      !cancel_cartesian_motion ||
+      !move_poses || !cancel_cartesian_motion ||
       !move_circular || !move_circular_v2 ||
       !product_grippers || !product_grippers_v2 || !has_product_grippers ||
       !product_state ||
@@ -346,7 +351,7 @@ int main() {
       !gravity_status || !health_v2 || !estop ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x00030002U ||
+      version != 0x00030003U ||
       (capabilities & required_with_circular) != required_with_circular ||
       !product_gripper_levels_valid ||
       !product_gripper_direct_valid ||

@@ -1021,6 +1021,11 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_trajectory(
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(
     ArticoreRuntime* runtime, uint32_t side, const float* target_pose,
     float speed_percent);
+/* Atomic dual-arm PTP. Runtime solves both endpoints from one reference
+ * snapshot, then installs one ordinary 14-joint PV target. */
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_poses(
+    ArticoreRuntime* runtime, const float* left_target_pose,
+    const float* right_target_pose, float speed_percent);
 /* Asynchronous FIFO Cartesian trajectories. New linear and circular plans
  * are appended after the current queue tail and never replace it.
  * Linear orientation uses shortest-path quaternion SLERP. */

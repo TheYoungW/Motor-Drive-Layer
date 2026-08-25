@@ -213,6 +213,16 @@ class Runtime final {
         "move_pose");
   }
 
+  void move_poses(const std::array<float, 6>& left_target_pose,
+                  const std::array<float, 6>& right_target_pose,
+                  float speed_percent = 50.0f) {
+    detail::check(
+        articore_runtime_move_poses(
+            checked(), left_target_pose.data(), right_target_pose.data(),
+            speed_percent),
+        "move_poses");
+  }
+
   uint64_t move_linear(uint32_t side,
                        const std::array<float, 6>& start_pose,
                        const std::array<float, 6>& end_pose,

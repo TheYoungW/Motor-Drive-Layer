@@ -160,8 +160,14 @@ struct NativeTrajectoryRequest {
   ArticoreRuntimeOperation operation = ARTICORE_OPERATION_START_TRAJECTORY;
   NativeTrajectoryExecution execution = NativeTrajectoryExecution::Quintic;
   bool allow_out_of_limit_start_recovery = false;
+  // Optional leading PV point-to-point segment(s). Runtime freezes at the
+  // final approach waypoint until fresh physical feedback is stable, then
+  // continues the already validated path under the same trajectory id.
+  uint32_t approach_segment_count = 0;
   std::vector<NativeTrajectoryJoint> joints;
   std::vector<NativeTrajectoryWaypoint> waypoints;
+  std::function<bool(const std::vector<float>&, std::string&)>
+      approach_convergence_check;
   // Product-owned optional endpoint verification. The callback receives one
   // coherent logical-joint snapshot and must not retain it.
   std::function<bool(const std::vector<float>&, std::string&)>
@@ -480,16 +486,21 @@ class SafetyRuntime {
     uint32_t active_segment = 0;
     double elapsed_s = 0.0;
     double duration_s = 0.0;
+    double approach_duration_s = 0.0;
     Clock::time_point started_at{};
     Clock::time_point settling_started_at{};
     Clock::time_point settling_stable_started_at{};
     Clock::time_point hold_unstable_started_at{};
     ArticoreRuntimeOperation operation = ARTICORE_OPERATION_START_TRAJECTORY;
     NativeTrajectoryExecution execution = NativeTrajectoryExecution::Quintic;
+    uint32_t approach_segment_count = 0;
+    bool approach_complete = true;
     std::vector<NativeTrajectoryJoint> joints;
     std::vector<TrajectorySegment> segments;
     std::function<bool(const std::vector<float>&, std::string&)>
         final_convergence_check;
+    std::function<bool(const std::vector<float>&, std::string&)>
+        approach_convergence_check;
     std::vector<uint64_t> settling_feedback_updates;
     std::vector<float> settling_position_min;
     std::vector<float> settling_position_max;

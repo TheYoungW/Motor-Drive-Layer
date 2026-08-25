@@ -1,0 +1,29 @@
+{
+  "date": "2026-08-25",
+  "product": "yunyi_v1_0",
+  "mode": "PV",
+  "with_grippers": true,
+  "speed_percent": 50.0,
+  "target_joint_shape_rad": [0.0, 0.0, 0.0, 1.5707963268, 0.0, 0.0, 0.0],
+  "target_left_pose": [0.403537, 0.231892, 0.381638, 0.0, -1.570796, 0.0],
+  "target_right_pose": [0.403537, -0.231889, 0.381639, 0.0, -1.570796, 0.0],
+  "before_fix": {
+    "submission": "left move_pose followed by right move_pose",
+    "left_final_j4_rad": 0.0001907349,
+    "right_final_j4_rad": 1.5699625015,
+    "left_xyz_error_m": 0.5543334205,
+    "cause": "the right single-arm call replaced the complete 14-joint target installed by the left call"
+  },
+  "after_fix": {
+    "submission": "one articore_runtime_move_poses call",
+    "left_final_j4_rad": 1.5703439713,
+    "right_final_j4_rad": 1.5699625015,
+    "left_xyz_error_m": 0.0004449673,
+    "right_xyz_error_m": 0.0004207150,
+    "left_orientation_error_rad": 0.0019141118,
+    "right_orientation_error_rad": 0.0007533258,
+    "left_right_arrival_difference_s": 0.0020694860,
+    "runtime_fault": false,
+    "disconnect_confirmed": true
+  }
+}

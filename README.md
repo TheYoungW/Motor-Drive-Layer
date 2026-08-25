@@ -192,6 +192,20 @@ at 3 rad/s. Linear and circular calls alone expose asynchronous motion IDs,
 status, cancellation, and FIFO queuing. Python performs no IK, interpolation,
 realtime playback, or queue scheduling.
 
+Runtime ABI 3.3 adds `articore_runtime_move_poses(left, right, speed)` for one
+atomic dual-arm PTP submission. C++ takes one planned-reference snapshot,
+solves both endpoint IK problems, and only after both succeed installs one
+ordinary 14-joint PV target. This prevents sequential single-arm calls from
+overwriting the first arm's endpoint; it does not add another interpolator.
+
+The same release makes explicit-start Linear and Circular calls native
+composite FIFO tasks. Runtime preplans and validates the complete approach plus
+path before motion, uses ordinary PV PTP to reach the declared start, waits for
+fresh physical feedback within 5 mm / 0.035 rad, and only then runs the line or
+arc. Approach, barrier and path share one motion ID; cancellation holds the
+last safe reference. Cartesian timing now reserves both velocity and
+acceleration headroom before the quintic path is installed.
+
 Hardware acceptance remains opt-in. Inspect the scripts under `scripts/` and provide explicit
 motor mappings and acknowledgement flags before running them.
 

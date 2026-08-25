@@ -617,9 +617,9 @@ Runtime ABI 3.1 adds the standard explicit-start linear call
 `articore_runtime_move_linear_v2(start_pose, end_pose, ...)` and restores the
 existing explicit `articore_runtime_move_circular(start_pose, via_pose,
 end_pose, ...)` as the standard circular product interface. Both validate the
-declared start against one current planned reference before atomic install;
-the existing motion remains untouched on mismatch. The auto-start circular
-v2 symbol remains exported only for compatibility.
+declared start as part of native planning. Releases before 0.12.7 rejected a
+start mismatch; 0.12.7 and later preplan and execute an approach PTP before the
+path. The auto-start circular v2 symbol remains exported only for compatibility.
 
 Runtime ABI 3.2 keeps point-to-point and path lifecycle semantics separate.
 `articore_runtime_move_pose()` performs endpoint IK and installs an ordinary PV
@@ -631,6 +631,20 @@ feedback-confirmed completion atomically activates the next plan, and
 `articore_runtime_cancel_cartesian_motion()` cancels the active path plus queued
 paths. Lifecycle and safety stops use the same path queue-clearing rule. No
 Python IK, interpolation, playback loop, or queue worker is required.
+
+Runtime ABI 3.3 adds `articore_runtime_move_poses()` for atomic dual-arm PTP.
+Both endpoint IK solutions use the same planned-reference snapshot, and one
+ordinary 14-joint PV target is installed only after both succeed. The existing
+single-arm PTP symbol remains available; no PTP trajectory state machine or
+second interpolation path is introduced.
+
+ABI 3.3 also changes explicit-start Linear and Circular calls into one native
+composite FIFO item: ordinary PV PTP approaches the declared start, a physical
+feedback barrier verifies 5 mm / 0.035 rad and stable joint velocity, then the
+prevalidated line or arc continues under the same motion ID. Planning failure
+does not move the robot, queued work cannot pass the barrier, and cancellation
+holds the last safe reference. Cartesian retiming accounts for both velocity
+and acceleration extrema before installation.
 
 motor-drive-layer 0.10.39 hardens native PV Cartesian completion and final
 hold. The public 0.02 rad / 0.05 rad/s arrival window remains compatible, but

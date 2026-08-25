@@ -4475,6 +4475,142 @@ void test_native_trajectory_fifo_executes_without_replacement() {
           "cancellation stops the active motion and clears every queued motion");
 }
 
+void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  std::atomic<bool> approach_pose_matches{false};
+
+  const auto composite_request = [&] {
+    auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.2);
+    request.waypoints[1].positions = {0.1f, 0.9f};
+    auto end = request.waypoints[1];
+    end.time_s = 0.4;
+    end.positions = {0.2f, 0.8f};
+    request.waypoints.push_back(end);
+    request.approach_segment_count = 1;
+    request.approach_convergence_check =
+        [&](const std::vector<float>& actual, std::string& error) {
+          if (actual.size() != 2) {
+            error = "invalid approach feedback";
+            return false;
+          }
+          if (!approach_pose_matches.load()) {
+            error = "approach Cartesian pose is outside tolerance";
+            return false;
+          }
+          return true;
+        };
+    return request;
+  };
+
+  auto invalid = composite_request();
+  invalid.waypoints.back().positions[0] = 3.0f;
+  require_throws(
+      [&] { runtime.start_trajectory(std::move(invalid)); },
+      "trajectory target waypoint",
+      "the complete composite task is validated before installation");
+  std::this_thread::sleep_for(20ms);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.last_pv.size() == 2 &&
+                std::abs(driver.last_pv[0].target_position) < 1e-6f &&
+                std::abs(driver.last_pv[1].target_position - 1.0f) < 1e-6f,
+            "a rejected composite plan leaves the robot at its prior hold");
+  }
+
+  const auto first_id = runtime.start_trajectory(composite_request(), 0,
+                                                  nullptr, true);
+  require(wait_for([&] {
+            const auto status = runtime.trajectory_status(first_id);
+            return status.state == ARTICORE_TRAJECTORY_RUNNING &&
+                   status.progress >= 0.49f;
+          }, 700ms),
+          "composite motion reaches its approach feedback barrier");
+  std::this_thread::sleep_for(100ms);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    float maximum_left_reference = -1.0f;
+    for (const auto& frame : driver.pv_history) {
+      if (frame.size() == 2) {
+        maximum_left_reference =
+            std::max(maximum_left_reference, frame[0].target_position);
+      }
+    }
+    require(maximum_left_reference <= 0.10001f,
+            "the path cannot start before physical approach convergence");
+  }
+  {
+    const auto status = runtime.trajectory_status(first_id);
+    require(status.progress >= 0.49f && status.progress <= 0.51f &&
+                status.active_segment == 0,
+            "status remains at the approach barrier until feedback settles");
+  }
+
+  auto queued = trajectory_request(motors, ARTICORE_MODE_PV, 0.2);
+  queued.waypoints.front().positions = {0.2f, 0.8f};
+  queued.waypoints.back().positions = {0.3f, 0.7f};
+  auto queued_transaction = runtime.begin_command_transaction();
+  const auto second_id = runtime.start_trajectory(
+      std::move(queued), 0, &queued_transaction, true);
+  queued_transaction.unlock();
+  require(runtime.trajectory_status(second_id).state ==
+              ARTICORE_TRAJECTORY_QUEUED,
+          "a composite motion remains one indivisible FIFO item");
+
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.emulate_arm_feedback = true;
+  }
+  std::this_thread::sleep_for(300ms);
+  require(runtime.trajectory_status(first_id).state ==
+              ARTICORE_TRAJECTORY_RUNNING &&
+              runtime.trajectory_status(first_id).progress <= 0.51f &&
+              runtime.trajectory_status(second_id).state ==
+                  ARTICORE_TRAJECTORY_QUEUED,
+          "joint arrival cannot bypass the Cartesian start-pose barrier");
+  approach_pose_matches.store(true);
+  require(wait_for([&] {
+            return runtime.trajectory_status(second_id).state ==
+                ARTICORE_TRAJECTORY_COMPLETED;
+          }, 1800ms),
+          "approach convergence resumes the path and then the queued motion");
+  require(runtime.trajectory_status(first_id).state ==
+              ARTICORE_TRAJECTORY_COMPLETED,
+          "the approach and path expose one final completion state");
+
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.emulate_arm_feedback = false;
+    driver.motors[motors[0].motor].position = 0.3f;
+    driver.motors[motors[1].motor].position = 0.7f;
+  }
+  approach_pose_matches.store(false);
+  auto cancelable = composite_request();
+  cancelable.waypoints.front().positions = {0.3f, 0.7f};
+  cancelable.waypoints[1].positions = {0.4f, 0.6f};
+  cancelable.waypoints[2].positions = {0.5f, 0.5f};
+  const auto cancel_id = runtime.start_trajectory(std::move(cancelable));
+  require(wait_for([&] {
+            return runtime.trajectory_status(cancel_id).progress >= 0.49f;
+          }, 700ms),
+          "cancel test reaches the approach feedback barrier");
+  runtime.cancel_trajectory();
+  require(runtime.trajectory_status(cancel_id).state ==
+              ARTICORE_TRAJECTORY_CANCELLED,
+          "cancelling during approach cancels the whole composite motion");
+  runtime.disable();
+}
+
 void test_sampled_pv_trajectory_uses_direct_linear_references() {
   FakeDriver driver;
   g_driver = &driver;
@@ -5605,6 +5741,7 @@ int main() {
     RUN_TEST(test_trajectory_errors_use_product_roles_and_allow_inward_recovery);
     RUN_TEST(test_native_quintic_trajectory_executes_at_worker_rate);
     RUN_TEST(test_native_trajectory_fifo_executes_without_replacement);
+    RUN_TEST(test_composite_cartesian_approach_waits_before_path_and_is_cancelable);
     RUN_TEST(test_sampled_pv_trajectory_uses_direct_linear_references);
     RUN_TEST(test_completed_trajectory_releases_hold_for_ordinary_pv);
     RUN_TEST(test_planned_reference_transaction_does_not_use_lagging_feedback);

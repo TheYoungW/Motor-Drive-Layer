@@ -62,6 +62,14 @@ solve_point_to_point_target_from_reference(
     const NativeTrajectorySample& reference,
     const float* target_pose);
 
+std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
+solve_dual_point_to_point_targets_from_reference(
+    YunyiRuntimeResources& product,
+    ArticoreControlMode mode,
+    const NativeTrajectorySample& reference,
+    const float* left_target_pose,
+    const float* right_target_pose);
+
 NativeCartesianPlan build_linear_plan_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,

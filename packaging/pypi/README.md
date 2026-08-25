@@ -30,6 +30,19 @@ and circular calls alone return asynchronous IDs and support status,
 cancellation, and native FIFO queuing. The wheel contains no Python IK,
 interpolation, playback loop, or queue worker.
 
+Runtime ABI 3.3 adds atomic dual-arm PTP through
+`articore_runtime_move_poses()`. Both endpoint IK solutions are computed from
+one reference snapshot and installed as one ordinary 14-joint PV target, so a
+second arm submission cannot replace the first arm's endpoint.
+
+Version 0.12.7 contains this Runtime ABI 3.3 dual-arm PTP fix.
+It also makes explicit-start Linear/Circular one native composite FIFO task:
+Runtime prevalidates the approach and complete path, approaches the declared
+start with ordinary PV PTP, waits for fresh stable feedback within
+5 mm / 0.035 rad, then executes the line or arc under the same motion ID.
+Cancellation covers the whole task and holds its last safe reference. Path
+retiming now enforces acceleration as well as velocity limits.
+
 Version 0.12.6 fixes the product fault-clear bootstrap path without changing
 the Runtime ABI. A valid CAN/feedback connection now succeeds when a Motor
 reports a recoverable fault status (`status_code > 1`): Runtime stays connected,

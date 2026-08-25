@@ -381,12 +381,23 @@ Runtime ABI 3.1 延续 ABI 3.0 的唯一产品工厂：
 `articore_runtime_create_yunyi(mode, with_grippers, runtime_out)`。函数返回稳定操作状态码，并
 通过输出指针写入 Runtime 句柄。旧的两参数指针返回签名和临时 `_v2` 别名都已删除；
 Articore-SDK 只绑定这一种工厂签名。ABI 3.1 另外统一了直线和圆弧运动的显式起点语义：
-Linear 使用 start/end，Circular 使用 start/via/end；起点不匹配时不覆盖当前运动。
+Linear 使用 start/end，Circular 使用 start/via/end。0.12.7 之前起点不匹配会拒绝；
+0.12.7 起改为先完整预规划，再由同一底层任务自动 PTP 接近起点后执行路径。
 
 Runtime ABI 3.2 明确区分 PTP 与路径运动。`move_pose()` 只提交点到点目标，不返回 motion
 ID，也没有状态查询或取消接口；C++ 完成终点 IK 后，使用与普通 PV 相同的 500 Hz 逐周期
 位置步进。只有直线和圆弧调用返回异步 motion ID，并支持状态、取消与 FIFO 排队。
 Python 不实现 IK、插值、实时回放或队列调度。
+
+Runtime ABI 3.3 新增 `articore_runtime_move_poses(left, right, speed)`，用于一次原子提交
+双臂 PTP。C++ 从同一份规划参考求解左右终点 IK；只有两侧都成功后，才安装一份普通 PV
+的 14 关节目标。这样两个单臂调用不会互相覆盖，也没有增加另一套插值器。
+
+同一版本把显式起点的 Linear/Circular 改为底层复合 FIFO 任务。Runtime 在运动前一次性
+规划并校验“普通 PV PTP 接近起点 + 完整直线/圆弧”；先到声明起点，再用真实反馈确认
+位置误差不超过 5 mm、姿态误差不超过 0.035 rad，之后才放行路径。接近、反馈屏障和路径
+共用一个 motion ID，取消时保持最后安全参考。笛卡尔路径时间戳也同时按速度和加速度约束
+扩时，避免细分路径首尾五次曲线产生过大加速度。
 
 | 参数 | 每周期 rad | 每周期 deg | 1 秒参考运动量 |
 |---:|---:|---:|---:|

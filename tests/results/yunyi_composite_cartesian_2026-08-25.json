@@ -1,0 +1,56 @@
+{
+  "initial_pose": [
+    0.0012306580320000648,
+    0.23173575103282928,
+    0.0033722964581102133,
+    -0.00038271714583970606,
+    -0.008945113979279995,
+    -0.000527961936313659
+  ],
+  "initial_start_position_error_m": 0.5522095251600192,
+  "initial_start_orientation_error_rad": 1.5618510952178102,
+  "linear": {
+    "motion_id": 1,
+    "duration_s": 10.85392677699565,
+    "samples": 2504,
+    "start_seen_at_s": 4.915998369004228,
+    "start_seen_progress": 0.4722273051738739,
+    "final_pose": [
+      0.4039193093776703,
+      0.32875633239746094,
+      0.3814740478992462,
+      -1.5457184314727783,
+      -1.56892991065979,
+      1.5388859510421753
+    ],
+    "final_position_error_m": 0.003163139589902638,
+    "final_orientation_error_rad": 0.0070828136941138,
+    "status": "completed"
+  },
+  "circular": {
+    "motion_id": 2,
+    "duration_s": 8.665684466002858,
+    "samples": 1990,
+    "start_seen_at_s": 2.253553242000635,
+    "start_seen_progress": 0.09914036840200424,
+    "final_pose": [
+      0.40380504727363586,
+      0.32954224944114685,
+      0.38104066252708435,
+      -0.8581111431121826,
+      -1.568934679031372,
+      0.853058397769928
+    ],
+    "final_position_error_m": 0.0024392599464353204,
+    "final_orientation_error_rad": 0.005384715656563977,
+    "status": "completed"
+  },
+  "cancel": {
+    "motion_id": 3,
+    "state": "cancelled",
+    "catch_up_after_cancel_rad": 0.11596870422363281,
+    "settled_hold_range_rad": 0.0064849853515625
+  },
+  "health_state": "RUNNING",
+  "health_error": null
+}
