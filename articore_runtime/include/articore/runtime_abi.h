@@ -972,6 +972,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_disconnect(
     ArticoreRuntime* runtime);
 ARTICORE_RUNTIME_API int32_t articore_runtime_configure_mode(
     ArticoreRuntime* runtime, int32_t mode);
+/* Clear recoverable Motor faults without motion. A faulted product remains
+ * connected; success also reapplies mode/watchdog and verifies disable. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_clear_faults(
     ArticoreRuntime* runtime);
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(

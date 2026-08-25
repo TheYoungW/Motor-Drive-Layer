@@ -67,6 +67,11 @@ int32_t SafetyRuntime::finish_maintenance(
         fault_latched_ = false;
         fault_reason_.clear();
         motor_faults_.clear();
+        for (auto& entry : presence_) {
+          if (entry.second == ARTICORE_FAULTED) {
+            entry.second = ARTICORE_PRESENT;
+          }
+        }
       }
       if (!fault_latched_) fault_reason_.clear();
       const auto ready_refresh_hz = std::min(config_.feedback_check_hz, 10U);
@@ -329,6 +334,48 @@ int32_t SafetyRuntime::run_motor_maintenance(
     return finish_maintenance(operation, ARTICORE_OPERATION_VERIFICATION,
                               error, failed, true);
   }
+  if (operation == ARTICORE_OPERATION_CLEAR_FAULTS &&
+      backend_->can_ensure_mode()) {
+    const int32_t configured = configure_hardware_mode(mode, error, failed);
+    if (configured != ARTICORE_OPERATION_OK) {
+      return finish_maintenance(
+          operation, configured,
+          error.empty() ? "post-clear mode configuration failed" : error,
+          failed, true);
+    }
+
+    missing.clear();
+    if (!request_feedback_parallel(config_.disable_feedback_timeout_ms,
+                                   missing, error) ||
+        !validate_fresh_feedback_snapshot(missing, error)) {
+      for (const auto& item : missing) {
+        for (const auto& motor : motors_) {
+          if (motor.descriptor.side == item.side &&
+              motor.motor_identity_configured &&
+              motor.configured_can_id == item.id) {
+            failed.emplace_back(motor.descriptor.name);
+          }
+        }
+      }
+      return finish_maintenance(operation, ARTICORE_OPERATION_FEEDBACK,
+                                error, failed, true);
+    }
+    for (const auto& motor : motors_) {
+      ArticoreMotorState state{};
+      if (backend_->get_state(motor.descriptor.motor, &state) == 0 &&
+          state.has_value && state.status_code == 0) {
+        continue;
+      }
+      failed.emplace_back(motor.descriptor.name);
+      if (!error.empty()) error += "; ";
+      error += std::string(motor.descriptor.name) +
+               ": post-clear mode configuration did not preserve disable";
+    }
+    if (!failed.empty()) {
+      return finish_maintenance(operation, ARTICORE_OPERATION_VERIFICATION,
+                                error, failed, true);
+    }
+  }
   if (configure) mode_ = mode;
   return finish_maintenance(operation, ARTICORE_OPERATION_OK, {}, {}, false);
 }
@@ -361,7 +408,7 @@ int32_t SafetyRuntime::configure_mode_for_connect(ArticoreControlMode mode) {
 
 int32_t SafetyRuntime::clear_faults() {
   return run_motor_maintenance(
-      ARTICORE_OPERATION_CLEAR_FAULTS, mode_, true);
+      ARTICORE_OPERATION_CLEAR_FAULTS, mode_, false);
 }
 
 int32_t SafetyRuntime::set_zero() {

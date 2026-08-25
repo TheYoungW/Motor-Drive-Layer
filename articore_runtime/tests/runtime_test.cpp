@@ -1011,6 +1011,56 @@ void test_connect_enabled_motor_fault_is_recoverable_from_ready() {
           "recover is callable from an already READY Runtime");
 }
 
+void test_connect_motor_fault_is_clearable_and_reconfigures_product() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  std::strncpy(motors[0].name, "left/l-joint1",
+               sizeof(motors[0].name) - 1);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  driver.motors[motors[0].motor].status = 8;
+  driver.motors[motors[0].motor].velocity = 0.1f;
+
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, enable_all, enable_motor, false, {},
+      maintenance_api());
+  const auto controls = joint_configs(motors);
+  runtime.configure_joints(controls.data(),
+                           static_cast<uint32_t>(controls.size()));
+
+  runtime.connect();
+  auto health = runtime.health_v2();
+  require(health.health.state == ARTICORE_FAULT &&
+              health.health.disable_confirmed == 0 &&
+              health.health.motor_fault_count == 1 &&
+              std::string(health.health.motor_faults[0]) ==
+                  "left/l-joint1" &&
+              runtime.motor_presence("left/l-joint1") == ARTICORE_FAULTED,
+          "connect preserves communication and exposes a recoverable Motor fault");
+
+  require(runtime.clear_faults() == ARTICORE_OPERATION_OK,
+          "fault clear does not require a stationary faulted Motor");
+  health = runtime.health_v2();
+  require(health.health.state == ARTICORE_READY &&
+              health.health.disable_confirmed == 1 &&
+              health.health.motor_fault_count == 0 &&
+              health.last_operation == ARTICORE_OPERATION_CLEAR_FAULTS &&
+              health.last_operation_code == ARTICORE_OPERATION_OK &&
+              runtime.motor_presence("left/l-joint1") == ARTICORE_PRESENT,
+          "successful fault clear restores READY and product presence");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.clear_fault_calls == motors.size() &&
+                driver.configure_mode_calls == motors.size() &&
+                driver.configure_timeout_calls == motors.size() &&
+                std::all_of(
+                    driver.motors.begin(), driver.motors.end(),
+                    [](const auto& entry) { return entry.second.status == 0; }),
+            "fault clear reconfigures mode and watchdog while preserving disable");
+  }
+}
+
 void test_disconnect_disables_after_connect_configuration_failure() {
   FakeDriver driver;
   g_driver = &driver;
@@ -5489,6 +5539,7 @@ int main() {
     RUN_TEST(test_runtime_maintenance_keeps_ready_and_reports_partial_failure);
     RUN_TEST(test_connect_mode_configuration_accepts_moving_disabled_feedback);
     RUN_TEST(test_connect_enabled_motor_fault_is_recoverable_from_ready);
+    RUN_TEST(test_connect_motor_fault_is_clearable_and_reconfigures_product);
     RUN_TEST(test_disconnect_disables_after_connect_configuration_failure);
     RUN_TEST(test_recover_connects_a_live_disconnected_runtime);
     RUN_TEST(test_disconnect_is_terminal_and_idempotent);

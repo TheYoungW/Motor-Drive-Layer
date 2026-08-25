@@ -495,12 +495,25 @@ void SafetyRuntime::connect() {
   }
 
   bool physical_disable_confirmed = true;
+  std::vector<std::string> detected_motor_faults;
+  bool side_has_motor_fault[2] = {false, false};
+  std::string side_motor_fault_error[2];
   for (const auto& motor : motors_) {
     ArticoreMotorState motor_state{};
     if (backend_->get_state(motor.descriptor.motor, &motor_state) != 0 ||
         !motor_state.has_value || motor_state.status_code != 0) {
       physical_disable_confirmed = false;
-      break;
+    }
+    if (motor_state.has_value && motor_state.status_code > 1) {
+      const std::string name(motor.descriptor.name);
+      detected_motor_faults.push_back(name);
+      side_has_motor_fault[motor.descriptor.side] = true;
+      if (!side_motor_fault_error[motor.descriptor.side].empty()) {
+        side_motor_fault_error[motor.descriptor.side] += "; ";
+      }
+      side_motor_fault_error[motor.descriptor.side] +=
+          name + ": motor fault status " +
+          std::to_string(motor_state.status_code);
     }
   }
 
@@ -513,16 +526,24 @@ void SafetyRuntime::connect() {
     report.received_count = static_cast<uint32_t>(motors_.size());
     report.error[0] = '\0';
     last_connect_report_ = report;
-    state_ = emergency_stop_latched_ ? ARTICORE_FAULT : ARTICORE_READY;
-    fault_latched_ = emergency_stop_latched_;
+    const bool recoverable_motor_fault = !detected_motor_faults.empty();
+    state_ = emergency_stop_latched_ || recoverable_motor_fault
+        ? ARTICORE_FAULT : ARTICORE_READY;
+    fault_latched_ = emergency_stop_latched_ || recoverable_motor_fault;
     disable_confirmed_ = physical_disable_confirmed;
     if (emergency_stop_latched_) {
       fault_reason_ = "emergency stop requested";
+    } else if (recoverable_motor_fault) {
+      fault_reason_ = "connect detected recoverable motor fault";
+      for (const auto& name : detected_motor_faults) {
+        fault_reason_ += ": " + name;
+        presence_[name] = ARTICORE_FAULTED;
+      }
     } else {
       fault_reason_.clear();
     }
     safety_reason_.clear();
-    motor_faults_.clear();
+    motor_faults_ = detected_motor_faults;
     unconfirmed_disable_.clear();
     hardware_transition_ = false;
     const auto now = Clock::now();
@@ -532,9 +553,9 @@ void SafetyRuntime::connect() {
     for (uint8_t side = 0; side < 2; ++side) {
       if (!active_sides_[side]) continue;
       sides_[side].connected = true;
-      sides_[side].healthy = true;
+      sides_[side].healthy = !side_has_motor_fault[side];
       sides_[side].feedback_failures = 0;
-      sides_[side].last_error.clear();
+      sides_[side].last_error = side_motor_fault_error[side];
     }
   }
   wakeup_.notify_all();

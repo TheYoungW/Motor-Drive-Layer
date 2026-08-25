@@ -863,6 +863,14 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_connect(ArticoreRuntime* runtime) 
   try {
     checked(runtime).connect();
     if (runtime->yunyi) {
+      const auto connected_health = checked(runtime).health_v2();
+      if (connected_health.health.state == ARTICORE_FAULT &&
+          connected_health.health.motor_fault_count > 0) {
+        checked(runtime).record_operation_result(ARTICORE_OPERATION_CONNECT,
+                                                 ARTICORE_OPERATION_OK);
+        g_last_error = "ok";
+        return ARTICORE_OPERATION_OK;
+      }
       const auto configured = checked(runtime).configure_mode_for_connect(
           runtime->product_mode);
       if (configured != ARTICORE_OPERATION_OK) {

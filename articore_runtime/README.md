@@ -396,7 +396,10 @@ enable only for a fixed low-speed return of all 14 arm joints to their
 previously calibrated zero, then disable and verify every installed motor.
 Every failed stage attempts the same full-product disable and records the
 stage, stable operation code, error text, and affected motor names in health.
-`clear_faults()` remains clear-only and never moves; `set_zero()` still changes
+`clear_faults()` remains clear-only and never moves. A recoverable Motor fault
+found during connect keeps the product connected in `FAULT`; successful clear
+reapplies the selected mode and communication watchdog, verifies physical
+disable again, and only then returns `READY`. `set_zero()` still changes
 calibration by defining the current physical position as zero.
 
 Runtime ABI 2.19 makes product `disconnect()` the single terminal shutdown

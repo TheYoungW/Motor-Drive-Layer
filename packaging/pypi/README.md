@@ -30,6 +30,18 @@ and circular calls alone return asynchronous IDs and support status,
 cancellation, and native FIFO queuing. The wheel contains no Python IK,
 interpolation, playback loop, or queue worker.
 
+Version 0.12.6 fixes the product fault-clear bootstrap path without changing
+the Runtime ABI. A valid CAN/feedback connection now succeeds when a Motor
+reports a recoverable fault status (`status_code > 1`): Runtime stays connected,
+enters latched `FAULT`, and exposes the exact product Motor through health
+instead of failing during automatic mode configuration. `clear_faults()` sends
+the native clear-error command on both channels without requiring stationary
+feedback, verifies every installed Motor is physically disabled, reapplies the
+selected product mode and 500 ms communication watchdog, verifies disable a
+second time, restores faulted product presence, and only then returns `READY`.
+Actually enabled Motors (`status_code == 1`) remain rejected by connect-time
+mode configuration and are not misclassified as recoverable faults.
+
 Version 0.12.5 repairs the product recovery state machine without changing the
 Runtime ABI. Connect now derives physical-disable confirmation from fresh Motor
 feedback. A connect-time mode-configuration failure caused by any enabled Motor
