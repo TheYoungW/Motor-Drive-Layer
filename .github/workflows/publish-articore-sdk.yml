@@ -1,0 +1,59 @@
+name: Publish Articore SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Articore-SDK version tag to publish
+        required: true
+        default: v0.3.3
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout tagged Articore SDK
+        uses: actions/checkout@v7
+        with:
+          repository: TheYoungW/Articore-SDK
+          ref: ${{ inputs.ref }}
+          path: sdk
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build and check distributions
+        working-directory: sdk
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build --outdir dist
+          python -m twine check dist/*
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          expected = os.environ["EXPECTED_REF"].removeprefix("v")
+          metadata = tomllib.loads(Path("pyproject.toml").read_text())
+          actual = metadata["project"]["version"]
+          assert actual == expected, (actual, expected)
+          files = sorted(path.name for path in Path("dist").iterdir())
+          assert files == [
+              f"arx_d_can-{expected}-py3-none-any.whl",
+              f"arx_d_can-{expected}.tar.gz",
+          ], files
+          PY
+        env:
+          EXPECTED_REF: ${{ inputs.ref }}
+
+      - name: Publish Articore SDK to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages_dir: sdk/dist/
