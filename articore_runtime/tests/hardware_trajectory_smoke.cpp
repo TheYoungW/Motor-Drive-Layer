@@ -61,13 +61,13 @@ ArticoreProductState read_state(ArticoreRuntime* runtime) {
 }
 
 void check_health(ArticoreRuntime* runtime,
-                  const ArticoreTrajectoryStatus* status = nullptr) {
+                  const ArticoreMotionStatus* status = nullptr) {
   ArticoreSafetyHealth health{};
   health.struct_size = sizeof(health);
   check(articore_runtime_get_health(runtime, &health), "get_health");
   if (health.state == ARTICORE_FAULT ||
       health.state == ARTICORE_SAFE_STOP ||
-      (status && status->state == ARTICORE_TRAJECTORY_FAULT)) {
+      (status && status->state == ARTICORE_MOTION_FAULT)) {
     const char* reason = status && status->error[0]
                              ? status->error
                              : (health.fault_reason[0]
@@ -114,7 +114,7 @@ double safe_duration(const JointArray& start, const JointArray& target) {
   return std::max(8.0, 1.875 * static_cast<double>(maximum_delta) / 0.30);
 }
 
-ArticoreTrajectoryStatus run_trajectory(ArticoreRuntime* runtime,
+ArticoreMotionStatus run_trajectory(ArticoreRuntime* runtime,
                                         const JointArray& start,
                                         const JointArray& target,
                                         double duration_s,
@@ -132,20 +132,22 @@ ArticoreTrajectoryStatus run_trajectory(ArticoreRuntime* runtime,
   config.control_mode = ARTICORE_MODE_PV;
   std::fill(std::begin(config.pv_velocity_limits),
             std::end(config.pv_velocity_limits), kPvVelocityLimit);
-  check(articore_runtime_start_trajectory(runtime, waypoints, 2, &config),
+  uint64_t motion_id = 0;
+  check(articore_runtime_start_trajectory(
+            runtime, waypoints, 2, &config, &motion_id),
         label);
 
-  ArticoreTrajectoryStatus status{};
+  ArticoreMotionStatus status{};
   status.struct_size = sizeof(status);
   const auto timeout = std::chrono::duration<double>(duration_s + 4.0);
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::duration_cast<std::chrono::milliseconds>(
                             timeout);
   while (std::chrono::steady_clock::now() < deadline) {
-    check(articore_runtime_get_trajectory_status(runtime, &status),
-          "get_trajectory_status");
+    check(articore_runtime_get_motion_status(runtime, motion_id, &status),
+          "get_motion_status");
     check_health(runtime, &status);
-    if (status.state == ARTICORE_TRAJECTORY_COMPLETED) return status;
+    if (status.state == ARTICORE_MOTION_COMPLETED) return status;
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
   throw std::runtime_error(std::string(label) + " timed out");
@@ -252,8 +254,8 @@ int main(int argc, char** argv) {
       enabled = false;
       check(articore_runtime_disconnect(runtime), "disconnect");
       connected = false;
-      std::cout << "stage=safety_return_complete trajectory_id="
-                << returned.trajectory_id << " max_error_rad=" << error
+      std::cout << "stage=safety_return_complete motion_id="
+                << returned.motion_id << " max_error_rad=" << error
                 << std::endl;
       articore_runtime_free(runtime);
       return 0;
@@ -267,8 +269,8 @@ int main(int argc, char** argv) {
                                         outward_duration, "move_to_joint4_90");
     const float outward_error =
         wait_for_target(runtime, ninety_target, std::chrono::seconds(4));
-    std::cout << "stage=outward_complete trajectory_id="
-              << outward.trajectory_id << " max_error_rad=" << outward_error
+    std::cout << "stage=outward_complete motion_id="
+              << outward.motion_id << " max_error_rad=" << outward_error
               << std::endl;
 
     const auto return_state =
@@ -280,8 +282,8 @@ int main(int argc, char** argv) {
                                          return_duration, "return_to_zero");
     const float return_error =
         wait_for_target(runtime, zero_target, std::chrono::seconds(4));
-    std::cout << "stage=return_complete trajectory_id="
-              << returned.trajectory_id << " max_error_rad=" << return_error
+    std::cout << "stage=return_complete motion_id="
+              << returned.motion_id << " max_error_rad=" << return_error
               << std::endl;
 
     if (outward_error > kArrivalTolerance) {
@@ -296,15 +298,15 @@ int main(int argc, char** argv) {
     enabled = false;
     check(articore_runtime_disconnect(runtime), "disconnect");
     connected = false;
-    std::cout << "outward_trajectory_id=" << outward.trajectory_id
+    std::cout << "outward_motion_id=" << outward.motion_id
               << " outward_duration_s=" << outward_duration
               << " outward_max_error_rad=" << outward_error
-              << " return_trajectory_id=" << returned.trajectory_id
+              << " return_motion_id=" << returned.motion_id
               << " return_duration_s=" << return_duration
               << " return_max_error_rad=" << return_error << '\n';
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
-    articore_runtime_cancel_trajectory(runtime);
+    articore_runtime_cancel_all_motions(runtime);
     if (enabled) articore_runtime_disable(runtime);
     if (connected) articore_runtime_disconnect(runtime);
     articore_runtime_free(runtime);

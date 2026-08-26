@@ -223,7 +223,7 @@ struct NativeTrajectoryRequest {
   bool allow_out_of_limit_start_recovery = false;
   // Optional leading PV point-to-point segment(s). Runtime freezes at the
   // final approach waypoint until fresh physical feedback is stable, then
-  // continues the already validated path under the same trajectory id.
+  // continues the already validated path under the same motion id.
   uint32_t approach_segment_count = 0;
   std::vector<NativeTrajectoryJoint> joints;
   std::vector<NativeTrajectoryWaypoint> waypoints;
@@ -237,7 +237,7 @@ struct NativeTrajectoryRequest {
 
 struct NativeTrajectorySample {
   bool active = false;
-  uint64_t trajectory_id = 0;
+  uint64_t motion_id = 0;
   ArticoreRuntimeOperation operation = ARTICORE_OPERATION_NONE;
   std::vector<float> positions;
   std::vector<float> velocities;
@@ -319,15 +319,15 @@ class SafetyRuntime {
   void submit_mit_ex(const ArticoreMitCommand* commands,
                      uint32_t count,
                      ArticoreCommandLifetime lifetime);
-  // Generic trajectories retain strict replacement semantics. Product
-  // linear/circular calls set enqueue=true after planning against the FIFO
-  // tail; point-to-point uses the ordinary PV position path instead.
+  // Stable product trajectory calls set enqueue=true after planning against
+  // the common FIFO tail. Replacement remains a private primitive; Cartesian
+  // point-to-point uses the ordinary PV position path instead.
   using CommandTransaction = std::unique_lock<std::mutex>;
   CommandTransaction begin_command_transaction();
   uint64_t begin_command_planning(const CommandTransaction& transaction);
   void cancel_command_planning(uint64_t token) noexcept;
   uint64_t start_trajectory(NativeTrajectoryRequest request,
-                            uint64_t replace_trajectory_id = 0,
+                            uint64_t replace_motion_id = 0,
                             CommandTransaction* transaction = nullptr,
                             bool enqueue = false);
   NativeTrajectorySample trajectory_sample() const;
@@ -337,9 +337,10 @@ class SafetyRuntime {
   NativeTrajectorySample planned_trajectory_tail_sample(
       const std::vector<NativeTrajectoryJoint>& joints,
       const CommandTransaction& transaction) const;
-  ArticoreTrajectoryStatus trajectory_status() const;
-  ArticoreTrajectoryStatus trajectory_status(uint64_t trajectory_id) const;
-  void cancel_trajectory();
+  ArticoreMotionStatus motion_status() const;
+  ArticoreMotionStatus motion_status(uint64_t motion_id) const;
+  void cancel_motion(uint64_t motion_id);
+  void cancel_all_motions();
   void set_joint_mit(const ArticoreJointMitTarget* targets,
                      uint32_t count,
                      float max_reference_velocity);
@@ -513,7 +514,7 @@ class SafetyRuntime {
     std::vector<ArticorePosVelCommand> pv;
     std::vector<ArticoreMitCommand> mit;
     std::vector<float> final_positions;
-    // Ordinary PV PTP has no trajectory status object, but it still needs the
+    // Ordinary PV PTP has no motion status object, but it still needs the
     // same quiet final hold as native Cartesian paths. Each joint transitions
     // to V=0 only after fresh feedback remains close to its final target for a
     // bounded 500 Hz window; a larger error releases it for correction.
@@ -556,7 +557,7 @@ class SafetyRuntime {
   };
 
   struct TrajectoryControl {
-    ArticoreTrajectoryState state = ARTICORE_TRAJECTORY_IDLE;
+    ArticoreMotionState state = ARTICORE_MOTION_IDLE;
     uint64_t id = 0;
     uint32_t waypoint_count = 0;
     uint32_t active_segment = 0;
@@ -598,8 +599,8 @@ class SafetyRuntime {
     uint64_t sequence = 0;
     uint64_t timestamp_ns = 0;
     int32_t runtime_state = ARTICORE_DISCONNECTED;
-    int32_t motion_state = ARTICORE_TRAJECTORY_IDLE;
-    uint64_t trajectory_id = 0;
+    int32_t motion_state = ARTICORE_MOTION_IDLE;
+    uint64_t motion_id = 0;
     float progress = 0.0f;
     float tracking_time_scale = 1.0f;
     float tracking_position_error = 0.0f;
@@ -625,12 +626,12 @@ class SafetyRuntime {
                                 bool& completing,
                                 std::string& error);
   void update_trajectory_completion(Clock::time_point now);
-  void terminate_trajectory_locked(ArticoreTrajectoryState state,
+  void terminate_trajectory_locked(ArticoreMotionState state,
                                    const std::string& error);
   void activate_trajectory_locked(TrajectoryControl trajectory,
                                   Clock::time_point now);
   void archive_trajectory_locked(const TrajectoryControl& trajectory);
-  ArticoreTrajectoryStatus trajectory_status_locked(
+  ArticoreMotionStatus motion_status_locked(
       const TrajectoryControl& trajectory) const;
   NativeTrajectorySample trajectory_final_sample_locked(
       const TrajectoryControl& trajectory) const;
@@ -771,8 +772,8 @@ class SafetyRuntime {
   BimanualFollowControl bimanual_follow_;
   TrajectoryControl trajectory_control_;
   std::deque<TrajectoryControl> trajectory_queue_;
-  std::deque<ArticoreTrajectoryStatus> trajectory_history_;
-  uint64_t next_trajectory_id_ = 1;
+  std::deque<ArticoreMotionStatus> trajectory_history_;
+  uint64_t next_motion_id_ = 1;
   mutable std::mutex state_mutex_;
   mutable std::mutex command_mutex_;
   // Raw arm submissions use a capacity-one pending mailbox so callers never

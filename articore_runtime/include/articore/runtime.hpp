@@ -166,28 +166,37 @@ class Runtime final {
         "submit_mit_frame");
   }
 
-  void start_trajectory(
+  uint64_t start_trajectory(
       const std::vector<ArticoreTrajectoryWaypoint>& waypoints,
       const ArticoreTrajectoryConfig& config) {
+    uint64_t motion_id = 0;
     detail::check(
         articore_runtime_start_trajectory(
             checked(), waypoints.data(),
-            static_cast<uint32_t>(waypoints.size()), &config),
+            static_cast<uint32_t>(waypoints.size()), &config, &motion_id),
         "start_trajectory");
+    return motion_id;
   }
 
-  ArticoreTrajectoryStatus trajectory_status() const {
-    ArticoreTrajectoryStatus result{};
+  ArticoreMotionStatus motion_status(uint64_t motion_id) const {
+    ArticoreMotionStatus result{};
     result.struct_size = sizeof(result);
     detail::check(
-        articore_runtime_get_trajectory_status(checked(), &result),
-        "get_trajectory_status");
+        articore_runtime_get_motion_status(checked(), motion_id, &result),
+        "get_motion_status");
     return result;
   }
 
-  void cancel_trajectory() {
+  void cancel_motion(uint64_t motion_id) {
     detail::check(
-        articore_runtime_cancel_trajectory(checked()), "cancel_trajectory");
+        articore_runtime_cancel_motion(checked(), motion_id),
+        "cancel_motion");
+  }
+
+  void cancel_all_motions() {
+    detail::check(
+        articore_runtime_cancel_all_motions(checked()),
+        "cancel_all_motions");
   }
 
   void move_pose(const std::array<float, 6>& left_target_pose,
@@ -203,12 +212,12 @@ class Runtime final {
   uint64_t move_linear(uint32_t side,
                        const std::array<float, 6>& start_pose,
                        const std::array<float, 6>& end_pose,
-                       float speed_percent = 50.0f) {
+                       double duration_s) {
     uint64_t motion_id = 0;
     detail::check(
         articore_runtime_move_linear(
             checked(), side, start_pose.data(), end_pose.data(),
-            speed_percent, &motion_id),
+            duration_s, &motion_id),
         "move_linear");
     return motion_id;
   }
@@ -218,31 +227,14 @@ class Runtime final {
       const std::array<float, 6>& start_pose,
       const std::array<float, 6>& via_pose,
       const std::array<float, 6>& end_pose,
-      float speed_percent = 50.0f) {
+      double duration_s) {
     uint64_t motion_id = 0;
     detail::check(
         articore_runtime_move_circular(
             checked(), side, start_pose.data(), via_pose.data(),
-            end_pose.data(), speed_percent, &motion_id),
+            end_pose.data(), duration_s, &motion_id),
         "move_circular");
     return motion_id;
-  }
-
-  ArticoreCartesianMotionStatus cartesian_motion_status(
-      uint64_t motion_id) const {
-    ArticoreCartesianMotionStatus result{};
-    result.struct_size = sizeof(result);
-    detail::check(
-        articore_runtime_get_cartesian_motion_status(
-            checked(), motion_id, &result),
-        "get_cartesian_motion_status");
-    return result;
-  }
-
-  void cancel_cartesian_motion() {
-    detail::check(
-        articore_runtime_cancel_cartesian_motion(checked()),
-        "cancel_cartesian_motion");
   }
 
   void set_grippers(float left_opening, float right_opening,

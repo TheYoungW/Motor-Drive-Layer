@@ -517,7 +517,7 @@ void SafetyRuntime::enter_fault(const std::string& reason, bool torque_off,
     if (state_ == ARTICORE_DISCONNECTED) return;
     state_ = ARTICORE_FAULT;
     terminate_trajectory_locked(
-        ARTICORE_TRAJECTORY_FAULT,
+        ARTICORE_MOTION_FAULT,
         "trajectory terminated by Runtime fault: " + reason);
     fault_latched_ = true;
     hardware_transition_ = torque_off;

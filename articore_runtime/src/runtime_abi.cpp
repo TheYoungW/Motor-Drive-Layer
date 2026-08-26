@@ -7,10 +7,8 @@
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <deque>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "articore/runtime_abi.h"
@@ -18,13 +16,6 @@
 #include "articore/detail/robot_model.hpp"
 #include "articore/detail/runtime.hpp"
 #include "articore/detail/yunyi_runtime.hpp"
-
-struct CartesianMotionRecord {
-  uint32_t side = ARTICORE_ROBOT_LEFT;
-  int32_t interpolation = ARTICORE_CARTESIAN_LINEAR;
-  float speed_percent = 0.0f;
-  std::array<float, ARTICORE_PRODUCT_POSE_DOF> target{};
-};
 
 struct ArticoreRuntime {
   explicit ArticoreRuntime(
@@ -43,10 +34,7 @@ struct ArticoreRuntime {
   std::mutex product_pv_speed_mutex;
   float product_pv_max_speed_percent = articore::kYunyiDefaultPvSpeedPercent;
   float product_pv_command_speed_percent = 100.0f;
-  std::mutex cartesian_motion_mutex;
-  uint64_t cartesian_motion_id = 0;
-  std::unordered_map<uint64_t, CartesianMotionRecord> cartesian_motions;
-  std::deque<uint64_t> cartesian_motion_order;
+  std::mutex motion_mutex;
 };
 
 struct ArticoreRobotModel {
@@ -217,7 +205,7 @@ bool same_planned_reference(
     const articore::NativeTrajectorySample& before,
     const articore::NativeTrajectorySample& after) {
   if (before.active != after.active ||
-      before.trajectory_id != after.trajectory_id ||
+      before.motion_id != after.motion_id ||
       before.operation != after.operation ||
       before.positions.size() != after.positions.size()) {
     return false;
@@ -230,51 +218,6 @@ bool same_planned_reference(
   return true;
 }
 
-void remember_cartesian_motion(
-    ArticoreRuntime* runtime, uint64_t motion_id, uint32_t side,
-    ArticoreCartesianInterpolation interpolation, float speed_percent,
-    const float* target_pose) {
-  CartesianMotionRecord record;
-  record.side = side;
-  record.interpolation = interpolation;
-  record.speed_percent = speed_percent;
-  std::copy(target_pose, target_pose + ARTICORE_PRODUCT_POSE_DOF,
-            record.target.begin());
-  runtime->cartesian_motions[motion_id] = record;
-  runtime->cartesian_motion_order.push_back(motion_id);
-  while (runtime->cartesian_motion_order.size() > 128) {
-    runtime->cartesian_motions.erase(runtime->cartesian_motion_order.front());
-    runtime->cartesian_motion_order.pop_front();
-  }
-  runtime->cartesian_motion_id = motion_id;
-}
-
-void fill_cartesian_motion_status(
-    ArticoreRuntime* runtime, uint64_t motion_id,
-    ArticoreCartesianMotionStatus& output) {
-  const auto record = runtime->cartesian_motions.find(motion_id);
-  if (record == runtime->cartesian_motions.end()) {
-    throw std::invalid_argument("Cartesian motion id is not available");
-  }
-  output.state = ARTICORE_TRAJECTORY_IDLE;
-  output.motion_id = motion_id;
-  output.superseded_motion_id = 0;
-  output.side = record->second.side;
-  output.interpolation = record->second.interpolation;
-  output.speed_percent = record->second.speed_percent;
-  std::copy(record->second.target.begin(), record->second.target.end(),
-            output.target_pose);
-  const auto trajectory = checked(runtime).trajectory_status(motion_id);
-  output.state = trajectory.state;
-  output.elapsed_s = trajectory.elapsed_s;
-  output.duration_s = trajectory.duration_s;
-  output.progress = trajectory.progress;
-  std::memset(output.error, 0, sizeof(output.error));
-  std::strncpy(
-      output.error, trajectory.error,
-      sizeof(output.error) - 1);
-}
-
 int32_t move_pose_impl(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float speed_percent) {
@@ -285,7 +228,7 @@ int32_t move_pose_impl(
       throw std::invalid_argument(
           "move_pose speed_percent must be finite and within 0..100");
     }
-    std::lock_guard<std::mutex> motion_lock(runtime->cartesian_motion_mutex);
+    std::lock_guard<std::mutex> motion_lock(runtime->motion_mutex);
     const auto ik_deadline = std::chrono::steady_clock::now() +
         articore::kYunyiMovePoseIkBudget;
     auto& safety = checked(runtime);
@@ -333,25 +276,27 @@ int32_t move_pose_impl(
   }
 }
 
- int32_t move_linear_impl(
+int32_t move_linear_impl(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* end_pose, float speed_percent, uint64_t* motion_id) {
+    const float* end_pose, double duration_s, uint64_t* motion_id) {
   try {
     if (!runtime) throw std::invalid_argument("runtime is null");
     if (!motion_id) throw std::invalid_argument("motion_id output is null");
-    std::lock_guard<std::mutex> motion_lock(runtime->cartesian_motion_mutex);
+    std::lock_guard<std::mutex> motion_lock(runtime->motion_mutex);
     auto& safety = checked(runtime);
     auto& product = checked_yunyi(runtime);
     const auto joints = articore::product_cartesian_joints(product);
 
     articore::NativeTrajectorySample reference;
+    CommandPlanningScope planning(safety);
     {
       auto snapshot = safety.begin_command_transaction();
+      planning.begin(snapshot);
       reference = safety.planned_trajectory_tail_sample(joints, snapshot);
     }
     auto plan = articore::build_linear_plan_from_reference(
         product, runtime->product_mode, side, reference, start_pose, end_pose,
-        speed_percent);
+        duration_s);
 
     auto transaction = safety.begin_command_transaction();
     const auto current =
@@ -363,9 +308,6 @@ int32_t move_pose_impl(
 
     const uint64_t new_id = safety.start_trajectory(
         plan.trajectory, 0, &transaction, true);
-    remember_cartesian_motion(
-        runtime, new_id, side, ARTICORE_CARTESIAN_LINEAR, speed_percent,
-        end_pose);
     *motion_id = new_id;
     safety.record_operation_result(
         ARTICORE_OPERATION_MOVE_LINEAR, ARTICORE_OPERATION_OK);
@@ -392,24 +334,26 @@ int32_t move_pose_impl(
 
 int32_t move_circular_impl(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* via_pose, const float* end_pose, float speed_percent,
+    const float* via_pose, const float* end_pose, double duration_s,
     uint64_t* motion_id) {
   try {
     if (!runtime) throw std::invalid_argument("runtime is null");
     if (!motion_id) throw std::invalid_argument("motion_id output is null");
-    std::lock_guard<std::mutex> motion_lock(runtime->cartesian_motion_mutex);
+    std::lock_guard<std::mutex> motion_lock(runtime->motion_mutex);
     auto& safety = checked(runtime);
     auto& product = checked_yunyi(runtime);
     const auto joints = articore::product_cartesian_joints(product);
 
     articore::NativeTrajectorySample reference;
+    CommandPlanningScope planning(safety);
     {
       auto snapshot = safety.begin_command_transaction();
+      planning.begin(snapshot);
       reference = safety.planned_trajectory_tail_sample(joints, snapshot);
     }
     auto plan = articore::build_circular_plan_from_reference(
         product, runtime->product_mode, side, reference, start_pose,
-        via_pose, end_pose, speed_percent);
+        via_pose, end_pose, duration_s);
 
     auto transaction = safety.begin_command_transaction();
     const auto current =
@@ -421,9 +365,6 @@ int32_t move_circular_impl(
     const uint64_t new_id = safety.start_trajectory(
         plan.trajectory, 0, &transaction, true);
 
-    remember_cartesian_motion(
-        runtime, new_id, side, ARTICORE_CARTESIAN_CIRCULAR, speed_percent,
-        end_pose);
     *motion_id = new_id;
     safety.record_operation_result(
         ARTICORE_OPERATION_MOVE_CIRCULAR, ARTICORE_OPERATION_OK);
@@ -581,7 +522,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (6U << 16);
+  return (7U << 16);
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -1033,9 +974,19 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_start_trajectory(
     ArticoreRuntime* runtime,
     const ArticoreTrajectoryWaypoint* waypoints,
     uint32_t waypoint_count,
-    const ArticoreTrajectoryConfig* config) {
+    const ArticoreTrajectoryConfig* config,
+    uint64_t* motion_id) {
   try {
+    if (!runtime) throw std::invalid_argument("runtime is null");
+    if (!motion_id) throw std::invalid_argument("motion_id output is null");
+    std::lock_guard<std::mutex> motion_lock(runtime->motion_mutex);
     auto& product = checked_yunyi(runtime);
+    auto& safety = checked(runtime);
+    CommandPlanningScope planning(safety);
+    {
+      auto transaction = safety.begin_command_transaction();
+      planning.begin(transaction);
+    }
     if (!waypoints) {
       throw std::invalid_argument("trajectory waypoints are null");
     }
@@ -1113,8 +1064,35 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_start_trajectory(
       request.waypoints.push_back(std::move(output));
     }
 
-    checked(runtime).start_trajectory(std::move(request));
-    checked(runtime).record_operation_result(
+    auto transaction = safety.begin_command_transaction();
+    const auto reference = safety.planned_trajectory_tail_sample(
+        request.joints, transaction);
+    if (reference.positions.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF ||
+        reference.velocities.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF) {
+      throw std::runtime_error(
+          "joint trajectory requires a complete planned FIFO reference");
+    }
+    const auto& first = request.waypoints.front();
+    for (uint32_t index = 0;
+         index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
+      if (std::abs(first.positions[index] - reference.positions[index]) >
+          0.05f) {
+        throw std::invalid_argument(
+            "joint trajectory start position does not match the FIFO tail at " +
+            articore::yunyi_joint_role(index));
+      }
+      if ((first.velocity_valid_mask & (uint32_t{1} << index)) != 0 &&
+          std::abs(first.velocities[index] - reference.velocities[index]) >
+              0.10f) {
+        throw std::invalid_argument(
+            "joint trajectory start velocity does not match the FIFO tail at " +
+            articore::yunyi_joint_role(index));
+      }
+    }
+    const uint64_t new_id = safety.start_trajectory(
+        std::move(request), 0, &transaction, true);
+    *motion_id = new_id;
+    safety.record_operation_result(
         ARTICORE_OPERATION_START_TRAJECTORY, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
     return ARTICORE_OPERATION_OK;
@@ -1137,72 +1115,20 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_start_trajectory(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t articore_runtime_get_trajectory_status(
-    ArticoreRuntime* runtime, ArticoreTrajectoryStatus* status) {
-  if (!status || status->struct_size != sizeof(*status)) {
-    g_last_error = "trajectory status output is null or too small";
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  }
-  return call([&] { *status = checked(runtime).trajectory_status(); });
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_trajectory(
-    ArticoreRuntime* runtime) {
-  try {
-    checked(runtime).cancel_trajectory();
-    checked(runtime).record_operation_result(
-        ARTICORE_OPERATION_CANCEL_TRAJECTORY, ARTICORE_OPERATION_OK);
-    g_last_error = "ok";
-    return ARTICORE_OPERATION_OK;
-  } catch (const std::exception& error) {
-    if (runtime && runtime->runtime) {
-      runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_CANCEL_TRAJECTORY,
-          ARTICORE_OPERATION_INVALID_STATE, error.what());
-    }
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_STATE;
-  }
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(
-    ArticoreRuntime* runtime, const float* left_target_pose,
-    const float* right_target_pose, float speed_percent) {
-  return move_pose_impl(
-      runtime, left_target_pose, right_target_pose, speed_percent);
-}
-
- ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear(
-    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* end_pose, float speed_percent, uint64_t* motion_id) {
-  return move_linear_impl(
-      runtime, side, start_pose, end_pose, speed_percent, motion_id);
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular(
-    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* via_pose, const float* end_pose, float speed_percent,
-    uint64_t* motion_id) {
-  return move_circular_impl(
-      runtime, side, start_pose, via_pose, end_pose, speed_percent,
-      motion_id);
-}
-
-  ARTICORE_RUNTIME_API int32_t articore_runtime_get_cartesian_motion_status(
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_motion_status(
     ArticoreRuntime* runtime, uint64_t motion_id,
-    ArticoreCartesianMotionStatus* status) {
+    ArticoreMotionStatus* status) {
   if (!status || status->struct_size != sizeof(*status) || motion_id == 0) {
-    g_last_error =
-        "Cartesian motion status requires a motion id and output";
+    g_last_error = "motion status requires a non-zero id and exact output";
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
   }
   try {
-    if (!runtime) throw std::invalid_argument("runtime is null");
-    std::lock_guard<std::mutex> motion_lock(runtime->cartesian_motion_mutex);
     const uint32_t caller_size = status->struct_size;
-    ArticoreCartesianMotionStatus output{};
+    auto output = checked(runtime).motion_status(motion_id);
+    if (output.state == ARTICORE_MOTION_IDLE) {
+      throw std::invalid_argument(output.error);
+    }
     output.struct_size = caller_size;
-    fill_cartesian_motion_status(runtime, motion_id, output);
     *status = output;
     g_last_error = "ok";
     return ARTICORE_OPERATION_OK;
@@ -1215,22 +1141,72 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_cartesian_motion(
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(
+    ArticoreRuntime* runtime, const float* left_target_pose,
+    const float* right_target_pose, float speed_percent) {
+  return move_pose_impl(
+      runtime, left_target_pose, right_target_pose, speed_percent);
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear(
+    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+    const float* end_pose, double duration_s, uint64_t* motion_id) {
+  return move_linear_impl(
+      runtime, side, start_pose, end_pose, duration_s, motion_id);
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular(
+    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+    const float* via_pose, const float* end_pose, double duration_s,
+    uint64_t* motion_id) {
+  return move_circular_impl(
+      runtime, side, start_pose, via_pose, end_pose, duration_s,
+      motion_id);
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_motion(
+    ArticoreRuntime* runtime, uint64_t motion_id) {
+  try {
+    if (!runtime) throw std::invalid_argument("runtime is null");
+    std::lock_guard<std::mutex> motion_lock(runtime->motion_mutex);
+    checked(runtime).cancel_motion(motion_id);
+    checked(runtime).record_operation_result(
+        ARTICORE_OPERATION_CANCEL_MOTION, ARTICORE_OPERATION_OK);
+    g_last_error = "ok";
+    return ARTICORE_OPERATION_OK;
+  } catch (const std::invalid_argument& error) {
+    if (runtime && runtime->runtime) {
+      runtime->runtime->record_operation_result(
+          ARTICORE_OPERATION_CANCEL_MOTION,
+          ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
+    }
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  } catch (const std::exception& error) {
+    if (runtime && runtime->runtime) {
+      runtime->runtime->record_operation_result(
+          ARTICORE_OPERATION_CANCEL_MOTION,
+          ARTICORE_OPERATION_INVALID_STATE, error.what());
+    }
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_STATE;
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_all_motions(
     ArticoreRuntime* runtime) {
   try {
     if (!runtime) throw std::invalid_argument("runtime is null");
-    std::lock_guard<std::mutex> motion_lock(runtime->cartesian_motion_mutex);
-    if (runtime->cartesian_motion_id != 0) {
-      checked(runtime).cancel_trajectory();
-    }
+    std::lock_guard<std::mutex> motion_lock(runtime->motion_mutex);
+    checked(runtime).cancel_all_motions();
     checked(runtime).record_operation_result(
-        ARTICORE_OPERATION_CANCEL_CARTESIAN_MOTION, ARTICORE_OPERATION_OK);
+        ARTICORE_OPERATION_CANCEL_ALL_MOTIONS, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
     return ARTICORE_OPERATION_OK;
   } catch (const std::exception& error) {
     if (runtime && runtime->runtime) {
       runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_CANCEL_CARTESIAN_MOTION,
+          ARTICORE_OPERATION_CANCEL_ALL_MOTIONS,
           ARTICORE_OPERATION_INVALID_STATE, error.what());
     }
     g_last_error = error.what();

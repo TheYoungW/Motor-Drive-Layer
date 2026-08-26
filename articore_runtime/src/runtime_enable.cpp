@@ -712,7 +712,7 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
     started_state = state_;
     started_ready = started_state == ARTICORE_READY;
     terminate_trajectory_locked(
-        ARTICORE_TRAJECTORY_CANCELLED,
+        ARTICORE_MOTION_CANCELLED,
         enabled ? "trajectory cancelled by motor enable"
                 : "trajectory cancelled by motor disable");
     hardware_transition_ = true;
@@ -1509,7 +1509,7 @@ void SafetyRuntime::disable() {
     preserve_fault = state_ == ARTICORE_FAULT && fault_latched_;
     preserved_reason = fault_reason_;
     terminate_trajectory_locked(
-        ARTICORE_TRAJECTORY_CANCELLED,
+        ARTICORE_MOTION_CANCELLED,
         "trajectory cancelled by Runtime disable");
     hardware_transition_ = true;
   }

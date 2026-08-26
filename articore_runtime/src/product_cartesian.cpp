@@ -168,7 +168,7 @@ NativeTrajectoryJoint trajectory_joint(
   joint.mit_kp = source.kp;
   joint.mit_kd = source.kd;
   joint.mit_feedforward_torque = 0.0f;
-  // The 0..100 value scales native trajectory timing. Damiao's POS_VEL V
+  // Cartesian duration controls native trajectory timing. Damiao's POS_VEL V
   // field is a separate product ceiling and remains 3 rad/s.
   joint.pv_velocity_limit = product_pv_drive_velocity_limit(
       source.velocity_limit);
@@ -179,7 +179,7 @@ NativeTrajectoryJoint trajectory_joint(
 
 std::vector<double> plan_timestamps(
     const std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>>& path,
-    const YunyiRuntimeResources& product, float scale,
+    const YunyiRuntimeResources& product,
     float maximum_reference_velocity) {
   std::vector<double> timestamps(path.size(), 0.0);
   for (std::size_t waypoint = 1; waypoint < path.size(); ++waypoint) {
@@ -190,7 +190,7 @@ std::vector<double> plan_timestamps(
       const double velocity = std::max(
           0.01, static_cast<double>(
                     std::min(joint.velocity_limit,
-                             maximum_reference_velocity) * scale));
+                             maximum_reference_velocity)));
       const double step = std::abs(static_cast<double>(
           path[waypoint][joint_index] -
           path[waypoint - 1][joint_index]));
@@ -199,11 +199,11 @@ std::vector<double> plan_timestamps(
       // are inferred from neighbouring samples. A velocity-only duration can
       // make the first/last derivative ramp arbitrarily sharp as the Cartesian
       // sampling interval gets smaller. Reserve enough time for that ramp as
-      // well; the factor bounds the quintic extrema conservatively and keeps
-      // the public speed percentage meaningful through the acceleration ramp.
+      // well; the factor bounds the quintic extrema conservatively and gives
+      // duration validation a conservative product minimum.
       const double acceleration = std::max(
           0.01, static_cast<double>(product_cartesian_acceleration_limit(
-                    joint_index, joint.acceleration_limit)) * scale);
+                    joint_index, joint.acceleration_limit)));
       segment_duration = std::max(
           segment_duration, std::sqrt(8.0 * step / acceleration));
     }
@@ -220,6 +220,14 @@ std::vector<double> plan_timestamps(
     }
   }
   return timestamps;
+}
+
+void require_cartesian_duration(double duration_s) {
+  if (!std::isfinite(duration_s) || duration_s <= 0.0 ||
+      duration_s > 3600.0) {
+    throw std::invalid_argument(
+        "Cartesian duration_s must be finite and within (0,3600]");
+  }
 }
 
 std::function<bool(const std::vector<float>&, std::string&)>
@@ -273,33 +281,51 @@ void prepend_cartesian_approach(
     uint32_t side,
     const NativeTrajectorySample& reference,
     const ArticoreRobotPose& declared_start,
-    float speed_percent) {
+    double total_duration_s) {
   if (plan.trajectory.waypoints.empty() ||
       reference.positions.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF) {
     throw std::runtime_error(
         "Cartesian approach requires a complete preplanned path");
   }
   const auto& approach_target = plan.trajectory.waypoints.front().positions;
-  const double scale = static_cast<double>(speed_percent) / 100.0;
-  double approach_duration = 0.10;
+  double minimum_approach_duration = 0.10;
   for (uint32_t index = 0; index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
     const auto& joint = product.joints[index];
     const double velocity = std::max(
-        0.01, static_cast<double>(
-                  std::min(joint.velocity_limit,
-                           product.default_pv_reference_velocity)) * scale);
-    approach_duration = std::max(
-        approach_duration,
-        std::abs(static_cast<double>(approach_target[index]) -
-                 static_cast<double>(reference.positions[index])) /
-            velocity);
+        0.01, static_cast<double>(std::min(
+                  joint.velocity_limit,
+                  product.default_pv_reference_velocity)));
+    const double step = std::abs(
+        static_cast<double>(approach_target[index]) -
+        static_cast<double>(reference.positions[index]));
+    minimum_approach_duration = std::max(
+        minimum_approach_duration, step / velocity);
+    const double acceleration = std::max(
+        0.01, static_cast<double>(product_cartesian_acceleration_limit(
+                  index, joint.acceleration_limit)));
+    minimum_approach_duration = std::max(
+        minimum_approach_duration, std::sqrt(8.0 * step / acceleration));
   }
-  if (!std::isfinite(approach_duration) || approach_duration > 60.0) {
+  const double minimum_total_duration =
+      minimum_approach_duration + plan.minimum_duration_s;
+  if (!std::isfinite(minimum_total_duration) ||
+      minimum_total_duration > 60.0) {
     throw std::invalid_argument(
         "Cartesian approach requires an unsafe duration");
   }
+  if (total_duration_s + 1e-9 < minimum_total_duration) {
+    throw std::invalid_argument(
+        "Cartesian duration_s is too short for the approach and path; "
+        "minimum=" + std::to_string(minimum_total_duration) + " s");
+  }
+  const double approach_duration = total_duration_s *
+      minimum_approach_duration / minimum_total_duration;
+  const double path_duration = total_duration_s - approach_duration;
+  const double original_path_duration =
+      plan.trajectory.waypoints.back().time_s;
   for (auto& waypoint : plan.trajectory.waypoints) {
-    waypoint.time_s += approach_duration;
+    waypoint.time_s = approach_duration +
+        waypoint.time_s * path_duration / original_path_duration;
   }
   NativeTrajectoryWaypoint current;
   current.time_s = 0.0;
@@ -313,6 +339,7 @@ void prepend_cartesian_approach(
   plan.trajectory.waypoints.insert(
       plan.trajectory.waypoints.begin(), std::move(current));
   plan.trajectory.approach_segment_count = 1;
+  plan.minimum_duration_s = minimum_total_duration;
   plan.trajectory.approach_convergence_check = pose_convergence_check(
       product, side, declared_start, 0.005, 0.035,
       "Cartesian approach start");
@@ -325,13 +352,23 @@ NativeCartesianPlan assemble_cartesian_plan(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     ArticoreRuntimeOperation operation,
-    float speed_percent,
+    double duration_s,
     uint32_t completion_side,
     float maximum_reference_velocity = kYunyiCartesianMaximumVelocity) {
+  require_cartesian_duration(duration_s);
   NativeCartesianPlan plan;
-  const float scale = speed_percent / 100.0f;
-  const auto timestamps = plan_timestamps(
-      path, product, scale, maximum_reference_velocity);
+  auto timestamps = plan_timestamps(
+      path, product, maximum_reference_velocity);
+  plan.minimum_duration_s = timestamps.back();
+  if (duration_s + 1e-9 < plan.minimum_duration_s) {
+    throw std::invalid_argument(
+        "Cartesian duration_s is too short for product limits; minimum=" +
+        std::to_string(plan.minimum_duration_s) + " s");
+  }
+  const double stretch = duration_s / plan.minimum_duration_s;
+  for (std::size_t index = 1; index < timestamps.size(); ++index) {
+    timestamps[index] *= stretch;
+  }
   auto& trajectory = plan.trajectory;
   trajectory.mode = mode;
   trajectory.operation = operation;
@@ -388,11 +425,12 @@ void require_cartesian_reference(
     const NativeTrajectorySample& reference, const char* motion_name) {
   if (reference.active &&
       reference.operation != ARTICORE_OPERATION_MOVE_POSE &&
+      reference.operation != ARTICORE_OPERATION_START_TRAJECTORY &&
       reference.operation != ARTICORE_OPERATION_MOVE_LINEAR &&
       reference.operation != ARTICORE_OPERATION_MOVE_CIRCULAR) {
     throw std::runtime_error(
         std::string(motion_name) +
-        " cannot replace an explicit multi-waypoint trajectory");
+        " cannot follow the current planned Runtime operation");
   }
   if (reference.positions.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF ||
       reference.velocities.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF ||
@@ -420,17 +458,13 @@ NativeCartesianPlan build_linear_plan_common(
     const NativeTrajectorySample& reference,
     const ArticoreRobotPose* declared_start,
     const float* end_pose_values,
-    float speed_percent) {
+    double duration_s) {
   cartesian::require_pv_mode(mode);
   if (side != ARTICORE_ROBOT_LEFT && side != ARTICORE_ROBOT_RIGHT) {
     throw std::invalid_argument(
         "Cartesian motion side must be LEFT(0) or RIGHT(1)");
   }
-  if (!std::isfinite(speed_percent) || speed_percent <= 0.0f ||
-      speed_percent > 100.0f) {
-    throw std::invalid_argument(
-        "Cartesian motion speed_percent must be in (0,100]");
-  }
+  require_cartesian_duration(duration_s);
   require_cartesian_reference(reference, "linear");
   if (declared_start) {
     validate_cartesian_start_pose(
@@ -510,7 +544,7 @@ NativeCartesianPlan build_linear_plan_common(
 
   return assemble_cartesian_plan(
       path, start_velocities, start_accelerations, product, mode,
-      ARTICORE_OPERATION_MOVE_LINEAR, speed_percent, side);
+      ARTICORE_OPERATION_MOVE_LINEAR, duration_s, side);
 }
 
 }  // namespace
@@ -521,10 +555,10 @@ NativeCartesianPlan build_linear_plan_from_reference(
     uint32_t side,
     const NativeTrajectorySample& reference,
     const float* end_pose_values,
-    float speed_percent) {
+    double duration_s) {
   return build_linear_plan_common(
       product, mode, side, reference, nullptr, end_pose_values,
-      speed_percent);
+      duration_s);
 }
 
 NativeCartesianPlan build_linear_plan_from_reference(
@@ -534,14 +568,14 @@ NativeCartesianPlan build_linear_plan_from_reference(
     const NativeTrajectorySample& reference,
     const float* start_pose_values,
     const float* end_pose_values,
-    float speed_percent) {
+    double duration_s) {
   const auto declared_start = robot_pose_from_rpy(start_pose_values);
   try {
     validate_cartesian_start_pose(
         product.tcp_offsets[side], side, reference, declared_start, "linear");
     return build_linear_plan_common(
         product, mode, side, reference, &declared_start, end_pose_values,
-        speed_percent);
+        duration_s);
   } catch (const std::invalid_argument& error) {
     if (std::string(error.what()).find(
             "start_pose does not match current planned pose") ==
@@ -559,9 +593,9 @@ NativeCartesianPlan build_linear_plan_from_reference(
   path_reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
   auto plan = build_linear_plan_common(
       product, mode, side, path_reference, &declared_start, end_pose_values,
-      speed_percent);
+      duration_s);
   prepend_cartesian_approach(
-      plan, product, side, reference, declared_start, speed_percent);
+      plan, product, side, reference, declared_start, duration_s);
   return plan;
 }
 
@@ -673,17 +707,13 @@ NativeCartesianPlan build_circular_plan_common(
     const ArticoreRobotPose* declared_start,
     const float* via_pose_values,
     const float* end_pose_values,
-    float speed_percent) {
+    double duration_s) {
   cartesian::require_pv_mode(mode);
   if (side != ARTICORE_ROBOT_LEFT && side != ARTICORE_ROBOT_RIGHT) {
     throw std::invalid_argument(
         "Cartesian motion side must be LEFT(0) or RIGHT(1)");
   }
-  if (!std::isfinite(speed_percent) || speed_percent <= 0.0f ||
-      speed_percent > 100.0f) {
-    throw std::invalid_argument(
-        "Cartesian motion speed_percent must be in (0,100]");
-  }
+  require_cartesian_duration(duration_s);
   const auto via = robot_pose_from_rpy(via_pose_values);
   const auto end = robot_pose_from_rpy(end_pose_values);
   RobotModel planning_model("yunyi_v1_0", side, product.tcp_offsets[side]);
@@ -801,8 +831,7 @@ NativeCartesianPlan build_circular_plan_common(
 
   return assemble_cartesian_plan(
       path, start_velocities, start_accelerations, product, mode,
-      ARTICORE_OPERATION_MOVE_CIRCULAR,
-      product_circular_speed_percent(speed_percent), side);
+      ARTICORE_OPERATION_MOVE_CIRCULAR, duration_s, side);
 }
 
 }  // namespace
@@ -814,10 +843,10 @@ NativeCartesianPlan build_circular_plan_from_reference(
     const NativeTrajectorySample& reference,
     const float* via_pose_values,
     const float* end_pose_values,
-    float speed_percent) {
+    double duration_s) {
   return build_circular_plan_common(
       product, mode, side, reference, nullptr, via_pose_values,
-      end_pose_values, speed_percent);
+      end_pose_values, duration_s);
 }
 
 NativeCartesianPlan build_circular_plan_from_reference(
@@ -828,14 +857,14 @@ NativeCartesianPlan build_circular_plan_from_reference(
     const float* start_pose_values,
     const float* via_pose_values,
     const float* end_pose_values,
-    float speed_percent) {
+    double duration_s) {
   const auto declared_start = robot_pose_from_rpy(start_pose_values);
   try {
     validate_cartesian_start_pose(
         product.tcp_offsets[side], side, reference, declared_start, "circular");
     return build_circular_plan_common(
         product, mode, side, reference, &declared_start, via_pose_values,
-        end_pose_values, speed_percent);
+        end_pose_values, duration_s);
   } catch (const std::invalid_argument& error) {
     if (std::string(error.what()).find(
             "start_pose does not match current planned pose") ==
@@ -853,9 +882,9 @@ NativeCartesianPlan build_circular_plan_from_reference(
   path_reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
   auto plan = build_circular_plan_common(
       product, mode, side, path_reference, &declared_start, via_pose_values,
-      end_pose_values, speed_percent);
+      end_pose_values, duration_s);
   prepend_cartesian_approach(
-      plan, product, side, reference, declared_start, speed_percent);
+      plan, product, side, reference, declared_start, duration_s);
   return plan;
 }
 

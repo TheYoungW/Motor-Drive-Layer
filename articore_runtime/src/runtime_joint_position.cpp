@@ -264,9 +264,9 @@ void SafetyRuntime::install_joint_position(
         "Runtime state changed while planning the command");
   }
   require_state_for_command(false, false, planning_token);
-  if (trajectory_control_.state == ARTICORE_TRAJECTORY_COMPLETED) {
+  if (trajectory_control_.state == ARTICORE_MOTION_COMPLETED) {
     terminate_trajectory_locked(
-        ARTICORE_TRAJECTORY_CANCELLED,
+        ARTICORE_MOTION_CANCELLED,
         std::string("completed trajectory replaced by ordinary ") + label +
             " position command");
   }

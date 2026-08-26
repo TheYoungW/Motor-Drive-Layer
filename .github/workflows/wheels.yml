@@ -78,7 +78,7 @@ jobs:
           assert not any("libmotor_abi" in name or "/dm_device/" in name for name in entries)
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00060000
+          assert runtime_lib.articore_runtime_abi_version() == 0x00070000
           assert hasattr(runtime_lib, "articore_runtime_create_yunyi")
           assert hasattr(runtime_lib, "articore_runtime_move_pose")
           assert not hasattr(runtime_lib, "articore_runtime_move_poses")
@@ -87,7 +87,14 @@ jobs:
           assert hasattr(runtime_lib, "articore_runtime_get_state")
           assert hasattr(runtime_lib, "articore_runtime_get_health")
           assert hasattr(runtime_lib, "articore_runtime_set_grippers")
-          assert hasattr(runtime_lib, "articore_runtime_get_cartesian_motion_status")
+          assert hasattr(runtime_lib, "articore_runtime_start_trajectory")
+          assert hasattr(runtime_lib, "articore_runtime_get_motion_status")
+          assert hasattr(runtime_lib, "articore_runtime_cancel_motion")
+          assert hasattr(runtime_lib, "articore_runtime_cancel_all_motions")
+          assert not hasattr(runtime_lib, "articore_runtime_get_trajectory_status")
+          assert not hasattr(runtime_lib, "articore_runtime_cancel_trajectory")
+          assert not hasattr(runtime_lib, "articore_runtime_get_cartesian_motion_status")
+          assert not hasattr(runtime_lib, "articore_runtime_cancel_cartesian_motion")
           assert hasattr(runtime_lib, "articore_runtime_get_joint_angle_vel_limits")
           assert hasattr(runtime_lib, "articore_runtime_set_joint_pv")
           assert hasattr(runtime_lib, "articore_runtime_set_joint_mit")

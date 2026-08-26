@@ -127,8 +127,15 @@ install(
 )
 include(CTest)
 if(BUILD_TESTING)
-  add_executable(articore_runtime_test tests/runtime_test.cpp)
-  target_link_libraries(articore_runtime_test PRIVATE articore_runtime_core)
+  add_executable(
+    articore_runtime_test tests/runtime_test.cpp src/product_cartesian.cpp
+  )
+  target_link_libraries(
+    articore_runtime_test PRIVATE articore_runtime_core damiao::runtime
+  )
+  target_include_directories(
+    articore_runtime_test PRIVATE ../cpp_damiao/include
+  )
   add_test(NAME articore_runtime_test COMMAND articore_runtime_test)
 
   add_executable(articore_runtime_abi_smoke_test tests/abi_smoke_test.cpp)

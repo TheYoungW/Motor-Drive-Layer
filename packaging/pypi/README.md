@@ -2,7 +2,7 @@
 
 Binary-only Yunyi product Runtime for Linux.
 
-Version 0.15.1 ships Runtime ABI 6.0 (`0x00060000`). The wheel contains the
+Version 0.16.0 ships Runtime ABI 7.0 (`0x00070000`). The wheel contains the
 native `libarticore_runtime.so` and required data; it contains no Python module,
 ctypes declarations or Motor ABI library.
 

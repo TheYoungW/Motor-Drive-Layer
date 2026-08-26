@@ -1,8 +1,8 @@
 # Yunyi product Runtime
 
-`libarticore_runtime.so` is the only public native library. Runtime ABI 6.0 is
+`libarticore_runtime.so` is the only public native library. Runtime ABI 7.0 is
 an exact contract: the SDK must require `articore_runtime_abi_version() ==
-0x00060000` and bind only the declarations in `articore/runtime_abi.h`.
+0x00070000` and bind only the declarations in `articore/runtime_abi.h`.
 
 ## Ownership
 
@@ -50,11 +50,22 @@ tolerance, reuses each arm's Pinocchio model and limits global fallback to an
 target unchanged. Linear and Circular are asynchronous FIFO trajectory tasks.
 Linear uses explicit `start_pose -> end_pose`; Circular uses explicit
 `start_pose -> via_pose -> end_pose`. Runtime validates and plans the complete
-task before installing it.
+task before installing it. Joint, Linear and Circular trajectories share one
+Motion ID namespace and FIFO, and use `get_motion_status(id)`,
+`cancel_motion(id)` and `cancel_all_motions()`. A joint trajectory returns its
+Motion ID directly from `start_trajectory()`. Cancelling a queued item removes
+only that item; Runtime inserts and validates a native approach into its
+immediate successor so execution cannot jump across the removed endpoint.
+Cancelling the running item holds the last safe reference and cancels its
+dependent queue tail, whose planned starts are no longer valid.
+Completed, cancelled and faulted tasks remain queryable in bounded history.
 
-PV and Cartesian speed values use `0..100`. The persistent PV maximum defaults
-to 50, mapping to a 1 rad/s reference slew; 100 maps to 2 rad/s. The Damiao
-POS_VEL drive ceiling remains an independent 3 rad/s.
+Linear and Circular accept `duration_s` instead of a speed percentage. The
+duration is the complete planned task duration, including an automatic PTP
+approach to the declared start pose when needed. Too-short durations are
+rejected before the FIFO changes. Ordinary PV speed values remain `0..100`.
+The persistent PV maximum defaults to 50, mapping to a 1 rad/s reference slew;
+100 maps to 2 rad/s. The Damiao POS_VEL drive ceiling remains independent.
 
 ## State and diagnostics
 
@@ -64,7 +75,7 @@ state. It performs no CAN request. `articore_runtime_get_health()` is the sole
 operation/safety diagnostic surface.
 
 Every public structure must set `struct_size` to its exact `sizeof(...)`.
-ABI 6.0 does not branch on older layouts or capability bits.
+ABI 7.0 does not branch on older layouts or capability bits.
 
 ## Shutdown
 

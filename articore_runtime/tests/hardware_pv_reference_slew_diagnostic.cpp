@@ -186,10 +186,10 @@ void seed_trace_joint_layout(
   runtime.start_trajectory(std::move(request));
   const auto deadline = Clock::now() + std::chrono::seconds(3);
   while (Clock::now() < deadline) {
-    const auto status = runtime.trajectory_status();
-    if (status.state == ARTICORE_TRAJECTORY_COMPLETED) return;
-    if (status.state == ARTICORE_TRAJECTORY_FAULT ||
-        status.state == ARTICORE_TRAJECTORY_CANCELLED) {
+    const auto status = runtime.motion_status();
+    if (status.state == ARTICORE_MOTION_COMPLETED) return;
+    if (status.state == ARTICORE_MOTION_FAULT ||
+        status.state == ARTICORE_MOTION_CANCELLED) {
       throw std::runtime_error(std::string("trace seed trajectory failed: ") +
                                status.error);
     }

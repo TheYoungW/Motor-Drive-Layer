@@ -28,8 +28,8 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.15.1`
-- Runtime ABI: `6.0` / `0x00060000`
+- package version: `0.16.0`
+- Runtime ABI: `7.0` / `0x00070000`
 - ABI matching: exact
 - product: `yunyi_v1_0`
 - transports: `can-left`, `can-right`

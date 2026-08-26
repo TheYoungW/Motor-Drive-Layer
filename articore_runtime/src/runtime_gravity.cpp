@@ -145,7 +145,7 @@ void SafetyRuntime::start_gravity_compensation(
       throw std::runtime_error(
           "gravity compensation cannot replace active bimanual follow");
     }
-    if (trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING) {
+    if (trajectory_control_.state == ARTICORE_MOTION_RUNNING) {
       throw std::runtime_error(
           "gravity compensation cannot replace an active trajectory");
     }
@@ -217,7 +217,7 @@ void SafetyRuntime::start_bimanual_follow(uint32_t leader_side) {
       throw std::runtime_error(
           "bimanual follow cannot replace active gravity compensation");
     }
-    if (trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING) {
+    if (trajectory_control_.state == ARTICORE_MOTION_RUNNING) {
       throw std::runtime_error(
           "bimanual follow cannot replace an active trajectory");
     }

@@ -57,11 +57,12 @@ class TrajectoryConfig(ctypes.Structure):
     ]
 
 
-class TrajectoryStatus(ctypes.Structure):
+class MotionStatus(ctypes.Structure):
     _fields_ = [
         ("struct_size", ctypes.c_uint32),
+        ("motion_id", ctypes.c_uint64),
+        ("motion_type", ctypes.c_int32),
         ("state", ctypes.c_int32),
-        ("trajectory_id", ctypes.c_uint64),
         ("active_segment", ctypes.c_uint32),
         ("waypoint_count", ctypes.c_uint32),
         ("elapsed_s", ctypes.c_double),
@@ -79,10 +80,13 @@ def native_functions(robot: ArxDCanDualArm) -> tuple[object, object]:
         ctypes.POINTER(TrajectoryWaypoint),
         ctypes.c_uint32,
         ctypes.POINTER(TrajectoryConfig),
+        ctypes.POINTER(ctypes.c_uint64),
     ]
     start.restype = ctypes.c_int32
-    status = library.articore_runtime_get_trajectory_status
-    status.argtypes = [ctypes.c_void_p, ctypes.POINTER(TrajectoryStatus)]
+    status = library.articore_runtime_get_motion_status
+    status.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint64, ctypes.POINTER(MotionStatus)
+    ]
     status.restype = ctypes.c_int32
     return start, status
 
@@ -92,12 +96,16 @@ def last_error(robot: ArxDCanDualArm) -> str:
     return value.decode(errors="replace") if value else "unknown Runtime error"
 
 
-def native_status(robot: ArxDCanDualArm, function: object) -> TrajectoryStatus:
-    output = TrajectoryStatus()
+def native_status(
+    robot: ArxDCanDualArm, function: object, motion_id: int,
+) -> MotionStatus:
+    output = MotionStatus()
     output.struct_size = ctypes.sizeof(output)
-    result = int(function(robot._runtime._require_open(), ctypes.byref(output)))
+    result = int(function(
+        robot._runtime._require_open(), motion_id, ctypes.byref(output)
+    ))
     if result != 0:
-        raise RuntimeError(f"get_trajectory_status failed: {last_error(robot)}")
+        raise RuntimeError(f"get_motion_status failed: {last_error(robot)}")
     return output
 
 
@@ -183,7 +191,7 @@ def build_request(
     return waypoints, config
 
 
-def sample(robot: ArxDCanDualArm, started: float, status: TrajectoryStatus) -> dict[str, object]:
+def sample(robot: ArxDCanDualArm, started: float, status: MotionStatus) -> dict[str, object]:
     state = robot.read_state()
     return {
         "monotonic_ns": time.monotonic_ns(),
@@ -291,9 +299,10 @@ def main() -> None:
         start_function, status_function = native_functions(robot)
         waypoints, config = build_request(args.duration, args.pv_v)
         started = time.monotonic()
+        motion_id = ctypes.c_uint64()
         code = int(start_function(
             robot._runtime._require_open(), waypoints, len(waypoints),
-            ctypes.byref(config),
+            ctypes.byref(config), ctypes.byref(motion_id),
         ))
         if code != 0:
             raise RuntimeError(f"start_trajectory failed: {last_error(robot)}")
@@ -304,7 +313,7 @@ def main() -> None:
             health = robot.get_health()
             if health.safe_stopped or health.fault_reason:
                 raise RuntimeError(f"unsafe Runtime state: {health}")
-            status = native_status(robot, status_function)
+            status = native_status(robot, status_function, motion_id.value)
             item = sample(robot, started, status)
             if item["sequence"] != last_sequence:
                 last_sequence = int(item["sequence"])

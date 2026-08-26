@@ -22,14 +22,17 @@ int main() {
   using RuntimeCall = int32_t (*)(ArticoreRuntime*);
   using ProductCommand = int32_t (*)(
       ArticoreRuntime*, const float*, uint32_t, float);
+  using StartTrajectory = int32_t (*)(
+      ArticoreRuntime*, const ArticoreTrajectoryWaypoint*, uint32_t,
+      const ArticoreTrajectoryConfig*, uint64_t*);
   using MoveLinear = int32_t (*)(
-      ArticoreRuntime*, uint32_t, const float*, const float*, float,
+      ArticoreRuntime*, uint32_t, const float*, const float*, double,
       uint64_t*);
   using MoveCircular = int32_t (*)(
       ArticoreRuntime*, uint32_t, const float*, const float*, const float*,
-      float, uint64_t*);
+      double, uint64_t*);
   using MotionStatus = int32_t (*)(
-      ArticoreRuntime*, uint64_t, ArticoreCartesianMotionStatus*);
+      ArticoreRuntime*, uint64_t, ArticoreMotionStatus*);
   using ProductGrippers = int32_t (*)(
       ArticoreRuntime*, float, float, int32_t, int32_t);
   using ProductState = int32_t (*)(ArticoreRuntime*, ArticoreProductState*);
@@ -46,11 +49,13 @@ int main() {
   static_assert(same_signature<
       decltype(&articore_runtime_set_joint_mit), ProductCommand>);
   static_assert(same_signature<
+      decltype(&articore_runtime_start_trajectory), StartTrajectory>);
+  static_assert(same_signature<
       decltype(&articore_runtime_move_linear), MoveLinear>);
   static_assert(same_signature<
       decltype(&articore_runtime_move_circular), MoveCircular>);
   static_assert(same_signature<
-      decltype(&articore_runtime_get_cartesian_motion_status), MotionStatus>);
+      decltype(&articore_runtime_get_motion_status), MotionStatus>);
   static_assert(same_signature<
       decltype(&articore_runtime_set_grippers), ProductGrippers>);
   static_assert(same_signature<
@@ -64,8 +69,7 @@ int main() {
 
   static_assert(sizeof(ArticoreTrajectoryWaypoint) == 192);
   static_assert(sizeof(ArticoreTrajectoryConfig) == 236);
-  static_assert(sizeof(ArticoreTrajectoryStatus) == 560);
-  static_assert(sizeof(ArticoreCartesianMotionStatus) == 600);
+  static_assert(sizeof(ArticoreMotionStatus) == 568);
   static_assert(sizeof(ArticoreProductArmState) == 152);
   static_assert(sizeof(ArticoreProductState) == 392);
   static_assert(sizeof(ArticoreProductJointAngleVelLimits) == 176);
@@ -201,10 +205,10 @@ int main() {
       &articore_runtime_get_max_speed &&
       &articore_runtime_submit_mit_frame &&
       &articore_runtime_start_trajectory &&
-      &articore_runtime_get_trajectory_status &&
-      &articore_runtime_cancel_trajectory &&
+      &articore_runtime_get_motion_status &&
+      &articore_runtime_cancel_motion &&
+      &articore_runtime_cancel_all_motions &&
       &articore_runtime_move_pose &&
-      &articore_runtime_cancel_cartesian_motion &&
       &articore_runtime_has_grippers &&
       &articore_runtime_get_joint_angle_vel_limits &&
       &articore_runtime_get_pose && &articore_runtime_set_tcp_offset &&
@@ -221,15 +225,15 @@ int main() {
       &articore_runtime_estop && &articore_runtime_recover &&
       &articore_robot_model_create && &articore_robot_model_fk;
 
-  if (articore_runtime_abi_version() != 0x00060000U ||
+  if (articore_runtime_abi_version() != 0x00070000U ||
       !symbols_present || !gripper_validation || !state_size_checked ||
       !state_runtime_checked || !health_size_checked ||
       !joint_limits_size_checked || !maximum_speed_validation ||
       !joint_command_validation || !factory_validation ||
       !product_limits_checked) {
-    std::cerr << "Articore Runtime ABI 6.0 contract is incomplete\n";
+    std::cerr << "Articore Runtime ABI 7.0 contract is incomplete\n";
     return 1;
   }
-  std::cout << "Articore Runtime ABI 6.0 smoke test passed\n";
+  std::cout << "Articore Runtime ABI 7.0 smoke test passed\n";
   return 0;
 }

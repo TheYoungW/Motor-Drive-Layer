@@ -27,8 +27,8 @@ can-left/right 接收线程
 
 ## 当前接口契约
 
-- 包版本：`0.15.1`
-- Runtime ABI：`6.0` / `0x00060000`
+- 包版本：`0.16.0`
+- Runtime ABI：`7.0` / `0x00070000`
 - ABI 校验：必须完全相等
 - 产品：`yunyi_v1_0`
 - 关节顺序：左 J1～J7、右 J1～J7
@@ -43,6 +43,11 @@ SDK 通过 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)`
 `set_joint_pv(left, right, speed)` 一样提交完整双臂目标，只额外在 C++ 中对两侧
 Pose 求终点 IK。两侧共用同一份规划参考快照，全部在 `1e-4` 精度和 8 ms 软预算
 内成功后才原子安装 14 关节 PV 目标；任一侧失败或超时都不改变当前目标。
+
+关节轨迹、Linear 和 Circular 共用一个 Motion ID、FIFO、状态查询和取消
+接口。Linear/Circular 传入计划运行时长 `duration_s`，不再使用速度百分比；
+若 Runtime 需要先 PTP 到显式起点，该接近段也包含在总时长中。PTP 仍是普通
+PV 点目标，不加入 Motion FIFO。
 
 当前 API 见 [Runtime 说明](articore_runtime/README.md)。
 

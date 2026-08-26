@@ -110,9 +110,9 @@ enum ArticoreRuntimeOperation {
   ARTICORE_OPERATION_COMMAND = 8,
   ARTICORE_OPERATION_RECOVER = 9,
   ARTICORE_OPERATION_START_TRAJECTORY = 10,
-  ARTICORE_OPERATION_CANCEL_TRAJECTORY = 11,
+  ARTICORE_OPERATION_CANCEL_MOTION = 11,
   ARTICORE_OPERATION_MOVE_POSE = 12,
-  ARTICORE_OPERATION_CANCEL_CARTESIAN_MOTION = 13,
+  ARTICORE_OPERATION_CANCEL_ALL_MOTIONS = 13,
   ARTICORE_OPERATION_MOVE_LINEAR = 14,
   ARTICORE_OPERATION_MOVE_CIRCULAR = 15,
   ARTICORE_OPERATION_START_BIMANUAL_FOLLOW = 16,
@@ -124,24 +124,24 @@ enum ArticoreTrajectoryInterpolation {
   ARTICORE_TRAJECTORY_QUINTIC = 1,
 };
 
-enum ArticoreTrajectoryState {
-  ARTICORE_TRAJECTORY_IDLE = 0,
-  ARTICORE_TRAJECTORY_RUNNING = 1,
+enum ArticoreMotionState {
+  ARTICORE_MOTION_IDLE = 0,
+  ARTICORE_MOTION_RUNNING = 1,
   // The planned clock has finished and fresh physical feedback has remained
   // within the native product position/velocity arrival window. A progress
   // value of 1.0 while state is still RUNNING means final-setpoint settling,
   // not physical completion.
-  ARTICORE_TRAJECTORY_COMPLETED = 2,
-  ARTICORE_TRAJECTORY_CANCELLED = 3,
-  ARTICORE_TRAJECTORY_FAULT = 4,
+  ARTICORE_MOTION_COMPLETED = 2,
+  ARTICORE_MOTION_CANCELLED = 3,
+  ARTICORE_MOTION_FAULT = 4,
   /* Accepted and fully planned, waiting for earlier FIFO motions to finish. */
-  ARTICORE_TRAJECTORY_QUEUED = 5,
+  ARTICORE_MOTION_QUEUED = 5,
 };
 
-enum ArticoreCartesianInterpolation {
-  ARTICORE_CARTESIAN_POINT_TO_POINT = 1,
-  ARTICORE_CARTESIAN_LINEAR = 2,
-  ARTICORE_CARTESIAN_CIRCULAR = 3,
+enum ArticoreMotionType {
+  ARTICORE_MOTION_JOINT_TRAJECTORY = 1,
+  ARTICORE_MOTION_CARTESIAN_LINEAR = 2,
+  ARTICORE_MOTION_CARTESIAN_CIRCULAR = 3,
 };
 
 enum { ARTICORE_MAX_TRAJECTORY_WAYPOINTS = 10000 };
@@ -256,32 +256,18 @@ typedef struct ArticoreTrajectoryConfig {
   float pv_velocity_limits[ARTICORE_PRODUCT_DUAL_ARM_DOF];
 } ArticoreTrajectoryConfig;
 
-typedef struct ArticoreTrajectoryStatus {
+typedef struct ArticoreMotionStatus {
   uint32_t struct_size;
+  uint64_t motion_id;
+  int32_t motion_type;
   int32_t state;
-  uint64_t trajectory_id;
   uint32_t active_segment;
   uint32_t waypoint_count;
   double elapsed_s;
   double duration_s;
   float progress;
   char error[512];
-} ArticoreTrajectoryStatus;
-
-typedef struct ArticoreCartesianMotionStatus {
-  uint32_t struct_size;
-  int32_t state;
-  uint64_t motion_id;
-  uint64_t superseded_motion_id;
-  uint32_t side;
-  int32_t interpolation;
-  float speed_percent;
-  double elapsed_s;
-  double duration_s;
-  float progress;
-  float target_pose[ARTICORE_PRODUCT_POSE_DOF];
-  char error[512];
-} ArticoreCartesianMotionStatus;
+} ArticoreMotionStatus;
 
 typedef struct ArticoreProductArmState {
   float positions[ARTICORE_PRODUCT_ARM_DOF];
@@ -550,16 +536,15 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
     const float* velocities, const float* feedforward_torques,
     const float* kp, const float* kd, uint32_t count);
 
-/* Asynchronous dual-arm quintic trajectory. Inputs are copied before return. */
+/* Asynchronous dual-arm quintic trajectory. Inputs are copied before return
+ * and the task joins the same FIFO and motion-id namespace as Linear/Circular.
+ */
 ARTICORE_RUNTIME_API int32_t articore_runtime_start_trajectory(
     ArticoreRuntime* runtime,
     const ArticoreTrajectoryWaypoint* waypoints,
     uint32_t waypoint_count,
-    const ArticoreTrajectoryConfig* config);
-ARTICORE_RUNTIME_API int32_t articore_runtime_get_trajectory_status(
-    ArticoreRuntime* runtime, ArticoreTrajectoryStatus* status);
-ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_trajectory(
-    ArticoreRuntime* runtime);
+    const ArticoreTrajectoryConfig* config,
+    uint64_t* motion_id);
 
 /* Atomic dual-arm point-to-point command. Runtime solves both endpoint poses
  * from one planned-reference snapshot, then installs one ordinary 14-joint PV
@@ -567,22 +552,32 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_trajectory(
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float speed_percent);
-/* Asynchronous FIFO Cartesian trajectories. New linear and circular plans
- * are appended after the current queue tail and never replace it.
- * Linear orientation uses shortest-path quaternion SLERP. */
+/* Asynchronous FIFO Cartesian trajectories. duration_s is the complete
+ * planned task duration, including an automatic PTP approach to an explicit
+ * start pose when required. Linear orientation uses shortest-path quaternion
+ * SLERP. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* end_pose, float speed_percent, uint64_t* motion_id);
-ARTICORE_RUNTIME_API int32_t articore_runtime_get_cartesian_motion_status(
-    ArticoreRuntime* runtime, uint64_t motion_id,
-    ArticoreCartesianMotionStatus* status);
-ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_cartesian_motion(
-    ArticoreRuntime* runtime);
+    const float* end_pose, double duration_s, uint64_t* motion_id);
 /* Standard circular path with an explicit, validated geometric start pose. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* via_pose, const float* end_pose, float speed_percent,
+    const float* via_pose, const float* end_pose, double duration_s,
     uint64_t* motion_id);
+/* Unified status and cancellation for joint, Linear, and Circular motions.
+ * Terminal states remain queryable by id in the bounded Runtime history.
+ * Cancelling a queued id removes only that item and inserts a validated native
+ * approach into its immediate successor so the FIFO cannot jump. Cancelling
+ * the running id holds the last safe reference and cancels its queue tail
+ * because those plans were generated from the running task's final reference.
+ */
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_motion_status(
+    ArticoreRuntime* runtime, uint64_t motion_id,
+    ArticoreMotionStatus* status);
+ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_motion(
+    ArticoreRuntime* runtime, uint64_t motion_id);
+ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_all_motions(
+    ArticoreRuntime* runtime);
 
 /* Grippers: opening 0..1000, strength 0..10, protected/direct mode.
  * Gripperless products return success without sending a command. */

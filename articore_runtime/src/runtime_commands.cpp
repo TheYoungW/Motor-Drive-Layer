@@ -249,7 +249,7 @@ void SafetyRuntime::require_state_for_command(bool allow_gravity,
         "arm commands are owned by active gravity compensation");
   }
   if (!allow_trajectory &&
-      trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING) {
+      trajectory_control_.state == ARTICORE_MOTION_RUNNING) {
     throw std::runtime_error(
         "arm commands are owned by an active native trajectory");
   }
@@ -423,7 +423,7 @@ bool SafetyRuntime::enter_safe_stop(const std::string& reason,
   }
   state_ = ARTICORE_SAFE_STOP;
   terminate_trajectory_locked(
-      ARTICORE_TRAJECTORY_FAULT,
+      ARTICORE_MOTION_FAULT,
       "trajectory terminated by safe stop: " + reason);
   fault_latched_ = false;
   fault_reason_.clear();
@@ -659,7 +659,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     gravity_active =
         gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE;
     adaptive_cartesian_tracking =
-        trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING &&
+        trajectory_control_.state == ARTICORE_MOTION_RUNNING &&
         native_cartesian_operation(trajectory_control_.operation) &&
         trajectory_control_.approach_complete;
     bimanual_active = bimanual_follow_.active;
@@ -1028,7 +1028,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
       last_sent_pv_.assign(pv_data, pv_data + command_count);
       last_sent_mit_.clear();
       if (adaptive_cartesian_tracking &&
-          trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING &&
+          trajectory_control_.state == ARTICORE_MOTION_RUNNING &&
           native_cartesian_operation(trajectory_control_.operation) &&
           trajectory_control_.approach_complete) {
         trajectory_control_.tracking_position_error =
@@ -1128,7 +1128,7 @@ void SafetyRuntime::record_control_trace(
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     sample.runtime_state = state_;
     sample.motion_state = trajectory_control_.state;
-    sample.trajectory_id = trajectory_control_.id;
+    sample.motion_id = trajectory_control_.id;
     sample.progress = trajectory_control_.duration_s > 0.0
         ? static_cast<float>(std::clamp(
               trajectory_control_.elapsed_s / trajectory_control_.duration_s,

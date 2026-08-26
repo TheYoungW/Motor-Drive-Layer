@@ -16,6 +16,7 @@
 #include "articore/detail/cartesian_math.hpp"
 #include "articore/detail/product_cartesian.hpp"
 #include "articore/detail/runtime.hpp"
+#include "articore/detail/yunyi_runtime.hpp"
 
 namespace {
 
@@ -4420,9 +4421,9 @@ void test_trajectory_errors_use_product_roles_and_allow_inward_recovery() {
   inward.waypoints.back().positions = {1.8f, 0.8f};
   const auto id = runtime.start_trajectory(std::move(inward));
   require(id != 0 &&
-              runtime.trajectory_status().state == ARTICORE_TRAJECTORY_RUNNING,
+              runtime.motion_status().state == ARTICORE_MOTION_RUNNING,
           "an out-of-limit start may execute a monotonic return to legal range");
-  runtime.cancel_trajectory();
+  runtime.cancel_all_motions();
   runtime.disable();
 }
 
@@ -4451,11 +4452,13 @@ void test_native_quintic_trajectory_executes_at_worker_rate() {
       trajectory_request(motors, ARTICORE_MODE_PV));
   require(id != 0, "native trajectory receives a stable id");
   require(wait_for([&] {
-            return runtime.trajectory_status().state ==
-                ARTICORE_TRAJECTORY_COMPLETED;
+            return runtime.motion_status().state ==
+                ARTICORE_MOTION_COMPLETED;
           }, 1000ms), "native trajectory completes asynchronously");
-  const auto status = runtime.trajectory_status();
-  require(status.trajectory_id == id && status.waypoint_count == 2 &&
+  const auto status = runtime.motion_status();
+  require(status.motion_id == id &&
+              status.motion_type == ARTICORE_MOTION_JOINT_TRAJECTORY &&
+              status.waypoint_count == 2 &&
               status.active_segment == 0 &&
               std::abs(status.progress - 1.0f) < 1e-6f &&
               std::abs(status.elapsed_s - 0.4) < 1e-6,
@@ -4526,8 +4529,8 @@ void test_cartesian_pv_adapts_drive_limit_and_slows_for_tracking_error() {
   request.operation = ARTICORE_OPERATION_MOVE_CIRCULAR;
   const auto id = runtime.start_trajectory(std::move(request));
   std::this_thread::sleep_for(300ms);
-  const auto slowed = runtime.trajectory_status(id);
-  require(slowed.state == ARTICORE_TRAJECTORY_RUNNING &&
+  const auto slowed = runtime.motion_status(id);
+  require(slowed.state == ARTICORE_MOTION_RUNNING &&
               slowed.elapsed_s > 0.10 && slowed.elapsed_s < 0.29,
           "Cartesian tracking error slows the complete native timeline");
   {
@@ -4549,8 +4552,8 @@ void test_cartesian_pv_adapts_drive_limit_and_slows_for_tracking_error() {
     driver.emulated_pv_position_offset = 0.0f;
   }
   require(wait_for([&] {
-            return runtime.trajectory_status(id).state ==
-                ARTICORE_TRAJECTORY_COMPLETED;
+            return runtime.motion_status(id).state ==
+                ARTICORE_MOTION_COMPLETED;
           }, 1800ms),
           "Cartesian timeline resumes and completes after feedback catches up");
   runtime.disable();
@@ -4576,12 +4579,12 @@ void test_cartesian_tracking_pause_times_out_to_safe_stop() {
   request.operation = ARTICORE_OPERATION_MOVE_CIRCULAR;
   const auto id = runtime.start_trajectory(std::move(request));
   require(wait_for([&] {
-            return runtime.trajectory_status(id).state ==
-                       ARTICORE_TRAJECTORY_FAULT &&
+            return runtime.motion_status(id).state ==
+                       ARTICORE_MOTION_FAULT &&
                 runtime.health().state == ARTICORE_SAFE_STOP;
           }, 1600ms),
           "a persistent Cartesian tracking pause becomes a protective stop");
-  const auto status = runtime.trajectory_status(id);
+  const auto status = runtime.motion_status(id);
   const std::string status_error = status.error;
   require(status_error.find("Cartesian tracking error did not recover") !=
                   std::string::npos &&
@@ -4613,7 +4616,7 @@ void test_native_trajectory_fifo_executes_without_replacement() {
   auto transaction = runtime.begin_command_transaction();
   const auto tail = runtime.planned_trajectory_tail_sample(
       second.joints, transaction);
-  require(tail.active && tail.trajectory_id == first_id &&
+  require(tail.active && tail.motion_id == first_id &&
               std::abs(tail.positions[0] - 0.2f) < 1e-6f &&
               std::abs(tail.positions[1] - 0.8f) < 1e-6f,
           "FIFO planning reads the first motion endpoint, not its live sample");
@@ -4621,17 +4624,17 @@ void test_native_trajectory_fifo_executes_without_replacement() {
       std::move(second), 0, &transaction, true);
   transaction.unlock();
   require(second_id != first_id &&
-              runtime.trajectory_status(second_id).state ==
-                  ARTICORE_TRAJECTORY_QUEUED,
+              runtime.motion_status(second_id).state ==
+                  ARTICORE_MOTION_QUEUED,
           "a second native motion is queued without replacing the first");
 
   require(wait_for([&] {
-            return runtime.trajectory_status(second_id).state ==
-                ARTICORE_TRAJECTORY_COMPLETED;
+            return runtime.motion_status(second_id).state ==
+                ARTICORE_MOTION_COMPLETED;
           }, 2500ms),
           "FIFO worker starts the second motion only after first arrival");
-  require(runtime.trajectory_status(first_id).state ==
-              ARTICORE_TRAJECTORY_COMPLETED,
+  require(runtime.motion_status(first_id).state ==
+              ARTICORE_MOTION_COMPLETED,
           "the completed first motion remains queryable after handoff");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
@@ -4652,12 +4655,45 @@ void test_native_trajectory_fifo_executes_without_replacement() {
   const auto fourth_id = runtime.start_trajectory(
       std::move(fourth), 0, &fourth_transaction, true);
   fourth_transaction.unlock();
-  runtime.cancel_trajectory();
-  require(runtime.trajectory_status(third_id).state ==
-              ARTICORE_TRAJECTORY_CANCELLED &&
-              runtime.trajectory_status(fourth_id).state ==
-                  ARTICORE_TRAJECTORY_CANCELLED,
-          "cancellation stops the active motion and clears every queued motion");
+  auto fifth = trajectory_request(motors, ARTICORE_MODE_PV, 0.5);
+  fifth.waypoints.front().positions = {0.8f, 0.2f};
+  fifth.waypoints.back().positions = {0.7f, 0.3f};
+  auto fifth_transaction = runtime.begin_command_transaction();
+  const auto fifth_id = runtime.start_trajectory(
+      std::move(fifth), 0, &fifth_transaction, true);
+  fifth_transaction.unlock();
+  runtime.cancel_motion(fourth_id);
+  require(runtime.motion_status(fourth_id).state ==
+              ARTICORE_MOTION_CANCELLED &&
+              runtime.motion_status(third_id).state ==
+                  ARTICORE_MOTION_RUNNING &&
+              runtime.motion_status(fifth_id).state == ARTICORE_MOTION_QUEUED,
+          "cancelling one queued motion removes only that FIFO item");
+  require(wait_for([&] {
+            return runtime.motion_status(fifth_id).state ==
+                ARTICORE_MOTION_COMPLETED;
+          }, 3000ms),
+          "the successor is safely rebased and still executes after a queued cancellation");
+
+  auto sixth = trajectory_request(motors, ARTICORE_MODE_PV, 0.5);
+  sixth.waypoints.front().positions = {0.7f, 0.3f};
+  sixth.waypoints.back().positions = {0.9f, 0.1f};
+  const auto sixth_id = runtime.start_trajectory(
+      std::move(sixth), 0, nullptr, true);
+  auto seventh = trajectory_request(motors, ARTICORE_MODE_PV, 0.5);
+  seventh.waypoints.front().positions = {0.9f, 0.1f};
+  seventh.waypoints.back().positions = {1.0f, 0.0f};
+  auto seventh_transaction = runtime.begin_command_transaction();
+  const auto seventh_id = runtime.start_trajectory(
+      std::move(seventh), 0, &seventh_transaction, true);
+  seventh_transaction.unlock();
+  runtime.cancel_motion(sixth_id);
+  runtime.cancel_motion(sixth_id);
+  require(runtime.motion_status(sixth_id).state ==
+              ARTICORE_MOTION_CANCELLED &&
+              runtime.motion_status(seventh_id).state ==
+                  ARTICORE_MOTION_CANCELLED,
+          "active cancellation is idempotent and cancels its dependent tail");
 }
 
 void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
@@ -4677,6 +4713,7 @@ void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
 
   const auto composite_request = [&] {
     auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.2);
+    request.operation = ARTICORE_OPERATION_MOVE_LINEAR;
     request.waypoints[1].positions = {0.1f, 0.9f};
     auto end = request.waypoints[1];
     end.time_s = 0.4;
@@ -4716,8 +4753,9 @@ void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
   const auto first_id = runtime.start_trajectory(composite_request(), 0,
                                                   nullptr, true);
   require(wait_for([&] {
-            const auto status = runtime.trajectory_status(first_id);
-            return status.state == ARTICORE_TRAJECTORY_RUNNING &&
+            const auto status = runtime.motion_status(first_id);
+            return status.motion_type == ARTICORE_MOTION_CARTESIAN_LINEAR &&
+                   status.state == ARTICORE_MOTION_RUNNING &&
                    status.progress >= 0.49f;
           }, 700ms),
           "composite motion reaches its approach feedback barrier");
@@ -4735,7 +4773,7 @@ void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
             "the path cannot start before physical approach convergence");
   }
   {
-    const auto status = runtime.trajectory_status(first_id);
+    const auto status = runtime.motion_status(first_id);
     require(status.progress >= 0.49f && status.progress <= 0.51f &&
                 status.active_segment == 0,
             "status remains at the approach barrier until feedback settles");
@@ -4748,8 +4786,8 @@ void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
   const auto second_id = runtime.start_trajectory(
       std::move(queued), 0, &queued_transaction, true);
   queued_transaction.unlock();
-  require(runtime.trajectory_status(second_id).state ==
-              ARTICORE_TRAJECTORY_QUEUED,
+  require(runtime.motion_status(second_id).state ==
+              ARTICORE_MOTION_QUEUED,
           "a composite motion remains one indivisible FIFO item");
 
   {
@@ -4757,20 +4795,20 @@ void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
     driver.emulate_arm_feedback = true;
   }
   std::this_thread::sleep_for(300ms);
-  require(runtime.trajectory_status(first_id).state ==
-              ARTICORE_TRAJECTORY_RUNNING &&
-              runtime.trajectory_status(first_id).progress <= 0.51f &&
-              runtime.trajectory_status(second_id).state ==
-                  ARTICORE_TRAJECTORY_QUEUED,
+  require(runtime.motion_status(first_id).state ==
+              ARTICORE_MOTION_RUNNING &&
+              runtime.motion_status(first_id).progress <= 0.51f &&
+              runtime.motion_status(second_id).state ==
+                  ARTICORE_MOTION_QUEUED,
           "joint arrival cannot bypass the Cartesian start-pose barrier");
   approach_pose_matches.store(true);
   require(wait_for([&] {
-            return runtime.trajectory_status(second_id).state ==
-                ARTICORE_TRAJECTORY_COMPLETED;
+            return runtime.motion_status(second_id).state ==
+                ARTICORE_MOTION_COMPLETED;
           }, 1800ms),
           "approach convergence resumes the path and then the queued motion");
-  require(runtime.trajectory_status(first_id).state ==
-              ARTICORE_TRAJECTORY_COMPLETED,
+  require(runtime.motion_status(first_id).state ==
+              ARTICORE_MOTION_COMPLETED,
           "the approach and path expose one final completion state");
 
   {
@@ -4786,12 +4824,12 @@ void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
   cancelable.waypoints[2].positions = {0.5f, 0.5f};
   const auto cancel_id = runtime.start_trajectory(std::move(cancelable));
   require(wait_for([&] {
-            return runtime.trajectory_status(cancel_id).progress >= 0.49f;
+            return runtime.motion_status(cancel_id).progress >= 0.49f;
           }, 700ms),
           "cancel test reaches the approach feedback barrier");
-  runtime.cancel_trajectory();
-  require(runtime.trajectory_status(cancel_id).state ==
-              ARTICORE_TRAJECTORY_CANCELLED,
+  runtime.cancel_all_motions();
+  require(runtime.motion_status(cancel_id).state ==
+              ARTICORE_MOTION_CANCELLED,
           "cancelling during approach cancels the whole composite motion");
   runtime.disable();
 }
@@ -4826,8 +4864,8 @@ void test_sampled_pv_trajectory_uses_direct_linear_references() {
   require(std::abs(sample.velocities[0] - 0.2f) < 0.01f,
           "sampled PV reports the constant segment velocity");
   require(wait_for([&] {
-            return runtime.trajectory_status().state ==
-                ARTICORE_TRAJECTORY_COMPLETED;
+            return runtime.motion_status().state ==
+                ARTICORE_MOTION_COMPLETED;
           }, 1500ms), "sampled PV motion retains native completion semantics");
   runtime.disable();
 }
@@ -4851,8 +4889,8 @@ void test_completed_trajectory_releases_hold_for_ordinary_pv() {
   runtime.start_trajectory(
       trajectory_request(motors, ARTICORE_MODE_PV));
   require(wait_for([&] {
-            return runtime.trajectory_status().state ==
-                ARTICORE_TRAJECTORY_COMPLETED;
+            return runtime.motion_status().state ==
+                ARTICORE_MOTION_COMPLETED;
           }, 1000ms), "native trajectory reaches its completed hold");
 
   ArticoreJointPvTarget targets[] = {
@@ -4860,7 +4898,7 @@ void test_completed_trajectory_releases_hold_for_ordinary_pv() {
       {sizeof(ArticoreJointPvTarget), motors[1].motor, 0.5f},
   };
   runtime.set_joint_pv(targets, 2, 1.0f);
-  require(runtime.trajectory_status().state == ARTICORE_TRAJECTORY_CANCELLED,
+  require(runtime.motion_status().state == ARTICORE_MOTION_CANCELLED,
           "ordinary PV atomically releases a completed trajectory hold");
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
@@ -4920,7 +4958,7 @@ void test_planned_reference_transaction_does_not_use_lagging_feedback() {
     }
   }
   require(id != 0 &&
-              runtime.trajectory_status().state == ARTICORE_TRAJECTORY_RUNNING,
+              runtime.motion_status().state == ARTICORE_MOTION_RUNNING,
           "planned reference and trajectory installation share one transaction");
   runtime.disable();
 }
@@ -4942,8 +4980,8 @@ void test_native_trajectory_completion_waits_for_physical_arrival() {
   const auto id = runtime.start_trajectory(
       trajectory_request(motors, ARTICORE_MODE_PV, 0.4));
   std::this_thread::sleep_for(480ms);
-  require(runtime.trajectory_status().trajectory_id == id &&
-              runtime.trajectory_status().state == ARTICORE_TRAJECTORY_RUNNING,
+  require(runtime.motion_status().motion_id == id &&
+              runtime.motion_status().state == ARTICORE_MOTION_RUNNING,
           "elapsed plan remains RUNNING until real feedback reaches the target");
 
   {
@@ -4959,8 +4997,8 @@ void test_native_trajectory_completion_waits_for_physical_arrival() {
     driver.emulate_arm_feedback = true;
   }
   require(wait_for([&] {
-            return runtime.trajectory_status().state ==
-                ARTICORE_TRAJECTORY_COMPLETED;
+            return runtime.motion_status().state ==
+                ARTICORE_MOTION_COMPLETED;
           }),
           "fresh stable target feedback completes the native trajectory");
   const auto health = runtime.health();
@@ -5006,7 +5044,7 @@ void test_pv_trajectory_settles_arrived_joints_independently() {
           }),
           "an arrived PV joint enters low-speed settling without waiting for "
           "a slower joint");
-  require(runtime.trajectory_status().state == ARTICORE_TRAJECTORY_RUNNING,
+  require(runtime.motion_status().state == ARTICORE_MOTION_RUNNING,
           "independent joint settling does not report whole-arm completion");
   runtime.disable();
 }
@@ -5029,8 +5067,8 @@ void test_completed_pv_hold_is_rechecked_and_restabilizes() {
   runtime.start_trajectory(
       trajectory_request(motors, ARTICORE_MODE_PV, 0.4));
   require(wait_for([&] {
-            return runtime.trajectory_status().state ==
-                ARTICORE_TRAJECTORY_COMPLETED;
+            return runtime.motion_status().state ==
+                ARTICORE_MOTION_COMPLETED;
           }, 800ms),
           "stable feedback completes PV trajectory after the settling window");
 
@@ -5040,8 +5078,8 @@ void test_completed_pv_hold_is_rechecked_and_restabilizes() {
     driver.emulated_pv_velocity = 0.08f;
   }
   require(wait_for([&] {
-            return runtime.trajectory_status().state ==
-                ARTICORE_TRAJECTORY_RUNNING;
+            return runtime.motion_status().state ==
+                ARTICORE_MOTION_RUNNING;
           }),
           "persistent post-completion motion returns status to settling");
   {
@@ -5060,8 +5098,8 @@ void test_completed_pv_hold_is_rechecked_and_restabilizes() {
     driver.emulated_pv_velocity = 0.0f;
   }
   require(wait_for([&] {
-            return runtime.trajectory_status().state ==
-                ARTICORE_TRAJECTORY_COMPLETED;
+            return runtime.motion_status().state ==
+                ARTICORE_MOTION_COMPLETED;
           }, 800ms),
           "restored stable feedback can complete the same final hold again");
   runtime.disable();
@@ -5084,11 +5122,11 @@ void test_native_trajectory_arrival_timeout_is_reported_in_health() {
   runtime.start_trajectory(
       trajectory_request(motors, ARTICORE_MODE_PV, 0.4));
   require(wait_for([&] {
-            return runtime.trajectory_status().state ==
-                ARTICORE_TRAJECTORY_FAULT;
+            return runtime.motion_status().state ==
+                ARTICORE_MOTION_FAULT;
           }, 5000ms),
           "a trajectory that never physically arrives reaches its native timeout");
-  const auto status = runtime.trajectory_status();
+  const auto status = runtime.motion_status();
   require(std::string(status.error).find("arrival timed out") !=
               std::string::npos &&
               std::string(status.error).find("target=") != std::string::npos,
@@ -5133,9 +5171,9 @@ void test_native_trajectory_uses_raw_mit_and_cancel_is_idempotent() {
                 frame[0].target_velocity > 0.0f,
             "MIT samples carry explicit dq, Kp, Kd and feedforward torque");
   }
-  runtime.cancel_trajectory();
-  runtime.cancel_trajectory();
-  require(runtime.trajectory_status().state == ARTICORE_TRAJECTORY_CANCELLED,
+  runtime.cancel_all_motions();
+  runtime.cancel_all_motions();
+  require(runtime.motion_status().state == ARTICORE_MOTION_CANCELLED,
           "trajectory cancellation is idempotent");
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
@@ -5169,7 +5207,7 @@ void test_native_point_target_replacement_is_validated_and_atomic() {
           }), "first point target starts asynchronously");
 
   const auto sampled = runtime.trajectory_sample();
-  require(sampled.active && sampled.trajectory_id == first_id &&
+  require(sampled.active && sampled.motion_id == first_id &&
               sampled.operation == ARTICORE_OPERATION_MOVE_POSE &&
               sampled.positions.size() == 2 &&
               sampled.velocities.size() == 2 &&
@@ -5188,8 +5226,8 @@ void test_native_point_target_replacement_is_validated_and_atomic() {
       [&] { runtime.start_trajectory(invalid, first_id); },
       "position limits",
       "invalid replacement is rejected before changing the active target");
-  require(runtime.trajectory_status().trajectory_id == first_id &&
-              runtime.trajectory_status().state == ARTICORE_TRAJECTORY_RUNNING,
+  require(runtime.motion_status().motion_id == first_id &&
+              runtime.motion_status().state == ARTICORE_MOTION_RUNNING,
           "rejected replacement leaves the previous point target running");
 
   auto replacement = trajectory_request(motors, ARTICORE_MODE_PV, 0.8);
@@ -5203,8 +5241,8 @@ void test_native_point_target_replacement_is_validated_and_atomic() {
   const auto replacement_id =
       runtime.start_trajectory(std::move(replacement), first_id);
   require(replacement_id != first_id &&
-              runtime.trajectory_status().trajectory_id == replacement_id &&
-              runtime.trajectory_status().state == ARTICORE_TRAJECTORY_RUNNING,
+              runtime.motion_status().motion_id == replacement_id &&
+              runtime.motion_status().state == ARTICORE_MOTION_RUNNING,
           "validated newer point target atomically replaces the old id");
   require_throws(
       [&] {
@@ -5213,7 +5251,7 @@ void test_native_point_target_replacement_is_validated_and_atomic() {
       },
       "active native trajectory",
       "strict multi-waypoint start does not inherit replacement semantics");
-  runtime.cancel_trajectory();
+  runtime.cancel_all_motions();
   runtime.disable();
 }
 
@@ -5796,7 +5834,7 @@ void test_product_cartesian_motion_is_pv_only() {
       "MIT product Runtime cannot start PTP, linear or circular Cartesian motion");
 }
 
-void test_product_cartesian_trajectory_speed_limits() {
+void test_product_cartesian_trajectory_limits() {
   require(
       std::abs(articore::kYunyiCartesianMaximumVelocity - 3.0f) < 1e-7f,
       "linear and circular Cartesian path ceiling remains 3 rad/s");
@@ -5807,7 +5845,7 @@ void test_product_cartesian_trajectory_speed_limits() {
           std::abs(articore::product_cartesian_reference_velocity_limit(
                        5.0f, 0.5f) -
                    1.5f) < 1e-7f,
-      "Cartesian 0..100 speed maps linearly onto 0..3 rad/s");
+      "Cartesian timing never raises the native reference above 3 rad/s");
   require(
       std::abs(articore::product_cartesian_reference_velocity_limit(
                    2.0f, 1.0f) -
@@ -5817,12 +5855,6 @@ void test_product_cartesian_trajectory_speed_limits() {
       std::abs(articore::product_pv_drive_velocity_limit(5.0f) -
                3.0f) < 1e-7f,
       "PV drive product ceiling remains 3 rad/s");
-  require(
-      std::abs(articore::product_circular_speed_percent(50.0f) - 20.0f) <
-              1e-7f &&
-          std::abs(articore::product_circular_speed_percent(100.0f) -
-                   40.0f) < 1e-7f,
-      "circular user speed maps onto the smooth real-hardware path range");
   require(
       std::abs(articore::native_cartesian_pv_velocity_limit(
                    0.126f, 0.05f, 3.0f) -
@@ -5850,6 +5882,109 @@ void test_product_cartesian_trajectory_speed_limits() {
           std::abs(articore::product_cartesian_acceleration_limit(11, 20.0f) -
                    6.0f) < 1e-7f,
       "Cartesian timing keeps arm limits and applies the wrist acceleration policy");
+}
+
+std::array<float, ARTICORE_PRODUCT_POSE_DOF> pose_rpy(
+    const ArticoreRobotPose& pose) {
+  return {
+      static_cast<float>(pose.position[0]),
+      static_cast<float>(pose.position[1]),
+      static_cast<float>(pose.position[2]),
+      static_cast<float>(std::atan2(pose.rotation[7], pose.rotation[8])),
+      static_cast<float>(std::asin(std::clamp(
+          -pose.rotation[6], -1.0, 1.0))),
+      static_cast<float>(std::atan2(pose.rotation[3], pose.rotation[0]))};
+}
+
+void configure_cartesian_planning_product(
+    articore::YunyiRuntimeResources& product) {
+  for (uint32_t side = 0; side < 2; ++side) {
+    product.pose_models[side] = std::make_unique<articore::RobotModel>(
+        "yunyi_v1_0", side);
+    ArticoreRobotModelInfo info{};
+    info.struct_size = sizeof(info);
+    product.pose_models[side]->get_info(&info);
+    for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+      const uint32_t index = side * ARTICORE_PRODUCT_ARM_DOF + joint;
+      auto& output = product.joints[index];
+      output.motor = reinterpret_cast<damiao::MotorHandle*>(
+          static_cast<uintptr_t>(index + 1));
+      output.direction = 1.0f;
+      output.lower = static_cast<float>(info.lower_limits[joint]);
+      output.upper = static_cast<float>(info.upper_limits[joint]);
+      output.velocity_limit = 5.0f;
+      output.acceleration_limit = 20.0f;
+      output.torque_limit = 20.0f;
+      product.arm_motors[index] = output.motor;
+    }
+  }
+}
+
+void test_cartesian_duration_is_exact_and_too_short_is_atomic() {
+  articore::YunyiRuntimeResources product;
+  configure_cartesian_planning_product(product);
+  articore::NativeTrajectorySample reference;
+  reference.positions.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+
+  std::array<double, ARTICORE_PRODUCT_ARM_DOF> start_q{};
+  auto end_q = start_q;
+  end_q[3] = 0.15;
+  ArticoreRobotPose start{};
+  start.struct_size = sizeof(start);
+  ArticoreRobotPose end{};
+  end.struct_size = sizeof(end);
+  product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      start_q.data(), start_q.size(), &start);
+  product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      end_q.data(), end_q.size(), &end);
+  const auto start_values = pose_rpy(start);
+  const auto end_values = pose_rpy(end);
+  const auto plan = articore::build_linear_plan_from_reference(
+      product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+      start_values.data(), end_values.data(), 5.0);
+  require(std::abs(plan.trajectory.waypoints.back().time_s - 5.0) < 1e-9 &&
+              plan.minimum_duration_s <= 5.0,
+          "Linear duration_s is the exact native planned duration");
+  require_throws(
+      [&] {
+        (void)articore::build_linear_plan_from_reference(
+            product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+            start_values.data(), end_values.data(), 0.001);
+      },
+      "duration_s is too short",
+      "an unsafe Cartesian duration is rejected before installation");
+
+  auto via_q = start_q;
+  via_q[3] = 0.075;
+  ArticoreRobotPose via{};
+  via.struct_size = sizeof(via);
+  product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      via_q.data(), via_q.size(), &via);
+  const auto via_values = pose_rpy(via);
+  const auto circular = articore::build_circular_plan_from_reference(
+      product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+      start_values.data(), via_values.data(), end_values.data(), 8.0);
+  require(
+      std::abs(circular.trajectory.waypoints.back().time_s - 8.0) < 1e-9 &&
+          circular.minimum_duration_s <= 8.0,
+      "Circular duration_s is the exact native planned duration");
+
+  auto approached_end_q = start_q;
+  approached_end_q[3] = 0.20;
+  ArticoreRobotPose approached_end{};
+  approached_end.struct_size = sizeof(approached_end);
+  product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      approached_end_q.data(), approached_end_q.size(), &approached_end);
+  const auto approached_end_values = pose_rpy(approached_end);
+  const auto composite = articore::build_linear_plan_from_reference(
+      product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+      end_values.data(), approached_end_values.data(), 8.0);
+  require(composite.trajectory.approach_segment_count == 1 &&
+              std::abs(
+                  composite.trajectory.waypoints.back().time_s - 8.0) < 1e-9,
+          "automatic PTP approach is included in the declared total duration");
 }
 
 void test_circular_arc_samples_support_continuous_native_ik() {
@@ -5955,7 +6090,7 @@ void test_native_trajectory_checks_segment_extrema_and_partial_power() {
                 });
           }), "partial trajectory sends only the intentionally enabled motor");
   runtime.disable();
-  require(runtime.trajectory_status().state == ARTICORE_TRAJECTORY_CANCELLED,
+  require(runtime.motion_status().state == ARTICORE_MOTION_CANCELLED,
           "disable terminates an active trajectory");
 }
 
@@ -6256,7 +6391,8 @@ int main() {
     RUN_TEST(test_cartesian_linear_samples_support_continuous_native_ik);
     RUN_TEST(test_three_point_circular_arc_geometry_and_degenerate_rejection);
     RUN_TEST(test_product_cartesian_motion_is_pv_only);
-    RUN_TEST(test_product_cartesian_trajectory_speed_limits);
+    RUN_TEST(test_product_cartesian_trajectory_limits);
+    RUN_TEST(test_cartesian_duration_is_exact_and_too_short_is_atomic);
     RUN_TEST(test_circular_arc_samples_support_continuous_native_ik);
     RUN_TEST(test_native_trajectory_checks_segment_extrema_and_partial_power);
     RUN_TEST(test_gravity_compensation_is_an_exclusive_hand_guiding_mode);

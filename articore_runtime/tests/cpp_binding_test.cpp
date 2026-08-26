@@ -32,12 +32,12 @@ int main() {
                                MovePose>);
   using MoveLinear = uint64_t (articore::Runtime::*)(
       uint32_t, const std::array<float, 6>&,
-      const std::array<float, 6>&, float);
+      const std::array<float, 6>&, double);
   static_assert(std::is_same_v<decltype(&articore::Runtime::move_linear),
                                MoveLinear>);
   using MoveCircular = uint64_t (articore::Runtime::*)(
       uint32_t, const std::array<float, 6>&,
-      const std::array<float, 6>&, const std::array<float, 6>&, float);
+      const std::array<float, 6>&, const std::array<float, 6>&, double);
   static_assert(std::is_same_v<decltype(&articore::Runtime::move_circular),
                                MoveCircular>);
 

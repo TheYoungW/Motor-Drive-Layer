@@ -575,7 +575,7 @@ void SafetyRuntime::stop_worker() {
     if (stopping_) return;
     stopping_ = true;
     terminate_trajectory_locked(
-        ARTICORE_TRAJECTORY_CANCELLED,
+        ARTICORE_MOTION_CANCELLED,
         "trajectory cancelled by Runtime disconnect");
     clear_pending_arm_mailbox();
     arm_mailbox_ = ArmMailbox{};
@@ -606,7 +606,7 @@ void SafetyRuntime::write_control_trace() noexcept {
   try {
     std::ofstream output(control_trace_path_, std::ios::out | std::ios::trunc);
     if (!output) return;
-    output << "sequence,timestamp_ns,runtime_state,motion_state,trajectory_id,progress"
+    output << "sequence,timestamp_ns,runtime_state,motion_state,motion_id,progress"
               ",tracking_time_scale,tracking_position_error";
     constexpr const char* roles[ARTICORE_PRODUCT_DUAL_ARM_DOF] = {
         "l-joint1", "l-joint2", "l-joint3", "l-joint4", "l-joint5",
@@ -623,7 +623,7 @@ void SafetyRuntime::write_control_trace() noexcept {
     for (const auto& sample : control_trace_) {
       output << sample.sequence << ',' << sample.timestamp_ns << ','
              << sample.runtime_state << ',' << sample.motion_state << ','
-             << sample.trajectory_id << ',' << sample.progress << ','
+             << sample.motion_id << ',' << sample.progress << ','
              << sample.tracking_time_scale << ','
              << sample.tracking_position_error;
       const auto write_values = [&](const auto& values) {
