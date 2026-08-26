@@ -89,9 +89,7 @@ class Runtime final {
   }
 
   bool enable() {
-    detail::check(
-        articore_runtime_enable(checked(), static_cast<int32_t>(control_mode())),
-        "enable");
+    detail::check(articore_runtime_enable(checked()), "enable");
     return true;
   }
 
@@ -217,20 +215,9 @@ class Runtime final {
                        float speed_percent = 50.0f) {
     uint64_t motion_id = 0;
     detail::check(
-        articore_runtime_move_linear_v2(
+        articore_runtime_move_linear(
             checked(), side, start_pose.data(), end_pose.data(),
             speed_percent, &motion_id),
-        "move_linear_v2");
-    return motion_id;
-  }
-
-  uint64_t move_linear_from_current(
-      uint32_t side, const std::array<float, 6>& end_pose,
-      float speed_percent = 50.0f) {
-    uint64_t motion_id = 0;
-    detail::check(
-        articore_runtime_move_linear(
-            checked(), side, end_pose.data(), speed_percent, &motion_id),
         "move_linear");
     return motion_id;
   }
@@ -250,37 +237,14 @@ class Runtime final {
     return motion_id;
   }
 
-  uint64_t move_circular_from_current(
-      uint32_t side,
-      const std::array<float, 6>& via_pose,
-      const std::array<float, 6>& end_pose,
-      float speed_percent = 50.0f) {
-    uint64_t motion_id = 0;
-    detail::check(
-        articore_runtime_move_circular_v2(
-            checked(), side, via_pose.data(), end_pose.data(),
-            speed_percent, &motion_id),
-        "move_circular_v2");
-    return motion_id;
-  }
-
-  ArticoreCartesianMotionStatus cartesian_motion_status() const {
-    ArticoreCartesianMotionStatus result{};
-    result.struct_size = sizeof(result);
-    detail::check(
-        articore_runtime_get_cartesian_motion_status(checked(), &result),
-        "get_cartesian_motion_status");
-    return result;
-  }
-
   ArticoreCartesianMotionStatus cartesian_motion_status(
       uint64_t motion_id) const {
     ArticoreCartesianMotionStatus result{};
     result.struct_size = sizeof(result);
     detail::check(
-        articore_runtime_get_cartesian_motion_status_v2(
+        articore_runtime_get_cartesian_motion_status(
             checked(), motion_id, &result),
-        "get_cartesian_motion_status_v2");
+        "get_cartesian_motion_status");
     return result;
   }
 
@@ -291,42 +255,19 @@ class Runtime final {
   }
 
   void set_grippers(float left_opening, float right_opening,
-                    int32_t gripper_level = ARTICORE_GRIPPER_FORCE_DEFAULT) {
+                    int32_t strength = ARTICORE_GRIPPER_STRENGTH_DEFAULT,
+                    ArticoreGripperMode mode = ARTICORE_GRIPPER_MODE_PROTECTED) {
     detail::check(
         articore_runtime_set_grippers(
-            checked(), left_opening, right_opening, gripper_level),
-        "set_grippers");
-  }
-
-  void set_grippers(float left_opening, float right_opening,
-                    int32_t strength, ArticoreGripperMode mode) {
-    detail::check(
-        articore_runtime_set_grippers_v2(
             checked(), left_opening, right_opening, strength,
             static_cast<int32_t>(mode)),
-        "set_grippers_v2");
+        "set_grippers");
   }
 
   ArticoreProductState state() const {
     ArticoreProductState result{};
     result.struct_size = sizeof(result);
     detail::check(articore_runtime_get_state(checked(), &result), "get_state");
-    return result;
-  }
-
-  ArticoreProductStateV2 state_v2() const {
-    ArticoreProductStateV2 result{};
-    result.struct_size = sizeof(result);
-    detail::check(
-        articore_runtime_get_state_v2(checked(), &result), "get_state_v2");
-    return result;
-  }
-
-  ArticoreProductStateV3 state_v3() const {
-    ArticoreProductStateV3 result{};
-    result.struct_size = sizeof(result);
-    detail::check(
-        articore_runtime_get_state_v3(checked(), &result), "get_state_v3");
     return result;
   }
 
@@ -372,32 +313,12 @@ class Runtime final {
         "reset_tcp_offset");
   }
 
-  ArticoreSafetyHealthV2 health() const {
-    ArticoreSafetyHealthV2 result{};
+  ArticoreSafetyHealth health() const {
+    ArticoreSafetyHealth result{};
     result.struct_size = sizeof(result);
-    detail::check(
-        articore_runtime_get_health_v2(checked(), &result), "get_health");
+    detail::check(articore_runtime_get_health(checked(), &result),
+                  "get_health");
     return result;
-  }
-
-  ArticoreMotorPowerState set_motor_power(const std::string& motor_name,
-                                          bool enable_motor) {
-    int32_t result = ARTICORE_MOTOR_POWER_UNKNOWN;
-    detail::check(
-        articore_runtime_set_motor_power(
-            checked(), motor_name.c_str(), enable_motor ? 1 : 0, &result),
-        "set_motor_power");
-    return static_cast<ArticoreMotorPowerState>(result);
-  }
-
-  ArticoreMotorPowerState motor_power_state(
-      const std::string& motor_name) const {
-    int32_t result = ARTICORE_MOTOR_POWER_UNKNOWN;
-    detail::check(
-        articore_runtime_get_motor_power(
-            checked(), motor_name.c_str(), &result),
-        "get_motor_power");
-    return static_cast<ArticoreMotorPowerState>(result);
   }
 
   void start_gravity_compensation(uint32_t transition_ms = 0) {

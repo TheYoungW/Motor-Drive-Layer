@@ -20,28 +20,28 @@ void check(int32_t result, const char* operation) {
       std::string(operation) + " failed: " + articore_runtime_last_error());
 }
 
-ArticoreProductStateV2 state(ArticoreRuntime* runtime) {
-  ArticoreProductStateV2 value{};
+ArticoreProductState state(ArticoreRuntime* runtime) {
+  ArticoreProductState value{};
   value.struct_size = sizeof(value);
-  check(articore_runtime_get_state_v2(runtime, &value), "get_state_v2");
+  check(articore_runtime_get_state(runtime, &value), "get_state");
   return value;
 }
 
-ArticoreSafetyHealthV2 health(ArticoreRuntime* runtime) {
-  ArticoreSafetyHealthV2 value{};
+ArticoreSafetyHealth health(ArticoreRuntime* runtime) {
+  ArticoreSafetyHealth value{};
   value.struct_size = sizeof(value);
-  check(articore_runtime_get_health_v2(runtime, &value), "get_health_v2");
-  if (value.health.state == ARTICORE_FAULT ||
-      value.health.state == ARTICORE_SAFE_STOP) {
+  check(articore_runtime_get_health(runtime, &value), "get_health");
+  if (value.state == ARTICORE_FAULT ||
+      value.state == ARTICORE_SAFE_STOP) {
     throw std::runtime_error(
         std::string("unsafe Runtime state: ") +
-        (value.health.fault_reason[0] ? value.health.fault_reason
+        (value.fault_reason[0] ? value.fault_reason
                                      : value.safety_reason));
   }
   return value;
 }
 
-float maximum_zero_error(const ArticoreProductStateV2& value) {
+float maximum_zero_error(const ArticoreProductState& value) {
   float error = 0.0f;
   for (const float position : value.left.positions) {
     error = std::max(error, std::abs(position));
@@ -72,7 +72,7 @@ int main(int argc, char** argv) {
   try {
     check(articore_runtime_connect(runtime), "connect");
     connected = true;
-    check(articore_runtime_enable(runtime, ARTICORE_MODE_PV), "enable");
+    check(articore_runtime_enable(runtime), "enable");
     enabled = true;
     check(articore_runtime_set_max_speed(runtime, 10.0f), "set_max_speed");
     JointArray zero{};
@@ -103,10 +103,10 @@ int main(int argc, char** argv) {
     const double elapsed = std::chrono::duration<double>(wall_end - wall_start).count();
     const double cpu_seconds = static_cast<double>(cpu_end - cpu_start) /
                                static_cast<double>(CLOCKS_PER_SEC);
-    const auto left_frames = after.health.left_transport.tx_frames -
-                             before.health.left_transport.tx_frames;
-    const auto right_frames = after.health.right_transport.tx_frames -
-                              before.health.right_transport.tx_frames;
+    const auto left_frames = after.left_transport.tx_frames -
+                             before.left_transport.tx_frames;
+    const auto right_frames = after.right_transport.tx_frames -
+                              before.right_transport.tx_frames;
     constexpr double frames_per_arm_cycle = ARTICORE_PRODUCT_ARM_DOF;
     const double left_hz = left_frames / frames_per_arm_cycle / elapsed;
     const double right_hz = right_frames / frames_per_arm_cycle / elapsed;
@@ -115,8 +115,8 @@ int main(int argc, char** argv) {
         right_hz < 490.0 || right_hz > 510.0) {
       throw std::runtime_error("native arm dispatch did not remain near 500 Hz");
     }
-    if (after.health.left_transport.send_errors != 0 ||
-        after.health.right_transport.send_errors != 0) {
+    if (after.left_transport.send_errors != 0 ||
+        after.right_transport.send_errors != 0) {
       throw std::runtime_error("transport send errors observed during soak");
     }
     std::cout << "elapsed_s=" << elapsed

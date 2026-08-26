@@ -64,41 +64,26 @@ jobs:
           import importlib.util
           from importlib.metadata import distribution, version
 
-          assert version("motor-drive-layer") == "0.13.1"
+          assert version("motor-drive-layer") == "0.14.0"
           assert importlib.util.find_spec("motor_drive_layer") is None
           dist = distribution("motor-drive-layer")
           files = {str(item): dist.locate_file(item) for item in dist.files or ()}
           runtime = files["motor_drive_layer_native/lib/libarticore_runtime.so"]
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00040001
+          assert runtime_lib.articore_runtime_abi_version() == 0x00050000
           assert hasattr(runtime_lib, "articore_runtime_set_joint_pv")
           assert hasattr(runtime_lib, "articore_runtime_set_joint_mit")
           assert hasattr(runtime_lib, "articore_runtime_submit_mit_frame")
-          assert not hasattr(runtime_lib, "articore_runtime_set_joint_positions")
-          assert not hasattr(runtime_lib, "articore_runtime_set_joint_positions_v2")
-          assert not hasattr(runtime_lib, "articore_runtime_submit_pv_frame")
-          assert not hasattr(runtime_lib, "articore_runtime_set_speed")
-          assert not hasattr(runtime_lib, "articore_runtime_get_speed")
-          assert not hasattr(runtime_lib, "articore_runtime_submit_pos_vel")
-          assert not hasattr(runtime_lib, "articore_runtime_submit_pos_vel_ex")
-          assert not hasattr(runtime_lib, "articore_runtime_submit_mit")
-          assert not hasattr(runtime_lib, "articore_runtime_submit_mit_ex")
           assert hasattr(runtime_lib, "articore_runtime_create_yunyi")
-          assert not hasattr(runtime_lib, "articore_runtime_create_yunyi_v2")
           assert hasattr(runtime_lib, "articore_runtime_move_pose")
           assert hasattr(runtime_lib, "articore_runtime_move_poses")
-          assert not hasattr(runtime_lib, "articore_runtime_get_move_pose_status")
-          assert not hasattr(runtime_lib, "articore_runtime_cancel_move_pose")
-          assert not hasattr(runtime_lib, "articore_runtime_move_cartesian")
-          assert hasattr(runtime_lib, "articore_runtime_move_linear_v2")
+          assert hasattr(runtime_lib, "articore_runtime_move_linear")
           assert hasattr(runtime_lib, "articore_runtime_move_circular")
-          runtime_lib.articore_runtime_capabilities.restype = ctypes.c_uint64
-          capabilities = runtime_lib.articore_runtime_capabilities()
-          assert capabilities & (1 << 59)
-          assert capabilities & (1 << 63)
-          assert capabilities & ((1 << 23) | (1 << 27)) == 0
-          assert not hasattr(runtime_lib, "articore_runtime_get_control_hz")
+          assert hasattr(runtime_lib, "articore_runtime_get_state")
+          assert hasattr(runtime_lib, "articore_runtime_get_health")
+          assert hasattr(runtime_lib, "articore_runtime_set_grippers")
+          assert hasattr(runtime_lib, "articore_runtime_get_cartesian_motion_status")
           runtime_lib.articore_robot_model_create.argtypes = [ctypes.c_char_p, ctypes.c_uint32]
           runtime_lib.articore_robot_model_create.restype = ctypes.c_void_p
           runtime_lib.articore_robot_model_free.argtypes = [ctypes.c_void_p]

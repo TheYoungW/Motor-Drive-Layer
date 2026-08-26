@@ -95,7 +95,7 @@ void SafetyRuntime::configure_gripper_products(
     const auto& binding = bindings[i];
     const auto end = std::find(
         std::begin(binding.profile_id), std::end(binding.profile_id), '\0');
-    if (binding.struct_size < sizeof(ArticoreGripperProductBinding) ||
+    if (binding.struct_size != sizeof(ArticoreGripperProductBinding) ||
         !binding.motor || end == std::end(binding.profile_id) ||
         end == std::begin(binding.profile_id) ||
         !unique.insert(binding.motor).second) {
@@ -176,7 +176,6 @@ void SafetyRuntime::configure_gripper_products(
     descriptor.safe_kp = normal.hold_kp;
     descriptor.safe_kd = normal.hold_kd;
     motor.force_level = ARTICORE_GRIPPER_FORCE_DEFAULT;
-    motor.legacy_force_level_mapping = false;
     motor.command_speed = profile.max_speed;
     motor.gripper_product_profile_id = binding.profile_id;
     motor.gripper_product_profile_bound = true;
@@ -207,15 +206,12 @@ void SafetyRuntime::configure_gripper_force_profiles(
         return motor.descriptor.is_gripper != 0;
       }));
   constexpr uint32_t kForceLevelCount = 10U;
-  constexpr uint32_t kLegacyForceLevelCount = 3U;
-  const bool legacy_three_levels =
-      gripper_count != 0 && count == gripper_count * kLegacyForceLevelCount;
   const bool complete_ten_levels =
       gripper_count != 0 && count == gripper_count * kForceLevelCount;
-  if (!legacy_three_levels && !complete_ten_levels) {
+  if (!complete_ten_levels) {
     throw std::invalid_argument(
         "force profiles must contain levels 1 through 10 for every active "
-        "gripper (legacy three-level profiles are also accepted)");
+        "gripper");
   }
 
   std::unordered_map<void*, std::unordered_map<int32_t,
@@ -227,11 +223,10 @@ void SafetyRuntime::configure_gripper_force_profiles(
           return candidate.descriptor.is_gripper &&
                  candidate.descriptor.motor == value.motor;
         });
-    const bool force_valid = legacy_three_levels
-        ? value.force_level >= 1 && value.force_level <= 3
-        : value.force_level >= ARTICORE_GRIPPER_FORCE_MIN &&
-              value.force_level <= ARTICORE_GRIPPER_FORCE_MAX;
-    if (value.struct_size < sizeof(ArticoreGripperForceProfile) ||
+    const bool force_valid =
+        value.force_level >= ARTICORE_GRIPPER_FORCE_MIN &&
+        value.force_level <= ARTICORE_GRIPPER_FORCE_MAX;
+    if (value.struct_size != sizeof(ArticoreGripperForceProfile) ||
         motor == motors_.end() || !force_valid ||
         !finite(value.contact_torque) || value.contact_torque < 0.0f ||
         !finite(value.overload_torque) ||
@@ -252,47 +247,12 @@ void SafetyRuntime::configure_gripper_force_profiles(
   for (auto& motor : motors_) {
     if (!motor.descriptor.is_gripper) continue;
     const auto values = configured.find(motor.descriptor.motor);
-    const auto expected = legacy_three_levels
-        ? kLegacyForceLevelCount : kForceLevelCount;
-    if (values == configured.end() || values->second.size() != expected) {
+    if (values == configured.end() ||
+        values->second.size() != kForceLevelCount) {
       throw std::invalid_argument(
           "force profiles must cover every required level for every active gripper");
     }
-    if (legacy_three_levels) {
-      const auto low = values->second.find(1);
-      const auto normal = values->second.find(2);
-      const auto high = values->second.find(3);
-      if (low == values->second.end() || normal == values->second.end() ||
-          high == values->second.end()) {
-        throw std::invalid_argument(
-            "legacy force profiles must contain LOW, NORMAL, and HIGH");
-      }
-      std::unordered_map<int32_t, MotorRecord::GripperForceProfile> expanded;
-      const auto blend = [](float from, float to, float ratio) {
-        return from + (to - from) * ratio;
-      };
-      for (int32_t level = ARTICORE_GRIPPER_FORCE_MIN;
-           level <= ARTICORE_GRIPPER_FORCE_MAX; ++level) {
-        const bool lighter = level <= ARTICORE_GRIPPER_FORCE_DEFAULT;
-        const float ratio = lighter
-            ? static_cast<float>(level - ARTICORE_GRIPPER_FORCE_MIN) / 4.0f
-            : static_cast<float>(level - ARTICORE_GRIPPER_FORCE_DEFAULT) / 5.0f;
-        const auto& from = lighter ? low->second : normal->second;
-        const auto& to = lighter ? normal->second : high->second;
-        expanded.emplace(level, MotorRecord::GripperForceProfile{
-            blend(from.contact_torque, to.contact_torque, ratio),
-            blend(from.overload_torque, to.overload_torque, ratio),
-            blend(from.moving_kp, to.moving_kp, ratio),
-            blend(from.moving_kd, to.moving_kd, ratio),
-            blend(from.hold_kp, to.hold_kp, ratio),
-            blend(from.hold_kd, to.hold_kd, ratio)});
-      }
-      motor.force_profiles = std::move(expanded);
-      motor.legacy_force_level_mapping = true;
-    } else {
-      motor.force_profiles = values->second;
-      motor.legacy_force_level_mapping = false;
-    }
+    motor.force_profiles = values->second;
     motor.force_profiles.emplace(
         ARTICORE_GRIPPER_STRENGTH_MIN,
         MotorRecord::GripperForceProfile{
@@ -443,15 +403,8 @@ void SafetyRuntime::set_gripper_commands(
           return candidate.descriptor.is_gripper &&
                  candidate.descriptor.motor == command.motor;
         });
-    int32_t effective_force_level = command.force_level;
-    if (motor != motors_.end() && motor->legacy_force_level_mapping) {
-      if (command.force_level == 2) {
-        effective_force_level = ARTICORE_GRIPPER_FORCE_DEFAULT;
-      } else if (command.force_level == 3) {
-        effective_force_level = ARTICORE_GRIPPER_FORCE_MAX;
-      }
-    }
-    if (command.struct_size < sizeof(ArticoreGripperCommand) ||
+    const int32_t effective_force_level = command.force_level;
+    if (command.struct_size != sizeof(ArticoreGripperCommand) ||
         motor == motors_.end() || !unique.insert(command.motor).second ||
         !finite(command.opening) || command.opening < 0.0f ||
         command.opening > 1000.0f || !finite(command.speed) ||

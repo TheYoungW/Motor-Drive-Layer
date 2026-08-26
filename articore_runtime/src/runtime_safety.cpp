@@ -584,6 +584,7 @@ void SafetyRuntime::enter_fault(const std::string& reason, bool torque_off,
 
 ArticoreSafetyHealth SafetyRuntime::health() const {
   ArticoreSafetyHealth result{};
+  result.struct_size = sizeof(result);
   const auto now = Clock::now();
   std::lock_guard<std::mutex> command_lock(command_mutex_);
   std::lock_guard<std::mutex> lock(state_mutex_);
@@ -655,14 +656,6 @@ ArticoreSafetyHealth SafetyRuntime::health() const {
     copy_text(result.unconfirmed_disable[i], unconfirmed_disable_[i]);
   }
   copy_text(result.fault_reason, fault_reason_);
-  return result;
-}
-
-ArticoreSafetyHealthV2 SafetyRuntime::health_v2() const {
-  ArticoreSafetyHealthV2 result{};
-  result.struct_size = sizeof(result);
-  result.health = health();
-  std::lock_guard<std::mutex> lock(state_mutex_);
   result.last_operation = last_operation_;
   result.last_operation_code = last_operation_code_;
   result.operation_failed_motor_count = static_cast<uint32_t>(
@@ -671,14 +664,13 @@ ArticoreSafetyHealthV2 SafetyRuntime::health_v2() const {
     copy_text(result.operation_failed_motors[i], operation_failed_motors_[i]);
   }
   copy_text(result.last_operation_error, last_operation_error_);
-  result.degraded = result.health.state == ARTICORE_DEGRADED;
-  result.safe_stopped = result.health.state == ARTICORE_SAFE_STOP;
+  result.degraded = result.state == ARTICORE_DEGRADED;
+  result.safe_stopped = result.state == ARTICORE_SAFE_STOP;
   result.requires_resynchronization =
-      result.health.state == ARTICORE_DEGRADED ||
-      result.health.state == ARTICORE_SAFE_STOP;
-  result.command_scale = result.health.state == ARTICORE_DEGRADED
+      result.state == ARTICORE_DEGRADED || result.state == ARTICORE_SAFE_STOP;
+  result.command_scale = result.state == ARTICORE_DEGRADED
       ? 0.25f
-      : (result.health.state == ARTICORE_SAFE_STOP ? 0.0f : 1.0f);
+      : (result.state == ARTICORE_SAFE_STOP ? 0.0f : 1.0f);
   copy_text(result.safety_reason, safety_reason_);
   return result;
 }

@@ -27,7 +27,7 @@ std::vector<std::pair<void*, float>> collect_targets(
   std::vector<std::pair<void*, float>> collected;
   collected.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
-    if (targets[i].struct_size < sizeof(Target) || !targets[i].motor ||
+    if (targets[i].struct_size != sizeof(Target) || !targets[i].motor ||
         !std::isfinite(targets[i].target_position)) {
       throw std::invalid_argument(
           std::string("ordinary ") + mode +

@@ -3,7 +3,7 @@
 #include <array>
 #include <cstdint>
 
-#include "articore/runtime_abi.h"
+#include "articore/detail/runtime_types.hpp"
 
 namespace articore {
 

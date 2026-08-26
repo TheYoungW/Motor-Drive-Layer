@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(motorbridge_native VERSION 0.13.1 LANGUAGES CXX)
+project(motorbridge_native VERSION 0.14.0 LANGUAGES CXX)
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
   message(FATAL_ERROR "The Yunyi Runtime supports Linux SocketCAN-FD only")
@@ -19,7 +19,7 @@ include(GNUInstallDirs)
 write_basic_package_version_file(
   "${CMAKE_CURRENT_BINARY_DIR}/MotorDriveLayerConfigVersion.cmake"
   VERSION ${PROJECT_VERSION}
-  COMPATIBILITY SameMajorVersion
+  COMPATIBILITY ExactVersion
 )
 configure_package_config_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MotorDriveLayerConfig.cmake.in"

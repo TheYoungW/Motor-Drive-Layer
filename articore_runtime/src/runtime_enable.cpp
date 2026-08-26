@@ -536,14 +536,7 @@ SafetyRuntime::MotorRecord* SafetyRuntime::resolve_motor_role(
     const std::string& role) {
   if (role.empty()) return nullptr;
   for (auto& motor : motors_) {
-    const std::string name = motor.descriptor.name;
-    if (name == role) return &motor;
-    const auto stable = stable_motor_role(motor);
-    if (stable == role) return &motor;
-    const std::string stable_prefix = motor.descriptor.side == 0 ? "l-" : "r-";
-    const std::string legacy_prefix = motor.descriptor.side == 0 ? "left/" : "right/";
-    if (stable.compare(0, stable_prefix.size(), stable_prefix) == 0 &&
-        legacy_prefix + stable.substr(stable_prefix.size()) == role) return &motor;
+    if (stable_motor_role(motor) == role) return &motor;
   }
   throw std::invalid_argument("unknown motor role: " + role);
 }

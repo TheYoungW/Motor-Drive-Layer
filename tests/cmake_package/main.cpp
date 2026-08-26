@@ -5,5 +5,5 @@
 int main() {
   static_assert(!std::is_copy_constructible_v<articore::Runtime>);
   static_assert(std::is_move_constructible_v<articore::Runtime>);
-  return articore_runtime_abi_version() == 0x00040001U ? 0 : 1;
+  return articore_runtime_abi_version() == 0x00050000U ? 0 : 1;
 }

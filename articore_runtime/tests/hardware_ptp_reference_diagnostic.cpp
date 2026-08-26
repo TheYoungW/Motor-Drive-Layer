@@ -30,13 +30,13 @@ void check(int32_t result, const char* operation) {
 }
 
 void check_health(ArticoreRuntime* runtime) {
-  ArticoreSafetyHealthV2 health{};
+  ArticoreSafetyHealth health{};
   health.struct_size = sizeof(health);
-  check(articore_runtime_get_health_v2(runtime, &health), "get_health_v2");
-  if (health.health.state == ARTICORE_FAULT ||
-      health.health.state == ARTICORE_SAFE_STOP) {
-    const char* reason = health.health.fault_reason[0]
-                             ? health.health.fault_reason
+  check(articore_runtime_get_health(runtime, &health), "get_health");
+  if (health.state == ARTICORE_FAULT ||
+      health.state == ARTICORE_SAFE_STOP) {
+    const char* reason = health.fault_reason[0]
+                             ? health.fault_reason
                              : health.safety_reason;
     throw std::runtime_error(
         std::string("Runtime safety failure: ") +
@@ -68,9 +68,9 @@ void wait_until_enabled_and_stationary(ArticoreRuntime* runtime,
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline) {
     check_health(runtime);
-    ArticoreProductStateV2 state{};
+    ArticoreProductState state{};
     state.struct_size = sizeof(state);
-    check(articore_runtime_get_state_v2(runtime, &state), "get_state_v2");
+    check(articore_runtime_get_state(runtime, &state), "get_state");
     float maximum_speed = 0.0f;
     for (float velocity : state.left.velocities) {
       maximum_speed = std::max(maximum_speed, std::abs(velocity));
@@ -117,9 +117,9 @@ void run_ptp(ArticoreRuntime* runtime, const Pose& target,
                                   2.0f * 3.14159265358979323846f)));
     }
 
-    ArticoreProductStateV2 state{};
+    ArticoreProductState state{};
     state.struct_size = sizeof(state);
-    check(articore_runtime_get_state_v2(runtime, &state), "get_state_v2");
+    check(articore_runtime_get_state(runtime, &state), "get_state");
     float maximum_speed = 0.0f;
     for (float velocity : state.left.velocities) {
       maximum_speed = std::max(maximum_speed, std::abs(velocity));
@@ -173,7 +173,7 @@ int main(int argc, char** argv) {
     const Pose original = read_left_pose(runtime);
     print_pose("original_pose", original);
 
-    check(articore_runtime_enable(runtime, ARTICORE_MODE_PV), "enable");
+    check(articore_runtime_enable(runtime), "enable");
     enabled = true;
     wait_until_enabled_and_stationary(runtime, std::chrono::seconds(4));
 

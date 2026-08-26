@@ -12,24 +12,12 @@
 namespace damiao {
 
 inline Limits model_limits(const std::string& model) {
-  if (model == "3507") return {-12.566f, 12.566f, -50.0f, 50.0f, -5.0f, 5.0f};
   if (model == "4310") return {-12.5f, 12.5f, -30.0f, 30.0f, -10.0f, 10.0f};
-  if (model == "4310P") return {-12.5f, 12.5f, -50.0f, 50.0f, -10.0f, 10.0f};
-  if (model == "4340" || model == "4340P") {
+  if (model == "4340P") {
     return {-12.5f, 12.5f, -10.0f, 10.0f, -28.0f, 28.0f};
   }
-  if (model == "4340_v20") return {-12.5f, 12.5f, -20.0f, 20.0f, -28.0f, 28.0f};
-  if (model == "6006") return {-12.5f, 12.5f, -45.0f, 45.0f, -20.0f, 20.0f};
-  if (model == "8006") return {-12.5f, 12.5f, -45.0f, 45.0f, -40.0f, 40.0f};
   if (model == "8009") return {-12.5f, 12.5f, -45.0f, 45.0f, -54.0f, 54.0f};
-  if (model == "10010L") return {-12.5f, 12.5f, -25.0f, 25.0f, -200.0f, 200.0f};
-  if (model == "10010") return {-12.5f, 12.5f, -20.0f, 20.0f, -200.0f, 200.0f};
-  if (model == "H3510") return {-12.5f, 12.5f, -280.0f, 280.0f, -1.0f, 1.0f};
-  if (model == "G6215") return {-12.5f, 12.5f, -45.0f, 45.0f, -10.0f, 10.0f};
-  if (model == "H6220") return {-12.5f, 12.5f, -45.0f, 45.0f, -10.0f, 10.0f};
-  if (model == "JH11") return {-12.5f, 12.5f, -10.0f, 10.0f, -12.0f, 12.0f};
-  if (model == "6248P") return {-12.566f, 12.566f, -20.0f, 20.0f, -120.0f, 120.0f};
-  throw std::invalid_argument("unknown Damiao model: " + model);
+  throw std::invalid_argument("motor model is not installed in yunyi_v1_0: " + model);
 }
 
 class Motor {

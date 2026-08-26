@@ -100,7 +100,7 @@ void SafetyRuntime::configure_joint_safety_limits(
   for (uint32_t i = 0; i < count; ++i) {
     const auto& value = limits[i];
     const auto configured = updated.find(value.motor);
-    if (value.struct_size < sizeof(ArticoreJointSafetyLimits) ||
+    if (value.struct_size != sizeof(ArticoreJointSafetyLimits) ||
         configured == updated.end() || !unique.insert(value.motor).second ||
         !finite(value.hard_lower_position) ||
         !finite(value.hard_upper_position) ||
@@ -557,24 +557,18 @@ bool SafetyRuntime::prepare_mit_torque_limited_commands(
   cycle_stats.struct_size = sizeof(cycle_stats);
   std::fill(std::begin(cycle_stats.applied_scale),
             std::end(cycle_stats.applied_scale), 1.0f);
-  if (requested.size() > ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS) {
+  if (requested.size() > ARTICORE_PRODUCT_DUAL_ARM_DOF) {
     error = "MIT torque limiter received too many arm joints";
     return false;
   }
 
   applied.assign(requested.begin(), requested.end());
   cycle_stats.joint_count = static_cast<uint32_t>(requested.size());
-  for (std::size_t index = 0; index < requested.size(); ++index) {
-    cycle_stats.joints[index] = requested[index].motor;
-  }
-
-  // Direct legacy embedders may omit native joint configuration. Preserve
-  // that ABI behavior; production SDK runtimes configure every arm motor and
-  // therefore always take the protected path below.
+  // The callback backend exists only for deterministic unit tests. Product
+  // Yunyi construction always installs native joint limits before connect.
   if (joint_configs_.empty()) return true;
 
-  std::array<ArticoreMotorState,
-             ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS> feedback{};
+  std::array<ArticoreMotorState, ARTICORE_PRODUCT_DUAL_ARM_DOF> feedback{};
   for (std::size_t index = 0; index < requested.size(); ++index) {
     const auto& command = requested[index];
     const auto configured = joint_configs_.find(command.motor);

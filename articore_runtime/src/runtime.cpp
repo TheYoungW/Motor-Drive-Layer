@@ -138,25 +138,22 @@ SafetyRuntime::SafetyRuntime(ArticoreRuntimeConfig config,
                              ArticoreControllerCallFn controller_enable_all,
                              ArticoreControllerCallFn motor_enable,
                              bool require_gripper_product_profiles,
-                             std::vector<ArticoreRuntimeTransportCapabilities>
-                                 transport_capabilities,
                              ArticoreMotorMaintenanceApi maintenance_api,
-                             uint32_t internal_control_rate_override)
+                             uint32_t test_control_rate_override)
     : SafetyRuntime(
           config,
           make_function_backend(api, controller_enable_all, motor_enable,
                                 maintenance_api),
           controller_group, left_controller, right_controller,
           std::move(motors), require_gripper_product_profiles,
-          std::move(transport_capabilities), internal_control_rate_override) {}
+          test_control_rate_override) {}
 
 SafetyRuntime::SafetyRuntime(
     ArticoreRuntimeConfig config, std::shared_ptr<MotorBackend> backend,
     void* controller_group, void* left_controller, void* right_controller,
     std::vector<ArticoreMotorDescriptor> motors,
     bool require_gripper_product_profiles,
-    std::vector<ArticoreRuntimeTransportCapabilities> transport_capabilities,
-    uint32_t internal_control_rate_override)
+    uint32_t test_control_rate_override)
     : config_(config), backend_(std::move(backend)),
       controller_group_(controller_group),
       require_gripper_product_profiles_(require_gripper_product_profiles) {
@@ -214,13 +211,9 @@ SafetyRuntime::SafetyRuntime(
     MotorRecord record;
     record.descriptor = motor;
     if (motor.is_gripper) {
-      // ABI 2.2 production runtimes receive all product-owned values from a
-      // named built-in profile before connect. Direct legacy construction is
-      // retained for internal compatibility tests and advanced embedders.
-      const bool legacy_descriptor = !require_gripper_product_profiles_;
       if (motor.open_position == motor.closed_position ||
           motor.normal_kp <= 0.0f || motor.close_speed <= 0.0f) {
-        if (!legacy_descriptor) {
+        if (require_gripper_product_profiles_) {
           record.gripper_state = ARTICORE_GRIPPER_DISABLED;
           motors_.push_back(std::move(record));
           continue;
@@ -254,54 +247,16 @@ SafetyRuntime::SafetyRuntime(
       })));
   degraded_pv_commands_.reserve(mit_torque_limited_commands_.capacity());
   degraded_mit_commands_.reserve(mit_torque_limited_commands_.capacity());
-  const bool has_gripper = std::any_of(
-      motors_.begin(), motors_.end(), [](const MotorRecord& motor) {
-        return motor.descriptor.is_gripper != 0;
-      });
-  if (has_gripper && !require_gripper_product_profiles_ &&
-      config_.gripper_fault_action != ARTICORE_GRIPPER_FAULT_HOLD &&
-      config_.gripper_fault_action != ARTICORE_GRIPPER_FAULT_DISABLE) {
-    throw std::invalid_argument("invalid legacy gripper fault action");
-  }
   if ((!active_sides_[0] && !active_sides_[1]) ||
       (active_sides_[0] && !controllers_[0]) ||
       (active_sides_[1] && !controllers_[1])) {
     throw std::invalid_argument(
         "Articore runtime requires a controller for every active side");
   }
-  std::array<bool, 2> capability_present{};
-  for (const auto& capability : transport_capabilities) {
-    if (capability.struct_size <
-        sizeof(ArticoreRuntimeTransportCapabilities)) {
-      throw std::invalid_argument(
-          "Articore transport capability struct_size is too small");
-    }
-    if (capability.side > 1 || !active_sides_[capability.side] ||
-        capability_present[capability.side]) {
-      throw std::invalid_argument(
-          "Articore transport capabilities must uniquely cover active sides");
-    }
-    capability_present[capability.side] = true;
-    const auto* transport_end = capability.transport + sizeof(capability.transport);
-    const auto* terminator =
-        std::find(capability.transport, transport_end, '\0');
-    if (terminator == transport_end) {
-      throw std::invalid_argument(
-          "Articore transport capability name is not NUL-terminated");
-    }
-  }
-  if (!transport_capabilities.empty()) {
-    for (uint8_t side = 0; side < 2; ++side) {
-      if (active_sides_[side] && !capability_present[side]) {
-        throw std::invalid_argument(
-            "Articore transport capabilities do not cover every active side");
-      }
-    }
-  }
   // Product control always runs at the fixed native 500 Hz cadence.
   control_hz_ = 500;
-  if (internal_control_rate_override != 0) {
-    control_hz_ = internal_control_rate_override;
+  if (test_control_rate_override != 0) {
+    control_hz_ = test_control_rate_override;
   }
   if (const char* path = std::getenv("ARTICORE_RUNTIME_CONTROL_TRACE")) {
     if (path[0] != '\0') {
@@ -328,8 +283,7 @@ SafetyRuntime::~SafetyRuntime() {
     close();
   } catch (...) {
     // Destructors cannot propagate a failed physical-disable confirmation.
-    // The checked C ABI close entry point reports it; legacy free remains
-    // best-effort but still has to stop and join the native worker safely.
+    // Destruction remains best-effort but must stop and join the worker.
     stop_worker();
   }
 }
@@ -352,7 +306,7 @@ void SafetyRuntime::configure_motor_identities(
   resolved.reserve(count);
   for (uint32_t index = 0; index < count; ++index) {
     const auto& identity = identities[index];
-    if (identity.struct_size < sizeof(ArticoreMotorIdentity) ||
+    if (identity.struct_size != sizeof(ArticoreMotorIdentity) ||
         !identity.motor || identity.can_id > 0xFFU) {
       throw std::invalid_argument("invalid motor identity");
     }
@@ -602,30 +556,6 @@ ArticorePresenceState SafetyRuntime::motor_presence(
 ArticoreControlMode SafetyRuntime::control_mode() const {
   std::lock_guard<std::mutex> lock(state_mutex_);
   return mode_;
-}
-
-uint64_t SafetyRuntime::active_capabilities() const {
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  uint64_t capabilities = 0;
-  for (const auto& motor : motors_) {
-    const auto found = motor_roles_.find(motor.descriptor.motor);
-    if (found == motor_roles_.end()) continue;
-    const auto presence = presence_.find(found->second);
-    if (presence == presence_.end() ||
-        presence->second == ARTICORE_NOT_INSTALLED) {
-      continue;
-    }
-    if (motor.descriptor.is_gripper) {
-      capabilities |= motor.descriptor.side == 0
-          ? ARTICORE_ACTIVE_GRIPPER_SIDE_0
-          : ARTICORE_ACTIVE_GRIPPER_SIDE_1;
-    } else {
-      capabilities |= motor.descriptor.side == 0
-          ? ARTICORE_ACTIVE_ARM_SIDE_0
-          : ARTICORE_ACTIVE_ARM_SIDE_1;
-    }
-  }
-  return capabilities;
 }
 
 ArticoreMitTorqueLimitStats SafetyRuntime::mit_torque_limit_stats() const {

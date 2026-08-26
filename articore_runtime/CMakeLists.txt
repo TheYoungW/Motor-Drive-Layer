@@ -79,6 +79,11 @@ target_link_options(
     "-Wl,--exclude-libs,ALL"
     "-Wl,--as-needed"
     "-Wl,-z,defs"
+    "-Wl,--version-script=${CMAKE_CURRENT_LIST_DIR}/articore_runtime.exports.map"
+)
+set_property(
+  TARGET articore_runtime APPEND PROPERTY LINK_DEPENDS
+  "${CMAKE_CURRENT_LIST_DIR}/articore_runtime.exports.map"
 )
 set_target_properties(
   articore_runtime PROPERTIES

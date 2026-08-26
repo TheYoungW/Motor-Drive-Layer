@@ -20,7 +20,7 @@ RIGHT_CIRCLE_VIA = [0.403537, -0.311889, 0.381639, 0.0, -1.570796, 0.0]
 RIGHT_CIRCLE_END = [0.403537, -0.231889, 0.461639, 0.0, -1.570796, 0.0]
 
 
-class _ArmStateV3(ctypes.Structure):
+class _ArmState(ctypes.Structure):
     _fields_ = [
         ("positions", ctypes.c_float * 7),
         ("velocities", ctypes.c_float * 7),
@@ -33,12 +33,12 @@ class _ArmStateV3(ctypes.Structure):
     ]
 
 
-class _ProductStateV3(ctypes.Structure):
+class _ProductState(ctypes.Structure):
     _fields_ = [
         ("struct_size", ctypes.c_uint32),
         ("has_grippers", ctypes.c_int32),
-        ("left", _ArmStateV3),
-        ("right", _ArmStateV3),
+        ("left", _ArmState),
+        ("right", _ArmState),
         ("left_gripper_available", ctypes.c_int32),
         ("right_gripper_available", ctypes.c_int32),
         ("left_gripper_opening", ctypes.c_float),
@@ -62,16 +62,16 @@ class _ProductStateV3(ctypes.Structure):
 
 def temperatures(robot: ArxDCanDualArm) -> dict[str, object]:
     runtime = robot._runtime
-    function = runtime._runtime_abi.lib.articore_runtime_get_state_v3
-    function.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ProductStateV3)]
+    function = runtime._runtime_abi.lib.articore_runtime_get_state
+    function.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ProductState)]
     function.restype = ctypes.c_int32
-    native = _ProductStateV3()
+    native = _ProductState()
     native.struct_size = ctypes.sizeof(native)
     result = int(function(runtime._require_open(), ctypes.byref(native)))
     if result != 0:
-        raise RuntimeError("articore_runtime_get_state_v3 failed")
+        raise RuntimeError("articore_runtime_get_state failed")
 
-    def arm(value: _ArmStateV3) -> dict[str, list[float | None]]:
+    def arm(value: _ArmState) -> dict[str, list[float | None]]:
         def values(source: object) -> list[float | None]:
             return [
                 float(source[index])

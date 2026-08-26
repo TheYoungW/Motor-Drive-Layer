@@ -28,8 +28,8 @@ constexpr float kPvArrivalVelocityTolerance = 0.05f;
 // a tighter target error, then install the stationary hold.
 constexpr float kPvFinalPositionTolerance = 0.005f;
 constexpr float kPvLoadedJointFinalPositionTolerance = 0.012f;
-// Arrival still accepts <=0.02 rad absolute error for compatibility, but a
-// completed PV hold must remain inside a tighter 0.012 rad peak-to-peak window.
+// Arrival accepts <=0.02 rad absolute error, but a completed PV hold must
+// remain inside a tighter 0.012 rad peak-to-peak window.
 // This rejects the reported ~0.0145 rad visible oscillation without treating
 // one quantized feedback step as instability.
 constexpr float kPvStablePositionRange = 0.012f;

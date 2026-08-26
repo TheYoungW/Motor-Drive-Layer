@@ -52,15 +52,15 @@ uint64_t now_ns() {
 }
 
 void require_healthy(const articore::SafetyRuntime& runtime) {
-  const auto health = runtime.health_v2();
-  if (health.health.state == ARTICORE_FAULT ||
-      health.health.state == ARTICORE_SAFE_STOP ||
-      health.health.state == ARTICORE_DEGRADED ||
-      !health.health.left_transport.healthy ||
-      !health.health.right_transport.healthy) {
+  const auto health = runtime.health();
+  if (health.state == ARTICORE_FAULT ||
+      health.state == ARTICORE_SAFE_STOP ||
+      health.state == ARTICORE_DEGRADED ||
+      !health.left_transport.healthy ||
+      !health.right_transport.healthy) {
     throw std::runtime_error(
         std::string("unsafe Runtime state: ") +
-        (health.health.fault_reason[0] ? health.health.fault_reason
+        (health.fault_reason[0] ? health.fault_reason
                                       : health.safety_reason));
   }
 }
@@ -326,7 +326,7 @@ int main(int argc, char** argv) {
     if (configured != ARTICORE_OPERATION_OK) {
       throw std::runtime_error(
           std::string("failed to configure ") + label + " motor mode: " +
-          runtime.health_v2().last_operation_error);
+          runtime.health().last_operation_error);
     }
     mode_configured = true;
     require_all_disabled(resources);
@@ -405,7 +405,7 @@ int main(int argc, char** argv) {
       if (restored != ARTICORE_OPERATION_OK) {
         throw std::runtime_error(
             std::string("failed to restore PV motor mode: ") +
-            runtime.health_v2().last_operation_error);
+            runtime.health().last_operation_error);
       }
       mode_configured = false;
       std::cout << "RESTORED motor_mode=pv" << std::endl;
@@ -440,7 +440,7 @@ int main(int argc, char** argv) {
           std::cerr << "MOTOR_MODE_RESTORED pv\n";
         } else {
           std::cerr << "MOTOR_MODE_RESTORE_ERROR "
-                    << runtime.health_v2().last_operation_error << '\n';
+                    << runtime.health().last_operation_error << '\n';
         }
       } catch (const std::exception& restore_error) {
         std::cerr << "MOTOR_MODE_RESTORE_ERROR " << restore_error.what()

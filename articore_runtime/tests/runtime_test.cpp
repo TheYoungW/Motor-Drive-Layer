@@ -432,7 +432,6 @@ int32_t get_transport_health(void* controller,
 
 ArticoreRuntimeConfig config() {
   ArticoreRuntimeConfig value{};
-  value.reserved_control_rate = 0;
   value.command_timeout_ms = 30;
   value.enable_grace_ms = 60;
   value.safe_hold_hz = 100;
@@ -442,23 +441,8 @@ ArticoreRuntimeConfig config() {
   value.safe_hold_failure_threshold = 1;
   value.disable_feedback_timeout_ms = 20;
   value.safe_pv_velocity_limit = 0.15f;
-  value.reserved_gripper_control_rate = 0;
   value.gripper_fault_action = ARTICORE_GRIPPER_FAULT_DISABLE;
   return value;
-}
-
-std::vector<ArticoreRuntimeTransportCapabilities> transport_capabilities(
-    const char* transport, bool can_fd, bool can_fd_brs) {
-  std::vector<ArticoreRuntimeTransportCapabilities> values(2);
-  for (uint32_t side = 0; side < values.size(); ++side) {
-    values[side].struct_size = sizeof(values[side]);
-    values[side].side = side;
-    values[side].can_fd = can_fd ? 1 : 0;
-    values[side].can_fd_brs = can_fd_brs ? 1 : 0;
-    std::strncpy(values[side].transport, transport,
-                 sizeof(values[side].transport) - 1);
-  }
-  return values;
 }
 
 ArticoreMotorApi api() {
@@ -639,10 +623,10 @@ void test_runtime_motor_power_supports_single_and_whole_product_queries() {
   runtime.connect();
 
   require(runtime.motor_power_state("") == ARTICORE_MOTOR_POWER_DISABLED &&
-              runtime.motor_power_state("left/joint1") ==
+              runtime.motor_power_state("l-joint1") ==
                   ARTICORE_MOTOR_POWER_DISABLED,
           "whole-product and single-motor power queries report disabled");
-  require(runtime.set_motor_power("left/joint1", true) ==
+  require(runtime.set_motor_power("l-joint1", true) ==
               ARTICORE_MOTOR_POWER_ENABLED &&
               runtime.health().state == ARTICORE_PARTIALLY_ENABLED &&
               runtime.motor_power_state("") == ARTICORE_MOTOR_POWER_MIXED,
@@ -669,16 +653,16 @@ void test_runtime_motor_power_supports_single_and_whole_product_queries() {
             "the worker filters intentionally disabled motors at dispatch");
   }
 
-  require(runtime.set_motor_power("left/joint1", false) ==
+  require(runtime.set_motor_power("l-joint1", false) ==
               ARTICORE_MOTOR_POWER_DISABLED &&
               runtime.health().state == ARTICORE_READY &&
               runtime.motor_power_state("") == ARTICORE_MOTOR_POWER_DISABLED,
           "single-motor disable is confirmed and restores READY");
-  require_throws([&] { runtime.set_motor_power("left/not-a-motor", true); },
+  require_throws([&] { runtime.set_motor_power("l-not-a-motor", true); },
                  "unknown motor role",
                  "unknown product motor selectors are rejected");
 
-  runtime.set_motor_power("left/joint1", true);
+  runtime.set_motor_power("l-joint1", true);
   runtime.enable(ARTICORE_MODE_PV);
   require(runtime.health().state == ARTICORE_ENABLED &&
               runtime.motor_power_state("") == ARTICORE_MOTOR_POWER_ENABLED,
@@ -714,7 +698,7 @@ void test_motor_power_batch_rolls_back_failed_enable_atomically() {
   require(runtime.health().state == ARTICORE_READY,
           "confirmed rollback restores READY rather than partial power");
   require_throws(
-      [&] { runtime.set_motor_power_batch({"l-joint1", "left/joint1"}, true); },
+      [&] { runtime.set_motor_power_batch({"l-joint1", "l-joint1"}, true); },
       "duplicate motor role", "batch aliases cannot select one motor twice");
   require_throws(
       [&] { runtime.set_motor_power_batch({}, false); },
@@ -780,7 +764,7 @@ void test_runtime_maintenance_keeps_ready_and_reports_partial_failure() {
   for (auto& entry : driver.motors) entry.second.status = 0;
   articore::SafetyRuntime runtime(
       config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, enable_all, enable_motor, false, {},
+      g_right_controller, motors, enable_all, enable_motor, false,
       maintenance_api());
   const auto controls = joint_configs(motors);
   runtime.configure_joints(controls.data(),
@@ -789,12 +773,12 @@ void test_runtime_maintenance_keeps_ready_and_reports_partial_failure() {
 
   require(runtime.set_zero() == ARTICORE_OPERATION_OK,
           "whole-runtime zero succeeds");
-  auto health = runtime.health_v2();
-  require(health.health.state == ARTICORE_READY &&
+  auto health = runtime.health();
+  require(health.state == ARTICORE_READY &&
               health.last_operation == ARTICORE_OPERATION_SET_ZERO &&
               health.last_operation_code == ARTICORE_OPERATION_OK &&
               health.operation_failed_motor_count == 0 &&
-              health.health.fault_reason[0] == '\0',
+              health.fault_reason[0] == '\0',
           "successful zero remains READY and clears operation diagnostics");
   require(driver.set_zero_calls == motors.size(),
           "zero covers every installed arm and gripper motor");
@@ -811,7 +795,7 @@ void test_runtime_maintenance_keeps_ready_and_reports_partial_failure() {
           "PV product mode configures arm joints as PV but keeps grippers MIT");
   require(runtime.configure_mode(static_cast<ArticoreControlMode>(99)) ==
               ARTICORE_OPERATION_INVALID_ARGUMENT &&
-              runtime.health_v2().last_operation_code ==
+              runtime.health().last_operation_code ==
                   ARTICORE_OPERATION_INVALID_ARGUMENT,
           "invalid mode is reported without entering a hardware transaction");
   require(runtime.clear_faults() == ARTICORE_OPERATION_OK,
@@ -820,9 +804,9 @@ void test_runtime_maintenance_keeps_ready_and_reports_partial_failure() {
   runtime.record_operation_result(
       ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_INVALID_ARGUMENT,
       "joint 4 exceeds product position limits");
-  health = runtime.health_v2();
-  require(health.health.state == ARTICORE_READY &&
-              health.health.fault_reason[0] == '\0' &&
+  health = runtime.health();
+  require(health.state == ARTICORE_READY &&
+              health.fault_reason[0] == '\0' &&
               health.last_operation == ARTICORE_OPERATION_COMMAND &&
               health.last_operation_code == ARTICORE_OPERATION_INVALID_ARGUMENT &&
               std::string(health.last_operation_error).find("joint 4") !=
@@ -832,19 +816,19 @@ void test_runtime_maintenance_keeps_ready_and_reports_partial_failure() {
       ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
 
   runtime.estop();
-  health = runtime.health_v2();
-  require(health.health.state == ARTICORE_FAULT &&
-              health.health.disable_confirmed == 1 &&
-              std::string(health.health.fault_reason) ==
+  health = runtime.health();
+  require(health.state == ARTICORE_FAULT &&
+              health.disable_confirmed == 1 &&
+              std::string(health.fault_reason) ==
                   "emergency stop requested",
           "estop latches an already-disabled product without re-enabling it");
   require(runtime.clear_faults() == ARTICORE_OPERATION_INVALID_STATE &&
               runtime.health().state == ARTICORE_FAULT,
           "clear faults cannot release an emergency-stop latch");
   runtime.recover();
-  health = runtime.health_v2();
-  require(health.health.state == ARTICORE_READY &&
-              health.health.disable_confirmed == 1 &&
+  health = runtime.health();
+  require(health.state == ARTICORE_READY &&
+              health.disable_confirmed == 1 &&
               health.last_operation == ARTICORE_OPERATION_RECOVER &&
               health.last_operation_code == ARTICORE_OPERATION_OK,
           "recover returns calibrated-zero product to confirmed READY");
@@ -854,30 +838,30 @@ void test_runtime_maintenance_keeps_ready_and_reports_partial_failure() {
   }
   require(runtime.clear_faults() == ARTICORE_OPERATION_OK,
           "fault clear is available while a disabled Runtime is FAULT");
-  health = runtime.health_v2();
-  require(health.health.state == ARTICORE_READY &&
-              health.health.fault_reason[0] == '\0' &&
-              health.health.motor_fault_count == 0,
+  health = runtime.health();
+  require(health.state == ARTICORE_READY &&
+              health.fault_reason[0] == '\0' &&
+              health.motor_fault_count == 0,
           "successful fault clear removes the latch and returns READY");
 
   driver.fail_maintenance_motor = motors[1].motor;
   require(runtime.set_zero() == ARTICORE_OPERATION_MOTOR_COMMAND,
           "partial zero returns a stable motor-command error");
-  health = runtime.health_v2();
-  require(health.health.state == ARTICORE_FAULT &&
+  health = runtime.health();
+  require(health.state == ARTICORE_FAULT &&
               health.last_operation_code == ARTICORE_OPERATION_MOTOR_COMMAND &&
               health.operation_failed_motor_count == 1 &&
               std::string(health.operation_failed_motors[0]) ==
                   motors[1].name &&
-              health.health.fault_reason[0] != '\0',
+              health.fault_reason[0] != '\0',
           "partial zero is never reported as success and is visible in health");
 
   require_throws([&] { runtime.recover(); },
                  "recover failed during clear recoverable faults",
                  "recover reports the exact failed whole-product stage");
-  health = runtime.health_v2();
-  require(health.health.state == ARTICORE_FAULT &&
-              health.health.disable_confirmed == 1 &&
+  health = runtime.health();
+  require(health.state == ARTICORE_FAULT &&
+              health.disable_confirmed == 1 &&
               health.last_operation == ARTICORE_OPERATION_RECOVER &&
               health.last_operation_code == ARTICORE_OPERATION_MOTOR_COMMAND &&
               std::string(health.last_operation_error).find(
@@ -899,7 +883,7 @@ void test_connect_mode_configuration_accepts_moving_disabled_feedback() {
 
   articore::SafetyRuntime runtime(
       config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, enable_all, enable_motor, false, {},
+      g_right_controller, motors, enable_all, enable_motor, false,
       maintenance_api());
   const auto controls = joint_configs(motors);
   runtime.configure_joints(controls.data(),
@@ -922,7 +906,7 @@ void test_connect_mode_configuration_accepts_moving_disabled_feedback() {
 
   require(runtime.configure_mode(ARTICORE_MODE_PV) ==
               ARTICORE_OPERATION_NOT_STATIONARY &&
-              std::string(runtime.health_v2().last_operation_error).find(
+              std::string(runtime.health().last_operation_error).find(
                   "left/l-joint5") != std::string::npos,
           "explicit maintenance mode changes still require stationary motors");
 
@@ -962,7 +946,7 @@ void test_connect_enabled_motor_fault_is_recoverable_from_ready() {
 
   articore::SafetyRuntime runtime(
       config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, enable_all, enable_motor, false, {},
+      g_right_controller, motors, enable_all, enable_motor, false,
       maintenance_api());
   const auto controls = joint_configs(motors);
   runtime.configure_joints(controls.data(),
@@ -975,9 +959,9 @@ void test_connect_enabled_motor_fault_is_recoverable_from_ready() {
   require(runtime.configure_mode_for_connect(ARTICORE_MODE_PV) ==
               ARTICORE_OPERATION_NOT_DISABLED,
           "connect mode configuration rejects one physically enabled Motor");
-  auto health = runtime.health_v2();
-  require(health.health.state == ARTICORE_FAULT &&
-              health.health.disable_confirmed == 0 &&
+  auto health = runtime.health();
+  require(health.state == ARTICORE_FAULT &&
+              health.disable_confirmed == 0 &&
               health.operation_failed_motor_count == 1 &&
               std::string(health.operation_failed_motors[0]) ==
                   "left/l-joint1" &&
@@ -986,9 +970,9 @@ void test_connect_enabled_motor_fault_is_recoverable_from_ready() {
           "connect configuration failure becomes a named recoverable fault");
 
   runtime.recover();
-  health = runtime.health_v2();
-  require(health.health.state == ARTICORE_READY &&
-              health.health.disable_confirmed == 1 &&
+  health = runtime.health();
+  require(health.state == ARTICORE_READY &&
+              health.disable_confirmed == 1 &&
               health.last_operation == ARTICORE_OPERATION_RECOVER &&
               health.last_operation_code == ARTICORE_OPERATION_OK,
           "recover completes from a connect-time physical-enable mismatch");
@@ -1023,28 +1007,28 @@ void test_connect_motor_fault_is_clearable_and_reconfigures_product() {
 
   articore::SafetyRuntime runtime(
       config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, enable_all, enable_motor, false, {},
+      g_right_controller, motors, enable_all, enable_motor, false,
       maintenance_api());
   const auto controls = joint_configs(motors);
   runtime.configure_joints(controls.data(),
                            static_cast<uint32_t>(controls.size()));
 
   runtime.connect();
-  auto health = runtime.health_v2();
-  require(health.health.state == ARTICORE_FAULT &&
-              health.health.disable_confirmed == 0 &&
-              health.health.motor_fault_count == 1 &&
-              std::string(health.health.motor_faults[0]) ==
+  auto health = runtime.health();
+  require(health.state == ARTICORE_FAULT &&
+              health.disable_confirmed == 0 &&
+              health.motor_fault_count == 1 &&
+              std::string(health.motor_faults[0]) ==
                   "left/l-joint1" &&
               runtime.motor_presence("left/l-joint1") == ARTICORE_FAULTED,
           "connect preserves communication and exposes a recoverable Motor fault");
 
   require(runtime.clear_faults() == ARTICORE_OPERATION_OK,
           "fault clear does not require a stationary faulted Motor");
-  health = runtime.health_v2();
-  require(health.health.state == ARTICORE_READY &&
-              health.health.disable_confirmed == 1 &&
-              health.health.motor_fault_count == 0 &&
+  health = runtime.health();
+  require(health.state == ARTICORE_READY &&
+              health.disable_confirmed == 1 &&
+              health.motor_fault_count == 0 &&
               health.last_operation == ARTICORE_OPERATION_CLEAR_FAULTS &&
               health.last_operation_code == ARTICORE_OPERATION_OK &&
               runtime.motor_presence("left/l-joint1") == ARTICORE_PRESENT,
@@ -1070,7 +1054,7 @@ void test_disconnect_disables_after_connect_configuration_failure() {
 
   articore::SafetyRuntime runtime(
       config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, enable_all, enable_motor, false, {},
+      g_right_controller, motors, enable_all, enable_motor, false,
       maintenance_api());
   const auto controls = joint_configs(motors);
   runtime.configure_joints(controls.data(),
@@ -1102,16 +1086,16 @@ void test_recover_connects_a_live_disconnected_runtime() {
 
   articore::SafetyRuntime runtime(
       config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, enable_all, enable_motor, false, {},
+      g_right_controller, motors, enable_all, enable_motor, false,
       maintenance_api());
   const auto controls = joint_configs(motors);
   runtime.configure_joints(controls.data(),
                            static_cast<uint32_t>(controls.size()));
 
   runtime.recover();
-  const auto health = runtime.health_v2();
-  require(health.health.state == ARTICORE_READY &&
-              health.health.disable_confirmed == 1 &&
+  const auto health = runtime.health();
+  require(health.state == ARTICORE_READY &&
+              health.disable_confirmed == 1 &&
               health.last_operation == ARTICORE_OPERATION_RECOVER &&
               health.last_operation_code == ARTICORE_OPERATION_OK,
           "recover establishes feedback and completes from DISCONNECTED");
@@ -1124,7 +1108,7 @@ void test_disconnect_is_terminal_and_idempotent() {
   for (auto& entry : driver.motors) entry.second.status = 0;
   articore::SafetyRuntime runtime(
       config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {},
+      g_right_controller, motors, nullptr, nullptr, false,
       maintenance_api());
   runtime.connect();
   runtime.disconnect();
@@ -1277,7 +1261,7 @@ void test_pv_watchdog_safe_hold_and_fault() {
   auto motors = descriptors(driver);
   articore::SafetyRuntime runtime(
       config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, enable_all, enable_motor, false, {},
+      g_right_controller, motors, enable_all, enable_motor, false,
       maintenance_api());
   const auto controls = joint_configs(motors);
   runtime.configure_joints(controls.data(),
@@ -1499,7 +1483,6 @@ void test_gripper_stall_switches_to_contact_hold_target() {
   motors[2].hold_offset = 0.08f;
   auto cfg = config();
   cfg.command_timeout_ms = 500;
-  cfg.reserved_gripper_control_rate = 500;
   articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);
   runtime.connect();
@@ -1556,7 +1539,6 @@ void test_gripper_torque_spike_does_not_trigger_contact() {
   motors[2].contact_hold_ms = 500;
   auto cfg = config();
   cfg.command_timeout_ms = 500;
-  cfg.reserved_gripper_control_rate = 500;
   articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);
   runtime.connect();
@@ -1641,7 +1623,6 @@ void test_gripper_command_profiles_and_bidirectional_ramp() {
   auto motors = descriptors(driver);
   auto cfg = config();
   cfg.command_timeout_ms = 500;
-  cfg.reserved_control_rate = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100),
       g_left_controller, g_right_controller, motors);
@@ -2001,42 +1982,6 @@ void test_builtin_gripper_binding_is_complete_and_optional() {
           "a runtime without installed grippers needs no product binding");
 }
 
-void test_legacy_three_level_gripper_profiles_expand_to_ten_levels() {
-  FakeDriver driver;
-  g_driver = &driver;
-  auto motors = descriptors(driver);
-  articore::SafetyRuntime runtime(
-      config(), api(), reinterpret_cast<void*>(0x100),
-      g_left_controller, g_right_controller, motors);
-  const auto full = gripper_force_profiles(motors);
-  auto low = full.front();
-  auto normal = full[4];
-  auto high = full.back();
-  low.force_level = 1;
-  normal.force_level = 2;
-  high.force_level = 3;
-  const ArticoreGripperForceProfile legacy[] = {low, normal, high};
-  runtime.configure_gripper_force_profiles(legacy, 3);
-  runtime.connect();
-  runtime.enable(ARTICORE_MODE_MIT);
-
-  ArticoreGripperCommand command{
-      sizeof(ArticoreGripperCommand), motors[2].motor,
-      1000.0f, 500.0f, 2};
-  runtime.set_gripper_commands(&command, 1);
-  require(wait_for([&] {
-            std::lock_guard<std::mutex> lock(driver.mutex);
-            return !driver.last_mit.empty() &&
-                   driver.last_mit[0].motor == motors[2].motor &&
-                   driver.last_mit[0].stiffness == 4.0f;
-          }),
-          "legacy NORMAL command value 2 retains the level-5 calibration");
-  command.force_level = ARTICORE_GRIPPER_FORCE_LEVEL_7;
-  runtime.set_gripper_commands(&command, 1);
-  require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
-          "legacy three-level profiles expose interpolated force levels 1..10");
-}
-
 void test_estop_holds_current_position_and_is_idempotent() {
   FakeDriver driver;
   g_driver = &driver;
@@ -2046,7 +1991,7 @@ void test_estop_holds_current_position_and_is_idempotent() {
   cfg.gripper_fault_action = ARTICORE_GRIPPER_FAULT_HOLD;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, enable_all, enable_motor, false, {},
+      g_right_controller, motors, enable_all, enable_motor, false,
       maintenance_api());
   const auto controls = joint_configs(motors);
   runtime.configure_joints(controls.data(),
@@ -2155,7 +2100,7 @@ void test_missing_feedback_degrades_then_safe_stops_and_resynchronizes() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, enable_all, enable_motor, false, {},
+      g_right_controller, motors, enable_all, enable_motor, false,
       maintenance_api());
   const auto controls = joint_configs(motors);
   runtime.configure_joints(controls.data(),
@@ -2175,11 +2120,11 @@ void test_missing_feedback_degrades_then_safe_stops_and_resynchronizes() {
           }),
           "sustained missing feedback enters DEGRADED");
   {
-    const auto health = runtime.health_v2();
+    const auto health = runtime.health();
     require(health.degraded == 1 && health.safe_stopped == 0 &&
                 health.requires_resynchronization == 1 &&
                 std::abs(health.command_scale - 0.25f) < 1e-6f &&
-                health.health.fault_reason[0] == '\0' &&
+                health.fault_reason[0] == '\0' &&
                 health.safety_reason[0] != '\0',
             "DEGRADED is derated and is not reported as a motor fault");
   }
@@ -2212,11 +2157,11 @@ void test_missing_feedback_degrades_then_safe_stops_and_resynchronizes() {
             return runtime.health().state == ARTICORE_SAFE_STOP;
           }),
           "continued missing feedback enters SAFE_STOP");
-  const auto stopped = runtime.health_v2();
-  require(stopped.health.safe_holding == 1 &&
-              stopped.health.disable_confirmed == 0 &&
-              stopped.health.left_transport.healthy == 0 &&
-              stopped.health.fault_reason[0] == '\0' &&
+  const auto stopped = runtime.health();
+  require(stopped.safe_holding == 1 &&
+              stopped.disable_confirmed == 0 &&
+              stopped.left_transport.healthy == 0 &&
+              stopped.fault_reason[0] == '\0' &&
               stopped.safe_stopped == 1 && stopped.command_scale == 0.0f,
           "SAFE_STOP holds without disabling or reporting motor FAULT");
   require(runtime.motor_presence("left/joint1") == ARTICORE_PRESENT,
@@ -2244,7 +2189,6 @@ void test_single_gripper_feedback_miss_reuses_current_output() {
   auto cfg = config();
   cfg.command_timeout_ms = 500;
   cfg.feedback_check_hz = 1;
-  cfg.reserved_gripper_control_rate = 100;
   // The assertion restores feedback after observing a retransmitted frame,
   // not after an exact number of scheduler ticks. Keep the threshold well
   // above host scheduling jitter so this remains a one-gap behavior test.
@@ -2773,7 +2717,6 @@ void test_raw_mit_torque_limit_recomputes_on_every_native_cycle() {
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
-  cfg.reserved_control_rate = 500;
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100),
@@ -2818,7 +2761,6 @@ void test_raw_mit_torque_limit_recomputes_on_every_native_cycle() {
   require(stats.torque_limit_activation_count > 0 &&
               stats.torque_limited_joint_mask == 1 &&
               stats.joint_count == 2 &&
-              stats.joints[0] == motors[0].motor &&
               std::abs(stats.requested_resultant_torque[0] - 21.0f) < 1e-5f &&
               std::abs(stats.applied_scale[0] - expected_scale) < 1e-5f &&
               std::abs(stats.applied_resultant_torque[0] - 10.0f) < 1e-5f,
@@ -3219,7 +3161,7 @@ void test_atomic_enable_failure_rolls_back_and_fault_disable_is_allowed() {
   driver.fail_enable[1] = true;
   articore::SafetyRuntime runtime(
       config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, enable_all, enable_motor, false, {},
+      g_right_controller, motors, enable_all, enable_motor, false,
       maintenance_api());
   const auto controls = joint_configs(motors);
   runtime.configure_joints(controls.data(),
@@ -3277,19 +3219,11 @@ void test_native_scheduler_is_fixed_at_500_hz() {
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
-  cfg.reserved_control_rate = 17;
-  articore::SafetyRuntime legacy_dual(
+  articore::SafetyRuntime dual_rate_override(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
       g_right_controller, motors);
-  require(legacy_dual.control_hz() == 500,
-          "legacy dual runtime uses the fixed native cadence");
-
-  articore::SafetyRuntime socketcanfd_brs_dual(
-      cfg, api(), reinterpret_cast<void*>(0x101), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false,
-      transport_capabilities("socketcanfd", true, true));
-  require(socketcanfd_brs_dual.control_hz() == 500,
-          "SocketCAN-FD+BRS runtime uses the fixed native cadence");
+  require(dual_rate_override.control_hz() == 500,
+          "dual runtime uses the fixed native cadence");
 
   std::vector<ArticoreMotorDescriptor> single_motors{motors[0]};
   articore::SafetyRuntime single(
@@ -3344,14 +3278,12 @@ void test_normal_gripper_uses_arm_control_rate() {
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
-  cfg.reserved_control_rate = 1;
   cfg.command_timeout_ms = 500;
   // Public rate placeholders are ignored. The private override keeps this
   // scheduler-mechanics test deterministic without exposing a product API.
-  cfg.reserved_gripper_control_rate = 1;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   runtime.connect();
   runtime.enable(ARTICORE_MODE_MIT);
   ArticoreMitCommand arm_commands[] = {
@@ -3392,7 +3324,7 @@ void test_normal_gripper_uses_arm_control_rate() {
         }));
     const auto gripper_count = gripper_total - gripper_baseline;
     require(gripper_count + 2 >= arm_count,
-            "normal gripper output follows arm control_hz instead of the legacy 100 Hz field");
+            "normal gripper output follows the arm control cadence");
     const auto combined = std::find_if(
         driver.group_mit_history.begin() +
             static_cast<std::ptrdiff_t>(group_baseline),
@@ -3434,12 +3366,6 @@ void test_motor_presence_is_fixed_and_fault_aware() {
   require(runtime.motor_presence("left/optional_tool") == ARTICORE_NOT_INSTALLED &&
               runtime.motor_presence("right/gripper") == ARTICORE_PRESENT,
           "runtime distinguishes absent optional roles from present motors");
-  const auto capabilities = runtime.active_capabilities();
-  require((capabilities & ARTICORE_ACTIVE_ARM_SIDE_0) != 0 &&
-              (capabilities & ARTICORE_ACTIVE_ARM_SIDE_1) != 0 &&
-              (capabilities & ARTICORE_ACTIVE_GRIPPER_SIDE_1) != 0 &&
-              (capabilities & ARTICORE_ACTIVE_GRIPPER_SIDE_0) == 0,
-          "active capabilities reflect the fixed discovered descriptor set");
   runtime.connect();
   bool mutation_rejected = false;
   try {
@@ -3476,7 +3402,6 @@ void test_latest_value_mailbox_drops_superseded_targets() {
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
-  cfg.reserved_control_rate = 5000;
   cfg.command_timeout_ms = 500;
   // This test intentionally stretches the control period to 50 ms so all
   // three submissions land before the next tick. Keep the enable grace well
@@ -3485,7 +3410,7 @@ void test_latest_value_mailbox_drops_superseded_targets() {
   cfg.enable_grace_ms = 1000;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 20);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 20);
   runtime.connect();
   runtime.enable(ARTICORE_MODE_PV);
   require(wait_for([&] {
@@ -3526,7 +3451,6 @@ void test_latest_value_mailbox_stays_bounded_under_fast_producer() {
   g_driver = &driver;
   auto motors = descriptors(driver);
   auto cfg = config();
-  cfg.reserved_control_rate = 500;
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
                                   g_left_controller, g_right_controller, motors);
@@ -4364,7 +4288,7 @@ void test_trajectory_errors_use_product_roles_and_allow_inward_recovery() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -4458,7 +4382,7 @@ void test_native_quintic_trajectory_executes_at_worker_rate() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -4538,7 +4462,7 @@ void test_cartesian_pv_adapts_drive_limit_and_slows_for_tracking_error() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   const auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -4588,7 +4512,7 @@ void test_cartesian_tracking_pause_times_out_to_safe_stop() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   const auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -4621,7 +4545,7 @@ void test_native_trajectory_fifo_executes_without_replacement() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   const auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -4690,7 +4614,7 @@ void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   const auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -4828,7 +4752,7 @@ void test_sampled_pv_trajectory_uses_direct_linear_references() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -4864,7 +4788,7 @@ void test_completed_trajectory_releases_hold_for_ordinary_pv() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -4902,7 +4826,7 @@ void test_planned_reference_transaction_does_not_use_lagging_feedback() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -4926,7 +4850,7 @@ void test_planned_reference_transaction_does_not_use_lagging_feedback() {
             "planned reference comes from the Runtime mailbox");
 
     // Deliberately make feedback disagree while the transaction is open.
-    // A circular-v2 replacement must start from the planned reference and not
+    // An auto-start circular plan must start from the planned reference and not
     // reject it by re-reading this lagging physical sample.
     {
       std::lock_guard<std::mutex> lock(driver.mutex);
@@ -4955,7 +4879,7 @@ void test_native_trajectory_completion_waits_for_physical_arrival() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -4985,7 +4909,7 @@ void test_native_trajectory_completion_waits_for_physical_arrival() {
                 ARTICORE_TRAJECTORY_COMPLETED;
           }),
           "fresh stable target feedback completes the native trajectory");
-  const auto health = runtime.health_v2();
+  const auto health = runtime.health();
   require(health.last_operation_error[0] == '\0',
           "successful physical arrival does not create a health error");
   runtime.disable();
@@ -4999,7 +4923,7 @@ void test_pv_trajectory_settles_arrived_joints_independently() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -5042,7 +4966,7 @@ void test_completed_pv_hold_is_rechecked_and_restabilizes() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -5067,7 +4991,7 @@ void test_completed_pv_hold_is_rechecked_and_restabilizes() {
           }),
           "persistent post-completion motion returns status to settling");
   {
-    const auto health = runtime.health_v2();
+    const auto health = runtime.health();
     require(
         health.last_operation_code == ARTICORE_OPERATION_FEEDBACK &&
             std::string(health.last_operation_error).find(
@@ -5097,7 +5021,7 @@ void test_native_trajectory_arrival_timeout_is_reported_in_health() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -5115,8 +5039,8 @@ void test_native_trajectory_arrival_timeout_is_reported_in_health() {
               std::string::npos &&
               std::string(status.error).find("target=") != std::string::npos,
           "arrival timeout status contains the failing target feedback detail");
-  const auto health = runtime.health_v2();
-  require(health.health.state == ARTICORE_RUNNING &&
+  const auto health = runtime.health();
+  require(health.state == ARTICORE_RUNNING &&
               health.last_operation == ARTICORE_OPERATION_START_TRAJECTORY &&
               health.last_operation_code == ARTICORE_OPERATION_FEEDBACK &&
               std::string(health.last_operation_error).find(
@@ -5134,7 +5058,7 @@ void test_native_trajectory_uses_raw_mit_and_cancel_is_idempotent() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -5176,7 +5100,7 @@ void test_native_point_target_replacement_is_validated_and_atomic() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
   auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -5867,7 +5791,7 @@ void test_native_trajectory_checks_segment_extrema_and_partial_power() {
   cfg.command_timeout_ms = 500;
   articore::SafetyRuntime runtime(
       cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
-      g_right_controller, motors, nullptr, enable_motor, false, {}, {}, 500);
+      g_right_controller, motors, nullptr, enable_motor, false, {}, 500);
   auto configured = joint_configs(motors);
   runtime.configure_joints(configured.data(), configured.size());
   runtime.connect();
@@ -6131,7 +6055,6 @@ int main() {
     RUN_TEST(test_gripper_force_profiles_are_product_configuration);
     RUN_TEST(test_builtin_yunyi_gripper_profile_owns_product_calibration);
     RUN_TEST(test_builtin_gripper_binding_is_complete_and_optional);
-    RUN_TEST(test_legacy_three_level_gripper_profiles_expand_to_ten_levels);
     RUN_TEST(test_estop_holds_current_position_and_is_idempotent);
     RUN_TEST(test_estop_hold_overrides_gripper_disable_fault_policy);
     RUN_TEST(test_missing_feedback_degrades_then_safe_stops_and_resynchronizes);

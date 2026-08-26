@@ -12,58 +12,27 @@ def _resolve_articore_runtime_path() -> Path:
     here = Path(__file__).resolve()
     repo_root = here.parents[2]
     lib_name = "libarticore_runtime.so"
-    candidates = []
     env = os.getenv("ARTICORE_RUNTIME_LIB")
     if env:
-        candidates.append(Path(env).expanduser())
-    candidates.extend(
-        [
-            repo_root
-            / "builds"
-            / "cmake"
-            / "default"
-            / "articore_runtime"
-            / lib_name,
-            repo_root
-            / "builds"
-            / "cmake"
-            / "default"
-            / "articore_runtime"
-            / "Release"
-            / lib_name,
-            repo_root
-            / "builds"
-            / "cmake"
-            / "direct-socketcanfd"
-            / "articore_runtime"
-            / lib_name,
-            repo_root / "builds" / "cmake" / "ci" / "articore_runtime" / lib_name,
-            repo_root / "build" / "articore_runtime" / lib_name,
-            repo_root
-            / "build"
-            / "articore_runtime"
-            / "Release"
-            / lib_name,
-            repo_root / "cpp_damiao" / "build" / "articore_runtime" / lib_name,
-            repo_root
-            / "cpp_damiao"
-            / "build"
-            / "articore_runtime"
-            / "Release"
-            / lib_name,
-            here.parent / "src" / "motor_drive_layer_native" / "lib" / lib_name,
-        ]
+        path = Path(env).expanduser().resolve()
+        if not path.is_file():
+            raise RuntimeError(f"ARTICORE_RUNTIME_LIB is not a file: {path}")
+        return path
+    path = (
+        repo_root
+        / "builds"
+        / "cmake"
+        / "default"
+        / "articore_runtime"
+        / lib_name
     )
-    for path in candidates:
-        if path.exists():
-            return path
-    tried = "\n".join(f"- {path}" for path in candidates)
+    if path.is_file():
+        return path
     raise RuntimeError(
-        "Cannot locate articore_runtime shared library for wheel build.\n"
-        f"Tried:\n{tried}\n"
-        "Build the unified native targets first with "
+        f"Cannot locate the current Runtime at {path}. Build it with "
         "`cmake -S . -B builds/cmake/default && "
-        "cmake --build builds/cmake/default`."
+        "cmake --build builds/cmake/default`, or set ARTICORE_RUNTIME_LIB "
+        "to one explicit libarticore_runtime.so."
     )
 
 

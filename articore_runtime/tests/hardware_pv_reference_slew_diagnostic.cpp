@@ -42,15 +42,15 @@ uint64_t now_ns() {
 }
 
 void require_healthy(const articore::SafetyRuntime& runtime) {
-  const auto health = runtime.health_v2();
-  if (health.health.state == ARTICORE_FAULT ||
-      health.health.state == ARTICORE_SAFE_STOP ||
-      health.health.state == ARTICORE_DEGRADED ||
-      !health.health.left_transport.healthy ||
-      !health.health.right_transport.healthy) {
+  const auto health = runtime.health();
+  if (health.state == ARTICORE_FAULT ||
+      health.state == ARTICORE_SAFE_STOP ||
+      health.state == ARTICORE_DEGRADED ||
+      !health.left_transport.healthy ||
+      !health.right_transport.healthy) {
     throw std::runtime_error(
         std::string("unsafe Runtime state: ") +
-        (health.health.fault_reason[0] ? health.health.fault_reason
+        (health.fault_reason[0] ? health.fault_reason
                                       : health.safety_reason));
   }
 }

@@ -213,7 +213,7 @@ RobotModel::RobotModel(
 RobotModel::~RobotModel() = default;
 
 void RobotModel::get_info(ArticoreRobotModelInfo* info) const {
-  if (!info || info->struct_size < sizeof(*info)) {
+  if (!info || info->struct_size != sizeof(*info)) {
     throw std::invalid_argument("robot model info is null or too small");
   }
   const uint32_t size = info->struct_size;
@@ -233,7 +233,7 @@ void RobotModel::get_info(ArticoreRobotModelInfo* info) const {
 }
 
 void RobotModel::fk(const double* q, uint32_t count, ArticoreRobotPose* pose) const {
-  if (!pose || pose->struct_size < sizeof(*pose)) {
+  if (!pose || pose->struct_size != sizeof(*pose)) {
     throw std::invalid_argument("robot pose is null or too small");
   }
   const auto configuration = impl_->vector(q, count, "q");
@@ -366,11 +366,11 @@ void RobotModel::ik_impl(
     uint32_t initial_q_count, const ArticoreIkOptions* options,
     ArticoreIkResult* result, bool prefer_nearest_success,
     const std::chrono::steady_clock::time_point* deadline) const {
-  if (!target || target->struct_size < sizeof(*target))
+  if (!target || target->struct_size != sizeof(*target))
     throw std::invalid_argument("IK target pose is null or too small");
-  if (!result || result->struct_size < sizeof(*result))
+  if (!result || result->struct_size != sizeof(*result))
     throw std::invalid_argument("IK result is null or too small");
-  if (options && options->struct_size < sizeof(*options))
+  if (options && options->struct_size != sizeof(*options))
     throw std::invalid_argument("IK options struct is too small");
   const uint32_t max_iterations = options && options->max_iterations ? options->max_iterations : 1000;
   const uint32_t max_retries = options && options->max_retries

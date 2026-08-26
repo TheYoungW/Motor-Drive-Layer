@@ -91,8 +91,7 @@ SocketCAN-FD pacing can overlap.
 Every `CanBus` exposes `TransportCapabilities`; `Controller::transport_capabilities()` returns the
 active instance's transport name, canonical payload size, physical channel count,
 CAN-FD, active CAN-FD BRS, parallel-batch, reconnect, process-session reuse, and hardware RX
-timestamp flags. The legacy capability struct remains ABI-stable; new callers use the
-size-versioned V2 query for `can_fd_brs`.
+timestamp flags.
 The pacing wrapper also records `TransportHealth`; `Controller::transport_health()` exposes live
 connection state, TX/RX counters, activity ages, and transport errors.
 

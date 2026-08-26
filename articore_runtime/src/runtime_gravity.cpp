@@ -55,7 +55,7 @@ void SafetyRuntime::configure_gravity_products(
     const auto& binding = bindings[index];
     const auto end = std::find(std::begin(binding.product_id),
                                std::end(binding.product_id), '\0');
-    if (binding.struct_size < sizeof(binding) || binding.runtime_side > 1 ||
+    if (binding.struct_size != sizeof(binding) || binding.runtime_side > 1 ||
         binding.robot_side > 1 || end == std::end(binding.product_id) ||
         end == std::begin(binding.product_id) ||
         !unique_sides.insert(binding.runtime_side).second) {
@@ -114,9 +114,9 @@ void SafetyRuntime::start_gravity_compensation(
     const ArticoreGravityCompensationConfig* config) {
   uint32_t transition_ms = 500;
   if (config) {
-    if (config->struct_size < sizeof(*config)) {
+    if (config->struct_size != sizeof(*config)) {
       throw std::invalid_argument(
-          "gravity compensation config struct_size is too small");
+          "gravity compensation config struct_size does not match");
     }
     if (config->transition_ms != 0) transition_ms = config->transition_ms;
   }
@@ -191,12 +191,6 @@ void SafetyRuntime::start_gravity_compensation(
   gravity_control_.status.joint_count = static_cast<uint32_t>(
       gravity_arms_.size() * kArmDof);
   reset_bimanual_follow_locked();
-  std::size_t output = 0;
-  for (const auto& arm : gravity_arms_) {
-    for (void* joint : arm.joints) {
-      gravity_control_.status.joints[output++] = joint;
-    }
-  }
   has_successful_command_ = true;
   last_successful_command_ = now;
   state_ = ARTICORE_RUNNING;

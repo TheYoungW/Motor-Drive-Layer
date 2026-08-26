@@ -476,26 +476,13 @@ YunyiRuntimeBundle create_yunyi_runtime(
       std::vector<damiao::Controller*>{resources->controllers[0].get(),
                                        resources->controllers[1].get()});
 
-  ArticoreRuntimeTransportCapabilities transports[2]{};
-  for (uint32_t side = 0; side < 2; ++side) {
-    transports[side].struct_size = sizeof(transports[side]);
-    transports[side].side = side;
-    transports[side].can_fd = 1;
-    transports[side].can_fd_brs = 1;
-    std::strncpy(transports[side].transport, "socketcanfd",
-                 sizeof(transports[side].transport) - 1);
-  }
-
   const ArticoreRuntimeConfig config{
-      0, 250, 2000, 100, 100, 3, 100, 1, 50, 0.2f, 0,
+      250, 2000, 100, 100, 3, 100, 1, 50, 0.2f,
       ARTICORE_GRIPPER_FAULT_HOLD};
   auto runtime = std::make_unique<SafetyRuntime>(
       config, std::make_shared<YunyiMotorBackend>(), resources.get(),
       resources->controllers[0].get(), resources->controllers[1].get(),
-      descriptors,
-      with_grippers,
-      std::vector<ArticoreRuntimeTransportCapabilities>(
-          std::begin(transports), std::end(transports)));
+      descriptors, with_grippers);
   runtime->configure_motor_identities(identities.data(), identities.size());
 
   const auto joints = configure_joint_table(*resources);

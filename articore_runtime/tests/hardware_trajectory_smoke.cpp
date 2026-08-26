@@ -26,7 +26,7 @@ void check(int32_t result, const char* operation) {
       (detail && detail[0] ? detail : "unknown Runtime error"));
 }
 
-JointArray positions(const ArticoreProductStateV2& state) {
+JointArray positions(const ArticoreProductState& state) {
   JointArray result{};
   std::copy(std::begin(state.left.positions), std::end(state.left.positions),
             result.begin());
@@ -35,7 +35,7 @@ JointArray positions(const ArticoreProductStateV2& state) {
   return result;
 }
 
-JointArray velocities(const ArticoreProductStateV2& state) {
+JointArray velocities(const ArticoreProductState& state) {
   JointArray result{};
   std::copy(std::begin(state.left.velocities), std::end(state.left.velocities),
             result.begin());
@@ -53,35 +53,35 @@ void set_waypoint_positions(ArticoreTrajectoryWaypoint& waypoint,
             std::begin(waypoint.right_positions));
 }
 
-ArticoreProductStateV2 read_state(ArticoreRuntime* runtime) {
-  ArticoreProductStateV2 state{};
+ArticoreProductState read_state(ArticoreRuntime* runtime) {
+  ArticoreProductState state{};
   state.struct_size = sizeof(state);
-  check(articore_runtime_get_state_v2(runtime, &state), "get_state_v2");
+  check(articore_runtime_get_state(runtime, &state), "get_state");
   return state;
 }
 
 void check_health(ArticoreRuntime* runtime,
                   const ArticoreTrajectoryStatus* status = nullptr) {
-  ArticoreSafetyHealthV2 health{};
+  ArticoreSafetyHealth health{};
   health.struct_size = sizeof(health);
-  check(articore_runtime_get_health_v2(runtime, &health), "get_health_v2");
-  if (health.health.state == ARTICORE_FAULT ||
-      health.health.state == ARTICORE_SAFE_STOP ||
+  check(articore_runtime_get_health(runtime, &health), "get_health");
+  if (health.state == ARTICORE_FAULT ||
+      health.state == ARTICORE_SAFE_STOP ||
       (status && status->state == ARTICORE_TRAJECTORY_FAULT)) {
     const char* reason = status && status->error[0]
                              ? status->error
-                             : (health.health.fault_reason[0]
-                                    ? health.health.fault_reason
+                             : (health.fault_reason[0]
+                                    ? health.fault_reason
                                     : health.safety_reason);
     throw std::runtime_error(std::string("trajectory safety failure: ") +
                              (reason[0] ? reason : "unknown safety error"));
   }
 }
 
-ArticoreProductStateV2 wait_until_stationary(ArticoreRuntime* runtime,
+ArticoreProductState wait_until_stationary(ArticoreRuntime* runtime,
                                              std::chrono::seconds timeout) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
-  ArticoreProductStateV2 state{};
+  ArticoreProductState state{};
   while (std::chrono::steady_clock::now() < deadline) {
     check_health(runtime);
     state = read_state(runtime);
@@ -217,7 +217,7 @@ int main(int argc, char** argv) {
       articore_runtime_free(runtime);
       return 0;
     }
-    check(articore_runtime_enable(runtime, ARTICORE_MODE_PV), "enable");
+    check(articore_runtime_enable(runtime), "enable");
     enabled = true;
 
     wait_until_stationary(runtime, std::chrono::seconds(4));

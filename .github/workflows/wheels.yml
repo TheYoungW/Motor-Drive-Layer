@@ -67,7 +67,7 @@ jobs:
           from importlib.metadata import distribution, version
           from pathlib import Path
 
-          assert version("motor-drive-layer") == "0.13.1"
+          assert version("motor-drive-layer") == "0.14.0"
           assert importlib.util.find_spec("motor_drive_layer") is None
           dist = distribution("motor-drive-layer")
           entries = {str(item): item for item in dist.files or ()}
@@ -76,46 +76,26 @@ jobs:
           assert not any("libmotor_abi" in name or "/dm_device/" in name for name in entries)
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00040001
+          assert runtime_lib.articore_runtime_abi_version() == 0x00050000
           assert hasattr(runtime_lib, "articore_runtime_create_yunyi")
-          assert not hasattr(runtime_lib, "articore_runtime_create_yunyi_v2")
           assert hasattr(runtime_lib, "articore_runtime_move_pose")
           assert hasattr(runtime_lib, "articore_runtime_move_poses")
-          assert not hasattr(runtime_lib, "articore_runtime_get_move_pose_status")
-          assert not hasattr(runtime_lib, "articore_runtime_cancel_move_pose")
-          assert not hasattr(runtime_lib, "articore_runtime_move_cartesian")
-          assert hasattr(runtime_lib, "articore_runtime_move_linear_v2")
+          assert hasattr(runtime_lib, "articore_runtime_move_linear")
           assert hasattr(runtime_lib, "articore_runtime_move_circular")
-          runtime_lib.articore_runtime_capabilities.restype = ctypes.c_uint64
-          capabilities = runtime_lib.articore_runtime_capabilities()
-          assert capabilities & (1 << 55)
-          assert hasattr(runtime_lib, "articore_runtime_move_circular_v2")
-          assert capabilities & (1 << 56)
-          assert hasattr(runtime_lib, "articore_runtime_get_state_v3")
-          assert capabilities & (1 << 57)
-          assert capabilities & (1 << 58)
+          assert hasattr(runtime_lib, "articore_runtime_get_state")
+          assert hasattr(runtime_lib, "articore_runtime_get_health")
+          assert hasattr(runtime_lib, "articore_runtime_set_grippers")
+          assert hasattr(runtime_lib, "articore_runtime_get_cartesian_motion_status")
           assert hasattr(runtime_lib, "articore_runtime_get_joint_angle_vel_limits")
-          assert capabilities & (1 << 59)
           assert hasattr(runtime_lib, "articore_runtime_set_joint_pv")
           assert hasattr(runtime_lib, "articore_runtime_set_joint_mit")
           assert hasattr(runtime_lib, "articore_runtime_submit_mit_frame")
-          assert not hasattr(runtime_lib, "articore_runtime_set_joint_positions")
-          assert not hasattr(runtime_lib, "articore_runtime_set_joint_positions_v2")
-          assert not hasattr(runtime_lib, "articore_runtime_submit_pv_frame")
-          assert not hasattr(runtime_lib, "articore_runtime_set_speed")
-          assert not hasattr(runtime_lib, "articore_runtime_get_speed")
-          assert not hasattr(runtime_lib, "articore_runtime_submit_pos_vel")
-          assert not hasattr(runtime_lib, "articore_runtime_submit_pos_vel_ex")
-          assert not hasattr(runtime_lib, "articore_runtime_submit_mit")
-          assert not hasattr(runtime_lib, "articore_runtime_submit_mit_ex")
-          assert capabilities & (1 << 60)
           assert hasattr(runtime_lib, "articore_runtime_set_max_speed")
           assert hasattr(runtime_lib, "articore_runtime_get_max_speed")
-          assert capabilities & (1 << 63)
-          assert capabilities & ((1 << 23) | (1 << 27)) == 0
-          assert not hasattr(runtime_lib, "articore_runtime_get_control_hz")
           dynamic = subprocess.check_output(["readelf", "-d", runtime], text=True)
           exports = subprocess.check_output(["nm", "-D", "--defined-only", runtime], text=True)
+          exported_names = [line.split()[-1] for line in exports.splitlines() if line.split()]
+          assert all(name.startswith("articore_") for name in exported_names)
           assert "libpinocchio" not in dynamic
           assert "libboost_serialization" not in dynamic
           assert "_ZN9pinocchio" not in exports

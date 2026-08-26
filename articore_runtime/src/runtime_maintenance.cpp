@@ -20,7 +20,6 @@ const char* operation_name(ArticoreRuntimeOperation operation) {
     case ARTICORE_OPERATION_CONFIGURE_MODE: return "configure mode";
     case ARTICORE_OPERATION_CLEAR_FAULTS: return "clear faults";
     case ARTICORE_OPERATION_SET_ZERO: return "set zero";
-    case ARTICORE_OPERATION_CLOSE: return "close";
     case ARTICORE_OPERATION_DISCONNECT: return "disconnect";
     case ARTICORE_OPERATION_COMMAND: return "command";
     case ARTICORE_OPERATION_RECOVER: return "recover";

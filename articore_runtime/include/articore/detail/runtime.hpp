@@ -21,6 +21,7 @@
 
 #include "articore/runtime_abi.h"
 #include "articore/detail/robot_model.hpp"
+#include "articore/detail/runtime_types.hpp"
 
 // Private callback adapter retained only for deterministic native tests. The
 // installed product ABI no longer exposes caller-assembled Motor resources.
@@ -262,9 +263,7 @@ class SafetyRuntime {
                 void* right_controller,
                 std::vector<ArticoreMotorDescriptor> motors,
                 bool require_gripper_product_profiles = false,
-                std::vector<ArticoreRuntimeTransportCapabilities>
-                    transport_capabilities = {},
-                uint32_t internal_control_rate_override = 0);
+                uint32_t test_control_rate_override = 0);
   // Callback constructor retained only for deterministic native unit tests.
   // Yunyi product creation uses the native C++ MotorBackend overload above.
   SafetyRuntime(ArticoreRuntimeConfig config,
@@ -276,10 +275,8 @@ class SafetyRuntime {
                 ArticoreControllerCallFn controller_enable_all = nullptr,
                 ArticoreControllerCallFn motor_enable = nullptr,
                 bool require_gripper_product_profiles = false,
-                std::vector<ArticoreRuntimeTransportCapabilities>
-                    transport_capabilities = {},
                 ArticoreMotorMaintenanceApi maintenance_api = {},
-                uint32_t internal_control_rate_override = 0);
+                uint32_t test_control_rate_override = 0);
   ~SafetyRuntime();
 
   SafetyRuntime(const SafetyRuntime&) = delete;
@@ -391,7 +388,6 @@ class SafetyRuntime {
   void estop();
   void recover();
   ArticoreSafetyHealth health() const;
-  ArticoreSafetyHealthV2 health_v2() const;
   uint32_t control_hz() const noexcept { return control_hz_; }
   ArticoreControlMode control_mode() const;
   uint64_t feedback_max_age_ns() const noexcept {
@@ -400,7 +396,6 @@ class SafetyRuntime {
   void declare_motor_presence(const std::string& role,
                               ArticorePresenceState state);
   ArticorePresenceState motor_presence(const std::string& role) const;
-  uint64_t active_capabilities() const;
   void disconnect();
   void close();
 
@@ -440,10 +435,6 @@ class SafetyRuntime {
     std::unordered_map<int32_t, GripperForceProfile> force_profiles;
     std::string gripper_product_profile_id;
     bool gripper_product_profile_bound = false;
-    // ABI 1.10 callers encode LOW/NORMAL/HIGH as 1/2/3. When their legacy
-    // three-profile calibration is detected, preserve those command meanings
-    // while still making interpolated levels 4..10 available.
-    bool legacy_force_level_mapping = false;
     float command_position = 0.0f;
     bool has_gripper_target = false;
     bool contact_detected = false;
