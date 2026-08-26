@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -63,6 +64,11 @@ struct ArticoreMotorMaintenanceApi {
 };
 
 namespace articore {
+
+class InvalidRuntimeState : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
 
 class MotorBackend {
  public:

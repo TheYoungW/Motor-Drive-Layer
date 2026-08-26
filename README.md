@@ -28,7 +28,7 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.14.0`
+- package version: `0.14.1`
 - Runtime ABI: `5.0` / `0x00050000`
 - ABI matching: exact
 - product: `yunyi_v1_0`

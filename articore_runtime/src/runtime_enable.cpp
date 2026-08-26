@@ -15,6 +15,34 @@ namespace articore {
 using detail::age_ns;
 using detail::copy_text;
 
+namespace {
+
+const char* safety_state_name(ArticoreSafetyState state) {
+  switch (state) {
+    case ARTICORE_DISCONNECTED:
+      return "DISCONNECTED";
+    case ARTICORE_READY:
+      return "READY";
+    case ARTICORE_ENABLED:
+      return "ENABLED";
+    case ARTICORE_RUNNING:
+      return "RUNNING";
+    case ARTICORE_SAFE_HOLD:
+      return "SAFE_HOLD";
+    case ARTICORE_DEGRADED:
+      return "DEGRADED";
+    case ARTICORE_SAFE_STOP:
+      return "SAFE_STOP";
+    case ARTICORE_FAULT:
+      return "FAULT";
+    case ARTICORE_PARTIALLY_ENABLED:
+      return "PARTIALLY_ENABLED";
+  }
+  return "UNKNOWN";
+}
+
+}  // namespace
+
 bool SafetyRuntime::request_feedback_parallel(
     uint32_t timeout_ms, std::vector<MissingMotor>& missing_motors,
     std::string& error, FeedbackTransactionResults* output_results) {
@@ -1003,16 +1031,74 @@ void SafetyRuntime::enable(ArticoreControlMode mode) {
   if (mode != ARTICORE_MODE_PV && mode != ARTICORE_MODE_MIT) {
     throw std::invalid_argument("control mode must be PV or MIT");
   }
+  ArticoreSafetyState rejected_state = ARTICORE_DISCONNECTED;
+  bool rejected_fault_latched = false;
+  bool rejected_hardware_transition = false;
+  std::string rejected_fault_reason;
+  std::string rejected_safety_reason;
+  std::vector<std::string> rejected_motor_faults;
+  bool rejected = false;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     if ((state_ != ARTICORE_READY &&
          state_ != ARTICORE_PARTIALLY_ENABLED) ||
         fault_latched_ || hardware_transition_) {
-      throw std::runtime_error(
-          "Articore runtime can only enable from READY or PARTIALLY_ENABLED");
+      rejected = true;
+      rejected_state = state_;
+      rejected_fault_latched = fault_latched_;
+      rejected_hardware_transition = hardware_transition_;
+      rejected_fault_reason = fault_reason_;
+      rejected_safety_reason = safety_reason_;
+      rejected_motor_faults = motor_faults_;
+      for (const auto& name : operation_failed_motors_) {
+        if (std::find(rejected_motor_faults.begin(),
+                      rejected_motor_faults.end(),
+                      name) == rejected_motor_faults.end()) {
+          rejected_motor_faults.push_back(name);
+        }
+      }
+    } else {
+      hardware_transition_ = true;
+      enable_transaction_ = true;
     }
-    hardware_transition_ = true;
-    enable_transaction_ = true;
+  }
+  if (rejected) {
+    const bool connect_fault = rejected_fault_reason.rfind(
+        "connect detected", 0) == 0;
+    std::ostringstream error;
+    error << "current_state=" << safety_state_name(rejected_state)
+          << ", expected_states=[READY, PARTIALLY_ENABLED]"
+          << ", fault_latched="
+          << (rejected_fault_latched ? "true" : "false")
+          << ", hardware_transition="
+          << (rejected_hardware_transition ? "true" : "false")
+          << ", fault_source=" << (connect_fault ? "connect" : "runtime")
+          << ", fault_reason="
+          << (rejected_fault_reason.empty() ? "<none>" : rejected_fault_reason)
+          << ", safety_reason="
+          << (rejected_safety_reason.empty() ? "<none>" : rejected_safety_reason)
+          << ", motor_faults=[";
+    for (std::size_t index = 0; index < rejected_motor_faults.size(); ++index) {
+      if (index != 0) error << ", ";
+      const auto& name = rejected_motor_faults[index];
+      error << name << "(status_code=";
+      const auto motor = std::find_if(
+          motors_.begin(), motors_.end(), [&](const MotorRecord& candidate) {
+            return stable_motor_role(candidate) == name ||
+                std::string(candidate.descriptor.name) == name;
+          });
+      ArticoreMotorState state{};
+      if (motor != motors_.end() &&
+          backend_->get_state(motor->descriptor.motor, &state) == 0 &&
+          state.has_value) {
+        error << static_cast<uint32_t>(state.status_code);
+      } else {
+        error << "unavailable";
+      }
+      error << ')';
+    }
+    error << ']';
+    throw InvalidRuntimeState(error.str());
   }
 
   // Direct C++ users may omit the native enable callback. Preserve the 1.3

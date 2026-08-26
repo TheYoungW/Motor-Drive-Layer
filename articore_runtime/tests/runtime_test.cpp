@@ -969,6 +969,38 @@ void test_connect_enabled_motor_fault_is_recoverable_from_ready() {
                   "motor is not physically disabled") != std::string::npos,
           "connect configuration failure becomes a named recoverable fault");
 
+  bool enable_rejected = false;
+  std::string enable_error;
+  try {
+    runtime.enable(ARTICORE_MODE_PV);
+  } catch (const articore::InvalidRuntimeState& error) {
+    enable_rejected = true;
+    enable_error = error.what();
+    require(enable_error.find("current_state=FAULT") != std::string::npos &&
+                enable_error.find("fault_source=connect") != std::string::npos &&
+                enable_error.find(
+                    "connect detected mode configuration failure") !=
+                    std::string::npos &&
+                enable_error.find("left/l-joint1(status_code=1)") !=
+                    std::string::npos,
+            "enable rejection identifies a connect mode failure and the "
+            "physically enabled Motor status");
+  }
+  require(enable_rejected,
+          "connect mode configuration fault rejects enable diagnostically");
+  runtime.record_operation_result(
+      ARTICORE_OPERATION_ENABLE, ARTICORE_OPERATION_INVALID_STATE,
+      enable_error);
+  health = runtime.health();
+  require(std::string(health.fault_reason).find(
+              "connect detected mode configuration failure") !=
+              std::string::npos &&
+              health.last_operation == ARTICORE_OPERATION_ENABLE &&
+              health.last_operation_code == ARTICORE_OPERATION_INVALID_STATE &&
+              std::string(health.last_operation_error) == enable_error,
+          "recording the rejected enable preserves the original connect root "
+          "cause while exposing the complete operation error");
+
   runtime.recover();
   health = runtime.health();
   require(health.state == ARTICORE_READY &&
@@ -1022,6 +1054,28 @@ void test_connect_motor_fault_is_clearable_and_reconfigures_product() {
                   "left/l-joint1" &&
               runtime.motor_presence("left/l-joint1") == ARTICORE_FAULTED,
           "connect preserves communication and exposes a recoverable Motor fault");
+
+  bool enable_rejected = false;
+  try {
+    runtime.enable(ARTICORE_MODE_PV);
+  } catch (const articore::InvalidRuntimeState& error) {
+    enable_rejected = true;
+    const std::string detail = error.what();
+    require(detail.find("current_state=FAULT") != std::string::npos &&
+                detail.find(
+                    "expected_states=[READY, PARTIALLY_ENABLED]") !=
+                    std::string::npos &&
+                detail.find("fault_latched=true") != std::string::npos &&
+                detail.find("fault_source=connect") != std::string::npos &&
+                detail.find("connect detected recoverable motor fault") !=
+                    std::string::npos &&
+                detail.find("left/l-joint1(status_code=8)") !=
+                    std::string::npos,
+            "enable rejection preserves connect fault state, source, Motor, "
+            "and status code");
+  }
+  require(enable_rejected,
+          "latched connect Motor fault rejects enable with typed state error");
 
   require(runtime.clear_faults() == ARTICORE_OPERATION_OK,
           "fault clear does not require a stationary faulted Motor");

@@ -1683,6 +1683,12 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_enable(ArticoreRuntime* runtime) {
                                    ARTICORE_OPERATION_OK);
     g_last_error = "ok";
     return 0;
+  } catch (const articore::InvalidRuntimeState& error) {
+    if (runtime && runtime->runtime) runtime->runtime->record_operation_result(
+        ARTICORE_OPERATION_ENABLE, ARTICORE_OPERATION_INVALID_STATE,
+        error.what());
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_STATE;
   } catch (const std::exception& error) {
     if (runtime && runtime->runtime) runtime->runtime->record_operation_result(
         ARTICORE_OPERATION_ENABLE, ARTICORE_OPERATION_MOTOR_COMMAND,

@@ -48,7 +48,8 @@ void SafetyRuntime::record_operation_result(
   if (!emergency_stop_latched_ && operation != ARTICORE_OPERATION_COMMAND &&
       operation != ARTICORE_OPERATION_START_TRAJECTORY &&
       operation != ARTICORE_OPERATION_CANCEL_TRAJECTORY &&
-      code != ARTICORE_OPERATION_OK && !error.empty()) {
+      code != ARTICORE_OPERATION_OK && !error.empty() &&
+      !(fault_latched_ && code == ARTICORE_OPERATION_INVALID_STATE)) {
     fault_reason_ = std::string(operation_name(operation)) + " failed: " + error;
   }
 }
@@ -406,8 +407,18 @@ int32_t SafetyRuntime::configure_mode_for_connect(ArticoreControlMode mode) {
                             "unsupported control mode");
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
   }
-  return run_motor_maintenance(
+  const int32_t result = run_motor_maintenance(
       ARTICORE_OPERATION_CONFIGURE_MODE, mode, false);
+  if (result != ARTICORE_OPERATION_OK) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (state_ == ARTICORE_FAULT) {
+      fault_reason_ = "connect detected mode configuration failure";
+      if (!last_operation_error_.empty()) {
+        fault_reason_ += ": " + last_operation_error_;
+      }
+    }
+  }
+  return result;
 }
 
 int32_t SafetyRuntime::clear_faults() {

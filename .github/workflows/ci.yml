@@ -58,13 +58,16 @@ jobs:
           assert not any("libmotor_abi" in name or "/dm_device/" in name for name in names)
           PY
           python -m pip install --force-reinstall --no-deps builds/wheels/raw/*.whl
+          EXPECTED_VERSION="$(python -c 'import tomllib; print(tomllib.load(open("packaging/pypi/pyproject.toml", "rb"))["project"]["version"])')"
+          export EXPECTED_VERSION
           cd /tmp
           python - <<'PY'
           import ctypes
           import importlib.util
+          import os
           from importlib.metadata import distribution, version
 
-          assert version("motor-drive-layer") == "0.14.0"
+          assert version("motor-drive-layer") == os.environ["EXPECTED_VERSION"]
           assert importlib.util.find_spec("motor_drive_layer") is None
           dist = distribution("motor-drive-layer")
           files = {str(item): dist.locate_file(item) for item in dist.files or ()}
