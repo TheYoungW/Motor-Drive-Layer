@@ -23,6 +23,12 @@ Product trajectories are likewise planned and executed entirely by the C++
 Runtime through the stable trajectory C ABI; the wheel contains no Python
 interpolator or realtime playback loop.
 
+Version 0.12.9 formally guarantees the existing product joint-limit metadata
+ABI. `articore_runtime_get_joint_angle_vel_limits()` returns exactly fourteen
+logical arm joints in left J1..J7 then right J1..J7 order, using the same
+position and velocity limits enforced by the Runtime. The metadata call does
+not access CAN and is valid before connect or enable. Runtime ABI remains 3.6.
+
 Version 0.12.8 advances the Runtime ABI to 3.6. Native TCP offsets are stored
 per arm in the Runtime session and are applied consistently by pose reads and
 Cartesian FK/IK. Cartesian Linear/Circular execution uses feedback-aware PV

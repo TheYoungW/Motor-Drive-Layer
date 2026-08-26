@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -333,6 +334,26 @@ int main() {
       invalid_created_runtime == nullptr &&
       std::strcmp(articore_runtime_last_error(),
                   "with_grippers must be 0 or 1") == 0;
+  ArticoreRuntime* metadata_runtime = nullptr;
+  const bool metadata_runtime_created =
+      articore_runtime_create_yunyi(
+          ARTICORE_MODE_PV, 0, &metadata_runtime) == ARTICORE_OPERATION_OK &&
+      metadata_runtime != nullptr;
+  ArticoreProductJointAngleVelLimits product_limits{};
+  product_limits.struct_size = sizeof(product_limits);
+  const bool product_joint_limits_checked = metadata_runtime_created &&
+      articore_runtime_get_joint_angle_vel_limits(
+          metadata_runtime, &product_limits) == ARTICORE_OPERATION_OK &&
+      product_limits.joint_count == ARTICORE_PRODUCT_DUAL_ARM_DOF &&
+      std::fabs(product_limits.lower_angles[0] - -2.745f) < 1e-6f &&
+      std::fabs(product_limits.upper_angles[0] - 2.745f) < 1e-6f &&
+      std::fabs(product_limits.lower_angles[1] - -0.3489f) < 1e-6f &&
+      std::fabs(product_limits.upper_angles[8] - 0.3489f) < 1e-6f &&
+      std::fabs(product_limits.velocity_limits[0] - 5.0f) < 1e-6f &&
+      std::fabs(product_limits.velocity_limits[13] - 5.0f) < 1e-6f;
+  if (metadata_runtime != nullptr) {
+    articore_runtime_free(metadata_runtime);
+  }
   if (!create_yunyi ||
       !configure_mode || !clear_faults || !set_zero || !disconnect ||
       !product_positions || !product_positions_v2 ||
@@ -371,6 +392,7 @@ int main() {
       !joint_limits_size_checked || !joint_limits_runtime_checked ||
       !product_speed_validation_checked ||
       !factory_validation_checked ||
+      !product_joint_limits_checked ||
       (capabilities & removed_trajectory_bits) != 0 ||
       (capabilities & removed_public_rate_bits) != 0) {
     std::cerr << "Articore runtime ABI metadata is incomplete\n";

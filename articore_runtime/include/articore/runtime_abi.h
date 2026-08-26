@@ -538,8 +538,11 @@ typedef struct ArticoreProductStateV3 {
 
 typedef struct ArticoreProductJointAngleVelLimits {
   uint32_t struct_size;
+  // Always ARTICORE_PRODUCT_DUAL_ARM_DOF. Array order is fixed as
+  // left/l-joint1..7 followed by right/r-joint1..7; grippers are excluded.
   uint32_t joint_count;
-  // Logical product coordinates in radians and radians/second.
+  // Logical product coordinates from the same product table used by Runtime
+  // command validation. Angles are radians and velocities are radians/second.
   float lower_angles[ARTICORE_PRODUCT_DUAL_ARM_DOF];
   float upper_angles[ARTICORE_PRODUCT_DUAL_ARM_DOF];
   float velocity_limits[ARTICORE_PRODUCT_DUAL_ARM_DOF];
@@ -1105,6 +1108,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_state_v2(
     ArticoreRuntime* runtime, ArticoreProductStateV2* state);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_state_v3(
     ArticoreRuntime* runtime, ArticoreProductStateV3* state);
+/* Static product metadata. This call performs no CAN I/O and is valid before
+ * connect() and independently of the enabled state. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_joint_angle_vel_limits(
     ArticoreRuntime* runtime, ArticoreProductJointAngleVelLimits* limits);
 /* Cached active-TCP pose. The default is tool0 with grippers and link7
