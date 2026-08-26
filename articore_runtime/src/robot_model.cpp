@@ -28,6 +28,7 @@ namespace articore {
 namespace {
 
 constexpr uint32_t kDof = 7;
+constexpr double kHalfPi = 1.57079632679489661923;
 
 // Fixed Yunyi gripper-center control frame relative to link7. This is the
 // midpoint of the two gripper slide origins in the product URDF. Products
@@ -112,7 +113,77 @@ void require_output(const void* output, uint32_t actual, uint32_t expected,
   }
 }
 
+double radical_inverse(uint32_t index, uint32_t base) {
+  double result = 0.0;
+  double fraction = 1.0 / static_cast<double>(base);
+  while (index > 0) {
+    result += static_cast<double>(index % base) * fraction;
+    index /= base;
+    fraction /= static_cast<double>(base);
+  }
+  return result;
+}
+
 }  // namespace
+
+namespace detail {
+
+YunyiPtpFallbackSeeds yunyi_ptp_fallback_ik_seeds(
+    uint32_t side,
+    const YunyiIkSeed& lower_limits,
+    const YunyiIkSeed& upper_limits) {
+  if (side != ARTICORE_ROBOT_LEFT && side != ARTICORE_ROBOT_RIGHT) {
+    throw std::invalid_argument("PTP IK seed side must be LEFT(0) or RIGHT(1)");
+  }
+  for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+    if (!std::isfinite(lower_limits[joint]) ||
+        !std::isfinite(upper_limits[joint]) ||
+        lower_limits[joint] > upper_limits[joint]) {
+      throw std::invalid_argument("PTP IK seed limits are invalid");
+    }
+  }
+
+  const auto bounded = [&](YunyiIkSeed seed) {
+    for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+      seed[joint] = std::clamp(
+          seed[joint], lower_limits[joint], upper_limits[joint]);
+    }
+    return seed;
+  };
+
+  YunyiPtpFallbackSeeds seeds{};
+  YunyiIkSeed home{};
+  home[3] = kHalfPi;
+  seeds[0] = bounded(home);
+  seeds[1] = bounded(YunyiIkSeed{});
+
+  YunyiIkSeed midpoint{};
+  for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+    midpoint[joint] =
+        0.5 * (lower_limits[joint] + upper_limits[joint]);
+  }
+  seeds[2] = midpoint;
+
+  constexpr std::array<uint32_t, ARTICORE_PRODUCT_ARM_DOF> bases{
+      2, 3, 5, 7, 11, 13, 17};
+  for (uint32_t sample = 1; sample <= 5; ++sample) {
+    YunyiIkSeed distributed{};
+    for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+      double fraction = radical_inverse(sample, bases[joint]);
+      // J2 has mirrored product limits. Mirror its fraction as well so the
+      // deterministic left/right seed sets describe symmetric postures.
+      if (side == ARTICORE_ROBOT_RIGHT && joint == 1) {
+        fraction = 1.0 - fraction;
+      }
+      distributed[joint] = lower_limits[joint] +
+          fraction * (upper_limits[joint] - lower_limits[joint]);
+    }
+    seeds[sample + 2] = distributed;
+  }
+  return seeds;
+}
+
+}  // namespace detail
 
 struct RobotModel::Impl {
   std::string product_id;
@@ -348,8 +419,17 @@ void RobotModel::ik_nearest(
     const ArticoreRobotPose* target, const double* initial_q,
     uint32_t initial_q_count, const ArticoreIkOptions* options,
     ArticoreIkResult* result) const {
+  detail::YunyiIkSeed lower{};
+  detail::YunyiIkSeed upper{};
+  for (uint32_t joint = 0; joint < kDof; ++joint) {
+    lower[joint] = impl_->model.lowerPositionLimit[joint];
+    upper[joint] = impl_->model.upperPositionLimit[joint];
+  }
+  const auto fallback_seeds = detail::yunyi_ptp_fallback_ik_seeds(
+      impl_->side, lower, upper);
   ik_impl(
-      target, initial_q, initial_q_count, options, result, true, nullptr);
+      target, initial_q, initial_q_count, options, result, true, nullptr,
+      &fallback_seeds);
 }
 
 void RobotModel::ik_nearest_until(
@@ -357,15 +437,25 @@ void RobotModel::ik_nearest_until(
     uint32_t initial_q_count, const ArticoreIkOptions* options,
     std::chrono::steady_clock::time_point deadline,
     ArticoreIkResult* result) const {
+  detail::YunyiIkSeed lower{};
+  detail::YunyiIkSeed upper{};
+  for (uint32_t joint = 0; joint < kDof; ++joint) {
+    lower[joint] = impl_->model.lowerPositionLimit[joint];
+    upper[joint] = impl_->model.upperPositionLimit[joint];
+  }
+  const auto fallback_seeds = detail::yunyi_ptp_fallback_ik_seeds(
+      impl_->side, lower, upper);
   ik_impl(
-      target, initial_q, initial_q_count, options, result, true, &deadline);
+      target, initial_q, initial_q_count, options, result, true, &deadline,
+      &fallback_seeds);
 }
 
 void RobotModel::ik_impl(
     const ArticoreRobotPose* target, const double* initial_q,
     uint32_t initial_q_count, const ArticoreIkOptions* options,
     ArticoreIkResult* result, bool prefer_nearest_success,
-    const std::chrono::steady_clock::time_point* deadline) const {
+    const std::chrono::steady_clock::time_point* deadline,
+    const detail::YunyiPtpFallbackSeeds* fallback_seeds) const {
   if (!target || target->struct_size != sizeof(*target))
     throw std::invalid_argument("IK target pose is null or too small");
   if (!result || result->struct_size != sizeof(*result))
@@ -424,15 +514,21 @@ void RobotModel::ik_impl(
       normal.diagonal().array() += damping * std::max(1.0, attempt.error * 10.0);
       const Eigen::VectorXd delta = step_size * jacobian.transpose() * normal.ldlt().solve(error.toVector());
       double alpha = 1.0;
+      bool accepted = false;
       for (int line = 0; line < 4; ++line) {
         if (check_deadline()) break;
         Eigen::VectorXd candidate = pinocchio::integrate(impl_->model, attempt.q, alpha * delta);
         candidate = candidate.cwiseMax(impl_->model.lowerPositionLimit).cwiseMin(impl_->model.upperPositionLimit);
         pinocchio::forwardKinematics(impl_->model, data, candidate);
         const double candidate_error = pinocchio::log6(data.oMi[impl_->end_joint].actInv(desired)).toVector().norm();
-        if (candidate_error < attempt.error) { attempt.q = candidate; break; }
+        if (candidate_error < attempt.error) {
+          attempt.q = candidate;
+          accepted = true;
+          break;
+        }
         alpha *= .5;
       }
+      if (!accepted) break;
     }
     if (!deadline_expired) {
       pinocchio::forwardKinematics(impl_->model, data, attempt.q);
@@ -455,10 +551,32 @@ void RobotModel::ik_impl(
   double best_seed_distance = best.success
       ? seed_distance(best.q)
       : std::numeric_limits<double>::infinity();
+  if (!best.success && fallback_seeds) {
+    for (const auto& fallback : *fallback_seeds) {
+      if (deadline_expired) break;
+      const Eigen::Map<const Eigen::VectorXd> fallback_q(
+          fallback.data(), fallback.size());
+      if ((fallback_q - seed).squaredNorm() <= 1e-24) continue;
+      Attempt candidate = solve(fallback_q);
+      if (candidate.success) {
+        const double candidate_seed_distance = seed_distance(candidate.q);
+        if (!best.success || candidate_seed_distance < best_seed_distance ||
+            (std::abs(candidate_seed_distance - best_seed_distance) < 1e-12 &&
+             candidate.error < best.error)) {
+          best = std::move(candidate);
+          best_seed_distance = candidate_seed_distance;
+        }
+      } else if (!best.success && candidate.error < best.error) {
+        best = std::move(candidate);
+      }
+    }
+  }
+  const bool deterministic_success = best.success;
   std::mt19937_64 rng(options ? options->random_seed : 0);
   for (uint32_t retry = 0;
        retry < max_retries && !deadline_expired &&
-       (!best.success || run_global_nearest_search);
+       (!best.success ||
+        (run_global_nearest_search && !deterministic_success));
        ++retry) {
     Eigen::VectorXd random_q(kDof);
     for (uint32_t i = 0; i < kDof; ++i) {

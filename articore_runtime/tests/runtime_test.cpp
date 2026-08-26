@@ -5378,6 +5378,67 @@ void test_product_cartesian_endpoint_ik_search_is_global_and_deterministic() {
           "fixed-seed endpoint IK returns the same solution on repeated calls");
 }
 
+void test_product_ptp_ik_uses_bounded_deterministic_fallback_seeds() {
+  articore::RobotModel left_model("yunyi_v1_0", ARTICORE_ROBOT_LEFT);
+  articore::RobotModel right_model("yunyi_v1_0", ARTICORE_ROBOT_RIGHT);
+  ArticoreRobotModelInfo left_info{};
+  left_info.struct_size = sizeof(left_info);
+  left_model.get_info(&left_info);
+  ArticoreRobotModelInfo right_info{};
+  right_info.struct_size = sizeof(right_info);
+  right_model.get_info(&right_info);
+
+  articore::detail::YunyiIkSeed left_lower{};
+  articore::detail::YunyiIkSeed left_upper{};
+  articore::detail::YunyiIkSeed right_lower{};
+  articore::detail::YunyiIkSeed right_upper{};
+  for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+    left_lower[joint] = left_info.lower_limits[joint];
+    left_upper[joint] = left_info.upper_limits[joint];
+    right_lower[joint] = right_info.lower_limits[joint];
+    right_upper[joint] = right_info.upper_limits[joint];
+  }
+  const auto left = articore::detail::yunyi_ptp_fallback_ik_seeds(
+      ARTICORE_ROBOT_LEFT, left_lower, left_upper);
+  const auto repeated = articore::detail::yunyi_ptp_fallback_ik_seeds(
+      ARTICORE_ROBOT_LEFT, left_lower, left_upper);
+  const auto right = articore::detail::yunyi_ptp_fallback_ik_seeds(
+      ARTICORE_ROBOT_RIGHT, right_lower, right_upper);
+
+  require(left.size() == 8 && right.size() == 8 && left == repeated,
+          "PTP uses eight reproducible fallbacks after the live seed");
+  require(std::abs(left[0][3] - 1.5707963267948966) < 1e-12 &&
+              std::all_of(
+                  left[1].begin(), left[1].end(),
+                  [](double value) { return value == 0.0; }),
+          "PTP fallback order starts with product Home and product zero");
+  for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+    require(std::abs(
+                left[2][joint] -
+                0.5 * (left_lower[joint] + left_upper[joint])) < 1e-12,
+            "the third PTP fallback is the joint-range midpoint");
+  }
+  for (std::size_t seed = 0; seed < left.size(); ++seed) {
+    for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+      require(std::isfinite(left[seed][joint]) &&
+                  left[seed][joint] >= left_lower[joint] &&
+                  left[seed][joint] <= left_upper[joint] &&
+                  std::isfinite(right[seed][joint]) &&
+                  right[seed][joint] >= right_lower[joint] &&
+                  right[seed][joint] <= right_upper[joint],
+              "every deterministic PTP seed remains inside product limits");
+    }
+    require(std::abs(left[seed][1] + right[seed][1]) < 1e-12,
+            "left and right PTP seed sets mirror the asymmetric J2 range");
+  }
+  for (std::size_t first = 0; first < left.size(); ++first) {
+    for (std::size_t second = first + 1; second < left.size(); ++second) {
+      require(left[first] != left[second],
+              "the deterministic PTP fallback set contains no duplicates");
+    }
+  }
+}
+
 void test_nearest_endpoint_ik_returns_without_redundant_global_search() {
   articore::RobotModel model("yunyi_v1_0", ARTICORE_ROBOT_LEFT);
   const std::array<double, ARTICORE_PRODUCT_ARM_DOF> seed{
@@ -5491,6 +5552,19 @@ void test_product_ptp_ik_selects_solution_nearest_live_seed() {
   }
   require(nearest_distance < 0.2 * local_distance,
           "PTP ranks valid endpoint branches by distance to the live seed");
+
+  ArticoreIkResult bounded{};
+  bounded.struct_size = sizeof(bounded);
+  model.ik_nearest_until(
+      &target, seed.data(), seed.size(), &global_options,
+      std::chrono::steady_clock::now() +
+          articore::kYunyiMovePoseIkBudget,
+      &bounded);
+  require(bounded.success && bounded.error_norm < 1e-4 &&
+              std::abs(bounded.q[2] - seed[2]) < 0.1 &&
+              std::abs(bounded.q[4] - seed[4]) < 0.1,
+          "bounded PTP multi-seed search keeps the reported J3/J5 branch "
+          "continuous within the product IK budget");
 }
 
 void test_product_pose_selects_gripper_tool_center() {
@@ -6173,6 +6247,7 @@ int main() {
     RUN_TEST(test_cartesian_linear_math_uses_straight_xyz_and_shortest_slerp);
     RUN_TEST(test_explicit_cartesian_start_pose_reports_linear_and_circular_errors);
     RUN_TEST(test_product_cartesian_endpoint_ik_search_is_global_and_deterministic);
+    RUN_TEST(test_product_ptp_ik_uses_bounded_deterministic_fallback_seeds);
     RUN_TEST(test_nearest_endpoint_ik_returns_without_redundant_global_search);
     RUN_TEST(test_bounded_endpoint_ik_preserves_accuracy_and_honours_deadline);
     RUN_TEST(test_product_ptp_ik_selects_solution_nearest_live_seed);

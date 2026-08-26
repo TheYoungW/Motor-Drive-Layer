@@ -10,6 +10,21 @@
 
 namespace articore {
 
+namespace detail {
+
+using YunyiIkSeed = std::array<double, ARTICORE_PRODUCT_ARM_DOF>;
+using YunyiPtpFallbackSeeds = std::array<YunyiIkSeed, 8>;
+
+// The live/planned configuration remains the primary PTP seed. These are the
+// eight deterministic fallbacks: product Home, zero, joint-range midpoint and
+// five low-discrepancy configurations inside the product limits.
+YunyiPtpFallbackSeeds yunyi_ptp_fallback_ik_seeds(
+    uint32_t side,
+    const YunyiIkSeed& lower_limits,
+    const YunyiIkSeed& upper_limits);
+
+}  // namespace detail
+
 class RobotModel final {
  public:
   RobotModel(std::string product_id, uint32_t side,
@@ -68,7 +83,9 @@ class RobotModel final {
                uint32_t initial_q_count, const ArticoreIkOptions* options,
                ArticoreIkResult* result,
                bool prefer_nearest_success,
-               const std::chrono::steady_clock::time_point* deadline) const;
+               const std::chrono::steady_clock::time_point* deadline,
+               const detail::YunyiPtpFallbackSeeds* fallback_seeds =
+                   nullptr) const;
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
