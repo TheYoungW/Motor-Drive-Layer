@@ -129,11 +129,10 @@ def main() -> None:
         robot.connect()
         connected = True
         robot.enable()
-        robot.set_max_speed(1.0)
         robot.set_max_acceleration(4.0)
 
         home = (0.0,) * 14
-        robot.set_joint_pv(left=home[:7], right=home[7:])
+        robot.set_joint_pv(left=home[:7], right=home[7:], velocity=50.0)
         wait_joint_target(robot, home, 10.0)
         initial_pose = robot.get_pose("left")
         initial_error = pose_error(initial_pose, START)
@@ -155,7 +154,7 @@ def main() -> None:
         )
         results["circular"] = wait_motion(robot, circular_id, START, CIRCULAR_END)
 
-        robot.set_joint_pv(left=home[:7], right=home[7:])
+        robot.set_joint_pv(left=home[:7], right=home[7:], velocity=50.0)
         wait_joint_target(robot, home, 10.0)
         cancel_id = robot.move_linear(
             side="left", start_pose=START, end_pose=LINEAR_END, speed_percent=20.0

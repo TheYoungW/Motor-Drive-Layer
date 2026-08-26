@@ -1,8 +1,8 @@
 # Yunyi product Runtime
 
-`libarticore_runtime.so` is the only public native library. Runtime ABI 8.0 is
+`libarticore_runtime.so` is the only public native library. Runtime ABI 9.0 is
 an exact contract: the SDK must require `articore_runtime_abi_version() ==
-0x00080000` and bind only the declarations in `articore/runtime_abi.h`.
+0x00090000` and bind only the declarations in `articore/runtime_abi.h`.
 
 ## Ownership
 
@@ -24,11 +24,10 @@ objects, joint tables or product bindings.
 - Lifecycle: `connect`, `disconnect`, `enable`, `disable`, `estop`, `recover`.
 - Maintenance: `configure_mode`, `clear_faults`, `set_zero`.
 - Joint control: `set_joint_pv`, `set_joint_mit`, `submit_mit_frame`.
-- Ordinary PV limits: `set_max_speed`, `get_max_speed` use `rad/s`, while
-  `set_max_acceleration`, `get_max_acceleration` use `rad/s^2`. All four use
-  `0.01` physical-unit resolution. Ordinary PV commands also carry a
-  per-command `speed_percent`; Runtime maps it to `0..2 rad/s` and applies the
-  lower of that request and the persistent maximum speed.
+- Ordinary PV: each command carries `speed_percent`, which maps directly onto
+  `0..2 rad/s`. There is no persistent maximum-speed setting.
+  `set_max_acceleration` and `get_max_acceleration` use `rad/s^2` with `0.01`
+  physical-unit resolution.
 - Native trajectories: joint quintic trajectory, Cartesian PTP, Linear and
   Circular motion.
 - Grippers: one paired `set_grippers` call using opening `0..1000`, strength
@@ -66,11 +65,11 @@ Linear and Circular accept `duration_s` instead of a speed percentage. The
 duration is the complete planned task duration, including an automatic PTP
 approach to the declared start pose when needed. Too-short durations are
 rejected before the FIFO changes. Ordinary PV command speed values remain
-`0..100`. The persistent physical limits default to `1.00 rad/s` and
-`4.00 rad/s^2`; valid configured ranges are `0.00..2.00 rad/s` and
-`0.01..8.00 rad/s^2`. Runtime applies the acceleration limit to its 500 Hz PV
-position reference. MIT and native Joint/Linear/Circular trajectories remain
-unchanged. The Damiao POS_VEL drive ceiling remains independent at `3 rad/s`.
+`0..100` and map directly onto `0..2 rad/s`. Persistent maximum acceleration
+defaults to `4.00 rad/s^2`; its configured range is `0.01..8.00 rad/s^2`.
+Runtime applies that acceleration limit to its 500 Hz PV position reference.
+MIT and native Joint/Linear/Circular trajectories remain unchanged. The Damiao
+POS_VEL drive ceiling remains independent at `3 rad/s`.
 
 ## State and diagnostics
 
@@ -80,7 +79,7 @@ state. It performs no CAN request. `articore_runtime_get_health()` is the sole
 operation/safety diagnostic surface.
 
 Every public structure must set `struct_size` to its exact `sizeof(...)`.
-ABI 8.0 does not branch on older layouts or capability bits.
+ABI 9.0 does not branch on older layouts or capability bits.
 
 ## Shutdown
 

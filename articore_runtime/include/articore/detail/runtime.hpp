@@ -402,10 +402,6 @@ class SafetyRuntime {
                            uint32_t count, float speed_percent);
   void set_joint_pv_speed(const ArticoreJointPvTarget* targets,
                           uint32_t count, float speed_percent);
-  // Updates the pace of an already-installed ordinary MIT/PV position
-  // reference. Raw frames, native trajectories, and Cartesian plans are not
-  // ordinary position references and remain unchanged.
-  void update_joint_position_velocity(float max_reference_velocity);
   void update_joint_pv_motion_limits(float max_reference_velocity,
                                      float max_reference_acceleration,
                                      float pv_velocity_limit);

@@ -26,11 +26,14 @@ def collect_leg(
     robot: ArxDCanDualArm,
     left_target: list[float],
     right_target: list[float],
+    speed_percent: float,
     timeout_s: float = 8.0,
     hold_s: float = 3.0,
 ) -> tuple[list[Sample], float]:
     started = time.monotonic()
-    robot.set_joint_pv(left=left_target, right=right_target)
+    robot.set_joint_pv(
+        left=left_target, right=right_target, velocity=speed_percent
+    )
     samples: list[Sample] = []
     last_sequence = -1
     stable_since: float | None = None
@@ -133,7 +136,6 @@ def main() -> None:
         robot.connect()
         connected = True
         robot.enable()
-        robot.set_max_speed(2.0 * args.speed / 100.0)
         robot.set_max_acceleration(4.0)
         initial = robot.read_state()
         common = [
@@ -144,17 +146,19 @@ def main() -> None:
         ]
         left_initial = common.copy()
         right_initial = common.copy()
-        collect_leg(robot, left_initial, right_initial, hold_s=0.5)
+        collect_leg(
+            robot, left_initial, right_initial, args.speed, hold_s=0.5
+        )
 
         left_inward = left_initial.copy()
         right_inward = right_initial.copy()
         left_inward[3] -= args.delta_rad
         right_inward[3] -= args.delta_rad
         inward_samples, inward_settled = collect_leg(
-            robot, left_inward, right_inward
+            robot, left_inward, right_inward, args.speed
         )
         outward_samples, outward_settled = collect_leg(
-            robot, left_initial, right_initial
+            robot, left_initial, right_initial, args.speed
         )
         result["initial_left_q"] = left_initial
         result["initial_right_q"] = right_initial

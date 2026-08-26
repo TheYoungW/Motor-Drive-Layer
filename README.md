@@ -28,8 +28,8 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.17.0`
-- Runtime ABI: `8.0` / `0x00080000`
+- package version: `0.18.0`
+- Runtime ABI: `9.0` / `0x00090000`
 - ABI matching: exact
 - product: `yunyi_v1_0`
 - transports: `can-left`, `can-right`
@@ -41,11 +41,11 @@ The SDK creates the product with
 Motor mapping, controllers, limits, models, TCP offsets, workers and resource
 lifetime.
 
-Ordinary PV and `move_pose()` share one 500 Hz reference generator. Persistent
-maximum speed and acceleration are configured in physical units with `0.01`
-resolution: `0.00..2.00 rad/s` (default `1.00`) and
-`0.01..8.00 rad/s^2` (default `4.00`). These settings do not change MIT or
-native Joint/Linear/Circular trajectories.
+Ordinary PV and `move_pose()` share one 500 Hz reference generator. Each
+command maps `speed=0..100` directly onto `0..2 rad/s`; there is no second
+persistent maximum-speed cap. Persistent maximum acceleration uses physical
+units with `0.01` resolution, accepts `0.01..8.00 rad/s^2`, and defaults to
+`4.00 rad/s^2`. It does not affect MIT or native Joint/Linear/Circular motions.
 
 See [the Runtime reference](articore_runtime/README.md) for the current API.
 

@@ -126,38 +126,6 @@ void SafetyRuntime::set_joint_pv_speed(
                    ARTICORE_MODE_PV, speed_percent));
 }
 
-void SafetyRuntime::update_joint_position_velocity(
-    float max_reference_velocity) {
-  if (!finite(max_reference_velocity) || max_reference_velocity < 0.0f) {
-    throw std::invalid_argument(
-        "max_reference_velocity must be finite and non-negative");
-  }
-
-  std::lock_guard<std::mutex> command_lock(command_mutex_);
-  if (!arm_mailbox_.valid || !arm_mailbox_.joint_position) return;
-
-  for (const auto& command : arm_mailbox_.pv) {
-    if (max_reference_velocity > joint_config(command.motor).velocity_limit) {
-      throw std::invalid_argument(
-          "ordinary reference velocity exceeds joint safety limit");
-    }
-  }
-  for (const auto& command : arm_mailbox_.mit) {
-    if (max_reference_velocity > joint_config(command.motor).velocity_limit) {
-      throw std::invalid_argument(
-          "ordinary reference velocity exceeds joint safety limit");
-    }
-  }
-
-  arm_mailbox_.max_reference_velocity = max_reference_velocity;
-  arm_mailbox_.pv_velocity_limit = max_reference_velocity;
-  for (auto& command : arm_mailbox_.pv) {
-    command.velocity_limit = std::max(
-        config_.safe_pv_velocity_limit, max_reference_velocity);
-  }
-  wakeup_.notify_all();
-}
-
 void SafetyRuntime::update_joint_pv_motion_limits(
     float max_reference_velocity, float max_reference_acceleration,
     float pv_velocity_limit) {

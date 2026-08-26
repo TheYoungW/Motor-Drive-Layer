@@ -260,4 +260,20 @@ if(BUILD_TESTING)
   target_link_libraries(
     articore_runtime_hardware_500hz_smoke PRIVATE articore_runtime
   )
+  add_executable(
+    articore_runtime_hardware_pv_speed_percent_diagnostic EXCLUDE_FROM_ALL
+    tests/hardware_pv_speed_percent_diagnostic.cpp
+  )
+  target_link_libraries(
+    articore_runtime_hardware_pv_speed_percent_diagnostic
+    PRIVATE articore_runtime
+  )
+  add_executable(
+    articore_runtime_hardware_pv_jsonl_replay_diagnostic EXCLUDE_FROM_ALL
+    tests/hardware_pv_jsonl_replay_diagnostic.cpp
+  )
+  target_link_libraries(
+    articore_runtime_hardware_pv_jsonl_replay_diagnostic
+    PRIVATE articore_runtime
+  )
 endif()

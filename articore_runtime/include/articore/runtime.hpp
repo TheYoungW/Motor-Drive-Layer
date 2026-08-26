@@ -122,19 +122,6 @@ class Runtime final {
     return result != 0;
   }
 
-  void set_max_speed(float max_speed_rad_s) {
-    detail::check(
-        articore_runtime_set_max_speed(checked(), max_speed_rad_s),
-        "set_max_speed");
-  }
-
-  float get_max_speed() const {
-    float result = 0.0f;
-    detail::check(
-        articore_runtime_get_max_speed(checked(), &result), "get_max_speed");
-    return result;
-  }
-
   void set_max_acceleration(float max_acceleration_rad_s2) {
     detail::check(
         articore_runtime_set_max_acceleration(

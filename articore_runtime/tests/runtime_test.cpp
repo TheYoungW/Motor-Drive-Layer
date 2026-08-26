@@ -3762,6 +3762,20 @@ void test_ordinary_mit_position_uses_constant_reference_speed() {
   }
 }
 
+void test_yunyi_pv_speed_maps_directly_without_global_cap() {
+  require(std::abs(articore::yunyi_effective_pv_reference_velocity(0.0f)) <
+              1.0e-6f,
+          "zero percent maps to zero reference velocity");
+  require(std::abs(articore::yunyi_effective_pv_reference_velocity(50.0f) -
+                       1.0f) < 1.0e-6f,
+          "fifty percent maps directly to one radian per second");
+  require(std::abs(articore::yunyi_effective_pv_reference_velocity(100.0f) -
+                       2.0f) < 1.0e-6f,
+          "one hundred percent remains distinct at two radians per second");
+  require(std::abs(articore::kYunyiPvDriveVelocityLimit - 3.0f) < 1.0e-6f,
+          "Damiao POS_VEL drive ceiling remains three radians per second");
+}
+
 void test_ordinary_speed_percent_scales_and_zero_pauses() {
   FakeDriver driver;
   g_driver = &driver;
@@ -3801,15 +3815,6 @@ void test_ordinary_speed_percent_scales_and_zero_pauses() {
           }),
           "fifty percent maps to half the shared physical velocity limit");
 
-  runtime.update_joint_position_velocity(1.25f);
-  require(wait_for([&] {
-            std::lock_guard<std::mutex> lock(driver.mutex);
-            return driver.last_pv.size() == 2 &&
-                std::abs(driver.last_pv[0].velocity_limit - 1.25f) < 1e-6f &&
-                std::abs(driver.last_pv[1].velocity_limit - 1.25f) < 1e-6f;
-          }),
-          "persistent speed update changes an active ordinary PV reference");
-
   bool invalid_rejected = false;
   try {
     runtime.set_joint_pv_speed(targets, 2, 100.1f);
@@ -3817,15 +3822,6 @@ void test_ordinary_speed_percent_scales_and_zero_pauses() {
     invalid_rejected = true;
   }
   require(invalid_rejected, "ordinary speed above 100 is rejected natively");
-
-  invalid_rejected = false;
-  try {
-    runtime.update_joint_position_velocity(-0.1f);
-  } catch (const std::invalid_argument&) {
-    invalid_rejected = true;
-  }
-  require(invalid_rejected,
-          "negative active ordinary reference velocity is rejected");
 }
 
 void test_ordinary_pv_reference_limits_acceleration_and_brakes() {
@@ -6407,6 +6403,7 @@ int main() {
     RUN_TEST(test_persistent_setpoints_outlive_watchdog_but_streaming_still_times_out);
     RUN_TEST(test_persistent_mit_rejects_unbounded_motion_terms);
     RUN_TEST(test_ordinary_mit_position_uses_constant_reference_speed);
+    RUN_TEST(test_yunyi_pv_speed_maps_directly_without_global_cap);
     RUN_TEST(test_ordinary_speed_percent_scales_and_zero_pauses);
     RUN_TEST(test_ordinary_pv_reference_limits_acceleration_and_brakes);
     RUN_TEST(test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct);

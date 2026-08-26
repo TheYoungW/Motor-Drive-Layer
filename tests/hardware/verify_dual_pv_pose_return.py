@@ -40,13 +40,16 @@ def collect_leg(
     left_target: list[float],
     right_target: list[float],
     *,
+    speed_percent: float,
     timeout_s: float = 15.0,
     hold_s: float = 3.0,
 ) -> tuple[list[Sample], float, tuple[float, ...]]:
     initial_state = robot.read_state()
     initial_q, _ = read_q_dq(initial_state)
     started = time.monotonic()
-    robot.set_joint_pv(left=left_target, right=right_target)
+    robot.set_joint_pv(
+        left=left_target, right=right_target, velocity=speed_percent
+    )
     target = tuple(left_target + right_target)
     samples: list[Sample] = []
     last_sequence = -1
@@ -235,17 +238,18 @@ def main() -> None:
             "right_enabled": list(before_enable.right.arm.enabled),
         }
         robot.enable()
-        robot.set_max_speed(2.0 * args.speed / 100.0)
         robot.set_max_acceleration(4.0)
 
         outbound, outbound_settled, outbound_initial = collect_leg(
-            robot, left_target, right_target
+            robot, left_target, right_target, speed_percent=args.speed
         )
         result["outbound"] = leg_result(
             outbound, outbound_settled, outbound_initial, left_target + right_target
         )
 
-        returned, returned_settled, returned_initial = collect_leg(robot, zero, zero)
+        returned, returned_settled, returned_initial = collect_leg(
+            robot, zero, zero, speed_percent=args.speed
+        )
         result["return_to_zero"] = leg_result(
             returned, returned_settled, returned_initial, zero + zero
         )

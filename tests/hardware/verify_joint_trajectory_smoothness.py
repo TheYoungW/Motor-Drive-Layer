@@ -118,7 +118,7 @@ def wait_joint_target(
     hold_s: float = 0.4,
 ) -> None:
     started = time.monotonic()
-    robot.set_joint_pv(left=left, right=right)
+    robot.set_joint_pv(left=left, right=right, velocity=50.0)
     stable_since: float | None = None
     last_sequence = -1
     last_positions: tuple[float, ...] = ()
@@ -294,7 +294,6 @@ def main() -> None:
         robot.connect()
         connected = True
         robot.enable()
-        robot.set_max_speed(1.0)
         robot.set_max_acceleration(4.0)
         wait_joint_target(robot, START, START, timeout_s=args.timeout)
         start_function, status_function = native_functions(robot)

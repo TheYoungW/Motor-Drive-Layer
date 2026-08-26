@@ -15,10 +15,6 @@ int main() {
   using SpeedGetter = float (articore::Runtime::*)() const;
   using SpeedSetter = void (articore::Runtime::*)(float);
   static_assert(std::is_same_v<
-      decltype(&articore::Runtime::get_max_speed), SpeedGetter>);
-  static_assert(std::is_same_v<
-      decltype(&articore::Runtime::set_max_speed), SpeedSetter>);
-  static_assert(std::is_same_v<
       decltype(&articore::Runtime::get_max_acceleration), SpeedGetter>);
   static_assert(std::is_same_v<
       decltype(&articore::Runtime::set_max_acceleration), SpeedSetter>);
