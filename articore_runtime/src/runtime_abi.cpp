@@ -276,8 +276,8 @@ void fill_cartesian_motion_status(
 }
 
 int32_t move_pose_impl(
-    ArticoreRuntime* runtime, uint32_t side, const float* target_pose,
-    float speed_percent) {
+    ArticoreRuntime* runtime, const float* left_target_pose,
+    const float* right_target_pose, float speed_percent) {
   try {
     if (!runtime) throw std::invalid_argument("runtime is null");
     if (!std::isfinite(speed_percent) || speed_percent < 0.0f ||
@@ -301,63 +301,6 @@ int32_t move_pose_impl(
     if (reference.active) {
       throw std::runtime_error(
           "move_pose cannot start while a linear or circular motion is active");
-    }
-    const auto target = articore::solve_point_to_point_target_from_reference(
-        product, runtime->product_mode, side, reference, target_pose,
-        ik_deadline);
-    auto transaction = safety.begin_command_transaction();
-    install_product_joint_positions(
-        runtime, target.data(), static_cast<uint32_t>(target.size()),
-        speed_percent, &transaction, planning.token());
-    safety.record_operation_result(
-        ARTICORE_OPERATION_MOVE_POSE, ARTICORE_OPERATION_OK);
-    g_last_error = "ok";
-    return ARTICORE_OPERATION_OK;
-  } catch (const std::invalid_argument& error) {
-    if (runtime && runtime->runtime) {
-      runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_MOVE_POSE,
-          ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
-    }
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  } catch (const std::exception& error) {
-    if (runtime && runtime->runtime) {
-      runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_MOVE_POSE,
-          ARTICORE_OPERATION_INVALID_STATE, error.what());
-    }
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_STATE;
-  }
-}
-
-int32_t move_poses_impl(
-    ArticoreRuntime* runtime, const float* left_target_pose,
-    const float* right_target_pose, float speed_percent) {
-  try {
-    if (!runtime) throw std::invalid_argument("runtime is null");
-    if (!std::isfinite(speed_percent) || speed_percent < 0.0f ||
-        speed_percent > 100.0f) {
-      throw std::invalid_argument(
-          "move_poses speed_percent must be finite and within 0..100");
-    }
-    std::lock_guard<std::mutex> motion_lock(runtime->cartesian_motion_mutex);
-    const auto ik_deadline = std::chrono::steady_clock::now() +
-        articore::kYunyiMovePoseIkBudget;
-    auto& safety = checked(runtime);
-    auto& product = checked_yunyi(runtime);
-    const auto joints = articore::product_cartesian_joints(product);
-    articore::NativeTrajectorySample reference;
-    CommandPlanningScope planning(safety);
-    {
-      auto transaction = safety.begin_command_transaction();
-      planning.begin(transaction);
-      reference = safety.planned_arm_sample(joints, transaction);
-    }
-    if (reference.active) {
-      throw std::runtime_error(
-          "move_poses cannot start while a linear or circular motion is active");
     }
     const auto target =
         articore::solve_dual_point_to_point_targets_from_reference(
@@ -638,7 +581,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (5U << 16);
+  return (6U << 16);
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -1223,15 +1166,9 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_trajectory(
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(
-    ArticoreRuntime* runtime, uint32_t side, const float* target_pose,
-    float speed_percent) {
-  return move_pose_impl(runtime, side, target_pose, speed_percent);
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_move_poses(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float speed_percent) {
-  return move_poses_impl(
+  return move_pose_impl(
       runtime, left_target_pose, right_target_pose, speed_percent);
 }
 

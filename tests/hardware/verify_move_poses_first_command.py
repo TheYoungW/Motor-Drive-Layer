@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify move_poses as the first PV command after enable on real hardware."""
+"""Verify dual-arm move_pose as the first PV command after enable."""
 
 from __future__ import annotations
 
@@ -55,13 +55,13 @@ def main() -> None:
         connected = True
         robot.enable()
         started = time.monotonic()
-        robot.move_poses(
+        robot.move_pose(
             left_target_pose=LEFT_TARGET,
             right_target_pose=RIGHT_TARGET,
             speed_percent=args.speed,
         )
         installed = time.monotonic()
-        print(f"move_poses_call_s={installed - started:.6f}", flush=True)
+        print(f"move_pose_call_s={installed - started:.6f}", flush=True)
 
         deadline = started + 10.0
         stable_samples = 0

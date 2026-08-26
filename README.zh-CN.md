@@ -27,8 +27,8 @@ can-left/right 接收线程
 
 ## 当前接口契约
 
-- 包版本：`0.14.1`
-- Runtime ABI：`5.0` / `0x00050000`
+- 包版本：`0.15.0`
+- Runtime ABI：`6.0` / `0x00060000`
 - ABI 校验：必须完全相等
 - 产品：`yunyi_v1_0`
 - 关节顺序：左 J1～J7、右 J1～J7
@@ -38,6 +38,11 @@ SDK 通过 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)`
 创建完整产品。Motor 映射、Controller、限位、模型、TCP 偏移、worker 和
 资源生命周期都由 Runtime 管理。公开 ABI 不包含 Motor 指针、通用组装接口、
 能力位或带版本后缀的重复函数。
+
+笛卡尔 PTP 只有一个 `move_pose(left_pose, right_pose, speed)`：与
+`set_joint_pv(left, right, speed)` 一样提交完整双臂目标，只额外在 C++ 中对两侧
+Pose 求终点 IK。两侧共用同一份规划参考快照，全部在 `1e-4` 精度和 8 ms 软预算
+内成功后才原子安装 14 关节 PV 目标；任一侧失败或超时都不改变当前目标。
 
 当前 API 见 [Runtime 说明](articore_runtime/README.md)。
 

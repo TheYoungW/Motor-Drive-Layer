@@ -1,8 +1,8 @@
 # Yunyi product Runtime
 
-`libarticore_runtime.so` is the only public native library. Runtime ABI 5.0 is
+`libarticore_runtime.so` is the only public native library. Runtime ABI 6.0 is
 an exact contract: the SDK must require `articore_runtime_abi_version() ==
-0x00050000` and bind only the declarations in `articore/runtime_abi.h`.
+0x00060000` and bind only the declarations in `articore/runtime_abi.h`.
 
 ## Ownership
 
@@ -39,9 +39,16 @@ never contain native Motor pointers.
 
 ## Motion semantics
 
-Ordinary PTP solves endpoint IK from the current planned reference and installs
-one product PV target. Linear and Circular are asynchronous FIFO trajectory
-tasks. Linear uses explicit `start_pose -> end_pose`; Circular uses explicit
+`articore_runtime_move_pose(left_pose, right_pose, speed)` is the only public
+Cartesian PTP operation. Like `set_joint_pv(left, right, speed)`, it submits one
+complete dual-arm product target; the only additional step is endpoint IK for
+both poses. Both solutions use one planned-reference snapshot and the complete
+14-joint PV target is installed atomically only after both succeed. PTP has no
+motion ID, status or cancellation API. Endpoint IK retains the `1e-4` SE(3)
+tolerance, reuses each arm's Pinocchio model and limits global fallback to an
+8 ms soft steady-clock budget. Timeout or either-side failure leaves the active
+target unchanged. Linear and Circular are asynchronous FIFO trajectory tasks.
+Linear uses explicit `start_pose -> end_pose`; Circular uses explicit
 `start_pose -> via_pose -> end_pose`. Runtime validates and plans the complete
 task before installing it.
 
@@ -57,7 +64,7 @@ state. It performs no CAN request. `articore_runtime_get_health()` is the sole
 operation/safety diagnostic surface.
 
 Every public structure must set `struct_size` to its exact `sizeof(...)`.
-ABI 5.0 does not branch on older layouts or capability bits.
+ABI 6.0 does not branch on older layouts or capability bits.
 
 ## Shutdown
 

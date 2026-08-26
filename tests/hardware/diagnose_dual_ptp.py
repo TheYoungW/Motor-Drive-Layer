@@ -69,7 +69,7 @@ def main() -> None:
         print("start right pose", robot.get_pose("right"), flush=True)
 
         submitted_at = time.monotonic()
-        robot.move_poses(
+        robot.move_pose(
             left_target_pose=LEFT_TARGET,
             right_target_pose=RIGHT_TARGET,
             speed_percent=50.0,

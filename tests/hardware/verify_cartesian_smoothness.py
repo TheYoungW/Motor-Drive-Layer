@@ -275,7 +275,11 @@ def main() -> None:
         started = time.monotonic()
         if args.motion == "ptp":
             result["target"] = RIGHT_CENTER
-            robot.move_pose(side="right", target_pose=RIGHT_CENTER, speed_percent=args.speed)
+            robot.move_pose(
+                left_target_pose=robot.get_pose("left"),
+                right_target_pose=RIGHT_CENTER,
+                speed_percent=args.speed,
+            )
             settled_s = wait_ptp(
                 robot, started, RIGHT_CENTER, samples, timeout_s=args.timeout
             )

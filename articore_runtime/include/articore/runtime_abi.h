@@ -561,14 +561,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_trajectory_status(
 ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_trajectory(
     ArticoreRuntime* runtime);
 
-/* Point-to-point command. Runtime performs endpoint IK, then uses the ordinary
- * 500 Hz PV reference step. It has no motion ID, status, or cancellation API. */
+/* Atomic dual-arm point-to-point command. Runtime solves both endpoint poses
+ * from one planned-reference snapshot, then installs one ordinary 14-joint PV
+ * target. It has no motion ID, status, or cancellation API. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(
-    ArticoreRuntime* runtime, uint32_t side, const float* target_pose,
-    float speed_percent);
-/* Atomic dual-arm PTP. Runtime solves both endpoints from one reference
- * snapshot, then installs one ordinary 14-joint PV target. */
-ARTICORE_RUNTIME_API int32_t articore_runtime_move_poses(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float speed_percent);
 /* Asynchronous FIFO Cartesian trajectories. New linear and circular plans

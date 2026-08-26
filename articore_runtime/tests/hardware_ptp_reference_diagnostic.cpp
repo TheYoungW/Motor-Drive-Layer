@@ -44,11 +44,10 @@ void check_health(ArticoreRuntime* runtime) {
   }
 }
 
-Pose read_left_pose(ArticoreRuntime* runtime) {
+Pose read_pose(ArticoreRuntime* runtime, uint32_t side) {
   ArticoreProductPose pose{};
   pose.struct_size = sizeof(pose);
-  check(articore_runtime_get_pose(runtime, ARTICORE_ROBOT_LEFT, &pose),
-        "get_left_pose");
+  check(articore_runtime_get_pose(runtime, side, &pose), "get_pose");
   Pose result{};
   std::copy(std::begin(pose.values), std::end(pose.values), result.begin());
   return result;
@@ -91,8 +90,9 @@ void wait_until_enabled_and_stationary(ArticoreRuntime* runtime,
 
 void run_ptp(ArticoreRuntime* runtime, const Pose& target,
              float speed_percent, const char* label) {
-  check(articore_runtime_move_pose(runtime, ARTICORE_ROBOT_LEFT,
-                                   target.data(), speed_percent),
+  const Pose right_target = read_pose(runtime, ARTICORE_ROBOT_RIGHT);
+  check(articore_runtime_move_pose(runtime, target.data(),
+                                   right_target.data(), speed_percent),
         label);
   std::cout << "stage=" << label
             << " speed_percent=" << speed_percent << std::endl;
@@ -103,7 +103,7 @@ void run_ptp(ArticoreRuntime* runtime, const Pose& target,
   uint32_t stable_samples = 0;
   while (std::chrono::steady_clock::now() < deadline) {
     check_health(runtime);
-    const Pose actual = read_left_pose(runtime);
+    const Pose actual = read_pose(runtime, ARTICORE_ROBOT_LEFT);
     float position_error_squared = 0.0f;
     float maximum_orientation_error = 0.0f;
     for (uint32_t index = 0; index < 3; ++index) {

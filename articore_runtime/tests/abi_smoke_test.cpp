@@ -203,7 +203,7 @@ int main() {
       &articore_runtime_start_trajectory &&
       &articore_runtime_get_trajectory_status &&
       &articore_runtime_cancel_trajectory &&
-      &articore_runtime_move_pose && &articore_runtime_move_poses &&
+      &articore_runtime_move_pose &&
       &articore_runtime_cancel_cartesian_motion &&
       &articore_runtime_has_grippers &&
       &articore_runtime_get_joint_angle_vel_limits &&
@@ -221,15 +221,15 @@ int main() {
       &articore_runtime_estop && &articore_runtime_recover &&
       &articore_robot_model_create && &articore_robot_model_fk;
 
-  if (articore_runtime_abi_version() != 0x00050000U ||
+  if (articore_runtime_abi_version() != 0x00060000U ||
       !symbols_present || !gripper_validation || !state_size_checked ||
       !state_runtime_checked || !health_size_checked ||
       !joint_limits_size_checked || !maximum_speed_validation ||
       !joint_command_validation || !factory_validation ||
       !product_limits_checked) {
-    std::cerr << "Articore Runtime ABI 5.0 contract is incomplete\n";
+    std::cerr << "Articore Runtime ABI 6.0 contract is incomplete\n";
     return 1;
   }
-  std::cout << "Articore Runtime ABI 5.0 smoke test passed\n";
+  std::cout << "Articore Runtime ABI 6.0 smoke test passed\n";
   return 0;
 }
