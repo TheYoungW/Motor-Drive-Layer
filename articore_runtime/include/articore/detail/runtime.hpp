@@ -113,6 +113,7 @@ class MotorBackend {
 // leaves the arrival window.
 inline constexpr float kNativePvFinalHoldVelocityLimit = 0.0f;
 inline constexpr float kNativePvSettlingVelocityLimit = 0.05f;
+inline constexpr float kNativeOrdinaryPvDefaultAcceleration = 4.0f;
 inline constexpr float kNativeOrdinaryPvHoldPositionTolerance = 0.002f;
 inline constexpr float kNativeOrdinaryPvHoldReleaseTolerance = 0.020f;
 inline constexpr uint16_t kNativeOrdinaryPvHoldConfirmationCycles = 25;
@@ -171,6 +172,39 @@ inline float advance_pv_position_reference(
     float current_position, float target_position, float max_delta) {
   const float error = target_position - current_position;
   return current_position + std::clamp(error, -max_delta, max_delta);
+}
+
+struct NativePvReferenceStep {
+  float position = 0.0f;
+  float velocity = 0.0f;
+};
+
+inline NativePvReferenceStep advance_acceleration_limited_pv_reference(
+    float current_position, float current_velocity, float target_position,
+    float maximum_velocity, float maximum_acceleration, float period_s) {
+  const float error = target_position - current_position;
+  const float maximum_velocity_from_distance = std::sqrt(
+      std::max(0.0f, 2.0f * maximum_acceleration * std::abs(error)));
+  const float desired_velocity = std::copysign(
+      std::min(maximum_velocity, maximum_velocity_from_distance), error);
+  const float maximum_velocity_change = maximum_acceleration * period_s;
+  const float next_velocity = std::clamp(
+      desired_velocity,
+      current_velocity - maximum_velocity_change,
+      current_velocity + maximum_velocity_change);
+  const float next_position = current_position +
+      0.5f * (current_velocity + next_velocity) * period_s;
+
+  // Snap only when the remaining velocity can be removed within this cycle.
+  // Larger target replacements are allowed to brake continuously through the
+  // endpoint instead of creating an unbounded reference acceleration.
+  const bool crossed = (error > 0.0f && next_position >= target_position) ||
+      (error < 0.0f && next_position <= target_position);
+  if ((std::abs(error) <= 1.0e-7f || crossed) &&
+      std::abs(current_velocity) <= maximum_velocity_change) {
+    return {target_position, 0.0f};
+  }
+  return {next_position, next_velocity};
 }
 
 inline std::string yunyi_joint_role(uint32_t index) {
@@ -354,9 +388,15 @@ class SafetyRuntime {
                     uint32_t count,
                     float max_reference_velocity,
                     float pv_velocity_limit);
+  void set_joint_pv(const ArticoreJointPvTarget* targets,
+                    uint32_t count,
+                    float max_reference_velocity,
+                    float max_reference_acceleration,
+                    float pv_velocity_limit);
   void set_joint_pv_planned(
       const ArticoreJointPvTarget* targets, uint32_t count,
-      float max_reference_velocity, float pv_velocity_limit,
+      float max_reference_velocity, float max_reference_acceleration,
+      float pv_velocity_limit,
       CommandTransaction& transaction, uint64_t planning_token);
   void set_joint_mit_speed(const ArticoreJointMitTarget* targets,
                            uint32_t count, float speed_percent);
@@ -366,8 +406,9 @@ class SafetyRuntime {
   // reference. Raw frames, native trajectories, and Cartesian plans are not
   // ordinary position references and remain unchanged.
   void update_joint_position_velocity(float max_reference_velocity);
-  void update_joint_pv_velocity(float max_reference_velocity,
-                                float pv_velocity_limit);
+  void update_joint_pv_motion_limits(float max_reference_velocity,
+                                     float max_reference_acceleration,
+                                     float pv_velocity_limit);
   void submit_gripper_mit(const ArticoreMitCommand* commands, uint32_t count);
   void set_gripper_openings(const ArticoreGripperTarget* targets,
                             uint32_t count);
@@ -510,10 +551,12 @@ class SafetyRuntime {
     // command vector and matching user endpoints in final_positions.
     bool joint_position = false;
     float max_reference_velocity = 0.0f;
+    float max_reference_acceleration = 0.0f;
     float pv_velocity_limit = 0.0f;
     std::vector<ArticorePosVelCommand> pv;
     std::vector<ArticoreMitCommand> mit;
     std::vector<float> final_positions;
+    std::vector<float> pv_reference_velocities;
     // Ordinary PV PTP has no motion status object, but it still needs the
     // same quiet final hold as native Cartesian paths. Each joint transitions
     // to V=0 only after fresh feedback remains close to its final target for a
@@ -547,6 +590,7 @@ class SafetyRuntime {
     uint32_t leader_side = ARTICORE_ROBOT_LEFT;
     std::vector<float> start_positions;
     std::array<float, 7> follower_reference{};
+    std::array<float, 7> follower_reference_velocity{};
     ArticoreBimanualFollowStatus status{};
   };
 
@@ -685,6 +729,7 @@ class SafetyRuntime {
       ArticoreControlMode mode,
       const std::vector<std::pair<void*, float>>& targets,
       float max_reference_velocity,
+      float max_reference_acceleration = 0.0f,
       float pv_velocity_limit = 0.0f,
       CommandTransaction* transaction = nullptr,
       uint64_t planning_token = 0);

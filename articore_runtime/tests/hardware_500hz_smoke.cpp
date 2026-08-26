@@ -74,7 +74,9 @@ int main(int argc, char** argv) {
     connected = true;
     check(articore_runtime_enable(runtime), "enable");
     enabled = true;
-    check(articore_runtime_set_max_speed(runtime, 10.0f), "set_max_speed");
+    check(articore_runtime_set_max_speed(runtime, 0.20f), "set_max_speed");
+    check(articore_runtime_set_max_acceleration(runtime, 4.00f),
+          "set_max_acceleration");
     JointArray zero{};
     check(articore_runtime_set_joint_pv(
               runtime, zero.data(), zero.size(), 100.0f),

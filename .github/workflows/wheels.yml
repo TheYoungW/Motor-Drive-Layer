@@ -78,7 +78,7 @@ jobs:
           assert not any("libmotor_abi" in name or "/dm_device/" in name for name in entries)
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00070000
+          assert runtime_lib.articore_runtime_abi_version() == 0x00080000
           assert hasattr(runtime_lib, "articore_runtime_create_yunyi")
           assert hasattr(runtime_lib, "articore_runtime_move_pose")
           assert not hasattr(runtime_lib, "articore_runtime_move_poses")
@@ -101,6 +101,8 @@ jobs:
           assert hasattr(runtime_lib, "articore_runtime_submit_mit_frame")
           assert hasattr(runtime_lib, "articore_runtime_set_max_speed")
           assert hasattr(runtime_lib, "articore_runtime_get_max_speed")
+          assert hasattr(runtime_lib, "articore_runtime_set_max_acceleration")
+          assert hasattr(runtime_lib, "articore_runtime_get_max_acceleration")
           dynamic = subprocess.check_output(["readelf", "-d", runtime], text=True)
           exports = subprocess.check_output(["nm", "-D", "--defined-only", runtime], text=True)
           exported_names = [line.split()[-1] for line in exports.splitlines() if line.split()]

@@ -129,7 +129,8 @@ def main() -> None:
         robot.connect()
         connected = True
         robot.enable()
-        robot.set_max_speed(50.0)
+        robot.set_max_speed(1.0)
+        robot.set_max_acceleration(4.0)
 
         home = (0.0,) * 14
         robot.set_joint_pv(left=home[:7], right=home[7:])

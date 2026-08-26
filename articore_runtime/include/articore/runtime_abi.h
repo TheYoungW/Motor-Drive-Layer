@@ -516,8 +516,9 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(
     ArticoreRuntime* runtime);
 
 /* Ordinary product joint commands use fixed left J1..J7, right J1..J7 order.
- * PV speed_percent selects this command's reference step and is capped by the
- * persistent set_max_speed() value. Both values use the inclusive 0..100 range.
+ * PV speed_percent selects 0..2 rad/s for this command. The persistent
+ * physical-unit maximum speed and acceleration settings cap and shape only
+ * ordinary PV references, including move_pose().
  */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
@@ -525,11 +526,19 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
     float speed_percent);
-/* Persistent PV speed cap: 0..100 maps to 0..2 rad/s; default 50. */
+/* Persistent ordinary PV limits use physical units and 0.01 resolution.
+ * Speed accepts 0.00..2.00 rad/s and defaults to 1.00 rad/s. Acceleration
+ * accepts 0.01..8.00 rad/s^2 and defaults to 4.00 rad/s^2. These settings do
+ * not alter MIT frames or native Joint/Linear/Circular trajectories.
+ */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
-    ArticoreRuntime* runtime, float max_speed_percent);
+    ArticoreRuntime* runtime, float max_speed_rad_s);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(
-    ArticoreRuntime* runtime, float* max_speed_percent);
+    ArticoreRuntime* runtime, float* max_speed_rad_s);
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_acceleration(
+    ArticoreRuntime* runtime, float max_acceleration_rad_s2);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_acceleration(
+    ArticoreRuntime* runtime, float* max_acceleration_rad_s2);
 /* Advanced streaming MIT frame with explicit q, dq, torque and gains. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
     ArticoreRuntime* runtime, const float* positions,

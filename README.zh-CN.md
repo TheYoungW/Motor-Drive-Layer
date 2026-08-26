@@ -27,8 +27,8 @@ can-left/right 接收线程
 
 ## 当前接口契约
 
-- 包版本：`0.16.0`
-- Runtime ABI：`7.0` / `0x00070000`
+- 包版本：`0.17.0`
+- Runtime ABI：`8.0` / `0x00080000`
 - ABI 校验：必须完全相等
 - 产品：`yunyi_v1_0`
 - 关节顺序：左 J1～J7、右 J1～J7
@@ -38,6 +38,11 @@ SDK 通过 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)`
 创建完整产品。Motor 映射、Controller、限位、模型、TCP 偏移、worker 和
 资源生命周期都由 Runtime 管理。公开 ABI 不包含 Motor 指针、通用组装接口、
 能力位或带版本后缀的重复函数。
+
+普通 PV 与 `move_pose()` 共用同一套 500 Hz 参考生成器。最大速度和最大加速度
+使用真实物理单位并以 `0.01` 为设置精度：速度范围 `0.00～2.00 rad/s`、默认
+`1.00 rad/s`；加速度范围 `0.01～8.00 rad/s²`、默认 `4.00 rad/s²`。这些参数
+不影响 MIT，也不影响 Joint/Linear/Circular 原生轨迹。
 
 笛卡尔 PTP 只有一个 `move_pose(left_pose, right_pose, speed)`：与
 `set_joint_pv(left, right, speed)` 一样提交完整双臂目标，只额外在 C++ 中对两侧

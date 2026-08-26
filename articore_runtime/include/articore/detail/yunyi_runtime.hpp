@@ -19,30 +19,36 @@ namespace articore {
 // never scale it down with the public percentage.
 inline constexpr float kYunyiOrdinaryPvMaximumVelocity = 2.0f;
 inline constexpr float kYunyiPvDriveVelocityLimit = 3.0f;
-// The public 0..100 scale maps linearly onto 0..2 rad/s. Product calls keep
-// 50 percent as the ordinary default, or 1 rad/s.
-inline constexpr float kYunyiDefaultPvSpeedPercent = 50.0f;
+// Ordinary command speed_percent still selects 0..2 rad/s, while the
+// persistent product limits use physical units with 0.01 resolution.
+inline constexpr float kYunyiDefaultPvMaximumVelocity = 1.0f;
+inline constexpr float kYunyiOrdinaryPvMaximumAcceleration = 8.0f;
+inline constexpr float kYunyiDefaultPvMaximumAcceleration = 4.0f;
+inline constexpr float kYunyiPvMotionLimitResolution = 0.01f;
 inline constexpr float kYunyiOrdinaryMitMaximumVelocity = 5.0f;
-inline constexpr float yunyi_effective_pv_speed_percent(
-    float command_speed_percent, float maximum_speed_percent) {
-  return command_speed_percent < maximum_speed_percent
-      ? command_speed_percent : maximum_speed_percent;
+inline constexpr float yunyi_effective_pv_reference_velocity(
+    float command_speed_percent, float maximum_velocity) {
+  const float requested =
+      kYunyiOrdinaryPvMaximumVelocity * command_speed_percent / 100.0f;
+  return requested < maximum_velocity ? requested : maximum_velocity;
 }
 static_assert(kYunyiOrdinaryPvMaximumVelocity == 2.0f,
               "ordinary PV 100 percent must map to 2 rad/s");
 static_assert(kYunyiPvDriveVelocityLimit == 3.0f,
               "ordinary PV must retain the independent 3 rad/s drive ceiling");
-inline constexpr float kYunyiDefaultPvReferenceVelocity =
-    kYunyiOrdinaryPvMaximumVelocity *
-    kYunyiDefaultPvSpeedPercent / 100.0f;
-static_assert(kYunyiDefaultPvReferenceVelocity > 0.99999f &&
-                  kYunyiDefaultPvReferenceVelocity < 1.00001f,
-              "ordinary PV must default to a 1 rad/s reference velocity");
+static_assert(kYunyiDefaultPvMaximumVelocity == 1.0f,
+              "ordinary PV must default to a 1 rad/s maximum velocity");
+static_assert(kYunyiOrdinaryPvMaximumAcceleration == 8.0f &&
+                  kYunyiDefaultPvMaximumAcceleration == 4.0f,
+              "ordinary PV acceleration limits use physical rad/s^2 units");
+static_assert(kYunyiDefaultPvMaximumAcceleration ==
+                  kNativeOrdinaryPvDefaultAcceleration,
+              "product and native ordinary PV acceleration defaults must match");
 static_assert(kYunyiOrdinaryMitMaximumVelocity == 5.0f,
               "ordinary MIT 100 percent must map to 5 rad/s");
-static_assert(yunyi_effective_pv_speed_percent(30.0f, 50.0f) == 30.0f &&
-                  yunyi_effective_pv_speed_percent(80.0f, 50.0f) == 50.0f,
-              "PV command speed must be bounded by the configured maximum");
+static_assert(yunyi_effective_pv_reference_velocity(30.0f, 1.0f) == 0.6f &&
+                  yunyi_effective_pv_reference_velocity(80.0f, 1.0f) == 1.0f,
+              "PV command speed must be bounded by the physical maximum");
 
 // Complete native ownership for the only supported robot product. Nothing in
 // this structure crosses the public ABI or needs to be assembled by Python.

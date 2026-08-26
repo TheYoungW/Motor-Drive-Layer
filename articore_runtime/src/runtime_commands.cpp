@@ -185,6 +185,9 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
   initialized.submitted_at = Clock::now();
   initialized.joint_position = true;
   initialized.max_reference_velocity = 0.0f;
+  initialized.max_reference_acceleration =
+      mode == ARTICORE_MODE_PV
+      ? kNativeOrdinaryPvDefaultAcceleration : 0.0f;
   initialized.pv_velocity_limit = config_.safe_pv_velocity_limit;
   for (const auto& motor : motors_) {
     if (motor.descriptor.is_gripper) continue;
@@ -209,6 +212,7 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
           motor.descriptor.motor, state.pos, config_.safe_pv_velocity_limit});
       initialized.pv_hold_confirmation_cycles.push_back(0);
       initialized.pv_stationary_hold.push_back(0);
+      initialized.pv_reference_velocities.push_back(0.0f);
     } else {
       const auto configured = joint_configs_.find(motor.descriptor.motor);
       const auto kp = configured == joint_configs_.end()
@@ -645,6 +649,8 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
   uint32_t bimanual_leader_side = ARTICORE_ROBOT_LEFT;
   std::vector<float> bimanual_start_positions;
   std::array<float, ARTICORE_PRODUCT_ARM_DOF> bimanual_follower_reference{};
+  std::array<float, ARTICORE_PRODUCT_ARM_DOF>
+      bimanual_follower_reference_velocity{};
   std::set<void*> intentionally_disabled;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
@@ -666,6 +672,8 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     bimanual_leader_side = bimanual_follow_.leader_side;
     bimanual_start_positions = bimanual_follow_.start_positions;
     bimanual_follower_reference = bimanual_follow_.follower_reference;
+    bimanual_follower_reference_velocity =
+        bimanual_follow_.follower_reference_velocity;
     intentionally_disabled = intentionally_disabled_motors_;
   }
 
@@ -694,15 +702,20 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
         !finite(arm_mailbox_.max_reference_velocity) ||
         arm_mailbox_.max_reference_velocity < 0.0f ||
         (mode == ARTICORE_MODE_PV &&
-         (!finite(arm_mailbox_.pv_velocity_limit) ||
+         (!finite(arm_mailbox_.max_reference_acceleration) ||
+          arm_mailbox_.max_reference_acceleration <= 0.0f ||
+          arm_mailbox_.pv_reference_velocities.size() !=
+              arm_mailbox_.pv.size() ||
+          !finite(arm_mailbox_.pv_velocity_limit) ||
           arm_mailbox_.pv_velocity_limit < 0.0f))) {
       throw std::runtime_error(
           "ordinary joint position state is internally inconsistent");
     }
     const float command_scale = degraded ? 0.25f : 1.0f;
-    const float max_delta = arm_mailbox_.max_reference_velocity * command_scale /
-                            static_cast<float>(control_hz_);
     if (mode == ARTICORE_MODE_PV) {
+      const float period_s = 1.0f / static_cast<float>(control_hz_);
+      const float maximum_velocity =
+          arm_mailbox_.max_reference_velocity * command_scale;
       if (arm_mailbox_.pv_hold_confirmation_cycles.size() !=
               arm_mailbox_.pv.size() ||
           arm_mailbox_.pv_stationary_hold.size() != arm_mailbox_.pv.size()) {
@@ -712,9 +725,13 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
       }
       for (std::size_t i = 0; i < arm_mailbox_.pv.size(); ++i) {
         auto& command = arm_mailbox_.pv[i];
-        command.target_position = advance_pv_position_reference(
-            command.target_position, arm_mailbox_.final_positions[i],
-            max_delta);
+        const auto reference = advance_acceleration_limited_pv_reference(
+            command.target_position,
+            arm_mailbox_.pv_reference_velocities[i],
+            arm_mailbox_.final_positions[i], maximum_velocity,
+            arm_mailbox_.max_reference_acceleration, period_s);
+        command.target_position = reference.position;
+        arm_mailbox_.pv_reference_velocities[i] = reference.velocity;
         const float final_position = arm_mailbox_.final_positions[i];
         const bool reference_reached =
             std::abs(command.target_position - final_position) <= 1.0e-6f;
@@ -755,6 +772,9 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
                        arm_mailbox_.pv_velocity_limit);
       }
     } else {
+      const float max_delta =
+          arm_mailbox_.max_reference_velocity * command_scale /
+          static_cast<float>(control_hz_);
       for (std::size_t i = 0; i < arm_mailbox_.mit.size(); ++i) {
         auto& command = arm_mailbox_.mit[i];
         command.target_position = advance_pv_position_reference(
@@ -779,6 +799,9 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     const float command_scale = degraded ? 0.25f : 1.0f;
     const float max_delta = arm_mailbox_.max_reference_velocity * command_scale /
                             static_cast<float>(control_hz_);
+    const float maximum_velocity =
+        arm_mailbox_.max_reference_velocity * command_scale;
+    const float period_s = 1.0f / static_cast<float>(control_hz_);
     for (std::size_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
       void* leader_motor =
           gravity_arms_[bimanual_leader_side].joints[joint];
@@ -856,9 +879,14 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
         return false;
       }
 
-      bimanual_follower_reference[joint] = advance_pv_position_reference(
-          bimanual_follower_reference[joint], desired, max_delta);
       if (mode == ARTICORE_MODE_PV) {
+        const auto reference = advance_acceleration_limited_pv_reference(
+            bimanual_follower_reference[joint],
+            bimanual_follower_reference_velocity[joint], desired,
+            maximum_velocity, arm_mailbox_.max_reference_acceleration,
+            period_s);
+        bimanual_follower_reference[joint] = reference.position;
+        bimanual_follower_reference_velocity[joint] = reference.velocity;
         const auto command = std::find_if(
             arm_mailbox_.pv.begin(), arm_mailbox_.pv.end(),
             [&](const ArticorePosVelCommand& value) {
@@ -871,12 +899,16 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
         const auto index = static_cast<std::size_t>(
             std::distance(arm_mailbox_.pv.begin(), command));
         command->target_position = bimanual_follower_reference[joint];
+        arm_mailbox_.pv_reference_velocities[index] =
+            bimanual_follower_reference_velocity[joint];
         arm_mailbox_.final_positions[index] = desired;
         arm_mailbox_.pv_hold_confirmation_cycles[index] = 0;
         arm_mailbox_.pv_stationary_hold[index] = 0;
         command->velocity_limit = std::max(
             config_.safe_pv_velocity_limit, arm_mailbox_.pv_velocity_limit);
       } else {
+        bimanual_follower_reference[joint] = advance_pv_position_reference(
+            bimanual_follower_reference[joint], desired, max_delta);
         const auto command = std::find_if(
             arm_mailbox_.mit.begin(), arm_mailbox_.mit.end(),
             [&](const ArticoreMitCommand& value) {
@@ -1068,6 +1100,8 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     if (bimanual_active && bimanual_follow_.active) {
       const uint32_t follower_side = 1U - bimanual_leader_side;
       bimanual_follow_.follower_reference = bimanual_follower_reference;
+      bimanual_follow_.follower_reference_velocity =
+          bimanual_follower_reference_velocity;
       ++bimanual_follow_.status.control_cycles;
       bimanual_follow_.status.phase = ARTICORE_BIMANUAL_FOLLOW_ACTIVE;
       bimanual_follow_.status.active = 1;

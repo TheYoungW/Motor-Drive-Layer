@@ -79,7 +79,8 @@ def run_mode(args: argparse.Namespace, mode: str) -> dict[str, object]:
         robot.connect()
         robot.enable()
         if mode == "pv":
-            robot.set_max_speed(args.speed)
+            robot.set_max_speed(2.0 * args.speed / 100.0)
+            robot.set_max_acceleration(4.0)
         send_positions(robot, mode, SAFE_Q, SAFE_Q, args.speed)
         tolerance = 0.05 if mode == "pv" else 0.06
         wait_stable(robot, SAFE_Q, SAFE_Q, tolerance)

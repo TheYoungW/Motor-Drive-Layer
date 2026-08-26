@@ -294,7 +294,8 @@ def main() -> None:
         robot.connect()
         connected = True
         robot.enable()
-        robot.set_max_speed(50.0)
+        robot.set_max_speed(1.0)
+        robot.set_max_acceleration(4.0)
         wait_joint_target(robot, START, START, timeout_s=args.timeout)
         start_function, status_function = native_functions(robot)
         waypoints, config = build_request(args.duration, args.pv_v)

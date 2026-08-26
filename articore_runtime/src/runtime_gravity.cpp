@@ -264,6 +264,7 @@ void SafetyRuntime::start_bimanual_follow(uint32_t leader_side) {
   for (std::size_t joint = 0; joint < kArmDof; ++joint) {
     bimanual_follow_.follower_reference[joint] =
         positions[follower_side * kArmDof + joint];
+    bimanual_follow_.follower_reference_velocity[joint] = 0.0f;
   }
   bimanual_follow_.status = {};
   bimanual_follow_.status.struct_size = sizeof(bimanual_follow_.status);
@@ -323,6 +324,12 @@ void SafetyRuntime::stop_bimanual_follow() {
         const auto index = static_cast<std::size_t>(
             std::distance(arm_mailbox_.pv.begin(), command));
         command->target_position = positions[side][joint];
+        if (arm_mailbox_.pv_reference_velocities.size() !=
+            arm_mailbox_.pv.size()) {
+          throw std::runtime_error(
+              "PV bimanual hold lost reference velocity state");
+        }
+        arm_mailbox_.pv_reference_velocities[index] = 0.0f;
         arm_mailbox_.final_positions[index] = positions[side][joint];
         arm_mailbox_.pv_hold_confirmation_cycles[index] = 0;
         arm_mailbox_.pv_stationary_hold[index] = 0;
@@ -355,6 +362,7 @@ void SafetyRuntime::reset_bimanual_follow_locked() {
   bimanual_follow_.active = false;
   bimanual_follow_.start_positions.clear();
   bimanual_follow_.follower_reference.fill(0.0f);
+  bimanual_follow_.follower_reference_velocity.fill(0.0f);
   bimanual_follow_.status = {};
   bimanual_follow_.status.struct_size = sizeof(bimanual_follow_.status);
   bimanual_follow_.status.phase = ARTICORE_BIMANUAL_FOLLOW_INACTIVE;

@@ -3098,7 +3098,7 @@ void test_first_command_planning_reserves_enable_grace_without_blocking_hold() {
   {
     auto transaction = runtime.begin_command_transaction();
     runtime.set_joint_pv_planned(
-        targets, 2, 1.0f, 1.0f, transaction, planning_token);
+        targets, 2, 1.0f, 4.0f, 1.0f, transaction, planning_token);
   }
   require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
           "atomically installed planned command reaches RUNNING after grace");
@@ -3828,6 +3828,56 @@ void test_ordinary_speed_percent_scales_and_zero_pauses() {
           "negative active ordinary reference velocity is rejected");
 }
 
+void test_ordinary_pv_reference_limits_acceleration_and_brakes() {
+  constexpr float period_s = 0.002f;
+  constexpr float maximum_velocity = 2.0f;
+  constexpr float maximum_acceleration = 4.0f;
+  constexpr float maximum_velocity_change =
+      maximum_acceleration * period_s;
+
+  articore::NativePvReferenceStep reference{};
+  float previous_velocity = reference.velocity;
+  for (int cycle = 0; cycle < 250; ++cycle) {
+    reference = articore::advance_acceleration_limited_pv_reference(
+        reference.position, reference.velocity, 10.0f, maximum_velocity,
+        maximum_acceleration, period_s);
+    require(std::abs(reference.velocity - previous_velocity) <=
+                maximum_velocity_change + 1.0e-6f &&
+                std::abs(reference.velocity) <=
+                maximum_velocity + 1.0e-6f,
+            "ordinary PV changes reference velocity by at most a*dt");
+    previous_velocity = reference.velocity;
+  }
+  require(std::abs(reference.velocity - 2.0f) < 1.0e-4f &&
+              std::abs(reference.position - 0.5f) < 1.0e-3f,
+          "4 rad/s^2 reaches 2 rad/s in 0.5 seconds and travels 0.5 rad");
+
+  const float position_before_reverse = reference.position;
+  const float velocity_before_reverse = reference.velocity;
+  reference = articore::advance_acceleration_limited_pv_reference(
+      reference.position, reference.velocity, -1.0f, maximum_velocity,
+      maximum_acceleration, period_s);
+  require(reference.position > position_before_reverse &&
+              std::abs(reference.velocity -
+                       (velocity_before_reverse - maximum_velocity_change)) <
+                  1.0e-5f,
+          "PV target reversal decelerates continuously before changing direction");
+
+  for (int cycle = 0; cycle < 3000 &&
+       (reference.position != -1.0f || reference.velocity != 0.0f);
+       ++cycle) {
+    const float prior_velocity = reference.velocity;
+    reference = articore::advance_acceleration_limited_pv_reference(
+        reference.position, reference.velocity, -1.0f, maximum_velocity,
+        maximum_acceleration, period_s);
+    require(std::abs(reference.velocity - prior_velocity) <=
+                maximum_velocity_change + 1.0e-6f,
+            "PV braking and reverse acceleration remain bounded");
+  }
+  require(reference.position == -1.0f && reference.velocity == 0.0f,
+          "acceleration-limited PV reaches the exact endpoint at zero speed");
+}
+
 void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
   FakeDriver driver;
   g_driver = &driver;
@@ -3878,15 +3928,15 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
           return frame[0].target_position > 0.0f;
         });
     require(first_moving != driver.pv_history.end() &&
-                first_moving->at(0).target_position <= 0.00201f &&
-                first_moving->at(1).target_position <= 1.00201f &&
+                first_moving->at(0).target_position <= 0.00002f &&
+                first_moving->at(1).target_position <= 1.00002f &&
                 first_moving->at(0).velocity_limit == 1.0f,
-            "ordinary PV starts from feedback with one shared reference speed");
+            "ordinary PV starts from feedback with a bounded acceleration");
     const auto available = static_cast<std::size_t>(
         driver.pv_history.end() - first_moving);
     require(available >= 100 &&
-                std::abs(first_moving[99][0].target_position - 0.20f) < 0.003f,
-            "ordinary PV advances about 0.20 rad in one hundred 500 Hz cycles");
+                std::abs(first_moving[99][0].target_position - 0.08f) < 0.003f,
+            "ordinary PV accelerates to 0.8 rad/s over one hundred cycles");
   }
   require(runtime.health().state == ARTICORE_RUNNING,
           "one-shot ordinary PV remains active beyond the watchdog");
@@ -3910,10 +3960,11 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
           "ordinary PV reversal takes effect on the next native cycle");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
-    require(std::abs((before_reverse -
-                      driver.pv_history[reverse_baseline][0].target_position) -
-                     0.002f) < 0.0002f,
-            "ordinary PV discards the old endpoint and preserves current q");
+    const float after_reverse =
+        driver.pv_history[reverse_baseline][0].target_position;
+    require(after_reverse > before_reverse &&
+                after_reverse - before_reverse < 0.0021f,
+            "ordinary PV target reversal preserves velocity and starts braking");
   }
 
   runtime.set_joint_pv(reverse, 2, 2.0f);
@@ -3932,14 +3983,13 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     const auto& sent = driver.pv_history[speed_baseline];
-    require(std::abs((before_speed - sent[0].target_position) - 0.004f) <
-                    0.0002f &&
+    require(std::abs(sent[0].target_position - before_speed) < 0.0041f &&
                 sent[0].velocity_limit == 2.0f &&
                 sent[1].velocity_limit == 2.0f,
-            "ordinary PV atomically applies one 2 rad/s speed to both arms");
+            "ordinary PV updates the velocity cap without a reference jump");
   }
 
-  runtime.update_joint_pv_velocity(1.0f, 3.0f);
+  runtime.update_joint_pv_motion_limits(1.0f, 4.0f, 3.0f);
   float before_decoupled_speed = 0.0f;
   std::size_t decoupled_speed_baseline = 0;
   {
@@ -3955,11 +4005,11 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     const auto& sent = driver.pv_history[decoupled_speed_baseline];
-    require(std::abs((before_decoupled_speed - sent[0].target_position) -
-                     0.002f) < 0.0002f &&
+    require(std::abs(sent[0].target_position - before_decoupled_speed) <
+                    0.0041f &&
                 sent[0].velocity_limit == 3.0f &&
                 sent[1].velocity_limit == 3.0f,
-            "ordinary PV separates the 1 rad/s reference slew from the "
+            "ordinary PV separates the acceleration-limited reference from the "
             "3 rad/s drive velocity ceiling");
   }
 
@@ -6358,6 +6408,7 @@ int main() {
     RUN_TEST(test_persistent_mit_rejects_unbounded_motion_terms);
     RUN_TEST(test_ordinary_mit_position_uses_constant_reference_speed);
     RUN_TEST(test_ordinary_speed_percent_scales_and_zero_pauses);
+    RUN_TEST(test_ordinary_pv_reference_limits_acceleration_and_brakes);
     RUN_TEST(test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct);
     RUN_TEST(test_ordinary_pv_uses_quiet_feedback_confirmed_final_hold);
     RUN_TEST(test_ordinary_mit_position_reversal_and_speed_update_are_continuous);

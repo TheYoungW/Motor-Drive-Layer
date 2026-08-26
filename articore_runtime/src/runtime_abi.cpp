@@ -24,15 +24,20 @@ struct ArticoreRuntime {
       ArticoreControlMode product_mode = ARTICORE_MODE_PV)
       : yunyi_owned(owned != nullptr), yunyi(std::move(owned)),
         runtime(std::move(value)), product_mode(product_mode),
-        product_pv_max_speed_percent(articore::kYunyiDefaultPvSpeedPercent) {}
+        product_pv_max_velocity(
+            articore::kYunyiDefaultPvMaximumVelocity),
+        product_pv_max_acceleration(
+            articore::kYunyiDefaultPvMaximumAcceleration) {}
   std::mutex terminal_mutex;
   bool yunyi_owned = false;
   bool terminally_disconnected = false;
   std::unique_ptr<articore::YunyiRuntimeResources> yunyi;
   std::unique_ptr<articore::SafetyRuntime> runtime;
   ArticoreControlMode product_mode = ARTICORE_MODE_PV;
-  std::mutex product_pv_speed_mutex;
-  float product_pv_max_speed_percent = articore::kYunyiDefaultPvSpeedPercent;
+  std::mutex product_pv_limits_mutex;
+  float product_pv_max_velocity = articore::kYunyiDefaultPvMaximumVelocity;
+  float product_pv_max_acceleration =
+      articore::kYunyiDefaultPvMaximumAcceleration;
   float product_pv_command_speed_percent = 100.0f;
   std::mutex motion_mutex;
 };
@@ -106,6 +111,23 @@ void require_finite(const float* values, uint32_t count, const char* name) {
   }
 }
 
+float require_physical_limit(
+    float value, float minimum, float maximum, const char* name) {
+  if (!std::isfinite(value) || value < minimum || value > maximum) {
+    throw std::invalid_argument(
+        std::string(name) + " must be finite and within " +
+        std::to_string(minimum) + ".." + std::to_string(maximum));
+  }
+  const float quantized = std::round(
+      value / articore::kYunyiPvMotionLimitResolution) *
+      articore::kYunyiPvMotionLimitResolution;
+  if (std::abs(value - quantized) > 1.0e-5f) {
+    throw std::invalid_argument(
+        std::string(name) + " must use 0.01 physical-unit resolution");
+  }
+  return quantized;
+}
+
 void validate_product_position(
     const articore::YunyiRuntimeResources::Joint& joint, float position,
     uint32_t index) {
@@ -141,7 +163,8 @@ void install_product_joint_positions(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
     float speed_percent,
     articore::SafetyRuntime::CommandTransaction* transaction = nullptr,
-    uint64_t planning_token = 0) {
+    uint64_t planning_token = 0,
+    std::unique_lock<std::mutex>* product_limits_transaction = nullptr) {
   auto& product = checked_yunyi(runtime);
   require_product_count(count);
   require_finite(positions, count, "positions");
@@ -150,12 +173,30 @@ void install_product_joint_positions(
     throw std::invalid_argument(
         "ordinary speed must be finite and within 0..100");
   }
-  const float maximum_reference_velocity =
-      runtime->product_mode == ARTICORE_MODE_MIT
-      ? product.default_mit_reference_velocity
-      : product.default_pv_reference_velocity;
-  const float selected_reference_velocity =
-      maximum_reference_velocity * speed_percent / 100.0f;
+  std::unique_lock<std::mutex> pv_limits_lock;
+  float selected_reference_velocity = 0.0f;
+  float selected_reference_acceleration = 0.0f;
+  if (runtime->product_mode == ARTICORE_MODE_MIT) {
+    selected_reference_velocity =
+        product.default_mit_reference_velocity * speed_percent / 100.0f;
+  } else {
+    if (product_limits_transaction) {
+      if (!product_limits_transaction->owns_lock() ||
+          product_limits_transaction->mutex() !=
+              &runtime->product_pv_limits_mutex) {
+        throw std::logic_error(
+            "PV command requires the product motion-limit transaction");
+      }
+    } else {
+      pv_limits_lock =
+          std::unique_lock<std::mutex>(runtime->product_pv_limits_mutex);
+    }
+    selected_reference_velocity =
+        articore::yunyi_effective_pv_reference_velocity(
+            speed_percent, runtime->product_pv_max_velocity);
+    selected_reference_acceleration =
+        runtime->product_pv_max_acceleration;
+  }
   const float selected_pv_velocity_limit =
       articore::kYunyiPvDriveVelocityLimit;
   std::array<ArticoreJointMitTarget, ARTICORE_PRODUCT_DUAL_ARM_DOF> mit{};
@@ -183,11 +224,15 @@ void install_product_joint_positions(
   } else if (transaction) {
     safety.set_joint_pv_planned(
         pv.data(), count, selected_reference_velocity,
-        selected_pv_velocity_limit, *transaction, planning_token);
+        selected_reference_acceleration, selected_pv_velocity_limit,
+        *transaction, planning_token);
   } else {
     safety.set_joint_pv(
         pv.data(), count, selected_reference_velocity,
-        selected_pv_velocity_limit);
+        selected_reference_acceleration, selected_pv_velocity_limit);
+  }
+  if (runtime->product_mode == ARTICORE_MODE_PV) {
+    runtime->product_pv_command_speed_percent = speed_percent;
   }
 }
 
@@ -249,10 +294,13 @@ int32_t move_pose_impl(
         articore::solve_dual_point_to_point_targets_from_reference(
             product, runtime->product_mode, reference,
             left_target_pose, right_target_pose, ik_deadline);
+    std::unique_lock<std::mutex> product_limits_transaction(
+        runtime->product_pv_limits_mutex);
     auto transaction = safety.begin_command_transaction();
     install_product_joint_positions(
         runtime, target.data(), static_cast<uint32_t>(target.size()),
-        speed_percent, &transaction, planning.token());
+        speed_percent, &transaction, planning.token(),
+        &product_limits_transaction);
     safety.record_operation_result(
         ARTICORE_OPERATION_MOVE_POSE, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
@@ -522,7 +570,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (7U << 16);
+  return (8U << 16);
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -809,13 +857,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
       throw std::runtime_error(
           "PV joint command requires product PV mode");
     }
-    std::lock_guard<std::mutex> lock(runtime->product_pv_speed_mutex);
-    const float effective_speed_percent =
-        articore::yunyi_effective_pv_speed_percent(
-            speed_percent, runtime->product_pv_max_speed_percent);
     install_product_joint_positions(
-        runtime, positions, count, effective_speed_percent);
-    runtime->product_pv_command_speed_percent = speed_percent;
+        runtime, positions, count, speed_percent);
     checked(runtime).record_operation_result(
         ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
@@ -858,27 +901,24 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
-    ArticoreRuntime* runtime, float max_speed_percent) {
+    ArticoreRuntime* runtime, float max_speed_rad_s) {
   try {
-    if (!std::isfinite(max_speed_percent) || max_speed_percent < 0.0f ||
-        max_speed_percent > 100.0f) {
-      throw std::invalid_argument(
-          "ordinary maximum speed must be finite and within 0..100");
-    }
+    const float validated = require_physical_limit(
+        max_speed_rad_s, 0.0f, articore::kYunyiOrdinaryPvMaximumVelocity,
+        "ordinary maximum speed in rad/s");
     checked_yunyi(runtime);
     if (runtime->product_mode != ARTICORE_MODE_PV) {
       throw std::runtime_error(
           "maximum speed setting is available only in product PV mode");
     }
-    std::lock_guard<std::mutex> lock(runtime->product_pv_speed_mutex);
-    const float effective_speed_percent =
-        articore::yunyi_effective_pv_speed_percent(
-            runtime->product_pv_command_speed_percent, max_speed_percent);
-    checked(runtime).update_joint_pv_velocity(
-        articore::kYunyiOrdinaryPvMaximumVelocity *
-            effective_speed_percent / 100.0f,
+    std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
+    const float effective_velocity =
+        articore::yunyi_effective_pv_reference_velocity(
+            runtime->product_pv_command_speed_percent, validated);
+    checked(runtime).update_joint_pv_motion_limits(
+        effective_velocity, runtime->product_pv_max_acceleration,
         articore::kYunyiPvDriveVelocityLimit);
-    runtime->product_pv_max_speed_percent = max_speed_percent;
+    runtime->product_pv_max_velocity = validated;
     g_last_error = "ok";
     return 0;
   } catch (const std::invalid_argument& error) {
@@ -891,9 +931,9 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(
-    ArticoreRuntime* runtime, float* max_speed_percent) {
-  if (!max_speed_percent) {
-    g_last_error = "max_speed_percent output is null";
+    ArticoreRuntime* runtime, float* max_speed_rad_s) {
+  if (!max_speed_rad_s) {
+    g_last_error = "max_speed_rad_s output is null";
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
   }
   try {
@@ -902,8 +942,61 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(
       throw std::runtime_error(
           "maximum speed setting is available only in product PV mode");
     }
-    std::lock_guard<std::mutex> lock(runtime->product_pv_speed_mutex);
-    *max_speed_percent = runtime->product_pv_max_speed_percent;
+    std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
+    *max_speed_rad_s = runtime->product_pv_max_velocity;
+    g_last_error = "ok";
+    return 0;
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_acceleration(
+    ArticoreRuntime* runtime, float max_acceleration_rad_s2) {
+  try {
+    const float validated = require_physical_limit(
+        max_acceleration_rad_s2, articore::kYunyiPvMotionLimitResolution,
+        articore::kYunyiOrdinaryPvMaximumAcceleration,
+        "ordinary maximum acceleration in rad/s^2");
+    checked_yunyi(runtime);
+    if (runtime->product_mode != ARTICORE_MODE_PV) {
+      throw std::runtime_error(
+          "maximum acceleration setting is available only in product PV mode");
+    }
+    std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
+    const float effective_velocity =
+        articore::yunyi_effective_pv_reference_velocity(
+            runtime->product_pv_command_speed_percent,
+            runtime->product_pv_max_velocity);
+    checked(runtime).update_joint_pv_motion_limits(
+        effective_velocity, validated, articore::kYunyiPvDriveVelocityLimit);
+    runtime->product_pv_max_acceleration = validated;
+    g_last_error = "ok";
+    return 0;
+  } catch (const std::invalid_argument& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
+  } catch (const std::exception& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_STATE, error.what());
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_acceleration(
+    ArticoreRuntime* runtime, float* max_acceleration_rad_s2) {
+  if (!max_acceleration_rad_s2) {
+    g_last_error = "max_acceleration_rad_s2 output is null";
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  }
+  try {
+    checked_yunyi(runtime);
+    if (runtime->product_mode != ARTICORE_MODE_PV) {
+      throw std::runtime_error(
+          "maximum acceleration setting is available only in product PV mode");
+    }
+    std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
+    *max_acceleration_rad_s2 = runtime->product_pv_max_acceleration;
     g_last_error = "ok";
     return 0;
   } catch (const std::exception& error) {
