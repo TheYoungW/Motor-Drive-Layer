@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -105,6 +106,59 @@ class MotorBackend {
 // leaves the arrival window.
 inline constexpr float kNativePvFinalHoldVelocityLimit = 0.0f;
 inline constexpr float kNativePvSettlingVelocityLimit = 0.05f;
+inline constexpr float kNativeOrdinaryPvHoldPositionTolerance = 0.002f;
+inline constexpr float kNativeOrdinaryPvHoldReleaseTolerance = 0.020f;
+inline constexpr uint16_t kNativeOrdinaryPvHoldConfirmationCycles = 25;
+
+// Cartesian PV references normally move much more slowly than the drive's
+// product ceiling. Keep the Damiao POS_VEL speed limit close to the native
+// reference so the internal position loop cannot repeatedly sprint at the
+// target. The complete trajectory slows as one product when feedback falls
+// behind, preserving Cartesian geometry across all enabled joints.
+inline constexpr float kNativeCartesianPvVelocityGain = 1.5f;
+inline constexpr float kNativeCartesianPvVelocityMargin = 0.05f;
+inline constexpr float kNativeCartesianTrackingSlowError = 0.012f;
+inline constexpr float kNativeCartesianTrackingMinimumScaleError = 0.020f;
+inline constexpr float kNativeCartesianTrackingPauseError = 0.030f;
+inline constexpr float kNativeCartesianTrackingMinimumScale = 0.40f;
+inline constexpr float kNativeCartesianTrackingDecelerationPerSecond = 5.0f;
+inline constexpr float kNativeCartesianTrackingAccelerationPerSecond = 1.0f;
+inline constexpr auto kNativeCartesianTrackingPauseTimeout =
+    std::chrono::seconds(1);
+
+inline bool native_cartesian_operation(ArticoreRuntimeOperation operation) {
+  return operation == ARTICORE_OPERATION_MOVE_LINEAR ||
+      operation == ARTICORE_OPERATION_MOVE_CIRCULAR;
+}
+
+inline float native_cartesian_pv_velocity_limit(
+    float planned_velocity, float minimum_velocity, float product_ceiling) {
+  return std::clamp(
+      kNativeCartesianPvVelocityGain * std::abs(planned_velocity) +
+          kNativeCartesianPvVelocityMargin,
+      minimum_velocity, product_ceiling);
+}
+
+inline float native_cartesian_tracking_scale(float position_error) {
+  if (!std::isfinite(position_error) || position_error <=
+          kNativeCartesianTrackingSlowError) {
+    return 1.0f;
+  }
+  if (position_error >= kNativeCartesianTrackingPauseError) return 0.0f;
+  if (position_error <= kNativeCartesianTrackingMinimumScaleError) {
+    const float ratio =
+        (position_error - kNativeCartesianTrackingSlowError) /
+        (kNativeCartesianTrackingMinimumScaleError -
+         kNativeCartesianTrackingSlowError);
+    return 1.0f -
+        ratio * (1.0f - kNativeCartesianTrackingMinimumScale);
+  }
+  const float ratio =
+      (position_error - kNativeCartesianTrackingMinimumScaleError) /
+      (kNativeCartesianTrackingPauseError -
+       kNativeCartesianTrackingMinimumScaleError);
+  return kNativeCartesianTrackingMinimumScale * (1.0f - ratio);
+}
 
 inline float advance_pv_position_reference(
     float current_position, float target_position, float max_delta) {
@@ -267,6 +321,8 @@ class SafetyRuntime {
   // tail; point-to-point uses the ordinary PV position path instead.
   using CommandTransaction = std::unique_lock<std::mutex>;
   CommandTransaction begin_command_transaction();
+  uint64_t begin_command_planning(const CommandTransaction& transaction);
+  void cancel_command_planning(uint64_t token) noexcept;
   uint64_t start_trajectory(NativeTrajectoryRequest request,
                             uint64_t replace_trajectory_id = 0,
                             CommandTransaction* transaction = nullptr,
@@ -294,6 +350,10 @@ class SafetyRuntime {
                     uint32_t count,
                     float max_reference_velocity,
                     float pv_velocity_limit);
+  void set_joint_pv_planned(
+      const ArticoreJointPvTarget* targets, uint32_t count,
+      float max_reference_velocity, float pv_velocity_limit,
+      CommandTransaction& transaction, uint64_t planning_token);
   void set_joint_mit_speed(const ArticoreJointMitTarget* targets,
                            uint32_t count, float speed_percent);
   void set_joint_pv_speed(const ArticoreJointPvTarget* targets,
@@ -317,6 +377,9 @@ class SafetyRuntime {
       const ArticoreGravityCompensationConfig* config);
   void stop_gravity_compensation();
   ArticoreGravityCompensationStatus gravity_compensation_status() const;
+  void start_bimanual_follow(uint32_t leader_side);
+  void stop_bimanual_follow();
+  ArticoreBimanualFollowStatus bimanual_follow_status() const;
   void set_gripper_commands(const ArticoreGripperCommand* commands,
                             uint32_t count,
                             int32_t mode = ARTICORE_GRIPPER_MODE_PROTECTED);
@@ -453,6 +516,12 @@ class SafetyRuntime {
     std::vector<ArticorePosVelCommand> pv;
     std::vector<ArticoreMitCommand> mit;
     std::vector<float> final_positions;
+    // Ordinary PV PTP has no trajectory status object, but it still needs the
+    // same quiet final hold as native Cartesian paths. Each joint transitions
+    // to V=0 only after fresh feedback remains close to its final target for a
+    // bounded 500 Hz window; a larger error releases it for correction.
+    std::vector<uint16_t> pv_hold_confirmation_cycles;
+    std::vector<uint8_t> pv_stationary_hold;
   };
 
   struct GravityArm {
@@ -461,6 +530,8 @@ class SafetyRuntime {
     std::string product_id;
     std::unique_ptr<RobotModel> model;
     std::array<void*, 7> joints{};
+    std::array<float, 7> position_directions{};
+    std::array<float, 7> torque_command_scales{};
   };
 
   struct GravityControl {
@@ -471,6 +542,14 @@ class SafetyRuntime {
     std::vector<float> hold_positions;
     uint64_t control_cycles = 0;
     ArticoreGravityCompensationStatus status{};
+  };
+
+  struct BimanualFollowControl {
+    bool active = false;
+    uint32_t leader_side = ARTICORE_ROBOT_LEFT;
+    std::vector<float> start_positions;
+    std::array<float, 7> follower_reference{};
+    ArticoreBimanualFollowStatus status{};
   };
 
   struct TrajectorySegment {
@@ -488,6 +567,8 @@ class SafetyRuntime {
     double duration_s = 0.0;
     double approach_duration_s = 0.0;
     Clock::time_point started_at{};
+    Clock::time_point tracking_updated_at{};
+    Clock::time_point tracking_pause_started_at{};
     Clock::time_point settling_started_at{};
     Clock::time_point settling_stable_started_at{};
     Clock::time_point hold_unstable_started_at{};
@@ -509,6 +590,10 @@ class SafetyRuntime {
     bool stationary_hold_active = false;
     bool final_hold_limit_active = false;
     uint32_t final_hold_limit_mask = 0;
+    float tracking_time_scale = 1.0f;
+    float tracking_position_error = 0.0f;
+    bool tracking_feedback_valid = false;
+    std::string tracking_worst_role;
     std::string error;
   };
 
@@ -519,6 +604,8 @@ class SafetyRuntime {
     int32_t motion_state = ARTICORE_TRAJECTORY_IDLE;
     uint64_t trajectory_id = 0;
     float progress = 0.0f;
+    float tracking_time_scale = 1.0f;
+    float tracking_position_error = 0.0f;
     std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> planned_positions{};
     std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> planned_velocities{};
     std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> command_positions{};
@@ -536,6 +623,7 @@ class SafetyRuntime {
   bool run_gravity_control_cycle(Clock::time_point now,
                                  bool include_grippers,
                                  std::string& error);
+  void reset_bimanual_follow_locked();
   bool prepare_trajectory_cycle(Clock::time_point now,
                                 bool& completing,
                                 std::string& error);
@@ -589,7 +677,8 @@ class SafetyRuntime {
   void validate_position_velocity_torque(void* motor, float position,
                                          float velocity, float torque) const;
   void require_state_for_command(bool allow_gravity = false,
-                                 bool allow_trajectory = false) const;
+                                 bool allow_trajectory = false,
+                                 uint64_t planning_token = 0) const;
   void validate_motor_set(const ArticorePosVelCommand* commands,
                           uint32_t count, bool grippers_only) const;
   void validate_motor_set(const ArticoreMitCommand* commands,
@@ -598,7 +687,9 @@ class SafetyRuntime {
       ArticoreControlMode mode,
       const std::vector<std::pair<void*, float>>& targets,
       float max_reference_velocity,
-      float pv_velocity_limit = 0.0f);
+      float pv_velocity_limit = 0.0f,
+      CommandTransaction* transaction = nullptr,
+      uint64_t planning_token = 0);
   float ordinary_velocity_from_percent(ArticoreControlMode mode,
                                        float speed_percent) const;
   bool enter_safe_hold_from_feedback(const std::string& reason,
@@ -680,6 +771,7 @@ class SafetyRuntime {
   std::unordered_map<void*, JointControlConfig> joint_configs_;
   std::vector<GravityArm> gravity_arms_;
   GravityControl gravity_control_;
+  BimanualFollowControl bimanual_follow_;
   TrajectoryControl trajectory_control_;
   std::deque<TrajectoryControl> trajectory_queue_;
   std::deque<ArticoreTrajectoryStatus> trajectory_history_;
@@ -702,6 +794,10 @@ class SafetyRuntime {
   bool emergency_stop_latched_ = false;
   bool disable_confirmed_ = false;
   bool has_successful_command_ = false;
+  bool first_command_accepted_ = false;
+  bool enable_grace_transition_ = false;
+  uint64_t active_command_planning_token_ = 0;
+  uint64_t next_command_planning_token_ = 1;
   Clock::time_point enabled_at_{};
   Clock::time_point last_successful_command_{};
   Clock::time_point last_fresh_feedback_{};

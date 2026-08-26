@@ -455,6 +455,9 @@ void SafetyRuntime::initialize_enabled_state(ArticoreControlMode mode) {
   safety_reason_.clear();
   disable_confirmed_ = false;
   has_successful_command_ = false;
+  first_command_accepted_ = false;
+  enable_grace_transition_ = false;
+  active_command_planning_token_ = 0;
   gripper_command_generation_ = 0;
   gripper_sent_generation_ = 0;
   enabled_at_ = Clock::now();
@@ -498,6 +501,7 @@ void SafetyRuntime::initialize_enabled_state(ArticoreControlMode mode) {
   gravity_control_.status = {};
   gravity_control_.status.struct_size = sizeof(gravity_control_.status);
   gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
+  reset_bimanual_follow_locked();
 }
 
 bool SafetyRuntime::send_initial_hold(ArticoreControlMode mode,
@@ -698,6 +702,7 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
       gravity_control_.phase = ARTICORE_GRAVITY_INACTIVE;
       gravity_control_.status.active = 0;
       gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
+      reset_bimanual_follow_locked();
     }
   }
   wakeup_.notify_all();
@@ -1446,7 +1451,11 @@ void SafetyRuntime::disable() {
     gravity_control_.hold_positions.clear();
     gravity_control_.status.active = 0;
     gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
+    reset_bimanual_follow_locked();
     has_successful_command_ = false;
+    first_command_accepted_ = false;
+    enable_grace_transition_ = false;
+    active_command_planning_token_ = 0;
     gripper_command_generation_ = 0;
     gripper_sent_generation_ = 0;
     hardware_transition_ = false;
@@ -1673,6 +1682,7 @@ void SafetyRuntime::recover() {
     gravity_control_.hold_positions.clear();
     gravity_control_.status.active = 0;
     gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
+    reset_bimanual_follow_locked();
   }
 
   std::string error;

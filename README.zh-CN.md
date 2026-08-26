@@ -139,6 +139,13 @@ Runtime ABI 2.8 提供第一版重力补偿模式。SDK 将已安装的七轴侧
 MIT 模式使能后启动重力补偿。原生 worker 平滑移除刚度和阻尼，同时逐步加入随姿态变化的
 重力力矩；停止时反向过渡到当前位置 MIT 保持。第一版暂不包含摩擦和科氏补偿。
 
+Runtime ABI 3.6 将产品级双臂协同简化为普通控制链路。
+`start_bimanual_follow(leader_side)` 原子记录左右臂当前七关节位置并立即选定主臂；之后用户仍
+调用普通 PV 或 MIT 位置接口控制主臂，从臂在同一个原生控制 worker 中保持启动瞬间的相对
+关节关系。底层继续使用普通模式已有的速度、增益、软限位、反馈检查以及一次完整 14 轴
+ControllerGroup 发送，不再进入重力补偿、专用过渡阶段或专用跟随增益。停止接口幂等，并在
+当前 PV/MIT 模式下以退出瞬间的实际位置建立保持参考。
+
 Runtime ABI 2.9 将整机维护操作收归 C++ Runtime。`configure_mode`、`clear_faults` 和
 `set_zero` 复用 Runtime 已持有的 Motor lease，在同一 worker/发送屏障内并行处理左右通道，
 不会释放 ControllerGroup、关闭 Runtime 或重建资源。调零固定检查 READY、双 transport、
@@ -225,6 +232,28 @@ Runtime ABI 2.22 新增 `articore_runtime_get_state_v2()`。它从 Motor 的低�
 `enabled_valid_mask`，夹爪返回同语义的使能值与有效标志。状态码、反馈序列和反馈年龄在每台
 Motor 的同一个缓存锁内读取；缺失、过期或未知状态不会被推断，而是由 SDK 映射为 `None`。
 旧 `articore_runtime_get_state()` 和原结构保持不变，供已有二进制客户端继续使用。
+
+### 运动接口术语边界（强制约定）
+
+以下三类接口不能混为一谈，后续实现、测试、SDK 示例和问题说明都以此为准：
+
+- **笛卡尔 PTP**：`articore_runtime_move_pose()` / `move_poses()` 只在 C++ 中对目标
+  Pose 做一次终点 IK，得到完整 14 关节目标角度后，交给普通 PV 每周期位置步进执行。它不
+  调用原生轨迹规划器，不生成 trajectory ID，也没有五次插值、轨迹 FIFO、轨迹状态或轨迹
+  取消语义。终点 IK 保持 `1e-4` 的 SE(3) 精度，从当前规划关节参考 warm-start，复用每臂
+  Pinocchio 模型，并将最近分支的全局回退限制在 8 ms 墙钟预算内；超时或未收敛时不会安装
+  部分结果，也不会覆盖原目标。该预算为普通 Linux 调度下的软时间上限，不是硬实时保证。
+- **关节角度轨迹规划**：`articore_runtime_start_trajectory()` 接收带时间戳的完整 14 关节
+  路点以及可选速度/加速度边界条件，由 C++ Runtime 预计算分段五次多项式，并由 500 Hz
+  worker 实时求值和发送。用户或问题描述提到“角度轨迹规划”“关节轨迹”时，必须测试这个
+  接口，不能用笛卡尔 PTP 代替。
+- **笛卡尔 Linear/Circular**：先在工具空间生成直线或圆弧几何样本，再连续求 IK 并执行
+  原生路径任务。为到达声明起点而自动执行的 PTP 仍然只是普通 PV PTP，不改变关节角度轨迹
+  接口的定义。
+
+因此，笛卡尔 PTP 的平滑度数据不能作为关节角度轨迹规划的测试结论。关节轨迹必须通过
+`articore_runtime_start_trajectory()` 真机测试，并读取原生 trajectory status 以及 500 Hz
+的 planned / command / feedback 数据。
 
 Runtime ABI 2.23 增加产品级原生双臂五次轨迹。`start_trajectory()` 在返回前复制全部路点，
 计算共享的中间速度/加速度和每段五次系数，并检查时间、有限值、产品关节限制以及多项式段内
@@ -386,7 +415,9 @@ Linear 使用 start/end，Circular 使用 start/via/end。0.12.7 之前起点不
 
 Runtime ABI 3.2 明确区分 PTP 与路径运动。`move_pose()` 只提交点到点目标，不返回 motion
 ID，也没有状态查询或取消接口；C++ 完成终点 IK 后，使用与普通 PV 相同的 500 Hz 逐周期
-位置步进。只有直线和圆弧调用返回异步 motion ID，并支持状态、取消与 FIFO 排队。
+位置步进。终点 IK 保持 `1e-4` 精度并设置 8 ms 稳态时钟预算，为 100 Hz 调用周期预留
+2 ms 用于校验、加锁和目标原子安装；超时失败不会改变当前目标。只有直线和圆弧调用返回
+异步 motion ID，并支持状态、取消与 FIFO 排队。
 Python 不实现 IK、插值、实时回放或队列调度。
 
 Runtime ABI 3.3 新增 `articore_runtime_move_poses(left, right, speed)`，用于一次原子提交

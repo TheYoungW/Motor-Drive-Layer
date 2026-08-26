@@ -3056,6 +3056,82 @@ void test_enable_grace_enters_safe_stop() {
           "ordinary command cannot bypass SAFE_STOP or create a motor fault");
 }
 
+void test_first_command_planning_reserves_enable_grace_without_blocking_hold() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.enable_grace_ms = 40;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100),
+      g_left_controller, g_right_controller, motors);
+  const auto controls = joint_configs(motors);
+  runtime.configure_joints(
+      controls.data(), static_cast<uint32_t>(controls.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  uint32_t baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    baseline = driver.pv_sends;
+  }
+  uint64_t planning_token = 0;
+  {
+    auto transaction = runtime.begin_command_transaction();
+    planning_token = runtime.begin_command_planning(transaction);
+  }
+  std::this_thread::sleep_for(120ms);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.pv_sends > baseline,
+            "long first-command planning does not block native hold output");
+  }
+  require(runtime.health().state == ARTICORE_ENABLED,
+          "active native planning cannot lose first-command grace");
+
+  ArticoreJointPvTarget targets[] = {
+      {sizeof(ArticoreJointPvTarget), motors[0].motor, 0.1f},
+      {sizeof(ArticoreJointPvTarget), motors[1].motor, 0.2f},
+  };
+  require_throws(
+      [&] { runtime.set_joint_pv(targets, 2, 1.0f, 1.0f); },
+      "owned by an active native planning transaction",
+      "another command cannot interleave with native IK planning");
+  {
+    auto transaction = runtime.begin_command_transaction();
+    runtime.set_joint_pv_planned(
+        targets, 2, 1.0f, 1.0f, transaction, planning_token);
+  }
+  require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
+          "atomically installed planned command reaches RUNNING after grace");
+}
+
+void test_failed_first_command_planning_releases_enable_grace() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.enable_grace_ms = 40;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100),
+      g_left_controller, g_right_controller, motors);
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  uint64_t planning_token = 0;
+  {
+    auto transaction = runtime.begin_command_transaction();
+    planning_token = runtime.begin_command_planning(transaction);
+  }
+  std::this_thread::sleep_for(80ms);
+  require(runtime.health().state == ARTICORE_ENABLED,
+          "failed plan remains protected until its transaction ends");
+  runtime.cancel_command_planning(planning_token);
+  require(wait_for([&] { return runtime.health().state == ARTICORE_SAFE_STOP; }),
+          "failed plan does not permanently bypass first-command grace");
+}
+
 void test_atomic_enable_starts_hold_and_confirms_both_sides() {
   FakeDriver driver;
   g_driver = &driver;
@@ -3934,6 +4010,52 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
   }
 }
 
+void test_ordinary_pv_uses_quiet_feedback_confirmed_final_hold() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  auto motors = descriptors(driver);
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100),
+      g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(
+      configured.data(), static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  ArticoreJointPvTarget targets[] = {
+      {sizeof(ArticoreJointPvTarget), motors[0].motor, 0.10f},
+      {sizeof(ArticoreJointPvTarget), motors[1].motor, 1.10f},
+  };
+  runtime.set_joint_pv(targets, 2, 1.0f, 3.0f);
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_pv.size() == 2 &&
+                std::abs(driver.last_pv[0].target_position - 0.10f) < 1e-6f &&
+                std::abs(driver.last_pv[1].target_position - 1.10f) < 1e-6f &&
+                driver.last_pv[0].velocity_limit == 0.0f &&
+                driver.last_pv[1].velocity_limit == 0.0f;
+          }, 1000ms),
+          "ordinary PV enters a zero-speed hold only after feedback arrival");
+
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.emulate_arm_feedback = false;
+    driver.motors[motors[0].motor].position = 0.13f;
+    ++driver.motors[motors[0].motor].update_count;
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_pv.size() == 2 &&
+                driver.last_pv[0].velocity_limit == 3.0f &&
+                driver.last_pv[1].velocity_limit == 0.0f;
+          }, 100ms),
+          "ordinary PV independently restores correction when a held joint "
+          "leaves the arrival window");
+  runtime.disable();
+}
+
 void test_ordinary_mit_position_reversal_and_speed_update_are_continuous() {
   FakeDriver driver;
   g_driver = &driver;
@@ -4402,6 +4524,91 @@ void test_native_quintic_trajectory_executes_at_worker_rate() {
               "every final PV hold frame keeps an exactly constant reference");
     }
   }
+  runtime.disable();
+}
+
+void test_cartesian_pv_adapts_drive_limit_and_slows_for_tracking_error() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  driver.emulated_pv_feedback_period = 1;
+  driver.emulated_pv_position_offset = 0.016f;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.4);
+  request.operation = ARTICORE_OPERATION_MOVE_CIRCULAR;
+  const auto id = runtime.start_trajectory(std::move(request));
+  std::this_thread::sleep_for(300ms);
+  const auto slowed = runtime.trajectory_status(id);
+  require(slowed.state == ARTICORE_TRAJECTORY_RUNNING &&
+              slowed.elapsed_s > 0.10 && slowed.elapsed_s < 0.29,
+          "Cartesian tracking error slows the complete native timeline");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    bool saw_adaptive_limit = false;
+    for (const auto& frame : driver.pv_history) {
+      if (frame.size() != 2 || frame[0].target_position <= 0.005f ||
+          frame[0].target_position >= 0.195f) {
+        continue;
+      }
+      if (frame[0].velocity_limit > cfg.safe_pv_velocity_limit &&
+          frame[0].velocity_limit < 1.75f) {
+        saw_adaptive_limit = true;
+        break;
+      }
+    }
+    require(saw_adaptive_limit,
+            "Cartesian PV uses a planned-dq drive limit below the product ceiling");
+    driver.emulated_pv_position_offset = 0.0f;
+  }
+  require(wait_for([&] {
+            return runtime.trajectory_status(id).state ==
+                ARTICORE_TRAJECTORY_COMPLETED;
+          }, 1800ms),
+          "Cartesian timeline resumes and completes after feedback catches up");
+  runtime.disable();
+}
+
+void test_cartesian_tracking_pause_times_out_to_safe_stop() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  driver.emulated_pv_position_offset = 0.035f;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, {}, 500);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.4);
+  request.operation = ARTICORE_OPERATION_MOVE_CIRCULAR;
+  const auto id = runtime.start_trajectory(std::move(request));
+  require(wait_for([&] {
+            return runtime.trajectory_status(id).state ==
+                       ARTICORE_TRAJECTORY_FAULT &&
+                runtime.health().state == ARTICORE_SAFE_STOP;
+          }, 1600ms),
+          "a persistent Cartesian tracking pause becomes a protective stop");
+  const auto status = runtime.trajectory_status(id);
+  const std::string status_error = status.error;
+  require(status_error.find("Cartesian tracking error did not recover") !=
+                  std::string::npos &&
+              status_error.find("position_error=") != std::string::npos,
+          "tracking timeout reports the native error and measured magnitude");
   runtime.disable();
 }
 
@@ -5193,6 +5400,61 @@ void test_product_cartesian_endpoint_ik_search_is_global_and_deterministic() {
           "fixed-seed endpoint IK returns the same solution on repeated calls");
 }
 
+void test_nearest_endpoint_ik_returns_without_redundant_global_search() {
+  articore::RobotModel model("yunyi_v1_0", ARTICORE_ROBOT_LEFT);
+  const std::array<double, ARTICORE_PRODUCT_ARM_DOF> seed{
+      0.0, 0.0, 0.0, 1.5707963267948966, 0.0, 0.0, 0.0};
+  ArticoreRobotPose target{};
+  target.struct_size = sizeof(target);
+  model.fk(seed.data(), seed.size(), &target);
+  const auto options = articore::product_cartesian_ik_options(
+      articore::CartesianIkSearch::GlobalEndpoint);
+  ArticoreIkResult result{};
+  result.struct_size = sizeof(result);
+  const auto started = std::chrono::steady_clock::now();
+  model.ik_nearest(
+      &target, seed.data(), seed.size(), &options, &result);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  require(result.success && result.error_norm < 1e-4,
+          "nearest endpoint IK accepts the valid live-seed branch");
+  require(elapsed < 250ms,
+          "valid live-seed IK does not exhaust the 1000-retry fallback");
+}
+
+void test_bounded_endpoint_ik_preserves_accuracy_and_honours_deadline() {
+  require(articore::kYunyiMovePoseIkBudget == 8000us,
+          "move_pose reserves two milliseconds of each 100 Hz caller period");
+  articore::RobotModel model("yunyi_v1_0", ARTICORE_ROBOT_LEFT);
+  const std::array<double, ARTICORE_PRODUCT_ARM_DOF> seed{
+      0.1, -0.05, 0.08, 1.2, -0.04, 0.03, -0.06};
+  ArticoreRobotPose target{};
+  target.struct_size = sizeof(target);
+  model.fk(seed.data(), seed.size(), &target);
+  const auto options = articore::product_cartesian_ik_options(
+      articore::CartesianIkSearch::GlobalEndpoint);
+
+  ArticoreIkResult solved{};
+  solved.struct_size = sizeof(solved);
+  model.ik_nearest_until(
+      &target, seed.data(), seed.size(), &options,
+      std::chrono::steady_clock::now() +
+          articore::kYunyiMovePoseIkBudget,
+      &solved);
+  require(solved.success && solved.error_norm < 1e-4,
+          "bounded move_pose IK retains the existing numerical tolerance");
+
+  ArticoreIkResult expired{};
+  expired.struct_size = sizeof(expired);
+  require_throws(
+      [&] {
+        model.ik_nearest_until(
+            &target, seed.data(), seed.size(), &options,
+            std::chrono::steady_clock::now() - 1ms, &expired);
+      },
+      "IK time budget exceeded",
+      "an expired move_pose IK deadline stops before installing a solution");
+}
+
 void test_product_ptp_ik_selects_solution_nearest_live_seed() {
   articore::RobotModel model(
       "yunyi_v1_0", ARTICORE_ROBOT_LEFT, true);
@@ -5323,6 +5585,37 @@ void test_product_pose_selects_gripper_tool_center() {
                     numerical) < 1e-6,
                 "tool-center Jacobian includes the fixed TCP lever arm");
       }
+    }
+  }
+}
+
+void test_custom_tcp_offset_is_shared_by_fk_and_ik() {
+  const std::array<double, ARTICORE_PRODUCT_ARM_DOF> q{
+      0.2, 0.1, -0.25, 0.35, -0.15, 0.2, -0.1};
+  const std::array<float, ARTICORE_PRODUCT_POSE_DOF> tcp{
+      0.03f, -0.02f, 0.11f, 0.1f, -0.2f, 0.3f};
+  for (const uint32_t side : {ARTICORE_ROBOT_LEFT, ARTICORE_ROBOT_RIGHT}) {
+    articore::RobotModel model("yunyi_v1_0", side, tcp);
+    ArticoreRobotModelInfo info{};
+    info.struct_size = sizeof(info);
+    model.get_info(&info);
+    require(std::string(info.end_effector_frame) ==
+                (side == ARTICORE_ROBOT_LEFT ? "l-tcp" : "r-tcp"),
+            "custom TCP model exposes the active product TCP frame");
+
+    ArticoreRobotPose target{};
+    target.struct_size = sizeof(target);
+    model.fk(q.data(), q.size(), &target);
+    ArticoreIkOptions options{};
+    options.struct_size = sizeof(options);
+    ArticoreIkResult result{};
+    result.struct_size = sizeof(result);
+    model.ik(&target, q.data(), q.size(), &options, &result);
+    require(result.success && result.error_norm < 1e-10,
+            "custom TCP IK uses the same transform as custom TCP FK");
+    for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+      require(std::abs(result.q[joint] - q[joint]) < 1e-8,
+              "custom TCP FK/IK round trip keeps the live joint branch");
     }
   }
 }
@@ -5471,7 +5764,40 @@ void test_product_cartesian_trajectory_speed_limits() {
   require(
       std::abs(articore::product_pv_drive_velocity_limit(5.0f) -
                3.0f) < 1e-7f,
-      "PV drive velocity remains fixed at 3 rad/s independently of trajectory timing");
+      "PV drive product ceiling remains 3 rad/s");
+  require(
+      std::abs(articore::product_circular_speed_percent(50.0f) - 20.0f) <
+              1e-7f &&
+          std::abs(articore::product_circular_speed_percent(100.0f) -
+                   40.0f) < 1e-7f,
+      "circular user speed maps onto the smooth real-hardware path range");
+  require(
+      std::abs(articore::native_cartesian_pv_velocity_limit(
+                   0.126f, 0.05f, 3.0f) -
+               0.239f) < 1e-6f &&
+          std::abs(articore::native_cartesian_pv_velocity_limit(
+                       0.0f, 0.05f, 3.0f) -
+                   0.05f) < 1e-7f &&
+          std::abs(articore::native_cartesian_pv_velocity_limit(
+                       3.0f, 0.05f, 3.0f) -
+                   3.0f) < 1e-7f,
+      "Cartesian PV drive limit follows planned dq with a bounded margin");
+  require(
+      std::abs(articore::native_cartesian_tracking_scale(0.012f) - 1.0f) <
+              1e-7f &&
+          std::abs(articore::native_cartesian_tracking_scale(0.020f) -
+                   0.40f) < 1e-7f &&
+          std::abs(articore::native_cartesian_tracking_scale(0.030f)) <
+              1e-7f,
+      "Cartesian tracking error maps to full speed, synchronized slowdown and pause");
+  require(
+      std::abs(articore::product_cartesian_acceleration_limit(3, 8.0f) -
+               8.0f) < 1e-7f &&
+          std::abs(articore::product_cartesian_acceleration_limit(4, 20.0f) -
+                   6.0f) < 1e-7f &&
+          std::abs(articore::product_cartesian_acceleration_limit(11, 20.0f) -
+                   6.0f) < 1e-7f,
+      "Cartesian timing keeps arm limits and applies the wrist acceleration policy");
 }
 
 void test_circular_arc_samples_support_continuous_native_ik() {
@@ -5659,6 +5985,117 @@ void test_gravity_compensation_is_an_exclusive_hand_guiding_mode() {
   runtime.disable();
 }
 
+void test_bimanual_follow_tracks_relative_joint_motion_atomically() {
+  const auto run_mode = [](ArticoreControlMode mode) {
+    FakeDriver driver;
+    g_driver = &driver;
+    driver.feedback_expected = 14;
+    driver.feedback_received = 14;
+    std::vector<ArticoreMotorDescriptor> motors(14);
+    for (uint32_t side = 0; side < 2; ++side) {
+      for (uint32_t joint = 0; joint < 7; ++joint) {
+        const std::size_t index = side * 7 + joint;
+        auto& motor = motors[index];
+        motor.motor = reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(0x400 + index));
+        motor.side = static_cast<uint8_t>(side);
+        const auto name = std::string(side == 0 ? "l-joint" : "r-joint") +
+            std::to_string(joint + 1);
+        std::strncpy(motor.name, name.c_str(), sizeof(motor.name) - 1);
+        motor.safe_kp = 5.0f;
+        motor.safe_kd = 0.5f;
+        motor.lower_position = -2.0f;
+        motor.upper_position = 2.0f;
+        driver.motors[motor.motor] = FakeMotor{
+            1, joint == 3 ? 1.5707963f : 0.0f, 0.0f, 0.0f, 0, true};
+      }
+    }
+
+    auto cfg = config();
+    cfg.command_timeout_ms = 500;
+    cfg.enable_grace_ms = 2000;
+    articore::SafetyRuntime runtime(
+        cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+        g_right_controller, motors);
+    auto configs = joint_configs(motors);
+    for (auto& item : configs) item.torque_limit = 100.0f;
+    runtime.configure_joints(configs.data(), configs.size());
+    ArticoreGravityProductBinding bindings[2]{};
+    for (uint32_t side = 0; side < 2; ++side) {
+      bindings[side].struct_size = sizeof(bindings[side]);
+      bindings[side].runtime_side = side;
+      bindings[side].robot_side = side;
+      std::strncpy(bindings[side].product_id, "yunyi_v1_0",
+                   sizeof(bindings[side].product_id) - 1);
+    }
+    runtime.configure_gravity_products(bindings, 2);
+    runtime.connect();
+    runtime.enable(mode);
+    runtime.start_bimanual_follow(ARTICORE_ROBOT_LEFT);
+    require(runtime.bimanual_follow_status().phase ==
+                ARTICORE_BIMANUAL_FOLLOW_ACTIVE,
+            "bimanual follow becomes active without a gravity transition");
+
+    if (mode == ARTICORE_MODE_PV) {
+      std::vector<ArticoreJointPvTarget> targets;
+      targets.reserve(motors.size());
+      for (std::size_t index = 0; index < motors.size(); ++index) {
+        targets.push_back(ArticoreJointPvTarget{
+            sizeof(ArticoreJointPvTarget), motors[index].motor,
+            index == 0 ? 0.20f : (index % 7 == 3 ? 1.5707963f : 0.0f)});
+      }
+      runtime.set_joint_pv(targets.data(), targets.size(), 1.0f);
+    } else {
+      std::vector<ArticoreJointMitTarget> targets;
+      targets.reserve(motors.size());
+      for (std::size_t index = 0; index < motors.size(); ++index) {
+        targets.push_back(ArticoreJointMitTarget{
+            sizeof(ArticoreJointMitTarget), motors[index].motor,
+            index == 0 ? 0.20f : (index % 7 == 3 ? 1.5707963f : 0.0f)});
+      }
+      runtime.set_joint_mit(targets.data(), targets.size(), 1.0f);
+    }
+    require(wait_for([&] {
+              return runtime.bimanual_follow_status()
+                         .follower_target_positions[0] > 0.02f;
+            }, 300ms),
+            "right J1 follows the left J1 relative displacement");
+
+    const auto status = runtime.bimanual_follow_status();
+    require(status.active && status.leader_side == ARTICORE_ROBOT_LEFT &&
+                status.follower_side == ARTICORE_ROBOT_RIGHT &&
+                status.control_cycles > 0,
+            "bimanual status identifies both sides and the native control loop");
+    {
+      std::lock_guard<std::mutex> lock(driver.mutex);
+      if (mode == ARTICORE_MODE_PV) {
+        require(!driver.pv_history.empty() &&
+                    driver.pv_history.back().size() == 14 &&
+                    driver.pv_history.back()[7].target_position < -0.02f,
+                "PV bimanual follow reuses one ordinary fourteen-axis batch");
+      } else {
+        require(!driver.group_mit_history.empty() &&
+                    driver.group_mit_history.back().size() == 14,
+                "MIT bimanual follow reuses one ordinary fourteen-axis batch");
+        const auto& commands = driver.group_mit_history.back();
+        require(commands[0].stiffness > 0.0f && commands[0].damping > 0.0f &&
+                    commands[7].stiffness > 0.0f &&
+                    commands[7].target_position < -0.02f,
+                "MIT leader/follower retain ordinary product gains");
+      }
+    }
+
+    runtime.stop_bimanual_follow();
+    require(runtime.bimanual_follow_status().phase ==
+                ARTICORE_BIMANUAL_FOLLOW_INACTIVE,
+            "stopping bimanual follow immediately installs a current hold");
+    runtime.disable();
+  };
+
+  run_mode(ARTICORE_MODE_PV);
+  run_mode(ARTICORE_MODE_MIT);
+}
+
 }  // namespace
 
 int main() {
@@ -5717,6 +6154,8 @@ int main() {
     RUN_TEST(test_transport_disconnect_holds_the_connected_side);
     RUN_TEST(test_reported_feedback_failure_is_diagnostic_only);
     RUN_TEST(test_enable_grace_enters_safe_stop);
+    RUN_TEST(test_first_command_planning_reserves_enable_grace_without_blocking_hold);
+    RUN_TEST(test_failed_first_command_planning_releases_enable_grace);
     RUN_TEST(test_atomic_enable_starts_hold_and_confirms_both_sides);
     RUN_TEST(test_atomic_enable_retries_one_disabled_motor_once);
     RUN_TEST(test_gripper_control_waits_for_atomic_enable_confirmation);
@@ -5734,12 +6173,15 @@ int main() {
     RUN_TEST(test_ordinary_mit_position_uses_constant_reference_speed);
     RUN_TEST(test_ordinary_speed_percent_scales_and_zero_pauses);
     RUN_TEST(test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct);
+    RUN_TEST(test_ordinary_pv_uses_quiet_feedback_confirmed_final_hold);
     RUN_TEST(test_ordinary_mit_position_reversal_and_speed_update_are_continuous);
     RUN_TEST(test_raw_mit_targets_remain_direct_after_ordinary_position_control);
     RUN_TEST(test_ordinary_mit_position_reinitializes_after_reenable);
     RUN_TEST(test_deadline_skips_missed_periods_and_reenable_seeds_feedback);
     RUN_TEST(test_trajectory_errors_use_product_roles_and_allow_inward_recovery);
     RUN_TEST(test_native_quintic_trajectory_executes_at_worker_rate);
+    RUN_TEST(test_cartesian_pv_adapts_drive_limit_and_slows_for_tracking_error);
+    RUN_TEST(test_cartesian_tracking_pause_times_out_to_safe_stop);
     RUN_TEST(test_native_trajectory_fifo_executes_without_replacement);
     RUN_TEST(test_composite_cartesian_approach_waits_before_path_and_is_cancelable);
     RUN_TEST(test_sampled_pv_trajectory_uses_direct_linear_references);
@@ -5754,8 +6196,11 @@ int main() {
     RUN_TEST(test_cartesian_linear_math_uses_straight_xyz_and_shortest_slerp);
     RUN_TEST(test_explicit_cartesian_start_pose_reports_linear_and_circular_errors);
     RUN_TEST(test_product_cartesian_endpoint_ik_search_is_global_and_deterministic);
+    RUN_TEST(test_nearest_endpoint_ik_returns_without_redundant_global_search);
+    RUN_TEST(test_bounded_endpoint_ik_preserves_accuracy_and_honours_deadline);
     RUN_TEST(test_product_ptp_ik_selects_solution_nearest_live_seed);
     RUN_TEST(test_product_pose_selects_gripper_tool_center);
+    RUN_TEST(test_custom_tcp_offset_is_shared_by_fk_and_ik);
     RUN_TEST(test_cartesian_linear_samples_support_continuous_native_ik);
     RUN_TEST(test_three_point_circular_arc_geometry_and_degenerate_rejection);
     RUN_TEST(test_product_cartesian_motion_is_pv_only);
@@ -5763,6 +6208,7 @@ int main() {
     RUN_TEST(test_circular_arc_samples_support_continuous_native_ik);
     RUN_TEST(test_native_trajectory_checks_segment_extrema_and_partial_power);
     RUN_TEST(test_gravity_compensation_is_an_exclusive_hand_guiding_mode);
+    RUN_TEST(test_bimanual_follow_tracks_relative_joint_motion_atomically);
 #undef RUN_TEST
     std::cout << "Articore runtime tests passed\n";
     return 0;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <array>
 #include <memory>
@@ -13,6 +14,8 @@ class RobotModel final {
  public:
   RobotModel(std::string product_id, uint32_t side,
              bool use_gripper_tool_frame = false);
+  RobotModel(std::string product_id, uint32_t side,
+             const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& tcp_offset);
   ~RobotModel();
   RobotModel(const RobotModel&) = delete;
   RobotModel& operator=(const RobotModel&) = delete;
@@ -50,12 +53,22 @@ class RobotModel final {
                   uint32_t initial_q_count,
                   const ArticoreIkOptions* options,
                   ArticoreIkResult* result) const;
+  // Product streaming PTP uses the same nearest-solution policy but bounds
+  // the search by a steady-clock deadline. A converged solution found before
+  // the deadline is returned; otherwise the call fails without installing a
+  // partial joint target.
+  void ik_nearest_until(
+      const ArticoreRobotPose* target, const double* initial_q,
+      uint32_t initial_q_count, const ArticoreIkOptions* options,
+      std::chrono::steady_clock::time_point deadline,
+      ArticoreIkResult* result) const;
 
  private:
   void ik_impl(const ArticoreRobotPose* target, const double* initial_q,
                uint32_t initial_q_count, const ArticoreIkOptions* options,
                ArticoreIkResult* result,
-               bool prefer_nearest_success) const;
+               bool prefer_nearest_success,
+               const std::chrono::steady_clock::time_point* deadline) const;
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

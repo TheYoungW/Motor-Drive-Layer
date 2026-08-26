@@ -226,7 +226,7 @@ class Runtime final {
   uint64_t move_linear(uint32_t side,
                        const std::array<float, 6>& start_pose,
                        const std::array<float, 6>& end_pose,
-                       float speed_percent = 100.0f) {
+                       float speed_percent = 50.0f) {
     uint64_t motion_id = 0;
     detail::check(
         articore_runtime_move_linear_v2(
@@ -238,7 +238,7 @@ class Runtime final {
 
   uint64_t move_linear_from_current(
       uint32_t side, const std::array<float, 6>& end_pose,
-      float speed_percent = 100.0f) {
+      float speed_percent = 50.0f) {
     uint64_t motion_id = 0;
     detail::check(
         articore_runtime_move_linear(
@@ -252,7 +252,7 @@ class Runtime final {
       const std::array<float, 6>& start_pose,
       const std::array<float, 6>& via_pose,
       const std::array<float, 6>& end_pose,
-      float speed_percent = 100.0f) {
+      float speed_percent = 50.0f) {
     uint64_t motion_id = 0;
     detail::check(
         articore_runtime_move_circular(
@@ -266,7 +266,7 @@ class Runtime final {
       uint32_t side,
       const std::array<float, 6>& via_pose,
       const std::array<float, 6>& end_pose,
-      float speed_percent = 100.0f) {
+      float speed_percent = 50.0f) {
     uint64_t motion_id = 0;
     detail::check(
         articore_runtime_move_circular_v2(
@@ -359,6 +359,31 @@ class Runtime final {
     return result;
   }
 
+  void set_tcp_offset(uint32_t side,
+                      const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& values) {
+    ArticoreTcpOffset offset{};
+    offset.struct_size = sizeof(offset);
+    offset.side = side;
+    std::copy(values.begin(), values.end(), offset.values);
+    detail::check(
+        articore_runtime_set_tcp_offset(checked(), &offset), "set_tcp_offset");
+  }
+
+  ArticoreTcpOffset tcp_offset(uint32_t side) const {
+    ArticoreTcpOffset result{};
+    result.struct_size = sizeof(result);
+    detail::check(
+        articore_runtime_get_tcp_offset(checked(), side, &result),
+        "get_tcp_offset");
+    return result;
+  }
+
+  void reset_tcp_offset(uint32_t side) {
+    detail::check(
+        articore_runtime_reset_tcp_offset(checked(), side),
+        "reset_tcp_offset");
+  }
+
   ArticoreSafetyHealthV2 health() const {
     ArticoreSafetyHealthV2 result{};
     result.struct_size = sizeof(result);
@@ -408,6 +433,27 @@ class Runtime final {
     detail::check(
         articore_runtime_get_gravity_compensation_status(checked(), &result),
         "get_gravity_compensation_status");
+    return result;
+  }
+
+  void start_bimanual_follow(uint32_t leader_side) {
+    detail::check(
+        articore_runtime_start_bimanual_follow(checked(), leader_side),
+        "start_bimanual_follow");
+  }
+
+  void stop_bimanual_follow() {
+    detail::check(
+        articore_runtime_stop_bimanual_follow(checked()),
+        "stop_bimanual_follow");
+  }
+
+  ArticoreBimanualFollowStatus bimanual_follow_status() const {
+    ArticoreBimanualFollowStatus result{};
+    result.struct_size = sizeof(result);
+    detail::check(
+        articore_runtime_get_bimanual_follow_status(checked(), &result),
+        "get_bimanual_follow_status");
     return result;
   }
 

@@ -243,6 +243,9 @@ SafetyRuntime::SafetyRuntime(
   gravity_control_.status.struct_size =
       sizeof(ArticoreGravityCompensationStatus);
   gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
+  bimanual_follow_.status.struct_size =
+      sizeof(ArticoreBimanualFollowStatus);
+  bimanual_follow_.status.phase = ARTICORE_BIMANUAL_FOLLOW_INACTIVE;
   std::fill(std::begin(mit_torque_limit_stats_.applied_scale),
             std::end(mit_torque_limit_stats_.applied_scale), 1.0f);
   mit_torque_limited_commands_.reserve(static_cast<std::size_t>(std::count_if(
@@ -303,7 +306,7 @@ SafetyRuntime::SafetyRuntime(
   if (const char* path = std::getenv("ARTICORE_RUNTIME_CONTROL_TRACE")) {
     if (path[0] != '\0') {
       control_trace_path_ = path;
-      control_trace_.reserve(static_cast<std::size_t>(control_hz_) * 60U);
+      control_trace_.reserve(static_cast<std::size_t>(control_hz_) * 120U);
     }
   }
   const auto arm_count = static_cast<std::size_t>(std::count_if(
@@ -646,9 +649,13 @@ void SafetyRuntime::stop_worker() {
         "trajectory cancelled by Runtime disconnect");
     clear_pending_arm_mailbox();
     arm_mailbox_ = ArmMailbox{};
+    first_command_accepted_ = false;
+    enable_grace_transition_ = false;
+    active_command_planning_token_ = 0;
     gravity_control_.phase = ARTICORE_GRAVITY_INACTIVE;
     gravity_control_.status.active = 0;
     gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
+    reset_bimanual_follow_locked();
     fault_hold_active_ = false;
   }
   wakeup_.notify_all();
@@ -669,7 +676,8 @@ void SafetyRuntime::write_control_trace() noexcept {
   try {
     std::ofstream output(control_trace_path_, std::ios::out | std::ios::trunc);
     if (!output) return;
-    output << "sequence,timestamp_ns,runtime_state,motion_state,trajectory_id,progress";
+    output << "sequence,timestamp_ns,runtime_state,motion_state,trajectory_id,progress"
+              ",tracking_time_scale,tracking_position_error";
     constexpr const char* roles[ARTICORE_PRODUCT_DUAL_ARM_DOF] = {
         "l-joint1", "l-joint2", "l-joint3", "l-joint4", "l-joint5",
         "l-joint6", "l-joint7", "r-joint1", "r-joint2", "r-joint3",
@@ -685,7 +693,9 @@ void SafetyRuntime::write_control_trace() noexcept {
     for (const auto& sample : control_trace_) {
       output << sample.sequence << ',' << sample.timestamp_ns << ','
              << sample.runtime_state << ',' << sample.motion_state << ','
-             << sample.trajectory_id << ',' << sample.progress;
+             << sample.trajectory_id << ',' << sample.progress << ','
+             << sample.tracking_time_scale << ','
+             << sample.tracking_position_error;
       const auto write_values = [&](const auto& values) {
         for (float value : values) output << ',' << value;
       };

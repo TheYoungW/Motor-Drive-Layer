@@ -43,9 +43,45 @@ complete joint target with the same per-joint PV step rule and the same fixed
 second synchronized joint ramp, quintic interpolation, or percentage-scaled
 drive velocity ceiling.
 
+The endpoint solve keeps the public `1e-4` SE(3) tolerance. It starts from the
+current planned joint reference, reuses the per-arm Pinocchio model, and limits
+nearest-branch global fallback to an 8 ms steady-clock budget. This leaves 2 ms
+of a 100 Hz caller period for validation, locking, and atomic target install.
+If no converged solution is available before the deadline, the call fails and
+the previous target remains unchanged. The deadline is a soft wall-clock bound
+under normal Linux scheduling, not a hard realtime guarantee. Linear and
+circular full-path planning are unaffected by this endpoint budget.
+
 Cartesian linear and circular operations still require their geometric path
 sampling and retain their independent 3 rad/s path-timing ceiling. Their public
 percentage remains separate from the Damiao V field.
+
+### Terminology boundary: PTP is not joint trajectory planning
+
+This distinction is normative and must be preserved in implementation, tests,
+SDK bindings, examples, and issue reports:
+
+- `articore_runtime_move_pose()` and `articore_runtime_move_poses()` are
+  Cartesian PTP convenience commands. Runtime solves endpoint IK once and then
+  submits the resulting complete 14-joint target through ordinary PV position
+  stepping. They do not use the native trajectory planner, do not create a
+  trajectory ID, and do not add quintic interpolation, FIFO status, or
+  trajectory cancellation semantics.
+- `articore_runtime_start_trajectory()` is joint-angle trajectory planning.
+  Its input is an ordered sequence of complete 14-joint waypoints with time and
+  optional velocity/acceleration boundary conditions. Runtime validates and
+  precomputes native piecewise quintic coefficients, then samples them in the
+  500 Hz worker. This is the interface to test when a request explicitly says
+  "joint-angle trajectory", "angle trajectory planning", or equivalent.
+- Cartesian Linear and Circular are geometric path planners. They sample the
+  declared tool path, solve continuous IK, and execute a native path task. Any
+  automatic PTP used only to approach their declared start remains ordinary PV
+  PTP and does not change the meaning of the joint trajectory API.
+
+Never use Cartesian PTP measurements as evidence for joint-angle trajectory
+smoothness. A joint trajectory test must call `articore_runtime_start_trajectory()`
+and inspect its native trajectory status and 500 Hz planned/command/feedback
+trace.
 
 ### Required verification
 
@@ -322,6 +358,15 @@ ownership to the native worker. Each control cycle reads q, evaluates the produc
 and sends MIT gravity feedforward; the ACTIVE phase uses `kp=kd=0`. Entry and exit use a 500 ms
 default blend, and exit lands in a current-position MIT hold. The normal per-cycle resultant-torque
 limiter remains the final gate before transmission.
+
+Runtime ABI 3.6 simplifies product bimanual follow to the ordinary control path.
+Starting follow captures the two seven-axis positions atomically and immediately
+selects one leader. Subsequent ordinary PV or MIT position commands drive that
+leader; the opposite arm follows the same logical joint displacement from the
+captured relationship. The follower reference uses the ordinary product speed,
+gain, soft-limit, feedback, and complete 14-axis ControllerGroup path. There is
+no gravity-compensation transition or separate bimanual gain policy. Stop is
+idempotent and installs a current-position hold in the active PV/MIT mode.
 
 Runtime ABI 2.9 moves product maintenance behind the Runtime ownership boundary.
 `articore_runtime_configure_mode()`, `articore_runtime_clear_faults()`, and
@@ -669,3 +714,12 @@ cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+Runtime ABI 3.5 adds a native per-arm TCP offset. The offset is the transform
+from product flange `link7` to the active TCP in
+`[x, y, z, roll, pitch, yaw]` form. `get_pose()`, PTP, Linear and Circular all
+use the same Runtime-owned transform, so SDKs must not perform a second Python
+pose conversion. `set_tcp_offset()` is accepted only while disconnected or in
+READY with physical disable confirmed. `reset_tcp_offset()` restores `tool0`
+for products with grippers and `link7` for products without grippers. The
+offset belongs to the Runtime session and is not written to motor Flash.

@@ -132,6 +132,79 @@ void validate_product_position(
   }
 }
 
+class CommandPlanningScope {
+ public:
+  explicit CommandPlanningScope(articore::SafetyRuntime& runtime)
+      : runtime_(runtime) {}
+  CommandPlanningScope(const CommandPlanningScope&) = delete;
+  CommandPlanningScope& operator=(const CommandPlanningScope&) = delete;
+  ~CommandPlanningScope() { runtime_.cancel_command_planning(token_); }
+
+  void begin(const articore::SafetyRuntime::CommandTransaction& transaction) {
+    token_ = runtime_.begin_command_planning(transaction);
+  }
+
+  uint64_t token() const { return token_; }
+
+ private:
+  articore::SafetyRuntime& runtime_;
+  uint64_t token_ = 0;
+};
+
+void install_product_joint_positions(
+    ArticoreRuntime* runtime, const float* positions, uint32_t count,
+    float speed_percent,
+    articore::SafetyRuntime::CommandTransaction* transaction = nullptr,
+    uint64_t planning_token = 0) {
+  auto& product = checked_yunyi(runtime);
+  require_product_count(count);
+  require_finite(positions, count, "positions");
+  if (!std::isfinite(speed_percent) || speed_percent < 0.0f ||
+      speed_percent > 100.0f) {
+    throw std::invalid_argument(
+        "ordinary speed must be finite and within 0..100");
+  }
+  const float maximum_reference_velocity =
+      runtime->product_mode == ARTICORE_MODE_MIT
+      ? product.default_mit_reference_velocity
+      : product.default_pv_reference_velocity;
+  const float selected_reference_velocity =
+      maximum_reference_velocity * speed_percent / 100.0f;
+  const float selected_pv_velocity_limit =
+      articore::kYunyiPvDriveVelocityLimit;
+  std::array<ArticoreJointMitTarget, ARTICORE_PRODUCT_DUAL_ARM_DOF> mit{};
+  std::array<ArticoreJointPvTarget, ARTICORE_PRODUCT_DUAL_ARM_DOF> pv{};
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto& joint = product.joints[i];
+    validate_product_position(joint, positions[i], i);
+    if (selected_reference_velocity > joint.velocity_limit ||
+        (runtime->product_mode == ARTICORE_MODE_PV &&
+         selected_pv_velocity_limit > joint.velocity_limit)) {
+      throw std::invalid_argument(
+          "reference velocity exceeds product joint limit");
+    }
+    const float motor_position = joint.direction * positions[i];
+    mit[i] = {sizeof(ArticoreJointMitTarget), joint.motor, motor_position};
+    pv[i] = {sizeof(ArticoreJointPvTarget), joint.motor, motor_position};
+  }
+  auto& safety = checked(runtime);
+  if (runtime->product_mode == ARTICORE_MODE_MIT) {
+    if (transaction || planning_token != 0) {
+      throw std::logic_error(
+          "Cartesian command planning is only available in PV mode");
+    }
+    safety.set_joint_mit(mit.data(), count, selected_reference_velocity);
+  } else if (transaction) {
+    safety.set_joint_pv_planned(
+        pv.data(), count, selected_reference_velocity,
+        selected_pv_velocity_limit, *transaction, planning_token);
+  } else {
+    safety.set_joint_pv(
+        pv.data(), count, selected_reference_velocity,
+        selected_pv_velocity_limit);
+  }
+}
+
 int32_t record_product_command_error(
     ArticoreRuntime* runtime, int32_t code, const std::string& error) {
   if (runtime && runtime->runtime) {
@@ -215,12 +288,16 @@ int32_t move_pose_impl(
           "move_pose speed_percent must be finite and within 0..100");
     }
     std::lock_guard<std::mutex> motion_lock(runtime->cartesian_motion_mutex);
+    const auto ik_deadline = std::chrono::steady_clock::now() +
+        articore::kYunyiMovePoseIkBudget;
     auto& safety = checked(runtime);
     auto& product = checked_yunyi(runtime);
     const auto joints = articore::product_cartesian_joints(product);
     articore::NativeTrajectorySample reference;
+    CommandPlanningScope planning(safety);
     {
       auto transaction = safety.begin_command_transaction();
+      planning.begin(transaction);
       reference = safety.planned_arm_sample(joints, transaction);
     }
     if (reference.active) {
@@ -228,11 +305,12 @@ int32_t move_pose_impl(
           "move_pose cannot start while a linear or circular motion is active");
     }
     const auto target = articore::solve_point_to_point_target_from_reference(
-        product, runtime->product_mode, side, reference, target_pose);
-    const int32_t result = articore_runtime_set_joint_positions(
+        product, runtime->product_mode, side, reference, target_pose,
+        ik_deadline);
+    auto transaction = safety.begin_command_transaction();
+    install_product_joint_positions(
         runtime, target.data(), static_cast<uint32_t>(target.size()),
-        speed_percent);
-    if (result != ARTICORE_OPERATION_OK) return result;
+        speed_percent, &transaction, planning.token());
     safety.record_operation_result(
         ARTICORE_OPERATION_MOVE_POSE, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
@@ -267,12 +345,16 @@ int32_t move_poses_impl(
           "move_poses speed_percent must be finite and within 0..100");
     }
     std::lock_guard<std::mutex> motion_lock(runtime->cartesian_motion_mutex);
+    const auto ik_deadline = std::chrono::steady_clock::now() +
+        articore::kYunyiMovePoseIkBudget;
     auto& safety = checked(runtime);
     auto& product = checked_yunyi(runtime);
     const auto joints = articore::product_cartesian_joints(product);
     articore::NativeTrajectorySample reference;
+    CommandPlanningScope planning(safety);
     {
       auto transaction = safety.begin_command_transaction();
+      planning.begin(transaction);
       reference = safety.planned_arm_sample(joints, transaction);
     }
     if (reference.active) {
@@ -282,11 +364,11 @@ int32_t move_poses_impl(
     const auto target =
         articore::solve_dual_point_to_point_targets_from_reference(
             product, runtime->product_mode, reference,
-            left_target_pose, right_target_pose);
-    const int32_t result = articore_runtime_set_joint_positions(
+            left_target_pose, right_target_pose, ik_deadline);
+    auto transaction = safety.begin_command_transaction();
+    install_product_joint_positions(
         runtime, target.data(), static_cast<uint32_t>(target.size()),
-        speed_percent);
-    if (result != ARTICORE_OPERATION_OK) return result;
+        speed_percent, &transaction, planning.token());
     safety.record_operation_result(
         ARTICORE_OPERATION_MOVE_POSE, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
@@ -707,7 +789,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (3U << 16) | 3U;
+  return (3U << 16) | 6U;
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -1043,45 +1125,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
     float speed_percent) {
   try {
-    auto& product = checked_yunyi(runtime);
-    require_product_count(count);
-    require_finite(positions, count, "positions");
-    if (!std::isfinite(speed_percent) || speed_percent < 0.0f ||
-        speed_percent > 100.0f) {
-      throw std::invalid_argument(
-          "ordinary speed must be finite and within 0..100");
-    }
-    const float maximum_reference_velocity =
-        runtime->product_mode == ARTICORE_MODE_MIT
-        ? product.default_mit_reference_velocity
-        : product.default_pv_reference_velocity;
-    const float selected_reference_velocity =
-        maximum_reference_velocity * speed_percent / 100.0f;
-    const float selected_pv_velocity_limit =
-        articore::kYunyiPvDriveVelocityLimit;
-    std::array<ArticoreJointMitTarget, ARTICORE_PRODUCT_DUAL_ARM_DOF> mit{};
-    std::array<ArticoreJointPvTarget, ARTICORE_PRODUCT_DUAL_ARM_DOF> pv{};
-    for (uint32_t i = 0; i < count; ++i) {
-      const auto& joint = product.joints[i];
-      validate_product_position(joint, positions[i], i);
-      if (selected_reference_velocity > joint.velocity_limit ||
-          (runtime->product_mode == ARTICORE_MODE_PV &&
-           selected_pv_velocity_limit > joint.velocity_limit)) {
-        throw std::invalid_argument(
-            "reference velocity exceeds product joint limit");
-      }
-      const float motor_position = joint.direction * positions[i];
-      mit[i] = {sizeof(ArticoreJointMitTarget), joint.motor, motor_position};
-      pv[i] = {sizeof(ArticoreJointPvTarget), joint.motor, motor_position};
-    }
-    if (runtime->product_mode == ARTICORE_MODE_MIT) {
-      checked(runtime).set_joint_mit(mit.data(), count,
-                                     selected_reference_velocity);
-    } else {
-      checked(runtime).set_joint_pv(pv.data(), count,
-                                    selected_reference_velocity,
-                                    selected_pv_velocity_limit);
-    }
+    install_product_joint_positions(
+        runtime, positions, count, speed_percent);
     checked(runtime).record_operation_result(
         ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
@@ -2006,6 +2051,115 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_pose(
   }
 }
 
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_tcp_offset(
+    ArticoreRuntime* runtime, const ArticoreTcpOffset* offset) {
+  try {
+    if (!offset || offset->struct_size < sizeof(*offset)) {
+      throw std::invalid_argument("TCP offset input is null or too small");
+    }
+    if (offset->side != ARTICORE_ROBOT_LEFT &&
+        offset->side != ARTICORE_ROBOT_RIGHT) {
+      throw std::invalid_argument("TCP offset side must be LEFT(0) or RIGHT(1)");
+    }
+    std::array<float, ARTICORE_PRODUCT_POSE_DOF> values{};
+    for (uint32_t index = 0; index < values.size(); ++index) {
+      if (!std::isfinite(offset->values[index])) {
+        throw std::invalid_argument("TCP offset contains NaN or Inf");
+      }
+      values[index] = offset->values[index];
+    }
+
+    auto& safety = checked(runtime);
+    auto& product = checked_yunyi(runtime);
+    const auto health = safety.health_v2();
+    if (health.health.state != ARTICORE_DISCONNECTED &&
+        health.health.state != ARTICORE_READY) {
+      throw std::runtime_error(
+          "TCP offset can only be changed while disconnected or READY");
+    }
+    if (health.health.state == ARTICORE_READY &&
+        !health.health.disable_confirmed) {
+      throw std::runtime_error(
+          "TCP offset requires confirmed physical disable in READY");
+    }
+
+    auto model = std::make_unique<articore::RobotModel>(
+        "yunyi_v1_0", offset->side, values);
+    {
+      std::lock_guard<std::mutex> lock(product.pose_mutexes[offset->side]);
+      product.tcp_offsets[offset->side] = values;
+      product.pose_models[offset->side] = std::move(model);
+    }
+    safety.record_operation_result(
+        ARTICORE_OPERATION_SET_TCP_OFFSET, ARTICORE_OPERATION_OK);
+    g_last_error = "ok";
+    return ARTICORE_OPERATION_OK;
+  } catch (const std::invalid_argument& error) {
+    if (runtime && runtime->runtime) {
+      runtime->runtime->record_operation_result(
+          ARTICORE_OPERATION_SET_TCP_OFFSET,
+          ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
+    }
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  } catch (const std::exception& error) {
+    if (runtime && runtime->runtime) {
+      runtime->runtime->record_operation_result(
+          ARTICORE_OPERATION_SET_TCP_OFFSET,
+          ARTICORE_OPERATION_INVALID_STATE, error.what());
+    }
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_STATE;
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_tcp_offset(
+    ArticoreRuntime* runtime, uint32_t side, ArticoreTcpOffset* offset) {
+  if (!offset || offset->struct_size < sizeof(*offset)) {
+    g_last_error = "TCP offset output is null or too small";
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  }
+  if (side != ARTICORE_ROBOT_LEFT && side != ARTICORE_ROBOT_RIGHT) {
+    g_last_error = "TCP offset side must be LEFT(0) or RIGHT(1)";
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  }
+  try {
+    auto& product = checked_yunyi(runtime);
+    const uint32_t caller_size = offset->struct_size;
+    ArticoreTcpOffset output{};
+    output.struct_size = caller_size;
+    output.side = side;
+    {
+      std::lock_guard<std::mutex> lock(product.pose_mutexes[side]);
+      std::copy(product.tcp_offsets[side].begin(),
+                product.tcp_offsets[side].end(), output.values);
+    }
+    *offset = output;
+    g_last_error = "ok";
+    return ARTICORE_OPERATION_OK;
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_STATE;
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_reset_tcp_offset(
+    ArticoreRuntime* runtime, uint32_t side) {
+  try {
+    auto& product = checked_yunyi(runtime);
+    ArticoreTcpOffset offset{};
+    offset.struct_size = sizeof(offset);
+    offset.side = side;
+    const auto values = articore::default_yunyi_tcp_offset(
+        product.with_grippers);
+    std::copy(values.begin(), values.end(), offset.values);
+    return articore_runtime_set_tcp_offset(runtime, &offset);
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_STATE;
+  }
+}
+
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_grippers(
     ArticoreRuntime* runtime, float left_opening, float right_opening,
     int32_t gripper_level) {
@@ -2277,6 +2431,73 @@ articore_runtime_get_gravity_compensation_status(
     }
     const auto size = status->struct_size;
     *status = checked(runtime).gravity_compensation_status();
+    status->struct_size = size;
+  });
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_start_bimanual_follow(
+    ArticoreRuntime* runtime, uint32_t leader_side) {
+  try {
+    checked(runtime).start_bimanual_follow(leader_side);
+    checked(runtime).record_operation_result(
+        ARTICORE_OPERATION_START_BIMANUAL_FOLLOW, ARTICORE_OPERATION_OK);
+    g_last_error = "ok";
+    return 0;
+  } catch (const std::invalid_argument& error) {
+    if (runtime && runtime->runtime) {
+      runtime->runtime->record_operation_result(
+          ARTICORE_OPERATION_START_BIMANUAL_FOLLOW,
+          ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
+    }
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  } catch (const std::exception& error) {
+    if (runtime && runtime->runtime) {
+      runtime->runtime->record_operation_result(
+          ARTICORE_OPERATION_START_BIMANUAL_FOLLOW,
+          ARTICORE_OPERATION_INVALID_STATE, error.what());
+    }
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_STATE;
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_stop_bimanual_follow(
+    ArticoreRuntime* runtime) {
+  try {
+    checked(runtime).stop_bimanual_follow();
+    checked(runtime).record_operation_result(
+        ARTICORE_OPERATION_STOP_BIMANUAL_FOLLOW, ARTICORE_OPERATION_OK);
+    g_last_error = "ok";
+    return 0;
+  } catch (const std::invalid_argument& error) {
+    if (runtime && runtime->runtime) {
+      runtime->runtime->record_operation_result(
+          ARTICORE_OPERATION_STOP_BIMANUAL_FOLLOW,
+          ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
+    }
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  } catch (const std::exception& error) {
+    if (runtime && runtime->runtime) {
+      runtime->runtime->record_operation_result(
+          ARTICORE_OPERATION_STOP_BIMANUAL_FOLLOW,
+          ARTICORE_OPERATION_INVALID_STATE, error.what());
+    }
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_STATE;
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_bimanual_follow_status(
+    ArticoreRuntime* runtime, ArticoreBimanualFollowStatus* status) {
+  return call([&] {
+    if (!status || status->struct_size < sizeof(*status)) {
+      throw std::invalid_argument(
+          "bimanual follow status is null or too small");
+    }
+    const auto size = status->struct_size;
+    *status = checked(runtime).bimanual_follow_status();
     status->struct_size = size;
   });
 }

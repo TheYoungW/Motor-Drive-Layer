@@ -64,8 +64,10 @@ void SafetyRuntime::worker_loop() {
       if (state_ == ARTICORE_ENABLED &&
           !enable_transaction_ &&
           now - enabled_at_ >= std::chrono::milliseconds(config_.enable_grace_ms) &&
-          !has_successful_command_) {
+          !has_successful_command_ && !first_command_accepted_ &&
+          active_command_planning_token_ == 0) {
         grace_fault = true;
+        enable_grace_transition_ = true;
       } else if ((state_ == ARTICORE_RUNNING ||
                   state_ == ARTICORE_DEGRADED ||
                   state_ == ARTICORE_PARTIALLY_ENABLED) &&
@@ -201,7 +203,7 @@ void SafetyRuntime::worker_loop() {
         // non-blocking transport guarantees shutdown remains interruptible.
         const uint32_t failure_threshold =
             std::max<uint32_t>(1, config_.feedback_failure_threshold);
-        if (send_failures < failure_threshold) continue;
+        if (send_failures > 0 && send_failures < failure_threshold) continue;
         fault_trajectory(error);
         std::string stop_error;
         if (!enter_safe_stop(

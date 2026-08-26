@@ -535,6 +535,7 @@ void SafetyRuntime::enter_fault(const std::string& reason, bool torque_off,
     gravity_control_.hold_positions.clear();
     gravity_control_.status.active = 0;
     gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
+    reset_bimanual_follow_locked();
     next_safe_hold_ = Clock::now();
     if (!allow_protective_hold) {
       safe_pv_.clear();

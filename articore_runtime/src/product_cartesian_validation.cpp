@@ -42,7 +42,7 @@ ArticoreRobotPose pose_from_rpy(const float* values) {
 }  // namespace
 
 void validate_cartesian_start_pose(
-    bool with_grippers,
+    const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& tcp_offset,
     uint32_t side,
     const NativeTrajectorySample& reference,
     const ArticoreRobotPose& declared,
@@ -65,7 +65,7 @@ void validate_cartesian_start_pose(
   for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
     q[index] = reference.positions[offset + index];
   }
-  RobotModel model("yunyi_v1_0", side, with_grippers);
+  RobotModel model("yunyi_v1_0", side, tcp_offset);
   ArticoreRobotPose current{};
   current.struct_size = sizeof(current);
   model.fk(q.data(), q.size(), &current);
@@ -83,6 +83,21 @@ void validate_cartesian_start_pose(
           << "orientation_error=" << orientation_error << " rad, "
           << "tolerances=[position<=0.005, orientation<=0.035]";
   throw std::invalid_argument(message.str());
+}
+
+void validate_cartesian_start_pose(
+    bool with_grippers,
+    uint32_t side,
+    const NativeTrajectorySample& reference,
+    const ArticoreRobotPose& declared,
+    const char* motion_name) {
+  validate_cartesian_start_pose(
+      with_grippers
+          ? std::array<float, ARTICORE_PRODUCT_POSE_DOF>{
+                -0.004f, 0.0f, -0.178f, 0.0f, 0.0f, 0.0f}
+          : std::array<float, ARTICORE_PRODUCT_POSE_DOF>{},
+      side, reference, declared,
+      motion_name);
 }
 
 void validate_cartesian_start_pose(

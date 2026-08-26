@@ -26,6 +26,11 @@ const char* operation_name(ArticoreRuntimeOperation operation) {
     case ARTICORE_OPERATION_RECOVER: return "recover";
     case ARTICORE_OPERATION_START_TRAJECTORY: return "start trajectory";
     case ARTICORE_OPERATION_CANCEL_TRAJECTORY: return "cancel trajectory";
+    case ARTICORE_OPERATION_START_BIMANUAL_FOLLOW:
+      return "start bimanual follow";
+    case ARTICORE_OPERATION_STOP_BIMANUAL_FOLLOW:
+      return "stop bimanual follow";
+    case ARTICORE_OPERATION_SET_TCP_OFFSET: return "set TCP offset";
     default: return "maintenance";
   }
 }

@@ -63,6 +63,19 @@ void SafetyRuntime::set_joint_pv(
       max_reference_velocity, pv_velocity_limit);
 }
 
+void SafetyRuntime::set_joint_pv_planned(
+    const ArticoreJointPvTarget* targets, uint32_t count,
+    float max_reference_velocity, float pv_velocity_limit,
+    CommandTransaction& transaction, uint64_t planning_token) {
+  if (planning_token == 0) {
+    throw std::logic_error("planned PV command requires a planning token");
+  }
+  install_joint_position(
+      ARTICORE_MODE_PV, collect_targets(targets, count, "PV"),
+      max_reference_velocity, pv_velocity_limit, &transaction,
+      planning_token);
+}
+
 float SafetyRuntime::ordinary_velocity_from_percent(
     ArticoreControlMode mode, float speed_percent) const {
   if (!finite(speed_percent) || speed_percent < 0.0f ||
@@ -172,7 +185,8 @@ void SafetyRuntime::update_joint_pv_velocity(
 void SafetyRuntime::install_joint_position(
     ArticoreControlMode requested_mode,
     const std::vector<std::pair<void*, float>>& targets,
-    float max_reference_velocity, float pv_velocity_limit) {
+    float max_reference_velocity, float pv_velocity_limit,
+    CommandTransaction* transaction, uint64_t planning_token) {
   const char* const label = mode_name(requested_mode);
   if (!finite(max_reference_velocity) || max_reference_velocity < 0.0f) {
     throw std::invalid_argument(
@@ -228,10 +242,28 @@ void SafetyRuntime::install_joint_position(
         motor_handle, target_position, 0.0f, 0.0f);
   }
 
+  CommandTransaction owned_transaction;
+  if (transaction) {
+    if (!transaction->owns_lock() || transaction->mutex() != &command_mutex_) {
+      throw std::logic_error(
+          "planned joint position requires the Runtime command transaction");
+    }
+  } else {
+    if (planning_token != 0) {
+      throw std::logic_error(
+          "planned joint position token requires a command transaction");
+    }
+    owned_transaction = begin_command_transaction();
+  }
+
   const auto now = Clock::now();
-  std::lock_guard<std::mutex> command_lock(command_mutex_);
   std::lock_guard<std::mutex> state_lock(state_mutex_);
-  require_state_for_command();
+  if (planning_token != 0 &&
+      active_command_planning_token_ != planning_token) {
+    throw std::runtime_error(
+        "Runtime state changed while planning the command");
+  }
+  require_state_for_command(false, false, planning_token);
   if (trajectory_control_.state == ARTICORE_TRAJECTORY_COMPLETED) {
     terminate_trajectory_locked(
         ARTICORE_TRAJECTORY_CANCELLED,
@@ -268,6 +300,8 @@ void SafetyRuntime::install_joint_position(
   next.final_positions.reserve(targets.size());
   if (requested_mode == ARTICORE_MODE_PV) {
     next.pv.reserve(targets.size());
+    next.pv_hold_confirmation_cycles.assign(targets.size(), 0);
+    next.pv_stationary_hold.assign(targets.size(), 0);
   } else {
     next.mit.reserve(targets.size());
   }
@@ -333,6 +367,8 @@ void SafetyRuntime::install_joint_position(
 
   clear_pending_arm_mailbox();
   arm_mailbox_ = std::move(next);
+  first_command_accepted_ = true;
+  if (planning_token != 0) active_command_planning_token_ = 0;
   wakeup_.notify_all();
 }
 

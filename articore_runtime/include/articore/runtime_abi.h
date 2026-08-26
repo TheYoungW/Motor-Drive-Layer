@@ -214,6 +214,9 @@ enum ArticoreRuntimeOperation {
   ARTICORE_OPERATION_CANCEL_CARTESIAN_MOTION = 14,
   ARTICORE_OPERATION_MOVE_LINEAR = 15,
   ARTICORE_OPERATION_MOVE_CIRCULAR = 16,
+  ARTICORE_OPERATION_START_BIMANUAL_FOLLOW = 17,
+  ARTICORE_OPERATION_STOP_BIMANUAL_FOLLOW = 18,
+  ARTICORE_OPERATION_SET_TCP_OFFSET = 19,
 };
 
 enum ArticoreTrajectoryInterpolation {
@@ -290,6 +293,27 @@ typedef struct ArticoreGravityCompensationStatus {
   // Final motor-domain gravity feedforward from the latest sent cycle.
   float gravity_feedforward_torque[ARTICORE_MAX_MIT_TORQUE_LIMIT_JOINTS];
 } ArticoreGravityCompensationStatus;
+
+enum ArticoreBimanualFollowPhase {
+  ARTICORE_BIMANUAL_FOLLOW_INACTIVE = 0,
+  ARTICORE_BIMANUAL_FOLLOW_ENTERING = 1,
+  ARTICORE_BIMANUAL_FOLLOW_ACTIVE = 2,
+  ARTICORE_BIMANUAL_FOLLOW_EXITING = 3,
+};
+
+typedef struct ArticoreBimanualFollowStatus {
+  uint32_t struct_size;
+  int32_t phase;
+  int32_t active;
+  uint32_t leader_side;
+  uint32_t follower_side;
+  float transition_progress;
+  uint64_t control_cycles;
+  float leader_positions[ARTICORE_PRODUCT_ARM_DOF];
+  float follower_target_positions[ARTICORE_PRODUCT_ARM_DOF];
+  float max_tracking_error;
+  char error[512];
+} ArticoreBimanualFollowStatus;
 
 // A persistent setpoint is retransmitted at the control rate until another
 // command, disable, or fault replaces it. A streaming command
@@ -532,6 +556,14 @@ typedef struct ArticoreProductPose {
   uint64_t timestamp_ns;
   uint64_t sequence;
 } ArticoreProductPose;
+
+typedef struct ArticoreTcpOffset {
+  uint32_t struct_size;
+  uint32_t side;
+  // Transform from the product flange (link7) to the active TCP, expressed
+  // as [x, y, z, roll, pitch, yaw] in metres and radians.
+  float values[ARTICORE_PRODUCT_POSE_DOF];
+} ArticoreTcpOffset;
 
 typedef struct ArticoreJointMitTarget {
   uint32_t struct_size;
@@ -1075,9 +1107,16 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_state_v3(
     ArticoreRuntime* runtime, ArticoreProductStateV3* state);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_joint_angle_vel_limits(
     ArticoreRuntime* runtime, ArticoreProductJointAngleVelLimits* limits);
-/* Cached tool0 pose with grippers, otherwise link7 pose. */
+/* Cached active-TCP pose. The default is tool0 with grippers and link7
+ * without grippers. A custom offset affects FK and every Cartesian IK path. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_pose(
     ArticoreRuntime* runtime, uint32_t side, ArticoreProductPose* pose);
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_tcp_offset(
+    ArticoreRuntime* runtime, const ArticoreTcpOffset* offset);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_tcp_offset(
+    ArticoreRuntime* runtime, uint32_t side, ArticoreTcpOffset* offset);
+ARTICORE_RUNTIME_API int32_t articore_runtime_reset_tcp_offset(
+    ArticoreRuntime* runtime, uint32_t side);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_last_connect_report(
     ArticoreRuntime* runtime, ArticoreConnectReport* report);
 
@@ -1123,6 +1162,17 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_stop_gravity_compensation(
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_gravity_compensation_status(
     ArticoreRuntime* runtime,
     ArticoreGravityCompensationStatus* status);
+
+/* Current-mode relative joint-space leader/follower control. Runtime captures
+ * both arm positions atomically. Subsequent ordinary PV/MIT commands control
+ * the selected leader; the opposite arm follows its seven relative joint
+ * displacements in the same complete fourteen-axis product frame. */
+ARTICORE_RUNTIME_API int32_t articore_runtime_start_bimanual_follow(
+    ArticoreRuntime* runtime, uint32_t leader_side);
+ARTICORE_RUNTIME_API int32_t articore_runtime_stop_bimanual_follow(
+    ArticoreRuntime* runtime);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_bimanual_follow_status(
+    ArticoreRuntime* runtime, ArticoreBimanualFollowStatus* status);
 
 /* Low-level compatibility commands. Accepted frames replace a one-slot mailbox. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pos_vel(

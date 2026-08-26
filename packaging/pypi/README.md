@@ -23,6 +23,16 @@ Product trajectories are likewise planned and executed entirely by the C++
 Runtime through the stable trajectory C ABI; the wheel contains no Python
 interpolator or realtime playback loop.
 
+Version 0.12.8 advances the Runtime ABI to 3.6. Native TCP offsets are stored
+per arm in the Runtime session and are applied consistently by pose reads and
+Cartesian FK/IK. Cartesian Linear/Circular execution uses feedback-aware PV
+retiming and a bounded velocity envelope to reduce path vibration without
+moving interpolation into Python. Product bimanual follow now captures the
+current seven-joint relationship atomically, selects either arm as leader, and
+reuses the active ordinary PV or MIT reference path. The follower reference is
+generated from the leader reference in the same complete fourteen-axis send;
+there is no gravity-compensation transition or separate follow gain policy.
+
 Runtime ABI 3.2 keeps point-to-point and path lifecycle semantics separate.
 `articore_runtime_move_pose()` performs endpoint IK and submits an ordinary PV
 target; it returns no motion ID and has no status or cancellation API. Linear

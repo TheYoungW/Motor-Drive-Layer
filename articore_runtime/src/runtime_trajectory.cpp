@@ -592,6 +592,10 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     require_state_for_command(false, enqueue || replace_trajectory_id != 0);
+    if (bimanual_follow_.active) {
+      throw std::runtime_error(
+          "trajectory cannot replace active bimanual ordinary control");
+    }
     if (state_ == ARTICORE_DEGRADED) {
       throw std::runtime_error(
           "cannot start a trajectory while Runtime is degraded");
@@ -663,6 +667,10 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     require_state_for_command(false, enqueue || replace_trajectory_id != 0);
+    if (bimanual_follow_.active) {
+      throw std::runtime_error(
+          "trajectory cannot replace active bimanual ordinary control");
+    }
     if (mode_ != request.mode ||
         (!enqueue &&
          trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING &&
@@ -728,6 +736,34 @@ SafetyRuntime::CommandTransaction SafetyRuntime::begin_command_transaction() {
   return CommandTransaction(command_mutex_);
 }
 
+uint64_t SafetyRuntime::begin_command_planning(
+    const CommandTransaction& transaction) {
+  if (!transaction.owns_lock() || transaction.mutex() != &command_mutex_) {
+    throw std::logic_error(
+        "command planning requires the Runtime command transaction");
+  }
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  require_state_for_command();
+  if (active_command_planning_token_ != 0) {
+    throw std::runtime_error("another command is already being planned");
+  }
+  const uint64_t token = next_command_planning_token_++;
+  active_command_planning_token_ = token == 0
+      ? next_command_planning_token_++
+      : token;
+  return active_command_planning_token_;
+}
+
+void SafetyRuntime::cancel_command_planning(uint64_t token) noexcept {
+  if (token == 0) return;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    if (active_command_planning_token_ != token) return;
+    active_command_planning_token_ = 0;
+  }
+  wakeup_.notify_all();
+}
+
 NativeTrajectorySample SafetyRuntime::trajectory_final_sample_locked(
     const TrajectoryControl& trajectory) const {
   NativeTrajectorySample result;
@@ -775,6 +811,8 @@ void SafetyRuntime::activate_trajectory_locked(
   trajectory.active_segment = 0;
   trajectory.elapsed_s = 0.0;
   trajectory.started_at = now;
+  trajectory.tracking_updated_at = now;
+  trajectory.tracking_pause_started_at = Clock::time_point{};
   trajectory.settling_started_at = Clock::time_point{};
   trajectory.settling_stable_started_at = Clock::time_point{};
   trajectory.hold_unstable_started_at = Clock::time_point{};
@@ -783,6 +821,10 @@ void SafetyRuntime::activate_trajectory_locked(
   trajectory.stationary_hold_active = false;
   trajectory.final_hold_limit_active = false;
   trajectory.final_hold_limit_mask = 0;
+  trajectory.tracking_time_scale = 1.0f;
+  trajectory.tracking_position_error = 0.0f;
+  trajectory.tracking_feedback_valid = false;
+  trajectory.tracking_worst_role.clear();
   trajectory.approach_complete = trajectory.approach_segment_count == 0;
   trajectory.error.clear();
   trajectory_control_ = std::move(trajectory);
@@ -839,6 +881,10 @@ NativeTrajectorySample SafetyRuntime::trajectory_sample_locked(
   const double local = std::clamp(
       elapsed - segment.start_s, 0.0, segment.duration_s);
   const double u = local / segment.duration_s;
+  const float time_scale =
+      native_cartesian_operation(trajectory_control_.operation)
+      ? trajectory_control_.tracking_time_scale
+      : 1.0f;
 
   result.active = true;
   result.trajectory_id = trajectory_control_.id;
@@ -850,9 +896,10 @@ NativeTrajectorySample SafetyRuntime::trajectory_sample_locked(
     result.positions.push_back(static_cast<float>(
         sample_polynomial(coefficients, u)));
     result.velocities.push_back(static_cast<float>(
-        sample_velocity(coefficients, u, segment.duration_s)));
+        sample_velocity(coefficients, u, segment.duration_s) * time_scale));
     result.accelerations.push_back(static_cast<float>(
-        sample_acceleration(coefficients, u, segment.duration_s)));
+        sample_acceleration(coefficients, u, segment.duration_s) *
+        time_scale * time_scale));
   }
   return result;
 }
@@ -945,6 +992,61 @@ bool SafetyRuntime::prepare_trajectory_cycle(
     return false;
   }
 
+  const bool adaptive_cartesian_pv =
+      mode_ == ARTICORE_MODE_PV &&
+      native_cartesian_operation(trajectory_control_.operation) &&
+      trajectory_control_.approach_complete;
+  if (adaptive_cartesian_pv) {
+    const double tracking_dt = std::max(
+        0.0, std::chrono::duration<double>(
+                 now - trajectory_control_.tracking_updated_at).count());
+    const float target_scale = trajectory_control_.tracking_feedback_valid
+        ? native_cartesian_tracking_scale(
+              trajectory_control_.tracking_position_error)
+        : 1.0f;
+    if (target_scale <= 0.0f) {
+      trajectory_control_.tracking_time_scale = 0.0f;
+      if (trajectory_control_.tracking_pause_started_at ==
+          Clock::time_point{}) {
+        trajectory_control_.tracking_pause_started_at = now;
+      } else if (now - trajectory_control_.tracking_pause_started_at >=
+                 kNativeCartesianTrackingPauseTimeout) {
+        error = "Cartesian tracking error did not recover";
+        if (!trajectory_control_.tracking_worst_role.empty()) {
+          error += " at " + trajectory_control_.tracking_worst_role;
+        }
+        error += ": position_error=" + std::to_string(
+            trajectory_control_.tracking_position_error) +
+            " rad, pause_threshold=" + std::to_string(
+                kNativeCartesianTrackingPauseError) + " rad";
+        return false;
+      }
+    } else {
+      trajectory_control_.tracking_pause_started_at = Clock::time_point{};
+      const float rate = target_scale < trajectory_control_.tracking_time_scale
+          ? kNativeCartesianTrackingDecelerationPerSecond
+          : kNativeCartesianTrackingAccelerationPerSecond;
+      const float maximum_change = static_cast<float>(tracking_dt) * rate;
+      trajectory_control_.tracking_time_scale += std::clamp(
+          target_scale - trajectory_control_.tracking_time_scale,
+          -maximum_change, maximum_change);
+      trajectory_control_.tracking_time_scale = std::clamp(
+          trajectory_control_.tracking_time_scale, 0.0f, 1.0f);
+    }
+    if (tracking_dt > 0.0 && trajectory_control_.tracking_time_scale < 1.0f) {
+      trajectory_control_.started_at +=
+          std::chrono::duration_cast<Clock::duration>(
+              std::chrono::duration<double>(
+                  tracking_dt *
+                  (1.0 - trajectory_control_.tracking_time_scale)));
+    }
+    trajectory_control_.tracking_updated_at = now;
+  } else {
+    trajectory_control_.tracking_time_scale = 1.0f;
+    trajectory_control_.tracking_updated_at = now;
+    trajectory_control_.tracking_pause_started_at = Clock::time_point{};
+  }
+
   double elapsed = std::chrono::duration<double>(
       now - trajectory_control_.started_at).count();
   elapsed = std::clamp(elapsed, 0.0, trajectory_control_.duration_s);
@@ -993,7 +1095,8 @@ bool SafetyRuntime::prepare_trajectory_cycle(
     const float position = static_cast<float>(
         sample_polynomial(coefficients, u));
     const float velocity = static_cast<float>(
-        sample_velocity(coefficients, u, segment.duration_s));
+        sample_velocity(coefficients, u, segment.duration_s) *
+        trajectory_control_.tracking_time_scale);
     if (!finite(position) || !finite(velocity)) {
       error = "trajectory produced a non-finite sample";
       return false;
@@ -1019,6 +1122,10 @@ bool SafetyRuntime::prepare_trajectory_cycle(
               : use_joint_final_hold_limit
               ? std::min(joint.pv_velocity_limit,
                          kNativePvSettlingVelocityLimit)
+              : adaptive_cartesian_pv
+              ? native_cartesian_pv_velocity_limit(
+                    velocity, config_.safe_pv_velocity_limit,
+                    joint.pv_velocity_limit)
               : joint.pv_velocity_limit};
     }
   }
@@ -1442,6 +1549,12 @@ void SafetyRuntime::update_trajectory_completion(Clock::time_point now) {
             now - std::chrono::duration_cast<Clock::duration>(
                       std::chrono::duration<double>(
                           trajectory_control_.approach_duration_s));
+        trajectory_control_.tracking_updated_at = now;
+        trajectory_control_.tracking_time_scale = 1.0f;
+        trajectory_control_.tracking_position_error = 0.0f;
+        trajectory_control_.tracking_feedback_valid = false;
+        trajectory_control_.tracking_pause_started_at = Clock::time_point{};
+        trajectory_control_.tracking_worst_role.clear();
         trajectory_control_.settling_started_at = Clock::time_point{};
         trajectory_control_.settling_stable_started_at = Clock::time_point{};
         trajectory_control_.hold_unstable_started_at = Clock::time_point{};

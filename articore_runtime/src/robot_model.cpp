@@ -12,6 +12,7 @@
 
 #include <Eigen/Cholesky>
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 #include <pinocchio/algorithm/aba.hpp>
 #include <pinocchio/algorithm/compute-all-terms.hpp>
 #include <pinocchio/algorithm/crba.hpp>
@@ -123,9 +124,11 @@ struct RobotModel::Impl {
   pinocchio::FrameIndex end_frame = 0;
   pinocchio::SE3 end_placement = pinocchio::SE3::Identity();
   bool uses_gripper_tool_frame = false;
+  std::string end_frame_name;
 
   Impl(std::string product, uint32_t selected_side,
-       bool use_gripper_tool_frame)
+       const std::array<double, ARTICORE_PRODUCT_POSE_DOF>& tcp_offset,
+       bool use_gripper_tool_frame, bool custom_tcp)
       : product_id(std::move(product)), side(selected_side),
         prefix(side == ARTICORE_ROBOT_LEFT ? "l" : "r"),
         uses_gripper_tool_frame(use_gripper_tool_frame) {
@@ -158,14 +161,21 @@ struct RobotModel::Impl {
       parent = joint;
     }
     end_joint = parent;
-    if (uses_gripper_tool_frame) {
-      end_placement.translation() = Eigen::Vector3d(
-          kGripperToolTranslation[0], kGripperToolTranslation[1],
-          kGripperToolTranslation[2]);
+    for (double value : tcp_offset) {
+      if (!std::isfinite(value)) {
+        throw std::invalid_argument("TCP offset contains NaN or Inf");
+      }
     }
+    end_placement.translation() = Eigen::Vector3d(
+        tcp_offset[0], tcp_offset[1], tcp_offset[2]);
+    const Eigen::AngleAxisd roll(tcp_offset[3], Eigen::Vector3d::UnitX());
+    const Eigen::AngleAxisd pitch(tcp_offset[4], Eigen::Vector3d::UnitY());
+    const Eigen::AngleAxisd yaw(tcp_offset[5], Eigen::Vector3d::UnitZ());
+    end_placement.rotation() = (yaw * pitch * roll).toRotationMatrix();
+    end_frame_name = prefix + (custom_tcp ? "-tcp" :
+        (uses_gripper_tool_frame ? "-tool0" : "-link7"));
     end_frame = model.addFrame(pinocchio::Frame(
-        prefix + (uses_gripper_tool_frame ? "-tool0" : "-link7"),
-        end_joint, end_placement, pinocchio::OP_FRAME));
+        end_frame_name, end_joint, end_placement, pinocchio::OP_FRAME));
     model.gravity.linear() = Eigen::Vector3d(0, 0, -9.81);
     realtime_data = std::make_unique<pinocchio::Data>(model);
   }
@@ -183,8 +193,23 @@ struct RobotModel::Impl {
 
 RobotModel::RobotModel(std::string product_id, uint32_t side,
                        bool use_gripper_tool_frame)
+    : impl_(std::make_unique<Impl>(std::move(product_id), side,
+          use_gripper_tool_frame
+              ? std::array<double, ARTICORE_PRODUCT_POSE_DOF>{
+                    kGripperToolTranslation[0],
+                    kGripperToolTranslation[1],
+                    kGripperToolTranslation[2], 0, 0, 0}
+              : std::array<double, ARTICORE_PRODUCT_POSE_DOF>{},
+          use_gripper_tool_frame, false)) {}
+RobotModel::RobotModel(
+    std::string product_id, uint32_t side,
+    const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& tcp_offset)
     : impl_(std::make_unique<Impl>(
-          std::move(product_id), side, use_gripper_tool_frame)) {}
+          std::move(product_id), side,
+          std::array<double, ARTICORE_PRODUCT_POSE_DOF>{
+              tcp_offset[0], tcp_offset[1], tcp_offset[2],
+              tcp_offset[3], tcp_offset[4], tcp_offset[5]},
+          false, true)) {}
 RobotModel::~RobotModel() = default;
 
 void RobotModel::get_info(ArticoreRobotModelInfo* info) const {
@@ -198,8 +223,7 @@ void RobotModel::get_info(ArticoreRobotModelInfo* info) const {
   info->side = impl_->side;
   copy_string(info->product_id, sizeof(info->product_id), impl_->product_id);
   copy_string(info->end_effector_frame, sizeof(info->end_effector_frame),
-              impl_->prefix +
-                  (impl_->uses_gripper_tool_frame ? "-tool0" : "-link7"));
+              impl_->end_frame_name);
   for (uint32_t i = 0; i < kDof; ++i) {
     copy_string(info->joint_names[i], sizeof(info->joint_names[i]),
                 impl_->prefix + "-joint" + std::to_string(i + 1));
@@ -317,7 +341,7 @@ void RobotModel::ik(const ArticoreRobotPose* target, const double* initial_q,
                     uint32_t initial_q_count, const ArticoreIkOptions* options,
                     ArticoreIkResult* result) const {
   ik_impl(
-      target, initial_q, initial_q_count, options, result, false);
+      target, initial_q, initial_q_count, options, result, false, nullptr);
 }
 
 void RobotModel::ik_nearest(
@@ -325,13 +349,23 @@ void RobotModel::ik_nearest(
     uint32_t initial_q_count, const ArticoreIkOptions* options,
     ArticoreIkResult* result) const {
   ik_impl(
-      target, initial_q, initial_q_count, options, result, true);
+      target, initial_q, initial_q_count, options, result, true, nullptr);
+}
+
+void RobotModel::ik_nearest_until(
+    const ArticoreRobotPose* target, const double* initial_q,
+    uint32_t initial_q_count, const ArticoreIkOptions* options,
+    std::chrono::steady_clock::time_point deadline,
+    ArticoreIkResult* result) const {
+  ik_impl(
+      target, initial_q, initial_q_count, options, result, true, &deadline);
 }
 
 void RobotModel::ik_impl(
     const ArticoreRobotPose* target, const double* initial_q,
     uint32_t initial_q_count, const ArticoreIkOptions* options,
-    ArticoreIkResult* result, bool prefer_nearest_success) const {
+    ArticoreIkResult* result, bool prefer_nearest_success,
+    const std::chrono::steady_clock::time_point* deadline) const {
   if (!target || target->struct_size < sizeof(*target))
     throw std::invalid_argument("IK target pose is null or too small");
   if (!result || result->struct_size < sizeof(*result))
@@ -365,10 +399,18 @@ void RobotModel::ik_impl(
       pinocchio::SE3(rotation, translation) * impl_->end_placement.inverse();
   Eigen::VectorXd seed = impl_->vector(initial_q, initial_q_count, "initial_q");
   struct Attempt { Eigen::VectorXd q; double error; uint32_t iterations; bool success; };
+  bool deadline_expired = false;
+  const auto check_deadline = [&] {
+    if (deadline && std::chrono::steady_clock::now() >= *deadline) {
+      deadline_expired = true;
+    }
+    return deadline_expired;
+  };
+  pinocchio::Data data(impl_->model);
   auto solve = [&](Eigen::VectorXd q) {
-    pinocchio::Data data(impl_->model);
     Attempt attempt{q, std::numeric_limits<double>::infinity(), 0, false};
     for (uint32_t iteration = 0; iteration < max_iterations; ++iteration) {
+      if (check_deadline()) break;
       pinocchio::forwardKinematics(impl_->model, data, attempt.q);
       const pinocchio::Motion error = pinocchio::log6(data.oMi[impl_->end_joint].actInv(desired));
       attempt.error = error.toVector().norm();
@@ -383,6 +425,7 @@ void RobotModel::ik_impl(
       const Eigen::VectorXd delta = step_size * jacobian.transpose() * normal.ldlt().solve(error.toVector());
       double alpha = 1.0;
       for (int line = 0; line < 4; ++line) {
+        if (check_deadline()) break;
         Eigen::VectorXd candidate = pinocchio::integrate(impl_->model, attempt.q, alpha * delta);
         candidate = candidate.cwiseMax(impl_->model.lowerPositionLimit).cwiseMin(impl_->model.upperPositionLimit);
         pinocchio::forwardKinematics(impl_->model, data, candidate);
@@ -391,13 +434,21 @@ void RobotModel::ik_impl(
         alpha *= .5;
       }
     }
-    pinocchio::forwardKinematics(impl_->model, data, attempt.q);
-    attempt.error = pinocchio::log6(data.oMi[impl_->end_joint].actInv(desired)).toVector().norm();
-    attempt.iterations = max_iterations;
-    attempt.success = attempt.error < tolerance;
+    if (!deadline_expired) {
+      pinocchio::forwardKinematics(impl_->model, data, attempt.q);
+      attempt.error = pinocchio::log6(
+          data.oMi[impl_->end_joint].actInv(desired)).toVector().norm();
+      attempt.iterations = max_iterations;
+      attempt.success = attempt.error < tolerance;
+    }
     return attempt;
   };
   Attempt best = solve(seed);
+  // A solution reached directly from the live/planned seed is already on the
+  // nearest local redundant-arm branch. Exhausting every global retry after
+  // this point only adds seconds of latency and does not improve continuity.
+  const bool run_global_nearest_search =
+      prefer_nearest_success && !best.success;
   auto seed_distance = [&](const Eigen::VectorXd& q) {
     return (q - seed).squaredNorm();
   };
@@ -406,7 +457,8 @@ void RobotModel::ik_impl(
       : std::numeric_limits<double>::infinity();
   std::mt19937_64 rng(options ? options->random_seed : 0);
   for (uint32_t retry = 0;
-       retry < max_retries && (!best.success || prefer_nearest_success);
+       retry < max_retries && !deadline_expired &&
+       (!best.success || run_global_nearest_search);
        ++retry) {
     Eigen::VectorXd random_q(kDof);
     for (uint32_t i = 0; i < kDof; ++i) {
@@ -435,6 +487,10 @@ void RobotModel::ik_impl(
   result->dof = kDof;
   result->error_norm = best.error;
   std::copy(best.q.data(), best.q.data() + kDof, result->q);
+  if (deadline_expired && !best.success) {
+    throw std::runtime_error(
+        "IK time budget exceeded without a converged solution");
+  }
 }
 
 }  // namespace articore

@@ -180,8 +180,12 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
   ArmMailbox initialized;
   initialized.valid = true;
   initialized.user_command = false;
+  initialized.lifetime = ARTICORE_COMMAND_HOLD_UNTIL_REPLACED;
   initialized.generation = next_arm_generation();
   initialized.submitted_at = Clock::now();
+  initialized.joint_position = true;
+  initialized.max_reference_velocity = 0.0f;
+  initialized.pv_velocity_limit = config_.safe_pv_velocity_limit;
   for (const auto& motor : motors_) {
     if (motor.descriptor.is_gripper) continue;
     ArticoreFeedbackStats stats{};
@@ -203,6 +207,8 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
     if (mode == ARTICORE_MODE_PV) {
       initialized.pv.push_back(ArticorePosVelCommand{
           motor.descriptor.motor, state.pos, config_.safe_pv_velocity_limit});
+      initialized.pv_hold_confirmation_cycles.push_back(0);
+      initialized.pv_stationary_hold.push_back(0);
     } else {
       const auto configured = joint_configs_.find(motor.descriptor.motor);
       const auto kp = configured == joint_configs_.end()
@@ -214,6 +220,7 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
       initialized.mit.push_back(ArticoreMitCommand{
           motor.descriptor.motor, state.pos, 0.0f, kp, kd, tau});
     }
+    initialized.final_positions.push_back(state.pos);
   }
   if (initialized.pv.empty() && initialized.mit.empty()) {
     throw std::runtime_error("runtime requires at least one active arm motor");
@@ -222,12 +229,19 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
 }
 
 void SafetyRuntime::require_state_for_command(bool allow_gravity,
-                                              bool allow_trajectory) const {
+                                              bool allow_trajectory,
+                                              uint64_t planning_token) const {
   if (fault_latched_ || hardware_transition_ || enable_transaction_ ||
+      enable_grace_transition_ ||
       (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING &&
        state_ != ARTICORE_DEGRADED &&
        state_ != ARTICORE_PARTIALLY_ENABLED)) {
     throw std::runtime_error("Articore runtime is not accepting motion commands");
+  }
+  if (active_command_planning_token_ != 0 &&
+      active_command_planning_token_ != planning_token) {
+    throw std::runtime_error(
+        "motion commands are owned by an active native planning transaction");
   }
   if (!allow_gravity &&
       gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE) {
@@ -420,6 +434,7 @@ bool SafetyRuntime::enter_safe_stop(const std::string& reason,
   gravity_control_.hold_positions.clear();
   gravity_control_.status.active = 0;
   gravity_control_.status.phase = ARTICORE_GRAVITY_INACTIVE;
+  reset_bimanual_follow_locked();
   next_safe_hold_ = now;
   consecutive_hold_failures_ = 0;
   fault_hold_active_ = !safe_pv_.empty() || !safe_mit_.empty() ||
@@ -462,6 +477,10 @@ void SafetyRuntime::submit_pos_vel_ex(const ArticorePosVelCommand* commands,
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     require_state_for_command();
+    if (bimanual_follow_.active) {
+      throw std::runtime_error(
+          "raw PV cannot replace active bimanual ordinary control");
+    }
     if (mode_ != ARTICORE_MODE_PV) {
       throw std::runtime_error("cannot submit PV while runtime mode is MIT");
     }
@@ -515,6 +534,10 @@ void SafetyRuntime::submit_mit_ex(const ArticoreMitCommand* commands,
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     require_state_for_command();
+    if (bimanual_follow_.active) {
+      throw std::runtime_error(
+          "raw MIT cannot replace active bimanual ordinary control");
+    }
     if (mode_ != ARTICORE_MODE_MIT) {
       throw std::runtime_error("cannot submit MIT while runtime mode is PV");
     }
@@ -623,6 +646,11 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
   ArticoreControlMode mode;
   bool gravity_active = false;
   bool degraded = false;
+  bool adaptive_cartesian_tracking = false;
+  bool bimanual_active = false;
+  uint32_t bimanual_leader_side = ARTICORE_ROBOT_LEFT;
+  std::vector<float> bimanual_start_positions;
+  std::array<float, ARTICORE_PRODUCT_ARM_DOF> bimanual_follower_reference{};
   std::set<void*> intentionally_disabled;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
@@ -636,6 +664,14 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     degraded = state_ == ARTICORE_DEGRADED;
     gravity_active =
         gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE;
+    adaptive_cartesian_tracking =
+        trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING &&
+        native_cartesian_operation(trajectory_control_.operation) &&
+        trajectory_control_.approach_complete;
+    bimanual_active = bimanual_follow_.active;
+    bimanual_leader_side = bimanual_follow_.leader_side;
+    bimanual_start_positions = bimanual_follow_.start_positions;
+    bimanual_follower_reference = bimanual_follow_.follower_reference;
     intentionally_disabled = intentionally_disabled_motors_;
   }
 
@@ -673,14 +709,56 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     const float max_delta = arm_mailbox_.max_reference_velocity * command_scale /
                             static_cast<float>(control_hz_);
     if (mode == ARTICORE_MODE_PV) {
+      if (arm_mailbox_.pv_hold_confirmation_cycles.size() !=
+              arm_mailbox_.pv.size() ||
+          arm_mailbox_.pv_stationary_hold.size() != arm_mailbox_.pv.size()) {
+        arm_mailbox_.pv_hold_confirmation_cycles.assign(
+            arm_mailbox_.pv.size(), 0);
+        arm_mailbox_.pv_stationary_hold.assign(arm_mailbox_.pv.size(), 0);
+      }
       for (std::size_t i = 0; i < arm_mailbox_.pv.size(); ++i) {
         auto& command = arm_mailbox_.pv[i];
         command.target_position = advance_pv_position_reference(
             command.target_position, arm_mailbox_.final_positions[i],
             max_delta);
-        command.velocity_limit = std::max(
-            config_.safe_pv_velocity_limit,
-            arm_mailbox_.pv_velocity_limit);
+        const float final_position = arm_mailbox_.final_positions[i];
+        const bool reference_reached =
+            std::abs(command.target_position - final_position) <= 1.0e-6f;
+        ArticoreFeedbackStats stats{};
+        ArticoreMotorState actual{};
+        const bool fresh_feedback =
+            backend_->get_feedback_stats(command.motor, &stats) == 0 &&
+            stats.has_feedback && stats.age_ns <= feedback_max_age_ns() &&
+            backend_->get_state(command.motor, &actual) == 0 &&
+            actual.has_value && actual.status_code == 1 && finite(actual.pos);
+        if (!reference_reached) {
+          arm_mailbox_.pv_hold_confirmation_cycles[i] = 0;
+          arm_mailbox_.pv_stationary_hold[i] = 0;
+        } else if (fresh_feedback) {
+          const float position_error = std::abs(actual.pos - final_position);
+          if (arm_mailbox_.pv_stationary_hold[i] != 0) {
+            if (position_error > kNativeOrdinaryPvHoldReleaseTolerance) {
+              arm_mailbox_.pv_stationary_hold[i] = 0;
+              arm_mailbox_.pv_hold_confirmation_cycles[i] = 0;
+            }
+          } else if (position_error <=
+                     kNativeOrdinaryPvHoldPositionTolerance) {
+            auto& confirmations =
+                arm_mailbox_.pv_hold_confirmation_cycles[i];
+            if (confirmations < kNativeOrdinaryPvHoldConfirmationCycles) {
+              ++confirmations;
+            }
+            if (confirmations >= kNativeOrdinaryPvHoldConfirmationCycles) {
+              arm_mailbox_.pv_stationary_hold[i] = 1;
+            }
+          } else {
+            arm_mailbox_.pv_hold_confirmation_cycles[i] = 0;
+          }
+        }
+        command.velocity_limit = arm_mailbox_.pv_stationary_hold[i] != 0
+            ? kNativePvFinalHoldVelocityLimit
+            : std::max(config_.safe_pv_velocity_limit,
+                       arm_mailbox_.pv_velocity_limit);
       }
     } else {
       for (std::size_t i = 0; i < arm_mailbox_.mit.size(); ++i) {
@@ -691,6 +769,142 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
         command.target_velocity = 0.0f;
         command.feedforward_torque = 0.0f;
       }
+    }
+  }
+
+  std::array<float, ARTICORE_PRODUCT_ARM_DOF> bimanual_leader_positions{};
+  std::array<float, ARTICORE_PRODUCT_ARM_DOF> bimanual_follower_positions{};
+  float bimanual_tracking_error = 0.0f;
+  if (bimanual_active) {
+    if (!arm_mailbox_.joint_position ||
+        bimanual_start_positions.size() != 2 * ARTICORE_PRODUCT_ARM_DOF) {
+      error = "bimanual follow requires an ordinary PV/MIT position command";
+      return false;
+    }
+    const uint32_t follower_side = 1U - bimanual_leader_side;
+    const float command_scale = degraded ? 0.25f : 1.0f;
+    const float max_delta = arm_mailbox_.max_reference_velocity * command_scale /
+                            static_cast<float>(control_hz_);
+    for (std::size_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+      void* leader_motor =
+          gravity_arms_[bimanual_leader_side].joints[joint];
+      void* follower_motor = gravity_arms_[follower_side].joints[joint];
+      ArticoreFeedbackStats leader_stats{};
+      ArticoreFeedbackStats follower_stats{};
+      ArticoreMotorState leader{};
+      ArticoreMotorState follower{};
+      if (backend_->get_feedback_stats(leader_motor, &leader_stats) != 0 ||
+          !leader_stats.has_feedback ||
+          leader_stats.age_ns > feedback_max_age_ns() ||
+          backend_->get_feedback_stats(follower_motor, &follower_stats) != 0 ||
+          !follower_stats.has_feedback ||
+          follower_stats.age_ns > feedback_max_age_ns() ||
+          backend_->get_state(leader_motor, &leader) != 0 ||
+          backend_->get_state(follower_motor, &follower) != 0 ||
+          !leader.has_value || !follower.has_value ||
+          leader.status_code != 1 || follower.status_code != 1 ||
+          !finite(leader.pos) || !finite(leader.vel) ||
+          !finite(follower.pos) || !finite(follower.vel)) {
+        error = motor_roles_.at(leader_motor) + " / " +
+            motor_roles_.at(follower_motor) +
+            ": bimanual follow requires fresh enabled feedback";
+        return false;
+      }
+
+      const float leader_direction =
+          gravity_arms_[bimanual_leader_side].position_directions[joint];
+      const float follower_direction =
+          gravity_arms_[follower_side].position_directions[joint];
+      float leader_reference = 0.0f;
+      if (mode == ARTICORE_MODE_PV) {
+        const auto command = std::find_if(
+            arm_mailbox_.pv.begin(), arm_mailbox_.pv.end(),
+            [&](const ArticorePosVelCommand& value) {
+              return value.motor == leader_motor;
+            });
+        if (command == arm_mailbox_.pv.end()) {
+          error = "PV bimanual follow lost the leader product layout";
+          return false;
+        }
+        leader_reference = command->target_position;
+      } else {
+        const auto command = std::find_if(
+            arm_mailbox_.mit.begin(), arm_mailbox_.mit.end(),
+            [&](const ArticoreMitCommand& value) {
+              return value.motor == leader_motor;
+            });
+        if (command == arm_mailbox_.mit.end()) {
+          error = "MIT bimanual follow lost the leader product layout";
+          return false;
+        }
+        leader_reference = command->target_position;
+      }
+      const float desired =
+          bimanual_start_positions[
+              follower_side * ARTICORE_PRODUCT_ARM_DOF + joint] +
+          follower_direction * leader_direction *
+              (leader_reference -
+               bimanual_start_positions[
+                   bimanual_leader_side * ARTICORE_PRODUCT_ARM_DOF + joint]);
+      const auto& limits = joint_config(follower_motor);
+      if (!finite(desired) || desired < limits.soft_lower_position ||
+          desired > limits.soft_upper_position) {
+        const float logical_target = follower_direction * desired;
+        const float logical_lower = follower_direction > 0.0f
+            ? limits.soft_lower_position : -limits.soft_upper_position;
+        const float logical_upper = follower_direction > 0.0f
+            ? limits.soft_upper_position : -limits.soft_lower_position;
+        error = motor_roles_.at(follower_motor) +
+            ": bimanual target=" + std::to_string(logical_target) +
+            " rad exceeds product limits=[" +
+            std::to_string(logical_lower) + ", " +
+            std::to_string(logical_upper) + "] rad";
+        return false;
+      }
+
+      bimanual_follower_reference[joint] = advance_pv_position_reference(
+          bimanual_follower_reference[joint], desired, max_delta);
+      if (mode == ARTICORE_MODE_PV) {
+        const auto command = std::find_if(
+            arm_mailbox_.pv.begin(), arm_mailbox_.pv.end(),
+            [&](const ArticorePosVelCommand& value) {
+              return value.motor == follower_motor;
+            });
+        if (command == arm_mailbox_.pv.end()) {
+          error = "PV bimanual follow lost the follower product layout";
+          return false;
+        }
+        const auto index = static_cast<std::size_t>(
+            std::distance(arm_mailbox_.pv.begin(), command));
+        command->target_position = bimanual_follower_reference[joint];
+        arm_mailbox_.final_positions[index] = desired;
+        arm_mailbox_.pv_hold_confirmation_cycles[index] = 0;
+        arm_mailbox_.pv_stationary_hold[index] = 0;
+        command->velocity_limit = std::max(
+            config_.safe_pv_velocity_limit, arm_mailbox_.pv_velocity_limit);
+      } else {
+        const auto command = std::find_if(
+            arm_mailbox_.mit.begin(), arm_mailbox_.mit.end(),
+            [&](const ArticoreMitCommand& value) {
+              return value.motor == follower_motor;
+            });
+        if (command == arm_mailbox_.mit.end()) {
+          error = "MIT bimanual follow lost the follower product layout";
+          return false;
+        }
+        const auto index = static_cast<std::size_t>(
+            std::distance(arm_mailbox_.mit.begin(), command));
+        command->target_position = bimanual_follower_reference[joint];
+        command->target_velocity = 0.0f;
+        command->feedforward_torque = 0.0f;
+        arm_mailbox_.final_positions[index] = desired;
+      }
+      bimanual_leader_positions[joint] = leader_direction * leader.pos;
+      bimanual_follower_positions[joint] = follower_direction * follower.pos;
+      bimanual_tracking_error = std::max(
+          bimanual_tracking_error,
+          std::fabs(follower_direction * bimanual_follower_reference[joint] -
+                    bimanual_follower_positions[joint]));
     }
   }
 
@@ -787,12 +1001,60 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     return false;
   }
 
+  float cartesian_tracking_error = 0.0f;
+  void* cartesian_tracking_worst_motor = nullptr;
+  bool cartesian_tracking_feedback_valid =
+      adaptive_cartesian_tracking && mode == ARTICORE_MODE_PV &&
+      command_count > 0;
+  if (cartesian_tracking_feedback_valid) {
+    for (uint32_t index = 0; index < command_count; ++index) {
+      ArticoreFeedbackStats stats{};
+      ArticoreMotorState actual{};
+      if (backend_->get_feedback_stats(pv_data[index].motor, &stats) != 0 ||
+          !stats.has_feedback || stats.age_ns > feedback_max_age_ns() ||
+          backend_->get_state(pv_data[index].motor, &actual) != 0 ||
+          !actual.has_value || actual.status_code != 1 ||
+          !finite(actual.pos)) {
+        cartesian_tracking_feedback_valid = false;
+        break;
+      }
+      const float position_error =
+          std::abs(actual.pos - pv_data[index].target_position);
+      if (position_error > cartesian_tracking_error) {
+        cartesian_tracking_error = position_error;
+        cartesian_tracking_worst_motor = pv_data[index].motor;
+      }
+    }
+  }
+
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
     consecutive_send_failures_ = 0;
     if (mode == ARTICORE_MODE_PV) {
       last_sent_pv_.assign(pv_data, pv_data + command_count);
       last_sent_mit_.clear();
+      if (adaptive_cartesian_tracking &&
+          trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING &&
+          native_cartesian_operation(trajectory_control_.operation) &&
+          trajectory_control_.approach_complete) {
+        trajectory_control_.tracking_position_error =
+            cartesian_tracking_error;
+        trajectory_control_.tracking_feedback_valid =
+            cartesian_tracking_feedback_valid;
+        trajectory_control_.tracking_worst_role.clear();
+        if (cartesian_tracking_feedback_valid &&
+            cartesian_tracking_worst_motor) {
+          const auto found = std::find_if(
+              trajectory_control_.joints.begin(),
+              trajectory_control_.joints.end(),
+              [&](const NativeTrajectoryJoint& joint) {
+                return joint.motor == cartesian_tracking_worst_motor;
+              });
+          if (found != trajectory_control_.joints.end()) {
+            trajectory_control_.tracking_worst_role = found->role;
+          }
+        }
+      }
     } else {
       // Safe arm hold must remain independent from product gripper policy.
       last_sent_mit_.assign(mit_data, mit_data + command_count);
@@ -809,8 +1071,27 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
       sides_[side].send_failures = 0;
       sides_[side].healthy = true;
     }
+    if (bimanual_active && bimanual_follow_.active) {
+      const uint32_t follower_side = 1U - bimanual_leader_side;
+      bimanual_follow_.follower_reference = bimanual_follower_reference;
+      ++bimanual_follow_.status.control_cycles;
+      bimanual_follow_.status.phase = ARTICORE_BIMANUAL_FOLLOW_ACTIVE;
+      bimanual_follow_.status.active = 1;
+      bimanual_follow_.status.transition_progress = 1.0f;
+      bimanual_follow_.status.leader_side = bimanual_leader_side;
+      bimanual_follow_.status.follower_side = follower_side;
+      bimanual_follow_.status.max_tracking_error = bimanual_tracking_error;
+      for (std::size_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+        bimanual_follow_.status.leader_positions[joint] =
+            bimanual_leader_positions[joint];
+        bimanual_follow_.status.follower_target_positions[joint] =
+            gravity_arms_[follower_side].position_directions[joint] *
+            bimanual_follower_reference[joint];
+      }
+    }
     if (mailbox_user_command) {
       has_successful_command_ = true;
+      first_command_accepted_ = false;
       if (state_ == ARTICORE_ENABLED) state_ = ARTICORE_RUNNING;
       if (mailbox_generation > arm_mailbox_.sent_generation) {
         arm_mailbox_.sent_generation = mailbox_generation;
@@ -859,6 +1140,9 @@ void SafetyRuntime::record_control_trace(
               trajectory_control_.elapsed_s / trajectory_control_.duration_s,
               0.0, 1.0))
         : 0.0f;
+    sample.tracking_time_scale = trajectory_control_.tracking_time_scale;
+    sample.tracking_position_error =
+        trajectory_control_.tracking_position_error;
     joints = trajectory_control_.joints;
     const auto planned = trajectory_sample_locked(now);
     const auto planned_count = std::min<std::size_t>(

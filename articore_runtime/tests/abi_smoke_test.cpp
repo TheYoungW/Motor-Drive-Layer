@@ -110,6 +110,10 @@ int main() {
       ProductJointLimitsGetter>);
   static_assert(sizeof(ArticoreProductJointAngleVelLimits) == 176);
   const auto product_pose = &articore_runtime_get_pose;
+  const auto set_tcp_offset = &articore_runtime_set_tcp_offset;
+  const auto get_tcp_offset = &articore_runtime_get_tcp_offset;
+  const auto reset_tcp_offset = &articore_runtime_reset_tcp_offset;
+  static_assert(sizeof(ArticoreTcpOffset) == 32);
   const auto control_mode = &articore_runtime_get_control_mode;
   const auto enable_report = &articore_runtime_get_last_enable_report;
   const auto enable_motors = &articore_runtime_enable_motors;
@@ -149,6 +153,12 @@ int main() {
   const auto stop_gravity = &articore_runtime_stop_gravity_compensation;
   const auto gravity_status =
       &articore_runtime_get_gravity_compensation_status;
+  const auto start_bimanual_follow =
+      &articore_runtime_start_bimanual_follow;
+  const auto stop_bimanual_follow =
+      &articore_runtime_stop_bimanual_follow;
+  const auto bimanual_follow_status =
+      &articore_runtime_get_bimanual_follow_status;
   const auto health_v2 = &articore_runtime_get_health_v2;
   auto estop = &articore_runtime_estop;
   using ParameterlessEstop = int32_t (*)(ArticoreRuntime*);
@@ -340,6 +350,7 @@ int main() {
       !product_state_v3 ||
       !product_joint_limits ||
       !product_pose ||
+      !set_tcp_offset || !get_tcp_offset || !reset_tcp_offset ||
       !control_mode ||
       !enable_report || !enable_motors || !disable_motors ||
       !set_motor_power || !get_motor_power ||
@@ -348,10 +359,11 @@ int main() {
       !configure_motor_identities || !connect_report ||
       !mit_torque_limit_stats || !robot_model_create || !robot_model_fk ||
       !configure_gravity_products || !start_gravity || !stop_gravity ||
-      !gravity_status || !health_v2 || !estop ||
+      !gravity_status || !start_bimanual_follow || !stop_bimanual_follow ||
+      !bimanual_follow_status || !health_v2 || !estop ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x00030003U ||
+      version != 0x00030006U ||
       (capabilities & required_with_circular) != required_with_circular ||
       !product_gripper_levels_valid ||
       !product_gripper_direct_valid ||

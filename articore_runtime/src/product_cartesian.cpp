@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <future>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -17,6 +18,11 @@ static_assert(
     "Cartesian and ordinary PV must share the same drive velocity ceiling");
 
 namespace {
+
+// IK samples describe Cartesian geometry; the 500 Hz worker still evaluates
+// the resulting C2-continuous joint trajectory every control cycle.
+constexpr double kCartesianTranslationSampleDistance = 0.005;
+constexpr double kCartesianOrientationSampleDistance = 0.035;
 
 std::string product_joint_role(uint32_t index) {
   return yunyi_joint_role(index);
@@ -110,13 +116,38 @@ std::array<double, ARTICORE_PRODUCT_ARM_DOF> solve_endpoint_ik(
     YunyiRuntimeResources& product, uint32_t side,
     const ArticoreRobotPose& target,
     const std::array<double, ARTICORE_PRODUCT_ARM_DOF>& seed,
-    const char* context) {
+    const char* context,
+    std::chrono::steady_clock::time_point deadline) {
   // PTP has no sequential Cartesian samples to constrain the redundant arm.
   // Search the deterministic endpoint budget and select the valid joint
   // solution closest to the measured/planned seed.
-  return solve_ik(
-      planning_model, product, side, target, seed, context,
+  auto options = product_cartesian_ik_options(
       CartesianIkSearch::GlobalEndpoint);
+  ArticoreIkResult ik{};
+  ik.struct_size = sizeof(ik);
+  planning_model.ik_nearest_until(
+      &target, seed.data(), seed.size(), &options, deadline, &ik);
+  if (!ik.success || ik.dof != ARTICORE_PRODUCT_ARM_DOF) {
+    throw std::invalid_argument(
+        std::string(context) + " is unreachable; IK error_norm=" +
+        std::to_string(ik.error_norm));
+  }
+  std::array<double, ARTICORE_PRODUCT_ARM_DOF> result{};
+  const uint32_t offset = side * ARTICORE_PRODUCT_ARM_DOF;
+  for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
+    const auto& joint = product.joints[offset + index];
+    if (!std::isfinite(ik.q[index]) || ik.q[index] < joint.lower ||
+        ik.q[index] > joint.upper) {
+      std::ostringstream message;
+      message << context << " IK result exceeds product position limits: "
+              << product_joint_role(offset + index) << " position="
+              << ik.q[index] << " rad, allowed=[" << joint.lower << ", "
+              << joint.upper << "] rad";
+      throw std::invalid_argument(message.str());
+    }
+    result[index] = ik.q[index];
+  }
+  return result;
 }
 
 NativeTrajectoryJoint trajectory_joint(
@@ -171,7 +202,8 @@ std::vector<double> plan_timestamps(
       // well; the factor bounds the quintic extrema conservatively and keeps
       // the public speed percentage meaningful through the acceleration ramp.
       const double acceleration = std::max(
-          0.01, static_cast<double>(joint.acceleration_limit) * scale);
+          0.01, static_cast<double>(product_cartesian_acceleration_limit(
+                    joint_index, joint.acceleration_limit)) * scale);
       segment_duration = std::max(
           segment_duration, std::sqrt(8.0 * step / acceleration));
     }
@@ -402,11 +434,11 @@ NativeCartesianPlan build_linear_plan_common(
   require_cartesian_reference(reference, "linear");
   if (declared_start) {
     validate_cartesian_start_pose(
-        product.with_grippers, side, reference, *declared_start, "linear");
+        product.tcp_offsets[side], side, reference, *declared_start, "linear");
   }
 
   const auto end_pose = robot_pose_from_rpy(end_pose_values);
-  RobotModel planning_model("yunyi_v1_0", side, product.with_grippers);
+  RobotModel planning_model("yunyi_v1_0", side, product.tcp_offsets[side]);
   const auto start_q = reference_q(reference, side);
   ArticoreRobotPose actual_start{};
   actual_start.struct_size = sizeof(actual_start);
@@ -421,7 +453,8 @@ NativeCartesianPlan build_linear_plan_common(
   const double translation_distance = cartesian::norm(cartesian::subtract(
       end_pose.position, geometric_start.position));
   const double required_segments = std::ceil(std::max(
-      translation_distance / 0.005, orientation_distance / 0.035));
+      translation_distance / kCartesianTranslationSampleDistance,
+      orientation_distance / kCartesianOrientationSampleDistance));
   if (!std::isfinite(required_segments) || required_segments > 255.0) {
     throw std::invalid_argument(
         "Cartesian linear path is too long for one native transaction");
@@ -505,7 +538,7 @@ NativeCartesianPlan build_linear_plan_from_reference(
   const auto declared_start = robot_pose_from_rpy(start_pose_values);
   try {
     validate_cartesian_start_pose(
-        product.with_grippers, side, reference, declared_start, "linear");
+        product.tcp_offsets[side], side, reference, declared_start, "linear");
     return build_linear_plan_common(
         product, mode, side, reference, &declared_start, end_pose_values,
         speed_percent);
@@ -538,7 +571,8 @@ solve_point_to_point_target_from_reference(
     ArticoreControlMode mode,
     uint32_t side,
     const NativeTrajectorySample& reference,
-    const float* target_pose_values) {
+    const float* target_pose_values,
+    std::chrono::steady_clock::time_point deadline) {
   cartesian::require_pv_mode(mode);
   if (side != ARTICORE_ROBOT_LEFT && side != ARTICORE_ROBOT_RIGHT) {
     throw std::invalid_argument(
@@ -553,10 +587,16 @@ solve_point_to_point_target_from_reference(
   const uint32_t side_offset = side * ARTICORE_PRODUCT_ARM_DOF;
   const auto target = robot_pose_from_rpy(target_pose_values);
   const auto start_q = reference_q(reference, side);
-  RobotModel planning_model("yunyi_v1_0", side, product.with_grippers);
-  const auto target_q = solve_endpoint_ik(
-      planning_model, product, side, target, start_q,
-      "Cartesian point-to-point target");
+  std::array<double, ARTICORE_PRODUCT_ARM_DOF> target_q{};
+  {
+    std::lock_guard<std::mutex> lock(product.pose_mutexes[side]);
+    if (!product.pose_models[side]) {
+      throw std::runtime_error("Cartesian point-to-point model is unavailable");
+    }
+    target_q = solve_endpoint_ik(
+        *product.pose_models[side], product, side, target, start_q,
+        "Cartesian point-to-point target", deadline);
+  }
 
   auto result = start_positions;
   for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
@@ -571,7 +611,8 @@ solve_dual_point_to_point_targets_from_reference(
     ArticoreControlMode mode,
     const NativeTrajectorySample& reference,
     const float* left_target_pose,
-    const float* right_target_pose) {
+    const float* right_target_pose,
+    std::chrono::steady_clock::time_point deadline) {
   cartesian::require_pv_mode(mode);
   if (!left_target_pose || !right_target_pose) {
     throw std::invalid_argument(
@@ -582,21 +623,31 @@ solve_dual_point_to_point_targets_from_reference(
   std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> result{};
   std::copy(reference.positions.begin(), reference.positions.end(),
             result.begin());
-  for (uint32_t side = ARTICORE_ROBOT_LEFT;
-       side <= ARTICORE_ROBOT_RIGHT; ++side) {
+  auto solve_side = [&](uint32_t side) {
     const float* target_values = side == ARTICORE_ROBOT_LEFT
         ? left_target_pose : right_target_pose;
     const auto target = robot_pose_from_rpy(target_values);
     const auto start_q = reference_q(reference, side);
-    RobotModel planning_model("yunyi_v1_0", side, product.with_grippers);
-    const auto target_q = solve_endpoint_ik(
-        planning_model, product, side, target, start_q,
+    std::lock_guard<std::mutex> lock(product.pose_mutexes[side]);
+    if (!product.pose_models[side]) {
+      throw std::runtime_error("dual point-to-point model is unavailable");
+    }
+    return solve_endpoint_ik(
+        *product.pose_models[side], product, side, target, start_q,
         side == ARTICORE_ROBOT_LEFT
             ? "left Cartesian point-to-point target"
-            : "right Cartesian point-to-point target");
+            : "right Cartesian point-to-point target",
+        deadline);
+  };
+  auto left = std::async(std::launch::async, solve_side, ARTICORE_ROBOT_LEFT);
+  auto right = std::async(std::launch::async, solve_side, ARTICORE_ROBOT_RIGHT);
+  const std::array<std::array<double, ARTICORE_PRODUCT_ARM_DOF>, 2> targets{
+      left.get(), right.get()};
+  for (uint32_t side = ARTICORE_ROBOT_LEFT;
+       side <= ARTICORE_ROBOT_RIGHT; ++side) {
     const uint32_t offset = side * ARTICORE_PRODUCT_ARM_DOF;
     for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
-      result[offset + index] = static_cast<float>(target_q[index]);
+      result[offset + index] = static_cast<float>(targets[side][index]);
     }
   }
   return result;
@@ -635,7 +686,7 @@ NativeCartesianPlan build_circular_plan_common(
   }
   const auto via = robot_pose_from_rpy(via_pose_values);
   const auto end = robot_pose_from_rpy(end_pose_values);
-  RobotModel planning_model("yunyi_v1_0", side, product.with_grippers);
+  RobotModel planning_model("yunyi_v1_0", side, product.tcp_offsets[side]);
   require_cartesian_reference(reference, "circular");
 
   std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> start_positions{};
@@ -658,7 +709,7 @@ NativeCartesianPlan build_circular_plan_common(
   planning_model.fk(start_q.data(), start_q.size(), &actual_start);
   if (declared_start) {
     validate_cartesian_start_pose(
-        product.with_grippers, side, reference, *declared_start, "circular");
+        product.tcp_offsets[side], side, reference, *declared_start, "circular");
   }
   const auto& geometric_start = declared_start ? *declared_start : actual_start;
   const auto geometric_start_orientation =
@@ -679,10 +730,12 @@ NativeCartesianPlan build_circular_plan_common(
       via_orientation, end_orientation);
   const uint32_t first_segments = std::max<uint32_t>(
       1U, static_cast<uint32_t>(std::ceil(std::max(
-          first_arc_length / 0.005, first_orientation / 0.035))));
+          first_arc_length / kCartesianTranslationSampleDistance,
+          first_orientation / kCartesianOrientationSampleDistance))));
   const uint32_t second_segments = std::max<uint32_t>(
       1U, static_cast<uint32_t>(std::ceil(std::max(
-          second_arc_length / 0.005, second_orientation / 0.035))));
+          second_arc_length / kCartesianTranslationSampleDistance,
+          second_orientation / kCartesianOrientationSampleDistance))));
   if (first_segments + second_segments > 255U) {
     throw std::invalid_argument(
         "circular path is too long for one native transaction");
@@ -748,7 +801,8 @@ NativeCartesianPlan build_circular_plan_common(
 
   return assemble_cartesian_plan(
       path, start_velocities, start_accelerations, product, mode,
-      ARTICORE_OPERATION_MOVE_CIRCULAR, speed_percent, side);
+      ARTICORE_OPERATION_MOVE_CIRCULAR,
+      product_circular_speed_percent(speed_percent), side);
 }
 
 }  // namespace
@@ -778,7 +832,7 @@ NativeCartesianPlan build_circular_plan_from_reference(
   const auto declared_start = robot_pose_from_rpy(start_pose_values);
   try {
     validate_cartesian_start_pose(
-        product.with_grippers, side, reference, declared_start, "circular");
+        product.tcp_offsets[side], side, reference, declared_start, "circular");
     return build_circular_plan_common(
         product, mode, side, reference, &declared_start, via_pose_values,
         end_pose_values, speed_percent);

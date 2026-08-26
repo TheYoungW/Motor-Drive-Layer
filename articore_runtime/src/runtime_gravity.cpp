@@ -1,4 +1,5 @@
 #include "articore/detail/runtime.hpp"
+#include "articore/detail/yunyi_product.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -70,6 +71,17 @@ void SafetyRuntime::configure_gravity_products(
     arm.robot_side = binding.robot_side;
     arm.product_id.assign(binding.product_id, end);
     arm.model = std::make_unique<RobotModel>(arm.product_id, arm.robot_side);
+    if (arm.product_id != "yunyi_v1_0") {
+      throw std::invalid_argument(
+          "gravity compensation has no motor mapping for product " +
+          arm.product_id);
+    }
+    arm.position_directions = kYunyiJointDirection[arm.robot_side];
+    for (std::size_t joint = 0; joint < kArmDof; ++joint) {
+      arm.torque_command_scales[joint] =
+          kYunyiNativeTorqueRange[joint] /
+          kYunyiLogicalTorqueRange[joint];
+    }
     for (const auto& motor : motors_) {
       if (!motor.descriptor.is_gripper &&
           motor.descriptor.side == binding.runtime_side) {
@@ -129,6 +141,10 @@ void SafetyRuntime::start_gravity_compensation(
     if (gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE) {
       throw std::runtime_error("gravity compensation is already active");
     }
+    if (bimanual_follow_.active) {
+      throw std::runtime_error(
+          "gravity compensation cannot replace active bimanual follow");
+    }
     if (trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING) {
       throw std::runtime_error(
           "gravity compensation cannot replace an active trajectory");
@@ -174,6 +190,7 @@ void SafetyRuntime::start_gravity_compensation(
   gravity_control_.status.active = 1;
   gravity_control_.status.joint_count = static_cast<uint32_t>(
       gravity_arms_.size() * kArmDof);
+  reset_bimanual_follow_locked();
   std::size_t output = 0;
   for (const auto& arm : gravity_arms_) {
     for (void* joint : arm.joints) {
@@ -185,6 +202,168 @@ void SafetyRuntime::start_gravity_compensation(
   state_ = ARTICORE_RUNNING;
   next_control_tick_ = now;
   wakeup_.notify_all();
+}
+
+void SafetyRuntime::start_bimanual_follow(uint32_t leader_side) {
+  if (leader_side != ARTICORE_ROBOT_LEFT &&
+      leader_side != ARTICORE_ROBOT_RIGHT) {
+    throw std::invalid_argument("bimanual leader side must be left or right");
+  }
+
+  std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+  std::lock_guard<std::mutex> command_lock(command_mutex_);
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    if (hardware_transition_ || fault_latched_ ||
+        (state_ != ARTICORE_ENABLED && state_ != ARTICORE_RUNNING)) {
+      throw std::runtime_error(
+          "bimanual follow requires a fully enabled Runtime");
+    }
+    if (gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE) {
+      throw std::runtime_error(
+          "bimanual follow cannot replace active gravity compensation");
+    }
+    if (trajectory_control_.state == ARTICORE_TRAJECTORY_RUNNING) {
+      throw std::runtime_error(
+          "bimanual follow cannot replace an active trajectory");
+    }
+    if (!arm_mailbox_.valid || !arm_mailbox_.joint_position ||
+        (mode_ == ARTICORE_MODE_PV && arm_mailbox_.pv.size() != 2 * kArmDof) ||
+        (mode_ == ARTICORE_MODE_MIT && arm_mailbox_.mit.size() != 2 * kArmDof)) {
+      throw std::runtime_error(
+          "bimanual follow requires an ordinary current-position PV/MIT hold");
+    }
+  }
+  if (gravity_arms_.size() != 2 ||
+      gravity_arms_[0].runtime_side != ARTICORE_ROBOT_LEFT ||
+      gravity_arms_[1].runtime_side != ARTICORE_ROBOT_RIGHT) {
+    throw std::runtime_error(
+        "bimanual follow requires complete left and right product models");
+  }
+
+  std::vector<float> positions;
+  positions.reserve(2 * kArmDof);
+  for (const auto& arm : gravity_arms_) {
+    for (void* joint : arm.joints) {
+      ArticoreFeedbackStats stats{};
+      ArticoreMotorState state{};
+      if (joint_configs_.find(joint) == joint_configs_.end() ||
+          backend_->get_feedback_stats(joint, &stats) != 0 ||
+          !stats.has_feedback || stats.age_ns > feedback_max_age_ns() ||
+          backend_->get_state(joint, &state) != 0 || !state.has_value ||
+          state.status_code != 1 || !finite(state.pos) || !finite(state.vel)) {
+        throw std::runtime_error(
+            motor_roles_.at(joint) +
+            ": bimanual follow requires fresh enabled feedback");
+      }
+      positions.push_back(state.pos);
+    }
+  }
+
+  const uint32_t follower_side = 1U - leader_side;
+  const auto now = Clock::now();
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  clear_pending_arm_mailbox();
+  bimanual_follow_.active = true;
+  bimanual_follow_.leader_side = leader_side;
+  bimanual_follow_.start_positions = positions;
+  for (std::size_t joint = 0; joint < kArmDof; ++joint) {
+    bimanual_follow_.follower_reference[joint] =
+        positions[follower_side * kArmDof + joint];
+  }
+  bimanual_follow_.status = {};
+  bimanual_follow_.status.struct_size = sizeof(bimanual_follow_.status);
+  bimanual_follow_.status.phase = ARTICORE_BIMANUAL_FOLLOW_ACTIVE;
+  bimanual_follow_.status.active = 1;
+  bimanual_follow_.status.leader_side = leader_side;
+  bimanual_follow_.status.follower_side = follower_side;
+  for (std::size_t joint = 0; joint < kArmDof; ++joint) {
+    bimanual_follow_.status.leader_positions[joint] =
+        gravity_arms_[leader_side].position_directions[joint] *
+        positions[leader_side * kArmDof + joint];
+    bimanual_follow_.status.follower_target_positions[joint] =
+        gravity_arms_[follower_side].position_directions[joint] *
+        positions[follower_side * kArmDof + joint];
+  }
+  has_successful_command_ = true;
+  last_successful_command_ = now;
+  state_ = ARTICORE_RUNNING;
+  next_control_tick_ = now;
+  wakeup_.notify_all();
+}
+
+void SafetyRuntime::stop_bimanual_follow() {
+  std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+  std::lock_guard<std::mutex> command_lock(command_mutex_);
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    if (!bimanual_follow_.active) return;
+  }
+
+  std::array<std::array<float, kArmDof>, 2> positions{};
+  for (uint32_t side = 0; side < 2; ++side) {
+    for (std::size_t joint = 0; joint < kArmDof; ++joint) {
+      ArticoreMotorState feedback{};
+      if (backend_->get_state(gravity_arms_[side].joints[joint], &feedback) != 0 ||
+          !feedback.has_value || feedback.status_code != 1 ||
+          !finite(feedback.pos)) {
+        throw std::runtime_error(
+            motor_roles_.at(gravity_arms_[side].joints[joint]) +
+            ": current position is unavailable while stopping bimanual follow");
+      }
+      positions[side][joint] = feedback.pos;
+    }
+  }
+
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  for (uint32_t side = 0; side < 2; ++side) {
+    for (std::size_t joint = 0; joint < kArmDof; ++joint) {
+      void* motor = gravity_arms_[side].joints[joint];
+      if (mode_ == ARTICORE_MODE_PV) {
+        const auto command = std::find_if(
+            arm_mailbox_.pv.begin(), arm_mailbox_.pv.end(),
+            [&](const ArticorePosVelCommand& value) { return value.motor == motor; });
+        if (command == arm_mailbox_.pv.end()) {
+          throw std::runtime_error("PV bimanual hold lost the product layout");
+        }
+        const auto index = static_cast<std::size_t>(
+            std::distance(arm_mailbox_.pv.begin(), command));
+        command->target_position = positions[side][joint];
+        arm_mailbox_.final_positions[index] = positions[side][joint];
+        arm_mailbox_.pv_hold_confirmation_cycles[index] = 0;
+        arm_mailbox_.pv_stationary_hold[index] = 0;
+      } else {
+        const auto command = std::find_if(
+            arm_mailbox_.mit.begin(), arm_mailbox_.mit.end(),
+            [&](const ArticoreMitCommand& value) { return value.motor == motor; });
+        if (command == arm_mailbox_.mit.end()) {
+          throw std::runtime_error("MIT bimanual hold lost the product layout");
+        }
+        const auto index = static_cast<std::size_t>(
+            std::distance(arm_mailbox_.mit.begin(), command));
+        command->target_position = positions[side][joint];
+        command->target_velocity = 0.0f;
+        command->feedforward_torque = 0.0f;
+        arm_mailbox_.final_positions[index] = positions[side][joint];
+      }
+    }
+  }
+  reset_bimanual_follow_locked();
+  wakeup_.notify_all();
+}
+
+ArticoreBimanualFollowStatus SafetyRuntime::bimanual_follow_status() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return bimanual_follow_.status;
+}
+
+void SafetyRuntime::reset_bimanual_follow_locked() {
+  bimanual_follow_.active = false;
+  bimanual_follow_.start_positions.clear();
+  bimanual_follow_.follower_reference.fill(0.0f);
+  bimanual_follow_.status = {};
+  bimanual_follow_.status.struct_size = sizeof(bimanual_follow_.status);
+  bimanual_follow_.status.phase = ARTICORE_BIMANUAL_FOLLOW_INACTIVE;
 }
 
 void SafetyRuntime::stop_gravity_compensation() {
@@ -291,12 +470,14 @@ bool SafetyRuntime::run_gravity_control_cycle(Clock::time_point now,
             ": gravity compensation requires finite enabled feedback";
         return false;
       }
-      q[joint] = feedback[joint].pos;
+      q[joint] = arm.position_directions[joint] * feedback[joint].pos;
     }
     arm.model->gravity_realtime(q, gravity);
     for (std::size_t joint = 0; joint < kArmDof; ++joint, ++flat_index) {
       const auto& gains = joint_configs_.at(arm.joints[joint]);
-      const float torque = static_cast<float>(gravity[joint]) * gravity_scale;
+      const float torque = arm.position_directions[joint] *
+          arm.torque_command_scales[joint] *
+          static_cast<float>(gravity[joint]) * gravity_scale;
       if (!finite(torque)) {
         error = motor_roles_.at(arm.joints[joint]) +
             ": gravity feedforward is not finite";

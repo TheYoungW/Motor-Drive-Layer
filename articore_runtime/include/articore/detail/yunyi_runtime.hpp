@@ -9,6 +9,7 @@
 #include "articore/runtime_abi.h"
 #include "articore/detail/robot_model.hpp"
 #include "articore/detail/runtime.hpp"
+#include "articore/detail/yunyi_product.hpp"
 #include "damiao/runtime.hpp"
 
 namespace articore {
@@ -70,6 +71,9 @@ struct YunyiRuntimeResources {
   std::array<damiao::MotorHandle*, 2> grippers{};
   std::array<std::unique_ptr<RobotModel>, 2> pose_models;
   std::array<std::mutex, 2> pose_mutexes;
+  // Active flange(link7)-to-TCP transforms [x,y,z,roll,pitch,yaw]. They are
+  // native session configuration shared by pose reporting and every IK path.
+  std::array<std::array<float, ARTICORE_PRODUCT_POSE_DOF>, 2> tcp_offsets{};
   bool with_grippers = true;
   float default_mit_reference_velocity =
       kYunyiLegacyOrdinaryMitMaximumVelocity;
@@ -95,5 +99,8 @@ struct YunyiRuntimeBundle {
 // model bindings, and complete native ownership.
 YunyiRuntimeBundle create_yunyi_runtime(
     ArticoreControlMode mode, bool with_grippers);
+
+std::array<float, ARTICORE_PRODUCT_POSE_DOF> default_yunyi_tcp_offset(
+    bool with_grippers);
 
 }  // namespace articore

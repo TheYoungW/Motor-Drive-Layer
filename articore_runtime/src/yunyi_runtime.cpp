@@ -21,11 +21,7 @@ constexpr float kKp[7] = {190, 190, 70, 125, 10, 22, 28};
 constexpr float kKd[7] = {4.55f, 4.5f, 2, 2.9f, .7f, .89f, .84f};
 // Both model joint1 axes use +Y. The right physical motor direction is the
 // inverse mapping that keeps product-level joint angles symmetric.
-constexpr float kDirection[2][7] = {
-    {1, 1, 1, -1, -1, 1, 1},
-    {-1, 1, 1, 1, -1, -1, 1},
-};
-static_assert(kDirection[ARTICORE_ROBOT_RIGHT][0] == -1.0f,
+static_assert(kYunyiJointDirection[ARTICORE_ROBOT_RIGHT][0] == -1.0f,
               "right joint1 motor direction must preserve the shared +Y "
               "model convention");
 constexpr float kLower[2][7] = {
@@ -49,8 +45,6 @@ constexpr float kLogicalVelocityRange[2][7] = {
     {10, 10, 10, 10, 10, 10, 10},
 };
 constexpr float kNativeVelocityRange[7] = {45, 45, 10, 10, 30, 30, 30};
-constexpr float kLogicalTorqueRange[7] = {40, 40, 27, 27, 7, 7, 7};
-constexpr float kNativeTorqueRange[7] = {54, 54, 28, 28, 10, 10, 10};
 constexpr uint8_t kPvPositionKpRegister = 27;
 constexpr float kJoint4PvPositionKp = 100.0f;
 
@@ -388,20 +382,20 @@ std::vector<ArticoreJointControlConfig> configure_joint_table(
       const auto product_index = side * ARTICORE_PRODUCT_ARM_DOF + index;
       auto& product_joint = resources.joints[product_index];
       product_joint.motor = resources.arm_motors[product_index];
-      product_joint.direction = kDirection[side][index];
+      product_joint.direction = kYunyiJointDirection[side][index];
       product_joint.lower = kLower[side][index];
       product_joint.upper = kUpper[side][index];
       product_joint.velocity_limit = kVelocityLimit[index];
       product_joint.acceleration_limit = kAccelerationLimit[index];
-      product_joint.torque_limit = kLogicalTorqueRange[index];
+      product_joint.torque_limit = kYunyiLogicalTorqueRange[index];
       product_joint.velocity_command_scale =
           kNativeVelocityRange[index] / kLogicalVelocityRange[side][index];
       product_joint.velocity_feedback_scale =
           kLogicalVelocityRange[side][index] / kNativeVelocityRange[index];
       product_joint.torque_command_scale =
-          kNativeTorqueRange[index] / kLogicalTorqueRange[index];
+          kYunyiNativeTorqueRange[index] / kYunyiLogicalTorqueRange[index];
       product_joint.torque_feedback_scale =
-          kLogicalTorqueRange[index] / kNativeTorqueRange[index];
+          kYunyiLogicalTorqueRange[index] / kYunyiNativeTorqueRange[index];
       product_joint.kp = kKp[index];
       product_joint.kd = kKd[index];
 
@@ -412,7 +406,7 @@ std::vector<ArticoreJointControlConfig> configure_joint_table(
       joint.upper_position = product_joint.direction > 0
           ? product_joint.upper : -product_joint.lower;
       joint.velocity_limit = kNativeVelocityRange[index];
-      joint.torque_limit = kNativeTorqueRange[index];
+      joint.torque_limit = kYunyiNativeTorqueRange[index];
       joint.mit_kp = kKp[index];
       joint.mit_kd = kKd[index];
       joints.push_back(joint);
@@ -462,8 +456,10 @@ YunyiRuntimeBundle create_yunyi_runtime(
   auto resources = std::make_unique<YunyiRuntimeResources>();
   resources->with_grippers = with_grippers;
   for (uint32_t side = 0; side < 2; ++side) {
+    resources->tcp_offsets[side] = default_yunyi_tcp_offset(with_grippers);
     resources->pose_models[side] =
-        std::make_unique<RobotModel>(kProductId, side, with_grippers);
+        std::make_unique<RobotModel>(
+            kProductId, side, resources->tcp_offsets[side]);
     auto bus = damiao::SocketCanFdBus::open(kChannels[side], true);
     resources->controllers[side] = std::make_unique<damiao::Controller>(
         std::move(bus), std::string("socketcanfd ") + kChannels[side]);
@@ -530,6 +526,12 @@ YunyiRuntimeBundle create_yunyi_runtime(
 
   return YunyiRuntimeBundle{
       std::move(runtime), std::move(resources), mode};
+}
+
+std::array<float, ARTICORE_PRODUCT_POSE_DOF> default_yunyi_tcp_offset(
+    bool with_grippers) {
+  if (!with_grippers) return {};
+  return {-0.004f, 0.0f, -0.178f, 0.0f, 0.0f, 0.0f};
 }
 
 }  // namespace articore

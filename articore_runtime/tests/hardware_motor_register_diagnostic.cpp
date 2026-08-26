@@ -156,6 +156,8 @@ int main(int argc, char** argv) {
       argc == 2 && std::strcmp(argv[1], "--read-only-disabled") == 0;
   const bool read_gains =
       argc == 2 && std::strcmp(argv[1], "--read-gains-disabled") == 0;
+  const bool read_acc_dec =
+      argc == 2 && std::strcmp(argv[1], "--read-acc-dec-disabled") == 0;
   const bool set_pv_gains =
       argc == 12 &&
       std::strcmp(argv[1], "--set-pv-gains-disabled") == 0 &&
@@ -182,11 +184,11 @@ int main(int argc, char** argv) {
       argc == 7 &&
       std::strcmp(argv[1], "--set-left-j4-acc-dec") == 0 &&
       std::strcmp(argv[4], "--expect") == 0;
-  if (!read_only && !read_gains && !set_pv_gains && !persist_pv_gains &&
-      !set_deta && !set_acc_dec && !set_left_j4_kp && !persist_joint4_kp &&
-      !set_left_j4_acc_dec) {
+  if (!read_only && !read_gains && !read_acc_dec && !set_pv_gains &&
+      !persist_pv_gains && !set_deta && !set_acc_dec && !set_left_j4_kp &&
+      !persist_joint4_kp && !set_left_j4_acc_dec) {
     std::cerr << "Refusing hardware access. Pass --read-only-disabled, "
-                 "--read-gains-disabled, or "
+                 "--read-gains-disabled, --read-acc-dec-disabled, or "
                  "--set-pv-gains-disabled ROLE KP_ASR KI_ASR KP_APR KI_APR "
                  "--expect KP_ASR KI_ASR KP_APR KI_APR, or "
                  "--persist-pv-gains-disabled ROLE KP_ASR KI_ASR KP_APR "
@@ -202,7 +204,8 @@ int main(int argc, char** argv) {
   }
   try {
     auto product = articore::create_yunyi_runtime(ARTICORE_MODE_PV, true);
-    product.runtime->connect();
+    const bool strict_read_only = read_only || read_gains || read_acc_dec;
+    if (!strict_read_only) product.runtime->connect();
     if (read_only) {
       for (uint32_t index = 0; index < ARTICORE_PRODUCT_DUAL_ARM_DOF;
            ++index) {
@@ -232,6 +235,24 @@ int main(int argc, char** argv) {
                   << motor->get_register_f32(27, std::chrono::milliseconds(100))
                   << " KI_APR="
                   << motor->get_register_f32(28, std::chrono::milliseconds(100))
+                  << '\n';
+      }
+    } else if (read_acc_dec) {
+      for (uint32_t index = 0; index < ARTICORE_PRODUCT_DUAL_ARM_DOF;
+           ++index) {
+        auto* motor = product.resources->arm_motors[index];
+        const bool left = index < ARTICORE_PRODUCT_ARM_DOF;
+        const uint32_t joint = index % ARTICORE_PRODUCT_ARM_DOF + 1;
+        const std::string role = std::string(left ? "left/l-joint"
+                                                   : "right/r-joint") +
+            std::to_string(joint);
+        check_disabled(motor, role.c_str());
+        std::cout << std::setprecision(9)
+                  << "motor=" << role << " model=" << motor->model()
+                  << " ACC="
+                  << motor->get_register_f32(4, std::chrono::milliseconds(100))
+                  << " DEC="
+                  << motor->get_register_f32(5, std::chrono::milliseconds(100))
                   << '\n';
       }
     } else if (set_pv_gains || persist_pv_gains) {
@@ -458,7 +479,7 @@ int main(int argc, char** argv) {
                 << after_acc << ',' << after_dec
                 << "] persisted=false\n";
     }
-    product.runtime->disconnect();
+    if (!strict_read_only) product.runtime->disconnect();
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
