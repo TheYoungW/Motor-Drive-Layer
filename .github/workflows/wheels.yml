@@ -34,6 +34,14 @@ jobs:
       - name: Install build tools and pinned Pinocchio C++ headers
         run: python -m pip install --upgrade build 'libpinocchio==3.8.0' cmeel-eigen cmeel-urdfdom-headers
 
+      - name: Create virtual Yunyi CAN channels for factory tests
+        run: |
+          sudo modprobe vcan
+          sudo ip link add dev can-left type vcan
+          sudo ip link add dev can-right type vcan
+          sudo ip link set dev can-left up
+          sudo ip link set dev can-right up
+
       - name: Configure and build native libraries
         run: |
           cmake -S . -B builds/cmake/ci -DCMAKE_BUILD_TYPE=Release \
