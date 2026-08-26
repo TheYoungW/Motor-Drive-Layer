@@ -38,6 +38,13 @@ Linux SocketCAN-FD+BRS
   [`articore/runtime_abi.h`](articore_runtime/include/articore/runtime_abi.h)。
 - C++17 RAII 目标：`motorbridge::articore_runtime_cpp`。
 
+Runtime ABI 4.0 将整机关节控制收口为三条明确路径：普通 PV 使用
+`articore_runtime_set_joint_pv(runtime, positions, 14)`，其速度上限由独立的
+`articore_runtime_set_max_speed(0..100)` 管理；普通 MIT 使用
+`articore_runtime_set_joint_mit(runtime, positions, 14, speed_percent)`；需要显式
+q/dq/力矩/Kp/Kd 的高级 MIT 才使用 `articore_runtime_submit_mit_frame()`。历史位置命令别名、
+Raw PV 直发和通用 speed 别名已从动态库导出表删除。
+
 ## 原生能力
 
 - 达妙 MIT 与位置速度产品控制。
@@ -348,17 +355,10 @@ Runtime ABI 2.34 新增 `ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS` 和
 最大角度与产品速度上限，顺序为左 J1–J7、右 J1–J7，单位分别为 rad 和 rad/s。数据直接来自
 Yunyi 内置产品配置，不发送 CAN 请求、不依赖连接状态，也不包含左右夹爪。
 
-Runtime ABI 2.35 新增 `ARTICORE_CAP_PRODUCT_SPEED_SETTING`、
-`articore_runtime_set_speed()` 和 `articore_runtime_get_speed()`。产品 Runtime 保存一个普通关节
-运动速度设置，范围为 0–100，默认值为 70；14 个机械臂关节的 100 均对应 5 rad/s，因此默认
-实际参考速度为 3.5 rad/s。修改设置会立即作用于正在执行的普通 MIT/PV 位置参考。
-`articore_runtime_set_joint_positions_v2()` 使用当前设置，旧的带显式 `speed_percent` 参数接口
-继续保留。Raw MIT/PV、原生轨迹和笛卡尔运动不受此全局设置影响。
-
-Runtime ABI 2.36 将该设置的正式名称修正为“普通运动最大速度”，新增
+Runtime ABI 2.35/2.36 引入了普通运动百分比并将正式名称统一为“普通运动最大速度”，新增
 `ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING`、`articore_runtime_set_max_speed()` 和
-`articore_runtime_get_max_speed()`。范围、默认值、物理映射和动态生效行为不变。ABI 2.35 的
-`set_speed/get_speed` 符号保留为兼容别名，新 SDK 应只公开 `set_max_speed/get_max_speed`。
+`articore_runtime_get_max_speed()`。Runtime ABI 4.0 只保留这组正式名称，中间版本的兼容别名
+不再属于当前产品接口。
 
 Runtime ABI 2.37 新增 `ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE`，并将现有产品位姿统一定义为
 实际笛卡尔控制点。有夹爪时，原生 FK、IK、点到点、直线和圆弧运动统一使用位于夹爪中心的

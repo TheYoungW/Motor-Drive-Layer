@@ -76,9 +76,9 @@ int main(int argc, char** argv) {
     enabled = true;
     check(articore_runtime_set_max_speed(runtime, 10.0f), "set_max_speed");
     JointArray zero{};
-    check(articore_runtime_set_joint_positions_v2(
+    check(articore_runtime_set_joint_pv(
               runtime, zero.data(), zero.size()),
-          "set_joint_positions_v2");
+          "set_joint_pv");
 
     const auto arrival_deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(12);

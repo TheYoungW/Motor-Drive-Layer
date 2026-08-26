@@ -1,5 +1,12 @@
 # Articore native safety runtime
 
+Runtime ABI 4.0 exposes one product entry for each joint-control path:
+`articore_runtime_set_joint_pv(runtime, positions, 14)` for ordinary PV,
+`articore_runtime_set_joint_mit(runtime, positions, 14, speed_percent)` for
+ordinary MIT, and `articore_runtime_submit_mit_frame()` for advanced streaming
+MIT. Historical position aliases, raw PV product frames, and generic speed
+aliases are not exported.
+
 ## Yunyi PV control semantics
 
 This section is the normative product rule for ordinary joint PV commands and
@@ -158,18 +165,14 @@ to `SAFE_HOLD` or `FAULT`. Motor fault status, unexpected disable, non-finite fe
 transport disconnect remain actionable faults, but a hard fault does not automatically torque off
 unrelated healthy motors.
 
-Runtime ABI 1.5 separates command update lifetime from physical motion duration. The legacy direct
-submission entry points remain `STREAMING`: callers must refresh them before `command_timeout_ms`.
-The new `_ex` entry points accept either `ARTICORE_COMMAND_STREAMING` or
-`ARTICORE_COMMAND_HOLD_UNTIL_REPLACED`. Product SDK one-shot position APIs use the latter, so a slow
-move may take longer than the watchdog timeout while the native control thread keeps transmitting
-its latest setpoint. Real-time servo loops use `STREAMING`, so a stalled caller still enters
-`SAFE_HOLD`. Persistent MIT commands require zero target velocity and zero feedforward torque;
-advanced dynamic MIT control should use the raw streaming interface.
+Runtime separates command update lifetime from physical motion duration internally.
+Ordinary product position commands remain active until replaced, so a slow move may take longer
+than the watchdog timeout while the native control thread keeps transmitting its latest setpoint.
+Advanced MIT frames are streaming commands, so a stalled caller still enters `SAFE_HOLD`.
 
-Runtime ABI 1.12 adds `articore_runtime_set_joint_mit()` for ordinary one-shot MIT position
-setting. One call supplies the complete active arm layout, final joint positions, and one shared
-speed value. ABI 2.13 defines that value as 0..100 and converts it to the product's physical
+Runtime ABI 4.0 defines `articore_runtime_set_joint_mit()` as the ordinary MIT position
+command. One call supplies all fourteen logical product positions and one shared
+speed value. That value is 0..100 and converts to the product's physical
 reference velocity inside C++. On the first command after enable or recovery, the Runtime
 requires complete fresh enabled feedback and initializes every `current_target` from measured
 position. At each native control tick it advances each reference by a bounded
@@ -182,22 +185,16 @@ atomically discards the previous `final_target` and shared velocity while preser
 transmitted `current_target`; the next tick therefore reverses or changes speed without a position
 jump. The final target remains active and is retransmitted until another explicit control
 transaction, disable, close, or estop replaces it. This persistent behavior does not require a
-Python refresh loop. The original `articore_runtime_submit_mit_ex()` remains a raw advanced
-control path: q, dq, Kp, Kd, and feedforward torque are sent exactly as provided and receive no
-ordinary-position ramping.
+Python refresh loop. The advanced product frame supplies q, dq, Kp, Kd, and
+feedforward torque explicitly and receives no ordinary-position ramping.
 
-Runtime ABI 1.13 adds the symmetric `articore_runtime_set_joint_pv()` ordinary position path. It
+Runtime ABI 4.0 defines the symmetric `articore_runtime_set_joint_pv()` ordinary position path. It
 uses the same complete-arm latest-value mailbox, fresh-feedback initialization, shared rad/s speed,
 and a scheduler-owned bounded position step. Generated PV frames use the current native
 reference as position and the same shared speed as their protocol velocity limit. A new PV target
 atomically replaces only the final positions and shared speed; the currently transmitted reference
-remains continuous. The raw `articore_runtime_submit_pos_vel_ex()` entry point remains unchanged for
-internal advanced controllers.
-
-This was the ABI 1.13 product-binding rule. ABI 2.38 supersedes the PV half:
-product SDKs expose persistent `set_max_speed(0..100)` plus a positions-only
-`set_joint_pv`; raw PV and per-command PV speed are no longer public. MIT keeps
-its existing ordinary and advanced raw controls.
+remains continuous. Product SDKs expose persistent `set_max_speed(0..100)` plus
+this positions-only PV command; raw PV and per-command PV speed are not public.
 
 Runtime ABI 1.6 makes normal torque-off a checked transaction instead of relying on the motor
 communication watchdog. `disable()` first rejects new commands and waits for any in-flight
@@ -610,27 +607,11 @@ in left J1..J7 then right J1..J7 order. Units are radians and radians/second.
 Values come directly from the built-in Yunyi product configuration, require no
 CAN traffic or connected state, and never include grippers.
 
-Runtime ABI 2.35 adds `ARTICORE_CAP_PRODUCT_SPEED_SETTING`,
-`articore_runtime_set_speed()`, and `articore_runtime_get_speed()`. A product
-Runtime owns one persistent ordinary-joint-motion setting in the inclusive
-range 0..100. PV 100 maps linearly to a 3 rad/s reference slew. Real-hardware
-product feedback selects the default 50, which maps to 1.5 rad/s and
-0.003 rad per 500 Hz cycle. The Damiao PV `v_des` ceiling remains 3 rad/s so
-the drive has catch-up headroom. Legacy MIT compatibility scaling remains
-default 70 and 100 maps to 5 rad/s. Updating the setting also updates an active
-ordinary MIT/PV position reference. The additive
-`articore_runtime_set_joint_positions_v2()` uses the stored value, while the
-legacy explicit-speed symbol remains available. Raw frames, native
-trajectories, and Cartesian motions retain their independent explicit limits.
-
-Runtime ABI 2.36 corrects the preferred public terminology to an ordinary
-motion maximum-speed setting. `ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING`,
+Runtime ABI 2.35/2.36 introduced the persistent percentage and standardized
+its terminology as an ordinary motion maximum-speed setting.
+`ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING`,
 `articore_runtime_set_max_speed()`, and `articore_runtime_get_max_speed()` are
-the canonical API. The 0..100 scale, default 50, 3 rad/s PV
-maximum, and live
-ordinary-reference update semantics are unchanged. ABI 2.35
-`set_speed/get_speed` remain exported compatibility aliases; new bindings
-should expose only the max-speed names.
+the current API. Runtime ABI 4.0 removes the intermediate compatibility names.
 
 Runtime ABI 2.37 adds `ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE` and makes the
 existing product pose the single active Cartesian control point. A Yunyi
@@ -641,15 +622,13 @@ all use the same selection. No additional public flange-pose getter is added.
 
 Runtime ABI 2.38 adds `ARTICORE_CAP_PV_MAX_SPEED_ONLY`. Product SDKs expose
 one ordinary PV path: `set_max_speed(0..100)` configures the persistent limit
-(default 50; 100 maps to a 3 rad/s reference slew), and position
+(default 50; 100 maps to a 2 rad/s reference slew), and position
 commands contain positions only. The Damiao `v_des` ceiling remains 3 rad/s;
-the default therefore advances the 500 Hz reference by 0.003 rad
+the default therefore advances the 500 Hz reference by 0.002 rad
 per cycle while retaining drive catch-up headroom. Per-command ordinary speed
-and raw direct-PV entry points are no longer product SDK APIs; their existing C
-symbols remain exported only for binary compatibility. The max-speed names are
-PV-only from ABI 2.38 onward; MIT retains its existing per-command ordinary
-speed, raw targets, gains, and feedforward behavior unchanged. The ABI 2.35
-`set_speed/get_speed` compatibility symbols keep their historical semantics.
+and raw direct-PV entry points are not exported by Runtime ABI 4.0. The
+max-speed names are PV-only; MIT retains its per-command ordinary speed and its
+separate advanced q/dq/torque/gain frame.
 
 Runtime ABI 3.0 removes the temporary dual factory ABI. The only product
 factory is `articore_runtime_create_yunyi(mode, with_grippers, runtime_out)`;

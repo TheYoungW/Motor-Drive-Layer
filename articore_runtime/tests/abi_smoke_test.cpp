@@ -1,3 +1,4 @@
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -18,14 +19,18 @@ int main() {
   const auto clear_faults = &articore_runtime_clear_faults;
   const auto set_zero = &articore_runtime_set_zero;
   const auto disconnect = &articore_runtime_disconnect;
-  const auto product_positions = &articore_runtime_set_joint_positions;
-  const auto product_positions_v2 = &articore_runtime_set_joint_positions_v2;
-  const auto set_product_speed = &articore_runtime_set_speed;
-  const auto get_product_speed = &articore_runtime_get_speed;
+  const auto product_pv = &articore_runtime_set_joint_pv;
+  const auto product_mit = &articore_runtime_set_joint_mit;
+  using ProductPv = int32_t (*)(ArticoreRuntime*, const float*, uint32_t);
+  using ProductMit = int32_t (*)(
+      ArticoreRuntime*, const float*, uint32_t, float);
+  static_assert(std::is_same_v<
+      std::remove_cv_t<decltype(product_pv)>, ProductPv>);
+  static_assert(std::is_same_v<
+      std::remove_cv_t<decltype(product_mit)>, ProductMit>);
   const auto set_product_max_speed = &articore_runtime_set_max_speed;
   const auto get_product_max_speed = &articore_runtime_get_max_speed;
-  const auto product_mit = &articore_runtime_submit_mit_frame;
-  const auto product_pv = &articore_runtime_submit_pv_frame;
+  const auto product_mit_frame = &articore_runtime_submit_mit_frame;
   const auto start_trajectory = &articore_runtime_start_trajectory;
   const auto trajectory_status = &articore_runtime_get_trajectory_status;
   const auto cancel_trajectory = &articore_runtime_cancel_trajectory;
@@ -129,10 +134,6 @@ int main() {
       std::remove_cv_t<decltype(disable_motors)>, MotorPowerBatch>);
   const auto set_motor_power = &articore_runtime_set_motor_power;
   const auto get_motor_power = &articore_runtime_get_motor_power;
-  const auto submit_pos_vel_ex = &articore_runtime_submit_pos_vel_ex;
-  const auto submit_mit_ex = &articore_runtime_submit_mit_ex;
-  const auto set_joint_mit = &articore_runtime_set_joint_mit;
-  const auto set_joint_pv = &articore_runtime_set_joint_pv;
   const auto configure_joint_safety_limits =
       &articore_runtime_configure_joint_safety_limits;
   const auto configure_gripper_force_profiles =
@@ -175,7 +176,6 @@ int main() {
                             ARTICORE_CAP_MOTOR_PRESENCE |
                             ARTICORE_CAP_REALTIME_JOINT_MAILBOX |
                             ARTICORE_CAP_ATOMIC_ENABLE |
-                            ARTICORE_CAP_COMMAND_LIFETIME |
                             ARTICORE_CAP_PROTECTIVE_FAULT_HOLD |
                             ARTICORE_CAP_DETERMINISTIC_DISABLE |
                             ARTICORE_CAP_LAYERED_JOINT_LIMITS |
@@ -219,7 +219,6 @@ int main() {
       ARTICORE_CAP_PRODUCT_TEMPERATURE_STATE |
       ARTICORE_CAP_LATCHED_ESTOP_POSITION_HOLD |
       ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS |
-      ARTICORE_CAP_PRODUCT_SPEED_SETTING |
       ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING |
       ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE |
       ARTICORE_CAP_PV_MAX_SPEED_ONLY |
@@ -315,6 +314,18 @@ int main() {
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
       std::strcmp(articore_runtime_last_error(),
                   "ordinary maximum speed must be finite and within 0..100") == 0;
+  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> joint_positions{};
+  const bool product_joint_command_validation_checked =
+      articore_runtime_set_joint_pv(
+          nullptr, joint_positions.data(), joint_positions.size()) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(),
+                  "PV joint command: runtime is null") == 0 &&
+      articore_runtime_set_joint_mit(
+          nullptr, joint_positions.data(), joint_positions.size(), 50.0f) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(),
+                  "MIT joint command: runtime is null") == 0;
   ArticoreRuntime* invalid_created_runtime =
       reinterpret_cast<ArticoreRuntime*>(static_cast<uintptr_t>(1));
   const bool factory_validation_checked =
@@ -362,10 +373,8 @@ int main() {
   }
   if (!create_yunyi ||
       !configure_mode || !clear_faults || !set_zero || !disconnect ||
-      !product_positions || !product_positions_v2 ||
-      !set_product_speed || !get_product_speed ||
       !set_product_max_speed || !get_product_max_speed ||
-      !product_mit || !product_pv ||
+      !product_mit || !product_pv || !product_mit_frame ||
       !start_trajectory || !trajectory_status || !cancel_trajectory ||
       !move_pose || !move_linear || !move_linear_v2 ||
       !cartesian_motion_status ||
@@ -381,22 +390,21 @@ int main() {
       !control_mode ||
       !enable_report || !enable_motors || !disable_motors ||
       !set_motor_power || !get_motor_power ||
-      !submit_pos_vel_ex || !submit_mit_ex ||
-      !set_joint_mit || !set_joint_pv || !disable_report ||
-      !configure_motor_identities || !connect_report ||
+      !disable_report || !configure_motor_identities || !connect_report ||
       !mit_torque_limit_stats || !robot_model_create || !robot_model_fk ||
       !configure_gravity_products || !start_gravity || !stop_gravity ||
       !gravity_status || !start_bimanual_follow || !stop_bimanual_follow ||
       !bimanual_follow_status || !health_v2 || !estop ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x00030006U ||
+      version != 0x00040000U ||
       (capabilities & required_with_circular) != required_with_circular ||
       !product_gripper_levels_valid ||
       !product_gripper_direct_valid ||
       !state_v3_size_checked || !state_v3_runtime_checked ||
       !joint_limits_size_checked || !joint_limits_runtime_checked ||
       !product_speed_validation_checked ||
+      !product_joint_command_validation_checked ||
       !factory_validation_checked ||
       !product_joint_limits_checked ||
       (capabilities & removed_trajectory_bits) != 0 ||

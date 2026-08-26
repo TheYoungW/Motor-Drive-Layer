@@ -33,18 +33,15 @@ struct ArticoreRuntime {
       ArticoreControlMode product_mode = ARTICORE_MODE_PV)
       : yunyi_owned(owned != nullptr), yunyi(std::move(owned)),
         runtime(std::move(value)), product_mode(product_mode),
-        product_max_speed_percent(
-            product_mode == ARTICORE_MODE_PV
-                ? articore::kYunyiDefaultPvSpeedPercent
-                : articore::kYunyiLegacyDefaultMitSpeedPercent) {}
+        product_pv_max_speed_percent(articore::kYunyiDefaultPvSpeedPercent) {}
   std::mutex terminal_mutex;
   bool yunyi_owned = false;
   bool terminally_disconnected = false;
   std::unique_ptr<articore::YunyiRuntimeResources> yunyi;
   std::unique_ptr<articore::SafetyRuntime> runtime;
   ArticoreControlMode product_mode = ARTICORE_MODE_PV;
-  std::mutex product_speed_mutex;
-  float product_max_speed_percent = articore::kYunyiDefaultPvSpeedPercent;
+  std::mutex product_pv_speed_mutex;
+  float product_pv_max_speed_percent = articore::kYunyiDefaultPvSpeedPercent;
   std::mutex cartesian_motion_mutex;
   uint64_t cartesian_motion_id = 0;
   std::unordered_map<uint64_t, CartesianMotionRecord> cartesian_motions;
@@ -789,7 +786,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (3U << 16) | 6U;
+  return (4U << 16);
 }
 
 ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
@@ -802,7 +799,6 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_MOTOR_PRESENCE |
          ARTICORE_CAP_REALTIME_JOINT_MAILBOX |
          ARTICORE_CAP_ATOMIC_ENABLE |
-         ARTICORE_CAP_COMMAND_LIFETIME |
          ARTICORE_CAP_PROTECTIVE_FAULT_HOLD |
          ARTICORE_CAP_DETERMINISTIC_DISABLE |
          ARTICORE_CAP_LAYERED_JOINT_LIMITS |
@@ -844,7 +840,6 @@ ARTICORE_RUNTIME_API uint64_t articore_runtime_capabilities(void) {
          ARTICORE_CAP_PRODUCT_TEMPERATURE_STATE |
          ARTICORE_CAP_LATCHED_ESTOP_POSITION_HOLD |
          ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS |
-         ARTICORE_CAP_PRODUCT_SPEED_SETTING |
          ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING |
          ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE |
          ARTICORE_CAP_PV_MAX_SPEED_ONLY |
@@ -1121,10 +1116,19 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions(
-    ArticoreRuntime* runtime, const float* positions, uint32_t count,
-    float speed_percent) {
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
+    ArticoreRuntime* runtime, const float* positions, uint32_t count) {
   try {
+    checked_yunyi(runtime);
+    if (runtime->product_mode != ARTICORE_MODE_PV) {
+      throw std::runtime_error(
+          "PV joint command requires product PV mode");
+    }
+    float speed_percent = 0.0f;
+    {
+      std::lock_guard<std::mutex> lock(runtime->product_pv_speed_mutex);
+      speed_percent = runtime->product_pv_max_speed_percent;
+    }
     install_product_joint_positions(
         runtime, positions, count, speed_percent);
     checked(runtime).record_operation_result(
@@ -1133,10 +1137,38 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions(
     return 0;
   } catch (const std::invalid_argument& error) {
     return record_product_command_error(
-        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
+        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT,
+        std::string("PV joint command: ") + error.what());
   } catch (const std::exception& error) {
     return record_product_command_error(
-        runtime, ARTICORE_OPERATION_INVALID_STATE, error.what());
+        runtime, ARTICORE_OPERATION_INVALID_STATE,
+        std::string("PV joint command: ") + error.what());
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
+    ArticoreRuntime* runtime, const float* positions, uint32_t count,
+    float speed_percent) {
+  try {
+    checked_yunyi(runtime);
+    if (runtime->product_mode != ARTICORE_MODE_MIT) {
+      throw std::runtime_error(
+          "MIT joint command requires product MIT mode");
+    }
+    install_product_joint_positions(
+        runtime, positions, count, speed_percent);
+    checked(runtime).record_operation_result(
+        ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
+    g_last_error = "ok";
+    return 0;
+  } catch (const std::invalid_argument& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT,
+        std::string("MIT joint command: ") + error.what());
+  } catch (const std::exception& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_STATE,
+        std::string("MIT joint command: ") + error.what());
   }
 }
 
@@ -1153,12 +1185,12 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
       throw std::runtime_error(
           "maximum speed setting is available only in product PV mode");
     }
-    std::lock_guard<std::mutex> lock(runtime->product_speed_mutex);
+    std::lock_guard<std::mutex> lock(runtime->product_pv_speed_mutex);
     checked(runtime).update_joint_pv_velocity(
         articore::kYunyiOrdinaryPvMaximumVelocity *
             max_speed_percent / 100.0f,
         articore::kYunyiPvDriveVelocityLimit);
-    runtime->product_max_speed_percent = max_speed_percent;
+    runtime->product_pv_max_speed_percent = max_speed_percent;
     g_last_error = "ok";
     return 0;
   } catch (const std::invalid_argument& error) {
@@ -1182,77 +1214,13 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(
       throw std::runtime_error(
           "maximum speed setting is available only in product PV mode");
     }
-    std::lock_guard<std::mutex> lock(runtime->product_speed_mutex);
-    *max_speed_percent = runtime->product_max_speed_percent;
+    std::lock_guard<std::mutex> lock(runtime->product_pv_speed_mutex);
+    *max_speed_percent = runtime->product_pv_max_speed_percent;
     g_last_error = "ok";
     return 0;
   } catch (const std::exception& error) {
     g_last_error = error.what();
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  }
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_speed(
-    ArticoreRuntime* runtime, float speed_percent) {
-  try {
-    if (!std::isfinite(speed_percent) || speed_percent < 0.0f ||
-        speed_percent > 100.0f) {
-      throw std::invalid_argument(
-          "ordinary speed must be finite and within 0..100");
-    }
-    auto& product = checked_yunyi(runtime);
-    std::lock_guard<std::mutex> lock(runtime->product_speed_mutex);
-    const float maximum_velocity = runtime->product_mode == ARTICORE_MODE_MIT
-        ? product.default_mit_reference_velocity
-        : product.default_pv_reference_velocity;
-    if (runtime->product_mode == ARTICORE_MODE_PV) {
-      checked(runtime).update_joint_pv_velocity(
-          maximum_velocity * speed_percent / 100.0f,
-          articore::kYunyiPvDriveVelocityLimit);
-    } else {
-      checked(runtime).update_joint_position_velocity(
-          maximum_velocity * speed_percent / 100.0f);
-    }
-    runtime->product_max_speed_percent = speed_percent;
-    g_last_error = "ok";
-    return 0;
-  } catch (const std::invalid_argument& error) {
-    return record_product_command_error(
-        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
-  } catch (const std::exception& error) {
-    return record_product_command_error(
-        runtime, ARTICORE_OPERATION_INVALID_STATE, error.what());
-  }
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_get_speed(
-    ArticoreRuntime* runtime, float* speed_percent) {
-  if (!speed_percent) {
-    g_last_error = "speed_percent output is null";
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  }
-  try {
-    checked_yunyi(runtime);
-    std::lock_guard<std::mutex> lock(runtime->product_speed_mutex);
-    *speed_percent = runtime->product_max_speed_percent;
-    g_last_error = "ok";
-    return 0;
-  } catch (const std::exception& error) {
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  }
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions_v2(
-    ArticoreRuntime* runtime, const float* positions, uint32_t count) {
-  try {
-    checked_yunyi(runtime);
-    std::lock_guard<std::mutex> lock(runtime->product_speed_mutex);
-    return articore_runtime_set_joint_positions(
-        runtime, positions, count, runtime->product_max_speed_percent);
-  } catch (const std::exception& error) {
-    return record_product_command_error(
-        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
   }
 }
 
@@ -1301,43 +1269,6 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
               joint.torque_command_scale};
     }
     checked(runtime).submit_mit(commands.data(), count);
-    checked(runtime).record_operation_result(
-        ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
-    g_last_error = "ok";
-    return 0;
-  } catch (const std::invalid_argument& error) {
-    return record_product_command_error(
-        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
-  } catch (const std::exception& error) {
-    return record_product_command_error(
-        runtime, ARTICORE_OPERATION_INVALID_STATE, error.what());
-  }
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pv_frame(
-    ArticoreRuntime* runtime, const float* positions,
-    const float* velocity_limits, uint32_t count) {
-  try {
-    auto& product = checked_yunyi(runtime);
-    require_product_count(count);
-    require_finite(positions, count, "positions");
-    require_finite(velocity_limits, count, "velocity_limits");
-    if (runtime->product_mode != ARTICORE_MODE_PV) {
-      throw std::runtime_error("raw PV frame requires product PV mode");
-    }
-    std::array<ArticorePosVelCommand, ARTICORE_PRODUCT_DUAL_ARM_DOF> commands{};
-    for (uint32_t i = 0; i < count; ++i) {
-      const auto& joint = product.joints[i];
-      validate_product_position(joint, positions[i], i);
-      if (velocity_limits[i] <= 0.0f ||
-          velocity_limits[i] > joint.velocity_limit) {
-        throw std::invalid_argument(
-            "PV velocity limit exceeds product joint limit");
-      }
-      commands[i] = ArticorePosVelCommand{
-          joint.motor, joint.direction * positions[i], velocity_limits[i]};
-    }
-    checked(runtime).submit_pos_vel(commands.data(), count);
     checked(runtime).record_operation_result(
         ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
@@ -2312,64 +2243,6 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_configure_joint_safety_limits(
     uint32_t limit_count) {
   return call([&] {
     checked(runtime).configure_joint_safety_limits(limits, limit_count);
-  });
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pos_vel(
-    ArticoreRuntime* runtime,
-    const ArticorePosVelCommand* commands,
-    uint32_t command_count) {
-  return call([&] { checked(runtime).submit_pos_vel(commands, command_count); });
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit(
-    ArticoreRuntime* runtime,
-    const ArticoreMitCommand* commands,
-    uint32_t command_count) {
-  return call([&] { checked(runtime).submit_mit(commands, command_count); });
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pos_vel_ex(
-    ArticoreRuntime* runtime,
-    const ArticorePosVelCommand* commands,
-    uint32_t command_count,
-    int32_t lifetime) {
-  return call([&] {
-    checked(runtime).submit_pos_vel_ex(
-        commands, command_count, static_cast<ArticoreCommandLifetime>(lifetime));
-  });
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_ex(
-    ArticoreRuntime* runtime,
-    const ArticoreMitCommand* commands,
-    uint32_t command_count,
-    int32_t lifetime) {
-  return call([&] {
-    checked(runtime).submit_mit_ex(
-        commands, command_count, static_cast<ArticoreCommandLifetime>(lifetime));
-  });
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
-    ArticoreRuntime* runtime,
-    const ArticoreJointMitTarget* targets,
-    uint32_t target_count,
-    float speed_percent) {
-  return call([&] {
-    checked(runtime).set_joint_mit_speed(
-        targets, target_count, speed_percent);
-  });
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
-    ArticoreRuntime* runtime,
-    const ArticoreJointPvTarget* targets,
-    uint32_t target_count,
-    float speed_percent) {
-  return call([&] {
-    checked(runtime).set_joint_pv_speed(
-        targets, target_count, speed_percent);
   });
 }
 

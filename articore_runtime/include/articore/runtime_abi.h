@@ -31,7 +31,6 @@ enum ArticoreRuntimeCapability {
   ARTICORE_CAP_MOTOR_PRESENCE = 1ULL << 7,
   ARTICORE_CAP_REALTIME_JOINT_MAILBOX = 1ULL << 8,
   ARTICORE_CAP_ATOMIC_ENABLE = 1ULL << 10,
-  ARTICORE_CAP_COMMAND_LIFETIME = 1ULL << 11,
   ARTICORE_CAP_PROTECTIVE_FAULT_HOLD = 1ULL << 13,
   ARTICORE_CAP_DETERMINISTIC_DISABLE = 1ULL << 14,
   ARTICORE_CAP_LAYERED_JOINT_LIMITS = 1ULL << 18,
@@ -83,7 +82,6 @@ enum ArticoreRuntimeCapability {
   ARTICORE_CAP_PRODUCT_TEMPERATURE_STATE = 1ULL << 56,
   ARTICORE_CAP_LATCHED_ESTOP_POSITION_HOLD = 1ULL << 57,
   ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS = 1ULL << 58,
-  ARTICORE_CAP_PRODUCT_SPEED_SETTING = 1ULL << 59,
   ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING = 1ULL << 60,
   ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE = 1ULL << 61,
   ARTICORE_CAP_PV_MAX_SPEED_ONLY = 1ULL << 62,
@@ -1014,31 +1012,22 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_clear_faults(
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(
     ArticoreRuntime* runtime);
 
-/* Product joint commands. Prefer set_max_speed() plus set_joint_positions_v2(). */
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions(
+/* Ordinary product joint commands use fixed left J1..J7, right J1..J7 order. */
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
+    ArticoreRuntime* runtime, const float* positions, uint32_t count);
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
     float speed_percent);
-/* Compatibility names for the persistent ordinary-motion speed percentage. */
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_speed(
-    ArticoreRuntime* runtime, float speed_percent);
-ARTICORE_RUNTIME_API int32_t articore_runtime_get_speed(
-    ArticoreRuntime* runtime, float* speed_percent);
 /* PV reference speed: 0..100 maps linearly to 0..2 rad/s; default 50. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
     ArticoreRuntime* runtime, float max_speed_percent);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(
     ArticoreRuntime* runtime, float* max_speed_percent);
-/* Canonical ordinary position command using the persistent maximum speed. */
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_positions_v2(
-    ArticoreRuntime* runtime, const float* positions, uint32_t count);
+/* Advanced streaming MIT frame with explicit q, dq, torque and gains. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
     ArticoreRuntime* runtime, const float* positions,
     const float* velocities, const float* feedforward_torques,
     const float* kp, const float* kd, uint32_t count);
-/* Low-level PV compatibility entry point; product SDKs should not expose it. */
-ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pv_frame(
-    ArticoreRuntime* runtime, const float* positions,
-    const float* velocity_limits, uint32_t count);
 
 /* Asynchronous dual-arm quintic trajectory. Inputs are copied before return. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_start_trajectory(
@@ -1179,36 +1168,6 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_stop_bimanual_follow(
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_bimanual_follow_status(
     ArticoreRuntime* runtime, ArticoreBimanualFollowStatus* status);
 
-/* Low-level compatibility commands. Accepted frames replace a one-slot mailbox. */
-ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pos_vel(
-    ArticoreRuntime* runtime,
-    const ArticorePosVelCommand* commands,
-    uint32_t command_count);
-ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit(
-    ArticoreRuntime* runtime,
-    const ArticoreMitCommand* commands,
-    uint32_t command_count);
-/* Persistent MIT requires zero target velocity and feedforward torque. */
-ARTICORE_RUNTIME_API int32_t articore_runtime_submit_pos_vel_ex(
-    ArticoreRuntime* runtime,
-    const ArticorePosVelCommand* commands,
-    uint32_t command_count,
-    int32_t lifetime);
-ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_ex(
-    ArticoreRuntime* runtime,
-    const ArticoreMitCommand* commands,
-    uint32_t command_count,
-    int32_t lifetime);
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
-    ArticoreRuntime* runtime,
-    const ArticoreJointPvTarget* targets,
-    uint32_t target_count,
-    float speed_percent);
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
-    ArticoreRuntime* runtime,
-    const ArticoreJointMitTarget* targets,
-    uint32_t target_count,
-    float speed_percent);
 ARTICORE_RUNTIME_API int32_t articore_runtime_submit_gripper_mit(
     ArticoreRuntime* runtime,
     const ArticoreMitCommand* commands,

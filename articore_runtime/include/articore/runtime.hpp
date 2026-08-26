@@ -137,34 +137,20 @@ class Runtime final {
     return result;
   }
 
-  [[deprecated("legacy ordinary-motion compatibility API")]]
-  void set_speed(float speed_percent) {
+  void set_joint_pv(const std::vector<float>& positions) {
     detail::check(
-        articore_runtime_set_speed(checked(), speed_percent), "set_speed");
-  }
-
-  [[deprecated("legacy ordinary-motion compatibility API")]]
-  float get_speed() const {
-    float result = 0.0f;
-    detail::check(
-        articore_runtime_get_speed(checked(), &result), "get_speed");
-    return result;
-  }
-
-  void set_joint_positions(const std::vector<float>& positions) {
-    detail::check(
-        articore_runtime_set_joint_positions_v2(
+        articore_runtime_set_joint_pv(
             checked(), positions.data(), detail::size(positions)),
-        "set_joint_positions_v2");
+        "set_joint_pv");
   }
 
-  void set_joint_positions(const std::vector<float>& positions,
-                           float speed_percent) {
+  void set_joint_mit(const std::vector<float>& positions,
+                     float speed_percent) {
     detail::check(
-        articore_runtime_set_joint_positions(
+        articore_runtime_set_joint_mit(
             checked(), positions.data(), detail::size(positions),
             speed_percent),
-        "set_joint_positions");
+        "set_joint_mit");
   }
 
   void submit_mit_frame(const std::vector<float>& positions,

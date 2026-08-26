@@ -226,7 +226,7 @@ int main(int argc, char** argv) {
     // of out-of-range waypoints from the measured pose.
     JointArray zero_target{};
     check(articore_runtime_set_max_speed(runtime, 10.0f), "set_max_speed");
-    check(articore_runtime_set_joint_positions_v2(
+    check(articore_runtime_set_joint_pv(
               runtime, zero_target.data(), zero_target.size()),
           "recover_to_legal_zero");
     const float normalization_error =

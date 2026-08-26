@@ -18,16 +18,14 @@ int main() {
       decltype(&articore::Runtime::get_max_speed), SpeedGetter>);
   static_assert(std::is_same_v<
       decltype(&articore::Runtime::set_max_speed), SpeedSetter>);
-  using JointPositionSetter =
+  using JointPvSetter =
       void (articore::Runtime::*)(const std::vector<float>&);
-  using JointPositionSpeedSetter =
+  using JointMitSetter =
       void (articore::Runtime::*)(const std::vector<float>&, float);
-  static_assert(std::is_same_v<decltype(static_cast<JointPositionSetter>(
-                                   &articore::Runtime::set_joint_positions)),
-                               JointPositionSetter>);
-  static_assert(std::is_same_v<decltype(static_cast<JointPositionSpeedSetter>(
-                                   &articore::Runtime::set_joint_positions)),
-                               JointPositionSpeedSetter>);
+  static_assert(std::is_same_v<decltype(&articore::Runtime::set_joint_pv),
+                               JointPvSetter>);
+  static_assert(std::is_same_v<decltype(&articore::Runtime::set_joint_mit),
+                               JointMitSetter>);
   using MovePose = void (articore::Runtime::*)(
       uint32_t, const std::array<float, 6>&, float);
   static_assert(std::is_same_v<decltype(&articore::Runtime::move_pose),

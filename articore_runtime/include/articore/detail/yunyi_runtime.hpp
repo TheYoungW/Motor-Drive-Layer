@@ -22,8 +22,7 @@ inline constexpr float kYunyiPvDriveVelocityLimit = 3.0f;
 // The public 0..100 scale maps linearly onto 0..2 rad/s. Product calls keep
 // 50 percent as the ordinary default, or 1 rad/s.
 inline constexpr float kYunyiDefaultPvSpeedPercent = 50.0f;
-inline constexpr float kYunyiLegacyOrdinaryMitMaximumVelocity = 5.0f;
-inline constexpr float kYunyiLegacyDefaultMitSpeedPercent = 70.0f;
+inline constexpr float kYunyiOrdinaryMitMaximumVelocity = 5.0f;
 static_assert(kYunyiOrdinaryPvMaximumVelocity == 2.0f,
               "ordinary PV 100 percent must map to 2 rad/s");
 static_assert(kYunyiPvDriveVelocityLimit == 3.0f,
@@ -34,9 +33,8 @@ inline constexpr float kYunyiDefaultPvReferenceVelocity =
 static_assert(kYunyiDefaultPvReferenceVelocity > 0.99999f &&
                   kYunyiDefaultPvReferenceVelocity < 1.00001f,
               "ordinary PV must default to a 1 rad/s reference velocity");
-static_assert(kYunyiLegacyOrdinaryMitMaximumVelocity == 5.0f &&
-                  kYunyiLegacyDefaultMitSpeedPercent == 70.0f,
-              "legacy ordinary MIT speed scaling must remain unchanged");
+static_assert(kYunyiOrdinaryMitMaximumVelocity == 5.0f,
+              "ordinary MIT 100 percent must map to 5 rad/s");
 
 // Complete native ownership for the only supported robot product. Nothing in
 // this structure crosses the public ABI or needs to be assembled by Python.
@@ -76,7 +74,7 @@ struct YunyiRuntimeResources {
   std::array<std::array<float, ARTICORE_PRODUCT_POSE_DOF>, 2> tcp_offsets{};
   bool with_grippers = true;
   float default_mit_reference_velocity =
-      kYunyiLegacyOrdinaryMitMaximumVelocity;
+      kYunyiOrdinaryMitMaximumVelocity;
   float default_pv_reference_velocity =
       kYunyiOrdinaryPvMaximumVelocity;
 };

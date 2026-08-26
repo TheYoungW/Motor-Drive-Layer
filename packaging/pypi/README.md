@@ -23,6 +23,15 @@ Product trajectories are likewise planned and executed entirely by the C++
 Runtime through the stable trajectory C ABI; the wheel contains no Python
 interpolator or realtime playback loop.
 
+Version 0.13.0 advances the Runtime ABI to 4.0 and makes the product joint
+command surface unambiguous. Ordinary PV uses
+`articore_runtime_set_joint_pv(runtime, positions, 14)` together with the
+persistent `set_max_speed(0..100)` setting. Ordinary MIT uses
+`articore_runtime_set_joint_mit(runtime, positions, 14, speed_percent)`.
+Advanced streaming MIT retains `articore_runtime_submit_mit_frame()` for
+explicit q/dq/torque/Kp/Kd frames. Historical position-command aliases,
+per-frame raw PV, and the generic speed aliases are no longer exported.
+
 Version 0.12.9 formally guarantees the existing product joint-limit metadata
 ABI. `articore_runtime_get_joint_angle_vel_limits()` returns exactly fourteen
 logical arm joints in left J1..J7 then right J1..J7 order, using the same
@@ -194,19 +203,11 @@ velocity-limit snapshot. `articore_runtime_get_joint_angle_vel_limits()`
 returns logical lower/upper angles in radians and product velocity limits in
 radians/second, ordered left J1..J7 then right J1..J7; grippers are omitted.
 
-Runtime ABI 2.35 adds a persistent product ordinary-motion speed setting.
-`articore_runtime_set_speed()` accepts 0..100 and
-`articore_runtime_get_speed()` returns the current value; a newly created
-Runtime defaults to 70. All 14 arm joints map 100 to 5 rad/s. The setting can
-change an active ordinary MIT/PV reference, and
-`articore_runtime_set_joint_positions_v2()` uses it for later targets. Raw
-frames, trajectories, and Cartesian motions retain their explicit limits.
-
-Version 0.10.36 / Runtime ABI 2.36 corrects the public name of that setting to
-maximum speed. New SDKs bind `articore_runtime_set_max_speed()` and
-`articore_runtime_get_max_speed()` and expose `set_max_speed()` /
-`get_max_speed()`. The 2.35 `set_speed/get_speed` symbols remain binary
-compatibility aliases; all values and behavior are unchanged.
+Runtime ABI 2.35/2.36 introduced the persistent ordinary-motion percentage and
+then standardized its product name as maximum speed. Runtime ABI 4.0 retains
+only `articore_runtime_set_max_speed()` and
+`articore_runtime_get_max_speed()`; removed intermediate aliases are not part
+of the current product contract.
 
 Version 0.10.37 / Runtime ABI 2.37 defines the existing product pose as the
 single active Cartesian control point. With grippers, native FK/IK and all
@@ -215,11 +216,10 @@ grippers they continue to use link7. No extra public flange-pose API is added.
 
 Version 0.10.38 / Runtime ABI 2.38 reduces ordinary PV control to one
 product-owned stepped path. `set_max_speed(0..100)` is persistent and defaults
-to 70; position commands carry no per-call speed. New SDKs do not expose raw
-PV submission or the legacy explicit-speed ordinary command. Existing C ABI
-symbols remain available only for binary compatibility. This setting is PV
-only; MIT ordinary speed, raw targets, gains, and feedforward behavior are
-unchanged.
+to 50; 100 maps to a 2 rad/s reference slew, and position commands carry no
+per-call speed. Runtime ABI 4.0 removes raw PV submission and historical
+explicit-speed PV command symbols. This setting is PV-only; MIT ordinary speed
+and advanced streaming MIT remain separate.
 
 Version 0.10.39 also fixes visible Yunyi PV Cartesian endpoint oscillation.
 Native motion now performs staged low-speed settling, product FK endpoint

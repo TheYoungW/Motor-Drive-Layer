@@ -64,14 +64,26 @@ jobs:
           import importlib.util
           from importlib.metadata import distribution, version
 
-          assert version("motor-drive-layer") == "0.12.8"
+          assert version("motor-drive-layer") == "0.13.0"
           assert importlib.util.find_spec("motor_drive_layer") is None
           dist = distribution("motor-drive-layer")
           files = {str(item): dist.locate_file(item) for item in dist.files or ()}
           runtime = files["motor_drive_layer_native/lib/libarticore_runtime.so"]
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00030006
+          assert runtime_lib.articore_runtime_abi_version() == 0x00040000
+          assert hasattr(runtime_lib, "articore_runtime_set_joint_pv")
+          assert hasattr(runtime_lib, "articore_runtime_set_joint_mit")
+          assert hasattr(runtime_lib, "articore_runtime_submit_mit_frame")
+          assert not hasattr(runtime_lib, "articore_runtime_set_joint_positions")
+          assert not hasattr(runtime_lib, "articore_runtime_set_joint_positions_v2")
+          assert not hasattr(runtime_lib, "articore_runtime_submit_pv_frame")
+          assert not hasattr(runtime_lib, "articore_runtime_set_speed")
+          assert not hasattr(runtime_lib, "articore_runtime_get_speed")
+          assert not hasattr(runtime_lib, "articore_runtime_submit_pos_vel")
+          assert not hasattr(runtime_lib, "articore_runtime_submit_pos_vel_ex")
+          assert not hasattr(runtime_lib, "articore_runtime_submit_mit")
+          assert not hasattr(runtime_lib, "articore_runtime_submit_mit_ex")
           assert hasattr(runtime_lib, "articore_runtime_create_yunyi")
           assert not hasattr(runtime_lib, "articore_runtime_create_yunyi_v2")
           assert hasattr(runtime_lib, "articore_runtime_move_pose")
