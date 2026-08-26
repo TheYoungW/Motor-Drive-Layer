@@ -21,7 +21,8 @@ int main() {
   const auto disconnect = &articore_runtime_disconnect;
   const auto product_pv = &articore_runtime_set_joint_pv;
   const auto product_mit = &articore_runtime_set_joint_mit;
-  using ProductPv = int32_t (*)(ArticoreRuntime*, const float*, uint32_t);
+  using ProductPv = int32_t (*)(
+      ArticoreRuntime*, const float*, uint32_t, float);
   using ProductMit = int32_t (*)(
       ArticoreRuntime*, const float*, uint32_t, float);
   static_assert(std::is_same_v<
@@ -219,9 +220,9 @@ int main() {
       ARTICORE_CAP_PRODUCT_TEMPERATURE_STATE |
       ARTICORE_CAP_LATCHED_ESTOP_POSITION_HOLD |
       ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS |
+      ARTICORE_CAP_PRODUCT_PV_COMMAND_SPEED |
       ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING |
       ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE |
-      ARTICORE_CAP_PV_MAX_SPEED_ONLY |
       ARTICORE_CAP_DIRECT_CPP_MOTOR_CORE;
   bool product_gripper_levels_valid = true;
   for (const int32_t level : {1, 5, 10}) {
@@ -317,10 +318,29 @@ int main() {
   std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> joint_positions{};
   const bool product_joint_command_validation_checked =
       articore_runtime_set_joint_pv(
-          nullptr, joint_positions.data(), joint_positions.size()) ==
+          nullptr, joint_positions.data(), joint_positions.size(), 50.0f) ==
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
       std::strcmp(articore_runtime_last_error(),
                   "PV joint command: runtime is null") == 0 &&
+      articore_runtime_set_joint_pv(
+          nullptr, joint_positions.data(), joint_positions.size(), -0.1f) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(),
+                  "PV joint command: PV command speed must be finite "
+                  "and within 0..100") == 0 &&
+      articore_runtime_set_joint_pv(
+          nullptr, joint_positions.data(), joint_positions.size(), 100.1f) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(),
+                  "PV joint command: PV command speed must be finite "
+                  "and within 0..100") == 0 &&
+      articore_runtime_set_joint_pv(
+          nullptr, joint_positions.data(), joint_positions.size(),
+          std::numeric_limits<float>::quiet_NaN()) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(),
+                  "PV joint command: PV command speed must be finite "
+                  "and within 0..100") == 0 &&
       articore_runtime_set_joint_mit(
           nullptr, joint_positions.data(), joint_positions.size(), 50.0f) ==
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
@@ -397,7 +417,7 @@ int main() {
       !bimanual_follow_status || !health_v2 || !estop ||
       !configure_joint_safety_limits || !configure_gripper_products ||
       !configure_gripper_force_profiles || !set_gripper_commands ||
-      version != 0x00040000U ||
+      version != 0x00040001U ||
       (capabilities & required_with_circular) != required_with_circular ||
       !product_gripper_levels_valid ||
       !product_gripper_direct_valid ||

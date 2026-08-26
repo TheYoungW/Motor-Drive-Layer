@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
     check(articore_runtime_set_max_speed(runtime, 10.0f), "set_max_speed");
     JointArray zero{};
     check(articore_runtime_set_joint_pv(
-              runtime, zero.data(), zero.size()),
+              runtime, zero.data(), zero.size(), 100.0f),
           "set_joint_pv");
 
     const auto arrival_deadline =

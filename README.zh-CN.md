@@ -38,12 +38,14 @@ Linux SocketCAN-FD+BRS
   [`articore/runtime_abi.h`](articore_runtime/include/articore/runtime_abi.h)。
 - C++17 RAII 目标：`motorbridge::articore_runtime_cpp`。
 
-Runtime ABI 4.0 将整机关节控制收口为三条明确路径：普通 PV 使用
-`articore_runtime_set_joint_pv(runtime, positions, 14)`，其速度上限由独立的
-`articore_runtime_set_max_speed(0..100)` 管理；普通 MIT 使用
+Runtime ABI 4.1 将整机关节控制收口为三条明确路径：普通 PV 使用
+`articore_runtime_set_joint_pv(runtime, positions, 14, speed_percent)`；其中
+`speed_percent` 是本次命令的 reference 步进速度，独立的
+`articore_runtime_set_max_speed(0..100)` 是持久化速度上限，实际使用两者较小值。普通 MIT 使用
 `articore_runtime_set_joint_mit(runtime, positions, 14, speed_percent)`；需要显式
 q/dq/力矩/Kp/Kd 的高级 MIT 才使用 `articore_runtime_submit_mit_frame()`。历史位置命令别名、
-Raw PV 直发和通用 speed 别名已从动态库导出表删除。
+Raw PV 直发和通用 speed 别名已从动态库导出表删除。ABI 4.0 曾错误省略 PV 命令速度，SDK
+应直接要求 ABI 4.1。
 
 ## 原生能力
 
@@ -358,18 +360,17 @@ Yunyi 内置产品配置，不发送 CAN 请求、不依赖连接状态，也不
 Runtime ABI 2.35/2.36 引入了普通运动百分比并将正式名称统一为“普通运动最大速度”，新增
 `ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING`、`articore_runtime_set_max_speed()` 和
 `articore_runtime_get_max_speed()`。Runtime ABI 4.0 只保留这组正式名称，中间版本的兼容别名
-不再属于当前产品接口。
+不再属于当前产品接口；Runtime ABI 4.1 将它明确为每次 PV 命令速度的独立上限。
 
 Runtime ABI 2.37 新增 `ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE`，并将现有产品位姿统一定义为
 实际笛卡尔控制点。有夹爪时，原生 FK、IK、点到点、直线和圆弧运动统一使用位于夹爪中心的
 `l-tool0/r-tool0`；无夹爪时继续使用 `l-link7/r-link7`。公开接口仍然只有 `get_pose()`，
 没有增加单独的法兰位姿方法。
 
-Runtime ABI 2.38 新增 `ARTICORE_CAP_PV_MAX_SPEED_ONLY`。产品 SDK 的普通 PV 控制只保留
-`set_max_speed(0..100)` 与不带速度参数的位置命令；默认最大速度仍为 70，Runtime 在原生周期
-内按该上限逐步推进 reference。每次位置命令单独传速度以及 Raw PV 直发不再属于产品 SDK
-接口。该最大速度设置只属于 PV；MIT 继续使用原有的逐命令速度、Raw 目标、Kp/Kd 和前馈
-力矩逻辑，不受影响。旧 C ABI 符号只为已发布客户端保留二进制兼容，新绑定不得继续公开。
+产品 SDK 的普通 PV 控制使用同一条 reference 步进路径：`set_joint_pv()` 传递本次命令的
+0–100 速度，`set_max_speed(0..100)` 保存独立的持久化上限，Runtime 使用两者较小值。Raw PV
+直发不属于产品 SDK。该最大速度设置只属于 PV；MIT 继续使用自己的逐命令速度、Raw 目标、
+Kp/Kd 和前馈力矩逻辑，不受影响。
 
 motor-drive-layer 0.10.39 修复 Yunyi 原生 PV 笛卡尔运动的终点保持抖动。Runtime 保持
 0.02 rad / 0.05 rad/s 的公开到位窗口，但会先以低速继续收敛，并对笛卡尔终点执行

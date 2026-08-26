@@ -67,7 +67,7 @@ jobs:
           from importlib.metadata import distribution, version
           from pathlib import Path
 
-          assert version("motor-drive-layer") == "0.13.0"
+          assert version("motor-drive-layer") == "0.13.1"
           assert importlib.util.find_spec("motor_drive_layer") is None
           dist = distribution("motor-drive-layer")
           entries = {str(item): item for item in dist.files or ()}
@@ -76,7 +76,7 @@ jobs:
           assert not any("libmotor_abi" in name or "/dm_device/" in name for name in entries)
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00040000
+          assert runtime_lib.articore_runtime_abi_version() == 0x00040001
           assert hasattr(runtime_lib, "articore_runtime_create_yunyi")
           assert not hasattr(runtime_lib, "articore_runtime_create_yunyi_v2")
           assert hasattr(runtime_lib, "articore_runtime_move_pose")
@@ -95,6 +95,7 @@ jobs:
           assert capabilities & (1 << 57)
           assert capabilities & (1 << 58)
           assert hasattr(runtime_lib, "articore_runtime_get_joint_angle_vel_limits")
+          assert capabilities & (1 << 59)
           assert hasattr(runtime_lib, "articore_runtime_set_joint_pv")
           assert hasattr(runtime_lib, "articore_runtime_set_joint_mit")
           assert hasattr(runtime_lib, "articore_runtime_submit_mit_frame")
@@ -110,7 +111,6 @@ jobs:
           assert capabilities & (1 << 60)
           assert hasattr(runtime_lib, "articore_runtime_set_max_speed")
           assert hasattr(runtime_lib, "articore_runtime_get_max_speed")
-          assert capabilities & (1 << 62)
           assert capabilities & (1 << 63)
           assert capabilities & ((1 << 23) | (1 << 27)) == 0
           assert not hasattr(runtime_lib, "articore_runtime_get_control_hz")

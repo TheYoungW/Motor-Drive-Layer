@@ -19,7 +19,7 @@ int main() {
   static_assert(std::is_same_v<
       decltype(&articore::Runtime::set_max_speed), SpeedSetter>);
   using JointPvSetter =
-      void (articore::Runtime::*)(const std::vector<float>&);
+      void (articore::Runtime::*)(const std::vector<float>&, float);
   using JointMitSetter =
       void (articore::Runtime::*)(const std::vector<float>&, float);
   static_assert(std::is_same_v<decltype(&articore::Runtime::set_joint_pv),

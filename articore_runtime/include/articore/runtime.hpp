@@ -137,10 +137,12 @@ class Runtime final {
     return result;
   }
 
-  void set_joint_pv(const std::vector<float>& positions) {
+  void set_joint_pv(const std::vector<float>& positions,
+                    float speed_percent) {
     detail::check(
         articore_runtime_set_joint_pv(
-            checked(), positions.data(), detail::size(positions)),
+            checked(), positions.data(), detail::size(positions),
+            speed_percent),
         "set_joint_pv");
   }
 

@@ -227,7 +227,7 @@ int main(int argc, char** argv) {
     JointArray zero_target{};
     check(articore_runtime_set_max_speed(runtime, 10.0f), "set_max_speed");
     check(articore_runtime_set_joint_pv(
-              runtime, zero_target.data(), zero_target.size()),
+              runtime, zero_target.data(), zero_target.size(), 100.0f),
           "recover_to_legal_zero");
     const float normalization_error =
         wait_for_target(runtime, zero_target, std::chrono::seconds(12));

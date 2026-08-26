@@ -1,7 +1,7 @@
 # Articore native safety runtime
 
-Runtime ABI 4.0 exposes one product entry for each joint-control path:
-`articore_runtime_set_joint_pv(runtime, positions, 14)` for ordinary PV,
+Runtime ABI 4.1 exposes one product entry for each joint-control path:
+`articore_runtime_set_joint_pv(runtime, positions, 14, speed_percent)` for ordinary PV,
 `articore_runtime_set_joint_mit(runtime, positions, 14, speed_percent)` for
 ordinary MIT, and `articore_runtime_submit_mit_frame()` for advanced streaming
 MIT. Historical position aliases, raw PV product frames, and generic speed
@@ -19,15 +19,16 @@ Yunyi has one product PV position behavior. At every 500 Hz Runtime control
 cycle, each joint reference advances independently toward its final target:
 
 ```text
-step_velocity = 2 rad/s * user_percent / 100
+effective_percent = min(command_speed_percent, max_speed_percent)
+step_velocity = 2 rad/s * effective_percent / 100
 max_step = step_velocity / 500 Hz
 q_ref_next = q_ref + clamp(q_target - q_ref, -max_step, +max_step)
 ```
 
-The public `0..100` value controls only this Runtime position-reference step.
-It is persistent for ordinary PV through `set_max_speed()`; 100 is the
-product 2 rad/s ceiling (0.004 rad per 500 Hz cycle). The SDK default remains
-50, or 1 rad/s and 0.002 rad per cycle.
+The `set_joint_pv()` speed controls the current command's Runtime reference
+step. `set_max_speed()` stores a separate persistent upper bound. Both use the
+same 0..100 scale; the smaller value wins. The maximum-speed default is 50, so
+a command speed of 100 initially produces 1 rad/s and 0.002 rad per cycle.
 
 ### Damiao POS_VEL V field
 
@@ -188,13 +189,14 @@ transaction, disable, close, or estop replaces it. This persistent behavior does
 Python refresh loop. The advanced product frame supplies q, dq, Kp, Kd, and
 feedforward torque explicitly and receives no ordinary-position ramping.
 
-Runtime ABI 4.0 defines the symmetric `articore_runtime_set_joint_pv()` ordinary position path. It
+Runtime ABI 4.1 defines the symmetric `articore_runtime_set_joint_pv()` ordinary position path. It
 uses the same complete-arm latest-value mailbox, fresh-feedback initialization, shared rad/s speed,
 and a scheduler-owned bounded position step. Generated PV frames use the current native
 reference as position and the same shared speed as their protocol velocity limit. A new PV target
 atomically replaces only the final positions and shared speed; the currently transmitted reference
-remains continuous. Product SDKs expose persistent `set_max_speed(0..100)` plus
-this positions-only PV command; raw PV and per-command PV speed are not public.
+remains continuous. Product SDKs pass a per-command 0..100 speed and expose
+the persistent `set_max_speed(0..100)` as its independent upper bound. Raw PV
+frames are not public.
 
 Runtime ABI 1.6 makes normal torque-off a checked transaction instead of relying on the motor
 communication watchdog. `disable()` first rejects new commands and waits for any in-flight
@@ -611,7 +613,8 @@ Runtime ABI 2.35/2.36 introduced the persistent percentage and standardized
 its terminology as an ordinary motion maximum-speed setting.
 `ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING`,
 `articore_runtime_set_max_speed()`, and `articore_runtime_get_max_speed()` are
-the current API. Runtime ABI 4.0 removes the intermediate compatibility names.
+the current API. Runtime ABI 4.0 removes the intermediate compatibility names,
+and Runtime ABI 4.1 restores the distinct per-command PV speed parameter.
 
 Runtime ABI 2.37 adds `ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE` and makes the
 existing product pose the single active Cartesian control point. A Yunyi
@@ -620,15 +623,14 @@ Runtime created with grippers uses `l-tool0` / `r-tool0`, fixed at
 directly. `get_pose()`, endpoint IK, point-to-point, linear and circular motion
 all use the same selection. No additional public flange-pose getter is added.
 
-Runtime ABI 2.38 adds `ARTICORE_CAP_PV_MAX_SPEED_ONLY`. Product SDKs expose
-one ordinary PV path: `set_max_speed(0..100)` configures the persistent limit
-(default 50; 100 maps to a 2 rad/s reference slew), and position
-commands contain positions only. The Damiao `v_des` ceiling remains 3 rad/s;
+Product SDKs expose one ordinary PV path: `set_max_speed(0..100)` configures the persistent limit
+(default 50; 100 maps to a 2 rad/s reference slew), while each position
+command supplies its requested 0..100 speed. The Damiao `v_des` ceiling remains 3 rad/s;
 the default therefore advances the 500 Hz reference by 0.002 rad
-per cycle while retaining drive catch-up headroom. Per-command ordinary speed
-and raw direct-PV entry points are not exported by Runtime ABI 4.0. The
-max-speed names are PV-only; MIT retains its per-command ordinary speed and its
-separate advanced q/dq/torque/gain frame.
+per cycle while retaining drive catch-up headroom. Runtime ABI 4.1 caps the
+command speed by the persistent maximum and does not export raw direct-PV
+entry points. The max-speed names are PV-only; MIT retains its per-command
+ordinary speed and its separate advanced q/dq/torque/gain frame.
 
 Runtime ABI 3.0 removes the temporary dual factory ABI. The only product
 factory is `articore_runtime_create_yunyi(mode, with_grippers, runtime_out)`;

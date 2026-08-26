@@ -82,9 +82,9 @@ enum ArticoreRuntimeCapability {
   ARTICORE_CAP_PRODUCT_TEMPERATURE_STATE = 1ULL << 56,
   ARTICORE_CAP_LATCHED_ESTOP_POSITION_HOLD = 1ULL << 57,
   ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS = 1ULL << 58,
+  ARTICORE_CAP_PRODUCT_PV_COMMAND_SPEED = 1ULL << 59,
   ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING = 1ULL << 60,
   ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE = 1ULL << 61,
-  ARTICORE_CAP_PV_MAX_SPEED_ONLY = 1ULL << 62,
   ARTICORE_CAP_DIRECT_CPP_MOTOR_CORE = 1ULL << 63,
 };
 
@@ -1012,13 +1012,17 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_clear_faults(
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(
     ArticoreRuntime* runtime);
 
-/* Ordinary product joint commands use fixed left J1..J7, right J1..J7 order. */
+/* Ordinary product joint commands use fixed left J1..J7, right J1..J7 order.
+ * PV speed_percent selects this command's reference step and is capped by the
+ * persistent set_max_speed() value. Both values use the inclusive 0..100 range.
+ */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
-    ArticoreRuntime* runtime, const float* positions, uint32_t count);
+    ArticoreRuntime* runtime, const float* positions, uint32_t count,
+    float speed_percent);
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
     float speed_percent);
-/* PV reference speed: 0..100 maps linearly to 0..2 rad/s; default 50. */
+/* Persistent PV speed cap: 0..100 maps to 0..2 rad/s; default 50. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
     ArticoreRuntime* runtime, float max_speed_percent);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(
