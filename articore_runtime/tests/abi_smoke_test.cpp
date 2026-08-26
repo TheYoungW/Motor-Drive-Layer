@@ -3,6 +3,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <net/if.h>
 #include <type_traits>
 
 #include "articore/runtime_abi.h"
@@ -335,22 +336,27 @@ int main() {
       std::strcmp(articore_runtime_last_error(),
                   "with_grippers must be 0 or 1") == 0;
   ArticoreRuntime* metadata_runtime = nullptr;
-  const bool metadata_runtime_created =
-      articore_runtime_create_yunyi(
-          ARTICORE_MODE_PV, 0, &metadata_runtime) == ARTICORE_OPERATION_OK &&
-      metadata_runtime != nullptr;
+  const bool product_channels_available =
+      if_nametoindex("can-left") != 0 && if_nametoindex("can-right") != 0;
   ArticoreProductJointAngleVelLimits product_limits{};
   product_limits.struct_size = sizeof(product_limits);
-  const bool product_joint_limits_checked = metadata_runtime_created &&
-      articore_runtime_get_joint_angle_vel_limits(
-          metadata_runtime, &product_limits) == ARTICORE_OPERATION_OK &&
-      product_limits.joint_count == ARTICORE_PRODUCT_DUAL_ARM_DOF &&
-      std::fabs(product_limits.lower_angles[0] - -2.745f) < 1e-6f &&
-      std::fabs(product_limits.upper_angles[0] - 2.745f) < 1e-6f &&
-      std::fabs(product_limits.lower_angles[1] - -0.3489f) < 1e-6f &&
-      std::fabs(product_limits.upper_angles[8] - 0.3489f) < 1e-6f &&
-      std::fabs(product_limits.velocity_limits[0] - 5.0f) < 1e-6f &&
-      std::fabs(product_limits.velocity_limits[13] - 5.0f) < 1e-6f;
+  bool product_joint_limits_checked = true;
+  if (product_channels_available) {
+    const bool metadata_runtime_created =
+        articore_runtime_create_yunyi(
+            ARTICORE_MODE_PV, 0, &metadata_runtime) == ARTICORE_OPERATION_OK &&
+        metadata_runtime != nullptr;
+    product_joint_limits_checked = metadata_runtime_created &&
+        articore_runtime_get_joint_angle_vel_limits(
+            metadata_runtime, &product_limits) == ARTICORE_OPERATION_OK &&
+        product_limits.joint_count == ARTICORE_PRODUCT_DUAL_ARM_DOF &&
+        std::fabs(product_limits.lower_angles[0] - -2.745f) < 1e-6f &&
+        std::fabs(product_limits.upper_angles[0] - 2.745f) < 1e-6f &&
+        std::fabs(product_limits.lower_angles[1] - -0.3489f) < 1e-6f &&
+        std::fabs(product_limits.upper_angles[8] - 0.3489f) < 1e-6f &&
+        std::fabs(product_limits.velocity_limits[0] - 5.0f) < 1e-6f &&
+        std::fabs(product_limits.velocity_limits[13] - 5.0f) < 1e-6f;
+  }
   if (metadata_runtime != nullptr) {
     articore_runtime_free(metadata_runtime);
   }
