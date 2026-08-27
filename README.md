@@ -28,8 +28,12 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.18.0`
-- Runtime ABI: `9.0` / `0x00090000`
+- package version: `0.19.0`
+- Runtime ABI: `10.0` / `0x000A0000`
+
+Runtime health includes a product-order snapshot for every installed Motor,
+with role, CAN ID, feedback age, status, issue bits, and a scope that separates
+isolated Motor feedback loss from left/right/both-channel receive stalls.
 - ABI matching: exact
 - product: `yunyi_v1_0`
 - transports: `can-left`, `can-right`

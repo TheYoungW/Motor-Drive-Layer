@@ -145,8 +145,9 @@ class CommandPlanningScope {
   CommandPlanningScope& operator=(const CommandPlanningScope&) = delete;
   ~CommandPlanningScope() { runtime_.cancel_command_planning(token_); }
 
-  void begin(const articore::SafetyRuntime::CommandTransaction& transaction) {
-    token_ = runtime_.begin_command_planning(transaction);
+  void begin(const articore::SafetyRuntime::CommandTransaction& transaction,
+             bool allow_trajectory = false) {
+    token_ = runtime_.begin_command_planning(transaction, allow_trajectory);
   }
 
   uint64_t token() const { return token_; }
@@ -243,23 +244,6 @@ int32_t record_product_command_error(
   return code;
 }
 
-bool same_planned_reference(
-    const articore::NativeTrajectorySample& before,
-    const articore::NativeTrajectorySample& after) {
-  if (before.active != after.active ||
-      before.motion_id != after.motion_id ||
-      before.operation != after.operation ||
-      before.positions.size() != after.positions.size()) {
-    return false;
-  }
-  for (std::size_t index = 0; index < before.positions.size(); ++index) {
-    if (std::abs(before.positions[index] - after.positions[index]) > 1e-4f) {
-      return false;
-    }
-  }
-  return true;
-}
-
 int32_t move_pose_impl(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float speed_percent) {
@@ -336,7 +320,7 @@ int32_t move_linear_impl(
     CommandPlanningScope planning(safety);
     {
       auto snapshot = safety.begin_command_transaction();
-      planning.begin(snapshot);
+      planning.begin(snapshot, true);
       reference = safety.planned_trajectory_tail_sample(joints, snapshot);
     }
     auto plan = articore::build_linear_plan_from_reference(
@@ -346,13 +330,11 @@ int32_t move_linear_impl(
     auto transaction = safety.begin_command_transaction();
     const auto current =
         safety.planned_trajectory_tail_sample(joints, transaction);
-    if (!same_planned_reference(reference, current)) {
-      throw std::invalid_argument(
-          "linear queue tail changed while planning; no motion was queued");
-    }
+    articore::require_unchanged_planned_reference(
+        reference, current, "linear");
 
     const uint64_t new_id = safety.start_trajectory(
-        plan.trajectory, 0, &transaction, true);
+        plan.trajectory, 0, &transaction, true, planning.token());
     *motion_id = new_id;
     safety.record_operation_result(
         ARTICORE_OPERATION_MOVE_LINEAR, ARTICORE_OPERATION_OK);
@@ -393,7 +375,7 @@ int32_t move_circular_impl(
     CommandPlanningScope planning(safety);
     {
       auto snapshot = safety.begin_command_transaction();
-      planning.begin(snapshot);
+      planning.begin(snapshot, true);
       reference = safety.planned_trajectory_tail_sample(joints, snapshot);
     }
     auto plan = articore::build_circular_plan_from_reference(
@@ -403,12 +385,10 @@ int32_t move_circular_impl(
     auto transaction = safety.begin_command_transaction();
     const auto current =
         safety.planned_trajectory_tail_sample(joints, transaction);
-    if (!same_planned_reference(reference, current)) {
-      throw std::invalid_argument(
-          "circular queue tail changed while planning; no motion was queued");
-    }
+    articore::require_unchanged_planned_reference(
+        reference, current, "circular");
     const uint64_t new_id = safety.start_trajectory(
-        plan.trajectory, 0, &transaction, true);
+        plan.trajectory, 0, &transaction, true, planning.token());
 
     *motion_id = new_id;
     safety.record_operation_result(
@@ -567,7 +547,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (9U << 16);
+  return (10U << 16);
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -1024,7 +1004,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_start_trajectory(
     CommandPlanningScope planning(safety);
     {
       auto transaction = safety.begin_command_transaction();
-      planning.begin(transaction);
+      planning.begin(transaction, true);
     }
     if (!waypoints) {
       throw std::invalid_argument("trajectory waypoints are null");
@@ -1129,7 +1109,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_start_trajectory(
       }
     }
     const uint64_t new_id = safety.start_trajectory(
-        std::move(request), 0, &transaction, true);
+        std::move(request), 0, &transaction, true, planning.token());
     *motion_id = new_id;
     safety.record_operation_result(
         ARTICORE_OPERATION_START_TRAJECTORY, ARTICORE_OPERATION_OK);

@@ -104,6 +104,8 @@ struct FakeDriver {
   uint32_t motor_enable_delay_ms = 0;
   bool transport_connected[2]{true, true};
   bool transport_healthy[2]{true, true};
+  uint64_t transport_last_tx_age_ns[2]{};
+  uint64_t transport_last_rx_age_ns[2]{};
   bool emulate_arm_feedback = false;
   uint32_t emulated_pv_feedback_period = 1;
   uint64_t emulated_pv_send_count = 0;
@@ -426,8 +428,8 @@ int32_t get_transport_health(void* controller,
   *health = {};
   health->connected = g_driver->transport_connected[side] ? 1 : 0;
   health->healthy = g_driver->transport_healthy[side] ? 1 : 0;
-  health->last_tx_age_ns = std::numeric_limits<uint64_t>::max();
-  health->last_rx_age_ns = std::numeric_limits<uint64_t>::max();
+  health->last_tx_age_ns = g_driver->transport_last_tx_age_ns[side];
+  health->last_rx_age_ns = g_driver->transport_last_rx_age_ns[side];
   return 0;
 }
 
@@ -2452,8 +2454,20 @@ void test_single_stale_feedback_sample_keeps_persistent_position_control() {
             return runtime.health().consecutive_feedback_failures == 1;
           }, 200ms),
           "one stale feedback-health sample is counted");
-  require(runtime.health().state == ARTICORE_RUNNING,
+  const auto stale = runtime.health();
+  require(stale.state == ARTICORE_RUNNING,
           "one stale sample keeps persistent position control running");
+  require(stale.motor_feedback_count == 3 &&
+              stale.feedback_issue_count == 1 &&
+              stale.feedback_issue_scope ==
+                  ARTICORE_FEEDBACK_SCOPE_SINGLE_MOTOR &&
+              std::string(stale.motor_feedback[2].role) == "right/gripper" &&
+              stale.motor_feedback[2].feedback_age_ns == 201'000'000ULL &&
+              (stale.motor_feedback[2].issues &
+               ARTICORE_FEEDBACK_ISSUE_STALE) != 0 &&
+              std::string(stale.right_transport.last_error).find(
+                  "right/gripper") != std::string::npos,
+          "health identifies the one stale Motor with its age and role");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     driver.motors[motors[2].motor].age_ns = 0;
@@ -2463,6 +2477,80 @@ void test_single_stale_feedback_sample_keeps_persistent_position_control() {
                    runtime.health().consecutive_feedback_failures == 0;
           }, 200ms),
           "fresh feedback clears the transient failure without interrupting control");
+  const auto recovered = runtime.health();
+  require(recovered.feedback_issue_count == 0 &&
+              recovered.feedback_issue_scope == ARTICORE_FEEDBACK_SCOPE_NONE &&
+              recovered.right_transport.last_error[0] == '\0',
+          "fresh feedback clears the per-Motor diagnostic and side error");
+}
+
+void test_feedback_health_aggregates_motors_and_classifies_channel_stall() {
+  FakeDriver driver;
+  driver.emulate_arm_feedback = true;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  cfg.feedback_check_hz = 20;
+  cfg.feedback_failure_threshold = 3;
+  articore::SafetyRuntime runtime(cfg, api(), reinterpret_cast<void*>(0x100),
+                                  g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+  ArticoreJointMitTarget targets[] = {
+      {sizeof(ArticoreJointMitTarget), motors[0].motor, 0.05f},
+      {sizeof(ArticoreJointMitTarget), motors[1].motor, 0.95f}};
+  runtime.set_joint_mit(targets, 2, 0.5f);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[1].motor].age_ns = 301'000'000ULL;
+    driver.motors[motors[2].motor].age_ns = 302'000'000ULL;
+  }
+  require(wait_for([&] {
+            return runtime.health().state == ARTICORE_DEGRADED;
+          }, 500ms),
+          "sustained multi-Motor delay enters degraded");
+  const auto multiple = runtime.health();
+  const std::string right_error(multiple.right_transport.last_error);
+  const std::string safety_reason(multiple.safety_reason);
+  require(multiple.feedback_issue_count == 2 &&
+              multiple.feedback_issue_scope ==
+                  ARTICORE_FEEDBACK_SCOPE_MULTIPLE_MOTORS &&
+              (multiple.motor_feedback[1].issues &
+               ARTICORE_FEEDBACK_ISSUE_STALE) != 0 &&
+              (multiple.motor_feedback[2].issues &
+               ARTICORE_FEEDBACK_ISSUE_STALE) != 0 &&
+              right_error.find("right/joint1") != std::string::npos &&
+              right_error.find("right/gripper") != std::string::npos &&
+              safety_reason.find("right/joint1") != std::string::npos &&
+              safety_reason.find("right/gripper") != std::string::npos,
+          "all stale Motors remain visible instead of overwriting one another");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.transport_last_rx_age_ns[1] = 303'000'000ULL;
+  }
+  require(wait_for([&] {
+            const auto health = runtime.health();
+            return health.right_transport.last_rx_age_ns == 303'000'000ULL &&
+                health.feedback_issue_scope ==
+                    ARTICORE_FEEDBACK_SCOPE_RIGHT_CHANNEL;
+          }, 200ms),
+          "all right Motors stale with stalled RX classifies the right channel");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].age_ns = 304'000'000ULL;
+    driver.transport_last_rx_age_ns[0] = 305'000'000ULL;
+  }
+  require(wait_for([&] {
+            const auto health = runtime.health();
+            return health.feedback_issue_count == 3 &&
+                health.feedback_issue_scope ==
+                    ARTICORE_FEEDBACK_SCOPE_BOTH_CHANNELS;
+          }, 200ms),
+          "stalled RX with all Motors stale classifies both channels");
 }
 
 void test_ordinary_position_can_recover_from_feedback_outside_hard_limit() {
@@ -4374,6 +4462,136 @@ articore::NativeTrajectoryRequest trajectory_request(
   end.positions = {0.2f, 0.8f};
   request.waypoints = {start, end};
   return request;
+}
+
+void test_planned_trajectory_install_is_atomic_and_fifo_safe() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  uint64_t first_token = 0;
+  {
+    auto transaction = runtime.begin_command_transaction();
+    first_token = runtime.begin_command_planning(transaction, true);
+  }
+  ArticoreJointPvTarget targets[] = {
+      {sizeof(ArticoreJointPvTarget), motors[0].motor, 0.1f},
+      {sizeof(ArticoreJointPvTarget), motors[1].motor, 0.9f},
+  };
+  require_throws(
+      [&] { runtime.set_joint_pv(targets, 2, 1.0f); },
+      "owned by an active native planning transaction",
+      "external ordinary motion remains rejected during trajectory planning");
+
+  auto first = trajectory_request(motors, ARTICORE_MODE_PV, 0.5);
+  uint64_t first_id = 0;
+  {
+    auto transaction = runtime.begin_command_transaction();
+    require_throws(
+        [&] {
+          runtime.start_trajectory(
+              first, 0, &transaction, true, first_token + 1);
+        },
+        "Runtime state changed while planning the trajectory",
+        "trajectory installation rejects a mismatched planning token");
+    first_id = runtime.start_trajectory(
+        first, 0, &transaction, true, first_token);
+  }
+  require(first_id != 0 &&
+              runtime.motion_status(first_id).state ==
+                  ARTICORE_MOTION_RUNNING,
+          "the first token-owned trajectory installs successfully");
+
+  std::array<uint64_t, 2> queued_ids{};
+  for (std::size_t index = 0; index < queued_ids.size(); ++index) {
+    uint64_t token = 0;
+    articore::NativeTrajectorySample reference;
+    {
+      auto transaction = runtime.begin_command_transaction();
+      token = runtime.begin_command_planning(transaction, true);
+      reference = runtime.planned_trajectory_tail_sample(
+          first.joints, transaction);
+    }
+    require(reference.active && reference.positions.size() == 2,
+            "FIFO planner reads the installed trajectory tail");
+    auto changed_reference = reference;
+    changed_reference.positions[0] += 0.01f;
+    require_throws(
+        [&] {
+          articore::require_unchanged_planned_reference(
+              reference, changed_reference, "linear");
+        },
+        "linear queue tail changed while planning; no motion was queued",
+        "a changed FIFO tail still rejects Cartesian installation");
+    auto next = trajectory_request(motors, ARTICORE_MODE_PV, 0.5);
+    next.waypoints.front().positions = reference.positions;
+    next.waypoints.back().positions = {
+        reference.positions[0] + 0.1f,
+        reference.positions[1] - 0.1f,
+    };
+    auto transaction = runtime.begin_command_transaction();
+    const auto current = runtime.planned_trajectory_tail_sample(
+        next.joints, transaction);
+    require(current.motion_id == reference.motion_id &&
+                current.positions == reference.positions,
+            "FIFO tail remains unchanged before atomic installation");
+    queued_ids[index] = runtime.start_trajectory(
+        std::move(next), 0, &transaction, true, token);
+  }
+  require(queued_ids[0] != 0 && queued_ids[1] != 0 &&
+              queued_ids[0] != queued_ids[1] &&
+              runtime.motion_status(queued_ids[0]).state ==
+                  ARTICORE_MOTION_QUEUED &&
+              runtime.motion_status(queued_ids[1]).state ==
+                  ARTICORE_MOTION_QUEUED,
+          "three token-owned trajectories occupy the FIFO in order");
+
+  // A successful install must release its token while holding state_mutex_.
+  // Otherwise this next planning reservation would still be rejected.
+  uint64_t released_token_probe = 0;
+  {
+    auto transaction = runtime.begin_command_transaction();
+    released_token_probe = runtime.begin_command_planning(transaction, true);
+  }
+  runtime.cancel_command_planning(released_token_probe);
+
+  uint64_t failed_token = 0;
+  {
+    auto transaction = runtime.begin_command_transaction();
+    failed_token = runtime.begin_command_planning(transaction, true);
+  }
+  auto invalid = trajectory_request(motors, ARTICORE_MODE_PV, 0.5);
+  invalid.waypoints.back().time_s = invalid.waypoints.front().time_s;
+  {
+    auto transaction = runtime.begin_command_transaction();
+    require_throws(
+        [&] {
+          runtime.start_trajectory(
+              invalid, 0, &transaction, true, failed_token);
+        },
+        "strictly increasing",
+        "a failed planned trajectory is not partially installed");
+  }
+  runtime.cancel_command_planning(failed_token);
+  uint64_t post_failure_token = 0;
+  {
+    auto transaction = runtime.begin_command_transaction();
+    post_failure_token = runtime.begin_command_planning(transaction, true);
+  }
+  runtime.cancel_command_planning(post_failure_token);
+
+  runtime.cancel_all_motions();
+  runtime.disable();
 }
 
 void test_trajectory_errors_use_product_roles_and_allow_inward_recovery() {
@@ -6372,6 +6590,7 @@ int main() {
     RUN_TEST(test_feedback_seed_ignores_command_limits);
     RUN_TEST(test_feedback_fault_diagnostics_include_identity_value_and_threshold);
     RUN_TEST(test_single_stale_feedback_sample_keeps_persistent_position_control);
+    RUN_TEST(test_feedback_health_aggregates_motors_and_classifies_channel_stall);
     RUN_TEST(test_ordinary_position_can_recover_from_feedback_outside_hard_limit);
     RUN_TEST(test_disable_does_not_stop_after_one_side_fails);
     RUN_TEST(test_disable_uses_structured_feedback_report);
@@ -6412,6 +6631,7 @@ int main() {
     RUN_TEST(test_raw_mit_targets_remain_direct_after_ordinary_position_control);
     RUN_TEST(test_ordinary_mit_position_reinitializes_after_reenable);
     RUN_TEST(test_deadline_skips_missed_periods_and_reenable_seeds_feedback);
+    RUN_TEST(test_planned_trajectory_install_is_atomic_and_fifo_safe);
     RUN_TEST(test_trajectory_errors_use_product_roles_and_allow_inward_recovery);
     RUN_TEST(test_native_quintic_trajectory_executes_at_worker_rate);
     RUN_TEST(test_cartesian_pv_adapts_drive_limit_and_slows_for_tracking_error);

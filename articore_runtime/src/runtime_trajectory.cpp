@@ -322,8 +322,13 @@ double sample_acceleration(const std::array<double, 6>& coefficients,
 uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
                                          uint64_t replace_motion_id,
                                          CommandTransaction* transaction,
-                                         bool enqueue) {
+                                         bool enqueue,
+                                         uint64_t planning_token) {
   const bool planned_reference_transaction = transaction != nullptr;
+  if (planning_token != 0 && transaction == nullptr) {
+    throw std::logic_error(
+        "planned trajectory token requires a command transaction");
+  }
   if (enqueue && replace_motion_id != 0) {
     throw std::invalid_argument(
         "a queued trajectory cannot replace a running trajectory");
@@ -604,7 +609,13 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
   std::set<void*> intentionally_disabled;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
-    require_state_for_command(false, enqueue || replace_motion_id != 0);
+    if (planning_token != 0 &&
+        active_command_planning_token_ != planning_token) {
+      throw std::runtime_error(
+          "Runtime state changed while planning the trajectory");
+    }
+    require_state_for_command(
+        false, enqueue || replace_motion_id != 0, planning_token);
     if (bimanual_follow_.active) {
       throw std::runtime_error(
           "trajectory cannot replace active bimanual ordinary control");
@@ -679,7 +690,13 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
   uint64_t id = 0;
   {
     std::lock_guard<std::mutex> state_lock(state_mutex_);
-    require_state_for_command(false, enqueue || replace_motion_id != 0);
+    if (planning_token != 0 &&
+        active_command_planning_token_ != planning_token) {
+      throw std::runtime_error(
+          "Runtime state changed while planning the trajectory");
+    }
+    require_state_for_command(
+        false, enqueue || replace_motion_id != 0, planning_token);
     if (bimanual_follow_.active) {
       throw std::runtime_error(
           "trajectory cannot replace active bimanual ordinary control");
@@ -734,6 +751,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
       activate_trajectory_locked(std::move(prepared), now);
       next_control_tick_ = now;
     }
+    if (planning_token != 0) active_command_planning_token_ = 0;
   }
   wakeup_.notify_all();
   return id;
@@ -750,13 +768,14 @@ SafetyRuntime::CommandTransaction SafetyRuntime::begin_command_transaction() {
 }
 
 uint64_t SafetyRuntime::begin_command_planning(
-    const CommandTransaction& transaction) {
+    const CommandTransaction& transaction,
+    bool allow_trajectory) {
   if (!transaction.owns_lock() || transaction.mutex() != &command_mutex_) {
     throw std::logic_error(
         "command planning requires the Runtime command transaction");
   }
   std::lock_guard<std::mutex> state_lock(state_mutex_);
-  require_state_for_command();
+  require_state_for_command(false, allow_trajectory);
   if (active_command_planning_token_ != 0) {
     throw std::runtime_error("another command is already being planned");
   }

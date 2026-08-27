@@ -168,6 +168,13 @@ if(BUILD_TESTING)
     articore_runtime_hardware_trajectory_smoke PRIVATE articore_runtime
   )
   add_executable(
+    articore_runtime_hardware_cartesian_planning_smoke EXCLUDE_FROM_ALL
+    tests/hardware_cartesian_planning_smoke.cpp
+  )
+  target_link_libraries(
+    articore_runtime_hardware_cartesian_planning_smoke PRIVATE articore_runtime
+  )
+  add_executable(
     articore_runtime_hardware_ptp_reference_diagnostic EXCLUDE_FROM_ALL
     tests/hardware_ptp_reference_diagnostic.cpp
   )

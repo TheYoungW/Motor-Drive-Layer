@@ -290,6 +290,99 @@ bool SafetyRuntime::send_safe_hold_once(std::string& error) {
   return rc == 0 && gripper_sent;
 }
 
+std::vector<ArticoreMotorFeedbackHealth>
+SafetyRuntime::collect_motor_feedback_health() const {
+  std::vector<ArticoreMotorFeedbackHealth> result;
+  result.reserve(motors_.size());
+  const uint64_t maximum_age_ns = feedback_max_age_ns();
+  for (const auto& motor : motors_) {
+    ArticoreMotorFeedbackHealth item{};
+    item.side = motor.descriptor.side;
+    item.is_gripper = motor.descriptor.is_gripper ? 1U : 0U;
+    item.feedback_age_ns = std::numeric_limits<uint64_t>::max();
+    copy_text(item.role, motor.descriptor.name);
+
+    ArticoreFeedbackStats stats{};
+    ArticoreMotorState state{};
+    const bool has_feedback =
+        backend_->get_feedback_stats(motor.descriptor.motor, &stats) == 0 &&
+        stats.has_feedback;
+    const bool has_state =
+        backend_->get_state(motor.descriptor.motor, &state) == 0 &&
+        state.has_value;
+    if (motor.motor_identity_configured) {
+      item.can_id = motor.configured_can_id;
+      item.can_id_valid = 1;
+    } else if (has_state) {
+      item.can_id = state.can_id;
+      item.can_id_valid = 1;
+    }
+    item.has_feedback = has_feedback ? 1U : 0U;
+    item.has_state = has_state ? 1U : 0U;
+    if (has_feedback) {
+      item.feedback_age_ns = stats.age_ns;
+      item.update_count = stats.update_count;
+      item.fresh = stats.age_ns <= maximum_age_ns ? 1U : 0U;
+      if (!item.fresh) item.issues |= ARTICORE_FEEDBACK_ISSUE_STALE;
+    } else {
+      item.issues |= ARTICORE_FEEDBACK_ISSUE_MISSING;
+    }
+    if (has_state) {
+      item.status_code = state.status_code;
+      item.position = state.pos;
+      item.velocity = state.vel;
+      item.torque = state.torq;
+      item.values_finite =
+          finite(state.pos) && finite(state.vel) && finite(state.torq) ? 1U : 0U;
+      if (!item.values_finite) {
+        item.issues |= ARTICORE_FEEDBACK_ISSUE_NONFINITE;
+      }
+      if (state.status_code > 1) {
+        item.issues |= ARTICORE_FEEDBACK_ISSUE_MOTOR_FAULT;
+      }
+    } else {
+      item.issues |= ARTICORE_FEEDBACK_ISSUE_STATE_UNAVAILABLE;
+    }
+    result.push_back(item);
+  }
+  return result;
+}
+
+ArticoreFeedbackIssueScope SafetyRuntime::classify_feedback_issue_scope(
+    const std::vector<ArticoreMotorFeedbackHealth>& motors) const {
+  uint32_t installed[2]{};
+  uint32_t unavailable[2]{};
+  uint32_t issue_count = 0;
+  constexpr uint32_t availability_issues =
+      ARTICORE_FEEDBACK_ISSUE_MISSING |
+      ARTICORE_FEEDBACK_ISSUE_STALE |
+      ARTICORE_FEEDBACK_ISSUE_STATE_UNAVAILABLE;
+  for (const auto& motor : motors) {
+    if (motor.side > 1) continue;
+    ++installed[motor.side];
+    if (motor.issues != ARTICORE_FEEDBACK_ISSUE_NONE) ++issue_count;
+    if ((motor.issues & availability_issues) != 0) ++unavailable[motor.side];
+  }
+  bool channel[2]{};
+  for (uint8_t side = 0; side < 2; ++side) {
+    if (!active_sides_[side]) continue;
+    const bool transport_failed =
+        !sides_[side].connected || !sides_[side].transport_healthy;
+    const bool all_feedback_unavailable =
+        installed[side] > 0 && unavailable[side] == installed[side];
+    const bool receive_stalled =
+        sides_[side].last_rx_age_ns > feedback_max_age_ns();
+    channel[side] = transport_failed ||
+        (all_feedback_unavailable && receive_stalled);
+  }
+  if (channel[0] && channel[1]) return ARTICORE_FEEDBACK_SCOPE_BOTH_CHANNELS;
+  if (channel[0]) return ARTICORE_FEEDBACK_SCOPE_LEFT_CHANNEL;
+  if (channel[1]) return ARTICORE_FEEDBACK_SCOPE_RIGHT_CHANNEL;
+  if (issue_count == 1) return ARTICORE_FEEDBACK_SCOPE_SINGLE_MOTOR;
+  if (issue_count > 1) return ARTICORE_FEEDBACK_SCOPE_MULTIPLE_MOTORS;
+  return ARTICORE_FEEDBACK_SCOPE_NONE;
+}
+
 bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
                                             bool allow_held_grippers,
                                             std::string& error,
@@ -313,89 +406,91 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
     }
   };
   bool side_ok[2] = {active_sides_[0], active_sides_[1]};
-  std::string side_error[2];
-  for (const auto& motor : motors_) {
-    const std::string name(motor.descriptor.name);
-    ArticoreFeedbackStats stats{};
-    ArticoreMotorState state{};
-    const bool has_state =
-        backend_->get_state(motor.descriptor.motor, &state) == 0 &&
-        state.has_value;
-    const auto identity = [&]() {
-      std::ostringstream detail;
-      detail << "CH" << static_cast<unsigned>(motor.descriptor.side) << "/"
-             << name << " (CAN ID ";
-      if (has_state) detail << static_cast<unsigned>(state.can_id);
-      else detail << "unavailable";
-      detail << ")";
-      return detail.str();
-    };
-    if (backend_->get_feedback_stats(motor.descriptor.motor, &stats) != 0 ||
-        !stats.has_feedback) {
-      side_ok[motor.descriptor.side] = false;
-      side_error[motor.descriptor.side] =
-          identity() + ": feedback statistics unavailable; actual=missing, "
-                       "threshold=valid fresh feedback required";
-      if (recovery_check) mark_unconfirmed(name);
-      continue;
-    }
-    maximum_age[motor.descriptor.side] =
-        std::max(maximum_age[motor.descriptor.side], stats.age_ns);
-    if (stats.age_ns > static_cast<uint64_t>(config_.feedback_max_age_ms) * 1'000'000ULL) {
-      side_ok[motor.descriptor.side] = false;
-      side_error[motor.descriptor.side] =
-          identity() + ": feedback exceeds maximum age; actual_age_ns=" +
-          std::to_string(stats.age_ns) + ", threshold_age_ns<=" +
-          std::to_string(static_cast<uint64_t>(config_.feedback_max_age_ms) *
-                         1'000'000ULL);
-      if (recovery_check) mark_unconfirmed(name);
-    }
-    if (!has_state) {
-      side_ok[motor.descriptor.side] = false;
-      side_error[motor.descriptor.side] =
-          identity() + ": motor state unavailable; actual=missing, "
-                       "threshold=valid motor state required";
-      if (recovery_check) mark_unconfirmed(name);
-      continue;
-    }
-    if (!finite(state.pos) || !finite(state.vel) || !finite(state.torq)) {
-      actionable_failure = true;
-      side_ok[motor.descriptor.side] = false;
-      std::ostringstream detail;
-      detail << identity() << ": motor feedback is not finite; actual={position="
-             << state.pos << ", velocity=" << state.vel << ", torque="
-             << state.torq << "}, threshold=all feedback values finite";
-      side_error[motor.descriptor.side] = detail.str();
-      if (recovery_check) mark_unconfirmed(name);
-      continue;
-    }
-    if (state.status_code > 1) {
-      actionable_failure = true;
-      motor_faults.push_back(name);
-      faulted_presence.push_back(motor.descriptor.motor);
-      side_ok[motor.descriptor.side] = false;
-      side_error[motor.descriptor.side] =
-          identity() + ": motor fault status reported; actual_status=" +
-          std::to_string(state.status_code) + ", threshold_status<=1";
-    }
-    if (state.status_code <= 1 && recovery_check && state.status_code != 0 &&
-        !(allow_held_grippers && motor.descriptor.is_gripper)) {
+  std::vector<std::string> side_errors[2];
+  auto feedback = collect_motor_feedback_health();
+  for (std::size_t index = 0; index < feedback.size(); ++index) {
+    auto& item = feedback[index];
+    const auto& motor = motors_[index];
+    const std::string name(item.role);
+    maximum_age[item.side] =
+        std::max(maximum_age[item.side], item.feedback_age_ns);
+
+    if (item.has_state && item.status_code <= 1 && recovery_check &&
+        item.status_code != 0 &&
+        !(allow_held_grippers && item.is_gripper)) {
+      item.issues |= ARTICORE_FEEDBACK_ISSUE_UNEXPECTED_POWER_STATE;
       mark_unconfirmed(name);
-      side_ok[motor.descriptor.side] = false;
-      side_error[motor.descriptor.side] =
-          identity() + ": motor is not disabled; actual_status=" +
-          std::to_string(state.status_code) + ", threshold_status=0";
     }
-    if (!recovery_check && state.status_code == 0 &&
+    if (item.has_state && !recovery_check && item.status_code == 0 &&
         !intentionally_disabled.count(motor.descriptor.motor)) {
-      actionable_failure = true;
-      error = identity() +
-          ": motor unexpectedly disabled; actual_status=0, threshold_status=1";
+      item.issues |= ARTICORE_FEEDBACK_ISSUE_UNEXPECTED_POWER_STATE;
       motor_faults.push_back(name);
       faulted_presence.push_back(motor.descriptor.motor);
-      side_ok[motor.descriptor.side] = false;
-      side_error[motor.descriptor.side] = error;
     }
+
+    if (item.issues == ARTICORE_FEEDBACK_ISSUE_NONE) continue;
+    side_ok[item.side] = false;
+    const uint32_t severe_issues =
+        ARTICORE_FEEDBACK_ISSUE_NONFINITE |
+        ARTICORE_FEEDBACK_ISSUE_MOTOR_FAULT |
+        ARTICORE_FEEDBACK_ISSUE_UNEXPECTED_POWER_STATE;
+    if ((item.issues & severe_issues) != 0) actionable_failure = true;
+    if ((item.issues & ARTICORE_FEEDBACK_ISSUE_MOTOR_FAULT) != 0) {
+      motor_faults.push_back(name);
+      faulted_presence.push_back(motor.descriptor.motor);
+    }
+    if (recovery_check &&
+        (item.issues & (ARTICORE_FEEDBACK_ISSUE_MISSING |
+                        ARTICORE_FEEDBACK_ISSUE_STALE |
+                        ARTICORE_FEEDBACK_ISSUE_STATE_UNAVAILABLE |
+                        ARTICORE_FEEDBACK_ISSUE_NONFINITE)) != 0) {
+      mark_unconfirmed(name);
+    }
+
+    std::ostringstream detail;
+    detail << "CH" << item.side << "/" << item.role << " (CAN ID ";
+    if (item.can_id_valid) detail << item.can_id;
+    else detail << "unavailable";
+    detail << "): ";
+    bool wrote = false;
+    const auto append = [&](const std::string& value) {
+      if (wrote) detail << ", ";
+      detail << value;
+      wrote = true;
+    };
+    if ((item.issues & ARTICORE_FEEDBACK_ISSUE_MISSING) != 0) {
+      append("feedback statistics unavailable; actual=missing; "
+             "threshold=valid fresh feedback required");
+    }
+    if ((item.issues & ARTICORE_FEEDBACK_ISSUE_STALE) != 0) {
+      append("feedback exceeds maximum age; actual_age_ns=" +
+             std::to_string(item.feedback_age_ns) + "; threshold_age_ns<=" +
+             std::to_string(feedback_max_age_ns()));
+    }
+    if ((item.issues & ARTICORE_FEEDBACK_ISSUE_STATE_UNAVAILABLE) != 0) {
+      append("motor state unavailable; actual=missing; "
+             "threshold=valid motor state required");
+    }
+    if ((item.issues & ARTICORE_FEEDBACK_ISSUE_NONFINITE) != 0) {
+      std::ostringstream values;
+      values << "motor feedback is not finite; actual={position="
+             << item.position << ", velocity=" << item.velocity
+             << ", torque=" << item.torque
+             << "}; threshold=all feedback values finite";
+      append(values.str());
+    }
+    if ((item.issues & ARTICORE_FEEDBACK_ISSUE_MOTOR_FAULT) != 0) {
+      append("motor fault status reported; actual_status=" +
+             std::to_string(item.status_code) + "; threshold_status<=1");
+    }
+    if ((item.issues & ARTICORE_FEEDBACK_ISSUE_UNEXPECTED_POWER_STATE) != 0) {
+      append(recovery_check
+                 ? "motor is not disabled; actual_status=" +
+                       std::to_string(item.status_code) + "; threshold_status=0"
+                 : "motor unexpectedly disabled; actual_status=0; "
+                   "threshold_status=1");
+    }
+    side_errors[item.side].push_back(detail.str());
   }
 
   const auto now = Clock::now();
@@ -420,10 +515,19 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
       sides_[side].healthy = side_ok[side] && sides_[side].connected &&
                              sides_[side].transport_healthy;
       if (!side_ok[side]) {
-        sides_[side].last_error = side_error[side];
+        sides_[side].last_error.clear();
+        for (const auto& detail : side_errors[side]) {
+          if (!sides_[side].last_error.empty()) {
+            sides_[side].last_error += "; ";
+          }
+          sides_[side].last_error += detail;
+        }
         ++sides_[side].feedback_failures;
       } else {
         sides_[side].feedback_failures = 0;
+        if (sides_[side].connected && sides_[side].transport_healthy) {
+          sides_[side].last_error.clear();
+        }
       }
     }
     const bool active_feedback_ok =
@@ -446,17 +550,23 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
   if (diagnostic_only) {
     *diagnostic_only = !recovery_check && !actionable_failure;
   }
+  for (uint8_t side = 0; side < 2; ++side) {
+    if (!active_sides_[side] || side_ok[side] || side_errors[side].empty()) {
+      continue;
+    }
+    if (!error.empty()) error += "; ";
+    error += "CH" + std::to_string(side) + " feedback unhealthy: ";
+    for (std::size_t index = 0; index < side_errors[side].size(); ++index) {
+      if (index > 0) error += "; ";
+      error += side_errors[side][index];
+    }
+  }
+  if (error.empty() && has_motor_faults) {
+    error = "motor fault status reported";
+  }
   if (error.empty()) {
-    if (active_sides_[0] && !side_ok[0]) {
-      error = "CH0 feedback unhealthy: " + side_error[0];
-    } else if (active_sides_[1] && !side_ok[1]) {
-      error = "CH1 feedback unhealthy: " + side_error[1];
-    }
-    else if (has_motor_faults) error = "motor fault status reported";
-    else {
-      error = "not all motors are confirmed disabled";
-      if (!unconfirmed_detail.empty()) error += ": " + unconfirmed_detail;
-    }
+    error = "not all motors are confirmed disabled";
+    if (!unconfirmed_detail.empty()) error += ": " + unconfirmed_detail;
   }
   return false;
 }
@@ -614,6 +724,28 @@ ArticoreSafetyHealth SafetyRuntime::health() const {
     output.last_rx_age_ns = sides_[side].last_rx_age_ns;
     copy_text(output.last_error, sides_[side].last_error);
   }
+  auto motor_feedback = collect_motor_feedback_health();
+  result.motor_feedback_count = static_cast<uint32_t>(
+      std::min<std::size_t>(motor_feedback.size(), 32));
+  for (uint32_t index = 0; index < result.motor_feedback_count; ++index) {
+    auto& item = motor_feedback[index];
+    const bool power_expected =
+        state_ == ARTICORE_ENABLED || state_ == ARTICORE_RUNNING ||
+        state_ == ARTICORE_DEGRADED ||
+        state_ == ARTICORE_PARTIALLY_ENABLED ||
+        state_ == ARTICORE_SAFE_HOLD || state_ == ARTICORE_SAFE_STOP;
+    if (item.has_state && item.status_code == 0 && power_expected &&
+        !intentionally_disabled_motors_.count(
+            motors_[index].descriptor.motor)) {
+      item.issues |= ARTICORE_FEEDBACK_ISSUE_UNEXPECTED_POWER_STATE;
+    }
+    if (item.issues != ARTICORE_FEEDBACK_ISSUE_NONE) {
+      ++result.feedback_issue_count;
+    }
+    result.motor_feedback[index] = item;
+  }
+  result.feedback_issue_scope =
+      classify_feedback_issue_scope(motor_feedback);
   for (const auto& motor : motors_) {
     if (!motor.descriptor.is_gripper || result.gripper_count >= 2) continue;
     auto& output = result.grippers[result.gripper_count++];

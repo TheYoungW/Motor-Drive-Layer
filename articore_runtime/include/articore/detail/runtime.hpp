@@ -358,12 +358,15 @@ class SafetyRuntime {
   // point-to-point uses the ordinary PV position path instead.
   using CommandTransaction = std::unique_lock<std::mutex>;
   CommandTransaction begin_command_transaction();
-  uint64_t begin_command_planning(const CommandTransaction& transaction);
+  uint64_t begin_command_planning(
+      const CommandTransaction& transaction,
+      bool allow_trajectory = false);
   void cancel_command_planning(uint64_t token) noexcept;
   uint64_t start_trajectory(NativeTrajectoryRequest request,
                             uint64_t replace_motion_id = 0,
                             CommandTransaction* transaction = nullptr,
-                            bool enqueue = false);
+                            bool enqueue = false,
+                            uint64_t planning_token = 0);
   NativeTrajectorySample trajectory_sample() const;
   NativeTrajectorySample planned_arm_sample(
       const std::vector<NativeTrajectoryJoint>& joints,
@@ -764,6 +767,10 @@ class SafetyRuntime {
   bool refresh_feedback_health(bool recovery_check, bool allow_held_grippers,
                                std::string& error,
                                bool* diagnostic_only = nullptr);
+  std::vector<ArticoreMotorFeedbackHealth>
+  collect_motor_feedback_health() const;
+  ArticoreFeedbackIssueScope classify_feedback_issue_scope(
+      const std::vector<ArticoreMotorFeedbackHealth>& motors) const;
   bool refresh_transport_health(std::string& error);
   void seed_gripper_targets_from_feedback(bool activate);
   std::string motor_error(const std::string& fallback) const;

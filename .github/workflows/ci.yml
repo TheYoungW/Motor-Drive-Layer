@@ -74,7 +74,7 @@ jobs:
           runtime = files["motor_drive_layer_native/lib/libarticore_runtime.so"]
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x00090000
+          assert runtime_lib.articore_runtime_abi_version() == 0x000A0000
           assert hasattr(runtime_lib, "articore_runtime_set_joint_pv")
           assert hasattr(runtime_lib, "articore_runtime_set_joint_mit")
           assert hasattr(runtime_lib, "articore_runtime_submit_mit_frame")

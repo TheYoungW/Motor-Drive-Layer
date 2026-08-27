@@ -63,12 +63,14 @@ constexpr Arm kPoint98{
     0.135614395f, 0.530822754f, -1.274700165f, -0.174400000f,
     -0.888647079f, 0.785000000f, -0.394636154f};
 
-constexpr float kReferenceVelocity = 0.5f;
+// Product speed_percent=50 maps to a 1 rad/s ordinary-PV reference. Keep the
+// independent Damiao POS_VEL ceiling at 3 rad/s, matching the public Runtime.
+constexpr float kReferenceVelocity = 1.0f;
 constexpr float kVelocityLimit = 3.0f;
 constexpr float kAbortMoveVelocity = 3.5f;
 constexpr float kAbortHoldVelocity = 0.30f;
 constexpr float kAbortHoldError = 0.030f;
-constexpr auto kHoldDuration = std::chrono::seconds(6);
+constexpr auto kHoldDuration = std::chrono::seconds(1);
 
 struct PvGains {
   float kp_asr;
@@ -83,41 +85,47 @@ struct Profile {
   PvGains gains;
 };
 
-constexpr PvGains kExpectedBaseline{0.0068f, 0.002f, 54.0f, 0.0f};
+constexpr PvGains kExpectedBaseline{0.0092f, 0.002f, 54.0f, 0.0f};
 
 constexpr std::array<Profile, 19> kProfiles{{
-    {"kp_apr", "kp_apr_36", {0.0068f, 0.002f, 36.0f, 0.0f}},
-    {"kp_apr", "kp_apr_45", {0.0068f, 0.002f, 45.0f, 0.0f}},
+    {"kp_apr", "kp_apr_36", {0.0092f, 0.002f, 36.0f, 0.0f}},
+    {"kp_apr", "kp_apr_45", {0.0092f, 0.002f, 45.0f, 0.0f}},
     {"kp_apr", "kp_apr_54", kExpectedBaseline},
-    {"kp_apr", "kp_apr_63", {0.0068f, 0.002f, 63.0f, 0.0f}},
-    {"kp_apr", "kp_apr_72", {0.0068f, 0.002f, 72.0f, 0.0f}},
+    {"kp_apr", "kp_apr_63", {0.0092f, 0.002f, 63.0f, 0.0f}},
+    {"kp_apr", "kp_apr_72", {0.0092f, 0.002f, 72.0f, 0.0f}},
     {"kp_asr", "kp_asr_0.0048", {0.0048f, 0.002f, 54.0f, 0.0f}},
     {"kp_asr", "kp_asr_0.0058", {0.0058f, 0.002f, 54.0f, 0.0f}},
     {"kp_asr", "kp_asr_0.0068", kExpectedBaseline},
     {"kp_asr", "kp_asr_0.0080", {0.0080f, 0.002f, 54.0f, 0.0f}},
     {"kp_asr", "kp_asr_0.0092", {0.0092f, 0.002f, 54.0f, 0.0f}},
-    {"ki_asr", "ki_asr_0.0010", {0.0068f, 0.0010f, 54.0f, 0.0f}},
-    {"ki_asr", "ki_asr_0.0015", {0.0068f, 0.0015f, 54.0f, 0.0f}},
+    {"ki_asr", "ki_asr_0.0010", {0.0092f, 0.0010f, 54.0f, 0.0f}},
+    {"ki_asr", "ki_asr_0.0015", {0.0092f, 0.0015f, 54.0f, 0.0f}},
     {"ki_asr", "ki_asr_0.0020", kExpectedBaseline},
-    {"ki_asr", "ki_asr_0.0025", {0.0068f, 0.0025f, 54.0f, 0.0f}},
-    {"ki_asr", "ki_asr_0.0030", {0.0068f, 0.0030f, 54.0f, 0.0f}},
+    {"ki_asr", "ki_asr_0.0025", {0.0092f, 0.0025f, 54.0f, 0.0f}},
+    {"ki_asr", "ki_asr_0.0030", {0.0092f, 0.0030f, 54.0f, 0.0f}},
     {"ki_apr", "ki_apr_0.000", kExpectedBaseline},
-    {"ki_apr", "ki_apr_0.020", {0.0068f, 0.002f, 54.0f, 0.020f}},
-    {"ki_apr", "ki_apr_0.050", {0.0068f, 0.002f, 54.0f, 0.050f}},
-    {"ki_apr", "ki_apr_0.100", {0.0068f, 0.002f, 54.0f, 0.100f}},
+    {"ki_apr", "ki_apr_0.020", {0.0092f, 0.002f, 54.0f, 0.020f}},
+    {"ki_apr", "ki_apr_0.050", {0.0092f, 0.002f, 54.0f, 0.050f}},
+    {"ki_apr", "ki_apr_0.100", {0.0092f, 0.002f, 54.0f, 0.100f}},
 }};
 
-constexpr std::array<Profile, 3> kValidationProfiles{{
-    {"validation", "baseline_a1", kExpectedBaseline},
-    {"validation", "candidate_b",
-     {0.0092f, 0.002f, 54.0f, 0.0f}},
-    {"validation", "baseline_a2", kExpectedBaseline},
+constexpr std::array<Profile, 5> kValidationProfiles{{
+    {"kp_apr", "baseline_54_a1", kExpectedBaseline},
+    {"mixed_j2", "j1base_j2p58_vp0p0120_vi0p0015_b1",
+     {0.0120f, 0.0015f, 58.0f, 0.0f}},
+    {"kp_apr", "baseline_54_a2", kExpectedBaseline},
+    {"mixed_j2", "j1base_j2p58_vp0p0120_vi0p0015_b2",
+     {0.0120f, 0.0015f, 58.0f, 0.0f}},
+    {"kp_apr", "baseline_54_a3", kExpectedBaseline},
 }};
 
-constexpr std::array<std::pair<int, Arm>, 10> kValidationPoints{{
-    {25, kPoint25}, {84, kPoint84}, {58, kPoint58}, {131, kPoint131},
-    {154, kPoint154}, {27, kPoint27}, {2, kPoint2}, {61, kPoint61},
-    {87, kPoint87}, {98, kPoint98},
+PvGains validation_j1_gains(const Profile& profile) {
+  return std::strcmp(profile.family, "mixed_j2") == 0
+      ? kExpectedBaseline : profile.gains;
+}
+
+constexpr std::array<std::pair<int, Arm>, 3> kValidationPoints{{
+    {25, kPoint25}, {17, kPoint17}, {19, kPoint19},
 }};
 
 struct Snapshot {
@@ -143,6 +151,31 @@ PvGains read_gains(damiao::MotorHandle* motor) {
           motor->get_register_f32(26, timeout),
           motor->get_register_f32(27, timeout),
           motor->get_register_f32(28, timeout)};
+}
+
+uint32_t read_control_mode(damiao::MotorHandle* motor) {
+  return motor->get_register_u32(10, std::chrono::milliseconds(100));
+}
+
+void print_validation_modes(const char* checkpoint,
+                            damiao::MotorHandle* motor_j1,
+                            damiao::MotorHandle* motor_j2) {
+  std::cout << "MODES checkpoint=" << checkpoint
+            << " J1=" << read_control_mode(motor_j1)
+            << " J2=" << read_control_mode(motor_j2) << std::endl;
+}
+
+void require_validation_pv_mode(const char* checkpoint,
+                                damiao::MotorHandle* motor_j1,
+                                damiao::MotorHandle* motor_j2) {
+  const auto j1_mode = read_control_mode(motor_j1);
+  const auto j2_mode = read_control_mode(motor_j2);
+  std::cout << "MODES checkpoint=" << checkpoint
+            << " J1=" << j1_mode << " J2=" << j2_mode << std::endl;
+  if (j1_mode != 2 || j2_mode != 2) {
+    throw std::runtime_error(
+        std::string("PV control-mode precondition failed at ") + checkpoint);
+  }
 }
 
 bool gains_match(const PvGains& lhs, const PvGains& rhs) {
@@ -261,6 +294,54 @@ void move(articore::SafetyRuntime& runtime,
   wait_stable(runtime, resources, target);
 }
 
+void seed_trace_joint_layout(
+    articore::SafetyRuntime& runtime,
+    const articore::YunyiRuntimeResources& resources,
+    const Product& current) {
+  articore::NativeTrajectoryRequest request;
+  request.mode = ARTICORE_MODE_PV;
+  request.joints.reserve(resources.joints.size());
+  for (const auto& source : resources.joints) {
+    articore::NativeTrajectoryJoint joint;
+    joint.role = articore::yunyi_joint_role(
+        static_cast<uint32_t>(request.joints.size()));
+    joint.motor = source.motor;
+    joint.direction = source.direction;
+    joint.velocity_command_scale = source.velocity_command_scale;
+    joint.velocity_feedback_scale = source.velocity_feedback_scale;
+    joint.torque_command_scale = source.torque_command_scale;
+    joint.lower_position = source.lower;
+    joint.upper_position = source.upper;
+    joint.velocity_limit = source.velocity_limit;
+    joint.acceleration_limit = source.acceleration_limit;
+    joint.torque_limit = source.torque_limit;
+    joint.pv_velocity_limit = kVelocityLimit;
+    joint.pv_hold_velocity_limit = 0.0f;
+    request.joints.push_back(joint);
+  }
+  for (double time_s : {0.0, 0.1}) {
+    articore::NativeTrajectoryWaypoint waypoint;
+    waypoint.time_s = time_s;
+    waypoint.positions.assign(current.begin(), current.end());
+    waypoint.velocities.assign(current.size(), 0.0f);
+    waypoint.accelerations.assign(current.size(), 0.0f);
+    request.waypoints.push_back(std::move(waypoint));
+  }
+  runtime.start_trajectory(std::move(request));
+  const auto deadline = Clock::now() + std::chrono::seconds(3);
+  while (Clock::now() < deadline) {
+    const auto status = runtime.motion_status();
+    if (status.state == ARTICORE_MOTION_COMPLETED) return;
+    if (status.state == ARTICORE_MOTION_FAULT ||
+        status.state == ARTICORE_MOTION_CANCELLED) {
+      throw std::runtime_error(std::string("trace seed trajectory failed: ") +
+                               status.error);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  throw std::runtime_error("trace seed trajectory timed out");
+}
+
 void collect_hold(std::ofstream& output,
                   articore::SafetyRuntime& runtime,
                   const articore::YunyiRuntimeResources& resources,
@@ -348,6 +429,12 @@ int main(int argc, char** argv) {
   try {
     runtime.connect();
     connected = true;
+    const auto configure_result =
+        runtime.configure_mode_for_connect(ARTICORE_MODE_PV);
+    if (configure_result != ARTICORE_OPERATION_OK) {
+      throw std::runtime_error(
+          "failed to configure native POS_VEL mode after connect");
+    }
     require_all_disabled(resources);
     initial = read_snapshot(resources, false).q;
     have_initial = true;
@@ -355,6 +442,7 @@ int main(int argc, char** argv) {
       original_j1 = read_gains(motor_j1);
       original_j2 = read_gains(motor_j2);
       have_validation_originals = true;
+      print_validation_modes("after_connect", motor_j1, motor_j2);
       if (!gains_match(original_j1, kExpectedBaseline) ||
           !gains_match(original_j2, kExpectedBaseline)) {
         throw std::runtime_error(
@@ -362,20 +450,30 @@ int main(int argc, char** argv) {
       }
       for (const auto& profile : kValidationProfiles) {
         require_all_disabled(resources);
-        write_gains(motor_j1, profile.gains);
+        const auto j1_gains = validation_j1_gains(profile);
+        write_gains(motor_j1, j1_gains);
         try {
           write_gains(motor_j2, profile.gains);
         } catch (...) {
           write_gains(motor_j1, original_j1);
           throw;
         }
+        print_validation_modes("after_gain_write", motor_j1, motor_j2);
         std::cout << "PROFILE joints=J1/J2 label=" << profile.label
+                  << " J1_KP_ASR=" << j1_gains.kp_asr
+                  << " J1_KI_ASR=" << j1_gains.ki_asr
+                  << " J1_KP_APR=" << j1_gains.kp_apr
+                  << " J2_KP_ASR=" << profile.gains.kp_asr
+                  << " J2_KI_ASR=" << profile.gains.ki_asr
+                  << " J2_KP_APR=" << profile.gains.kp_apr
                   << std::endl;
         runtime.enable(ARTICORE_MODE_PV);
         enabled = true;
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
         require_healthy(runtime);
-        read_snapshot(resources);
+        require_validation_pv_mode("after_enable", motor_j1, motor_j2);
+        seed_trace_joint_layout(runtime, resources, read_snapshot(resources).q);
+        require_validation_pv_mode("after_trace_seed", motor_j1, motor_j2);
         for (const auto& point : kValidationPoints) {
           Product target = initial;
           std::copy(point.second.begin(), point.second.end(), target.begin());

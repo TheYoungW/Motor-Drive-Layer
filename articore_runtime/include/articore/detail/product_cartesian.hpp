@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 
 #include "articore/runtime_abi.h"
 #include "articore/detail/runtime.hpp"
@@ -52,6 +55,29 @@ enum class CartesianIkSearch {
   LocalPath,
   GlobalEndpoint,
 };
+
+inline void require_unchanged_planned_reference(
+    const NativeTrajectorySample& before,
+    const NativeTrajectorySample& after,
+    const char* motion_name) {
+  bool same = before.active == after.active &&
+      before.motion_id == after.motion_id &&
+      before.operation == after.operation &&
+      before.positions.size() == after.positions.size();
+  if (same) {
+    for (std::size_t index = 0; index < before.positions.size(); ++index) {
+      if (std::abs(before.positions[index] - after.positions[index]) > 1e-4f) {
+        same = false;
+        break;
+      }
+    }
+  }
+  if (!same) {
+    throw std::invalid_argument(
+        std::string(motion_name) +
+        " queue tail changed while planning; no motion was queued");
+  }
+}
 
 // Product Cartesian planning uses a small local search for sequential path
 // samples and a deterministic, fixed-seed global search for user endpoints.

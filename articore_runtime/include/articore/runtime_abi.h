@@ -159,6 +159,27 @@ enum ArticoreOperationError {
   ARTICORE_OPERATION_UNSUPPORTED = 9,
 };
 
+/* Per-Motor feedback diagnostics. Multiple issue bits may be set at once so
+ * stale cached state never hides a reported Motor status or invalid payload. */
+enum ArticoreMotorFeedbackIssue {
+  ARTICORE_FEEDBACK_ISSUE_NONE = 0,
+  ARTICORE_FEEDBACK_ISSUE_MISSING = 1U << 0,
+  ARTICORE_FEEDBACK_ISSUE_STALE = 1U << 1,
+  ARTICORE_FEEDBACK_ISSUE_STATE_UNAVAILABLE = 1U << 2,
+  ARTICORE_FEEDBACK_ISSUE_NONFINITE = 1U << 3,
+  ARTICORE_FEEDBACK_ISSUE_MOTOR_FAULT = 1U << 4,
+  ARTICORE_FEEDBACK_ISSUE_UNEXPECTED_POWER_STATE = 1U << 5,
+};
+
+enum ArticoreFeedbackIssueScope {
+  ARTICORE_FEEDBACK_SCOPE_NONE = 0,
+  ARTICORE_FEEDBACK_SCOPE_SINGLE_MOTOR = 1,
+  ARTICORE_FEEDBACK_SCOPE_MULTIPLE_MOTORS = 2,
+  ARTICORE_FEEDBACK_SCOPE_LEFT_CHANNEL = 3,
+  ARTICORE_FEEDBACK_SCOPE_RIGHT_CHANNEL = 4,
+  ARTICORE_FEEDBACK_SCOPE_BOTH_CHANNELS = 5,
+};
+
 enum ArticoreGravityCompensationPhase {
   ARTICORE_GRAVITY_INACTIVE = 0,
   ARTICORE_GRAVITY_ENTERING = 1,
@@ -403,6 +424,25 @@ typedef struct ArticoreGripperHealth {
   char fault_reason[256];
 } ArticoreGripperHealth;
 
+typedef struct ArticoreMotorFeedbackHealth {
+  uint32_t side;
+  uint32_t can_id;
+  uint32_t can_id_valid;
+  uint32_t is_gripper;
+  uint32_t has_feedback;
+  uint32_t fresh;
+  uint32_t has_state;
+  uint32_t values_finite;
+  uint32_t status_code;
+  uint32_t issues;
+  float position;
+  float velocity;
+  float torque;
+  uint64_t feedback_age_ns;
+  uint64_t update_count;
+  char role[64];
+} ArticoreMotorFeedbackHealth;
+
 typedef struct ArticoreSafetyHealth {
   uint32_t struct_size;
   int32_t state;
@@ -414,6 +454,12 @@ typedef struct ArticoreSafetyHealth {
   uint32_t consecutive_feedback_failures;
   ArticoreTransportHealth left_transport;
   ArticoreTransportHealth right_transport;
+  /* Complete product-order feedback diagnostics. feedback_issue_scope
+   * distinguishes an isolated Motor from a stalled left/right/both channel. */
+  uint32_t motor_feedback_count;
+  uint32_t feedback_issue_count;
+  int32_t feedback_issue_scope;
+  ArticoreMotorFeedbackHealth motor_feedback[32];
   uint32_t gripper_count;
   ArticoreGripperHealth grippers[2];
   uint32_t motor_fault_count;

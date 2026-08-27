@@ -1,8 +1,8 @@
 # Yunyi product Runtime
 
-`libarticore_runtime.so` is the only public native library. Runtime ABI 9.0 is
+`libarticore_runtime.so` is the only public native library. Runtime ABI 10.0 is
 an exact contract: the SDK must require `articore_runtime_abi_version() ==
-0x00090000` and bind only the declarations in `articore/runtime_abi.h`.
+0x000A0000` and bind only the declarations in `articore/runtime_abi.h`.
 
 ## Ownership
 
@@ -78,8 +78,15 @@ velocities, torques, temperatures, actual enabled masks and optional gripper
 state. It performs no CAN request. `articore_runtime_get_health()` is the sole
 operation/safety diagnostic surface.
 
+`ArticoreSafetyHealth::motor_feedback` reports every installed Motor in product
+order, including its stable role, CAN ID, feedback age, update counter, state
+availability, status code, and feedback issue bits. `feedback_issue_scope`
+distinguishes one Motor, several Motors with a still-active bus, the left or
+right receive path, and both receive paths. Side `last_error` strings aggregate
+all affected Motor roles instead of retaining only the last failure.
+
 Every public structure must set `struct_size` to its exact `sizeof(...)`.
-ABI 9.0 does not branch on older layouts or capability bits.
+ABI 10.0 does not branch on older layouts or capability bits.
 
 ## Shutdown
 
