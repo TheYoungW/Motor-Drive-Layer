@@ -124,7 +124,7 @@ def read_joint_trace(path: Path) -> dict[str, np.ndarray]:
                 (float(row["timestamp_ns"]), planned, command, actual, tracking_error)
             )
     values = np.asarray(rows)
-    # New traces record zero tracking error during the automatic PTP approach
+    # New traces record zero tracking error during the automatic joint approach
     # and a measured value during the declared Linear/Circular path. Showing
     # only that path keeps the joint chart aligned with the Cartesian charts.
     measured = np.flatnonzero(np.isfinite(values[:, 4]) & (values[:, 4] > 0.0))

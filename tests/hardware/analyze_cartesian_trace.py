@@ -23,7 +23,7 @@ def reversals(values: list[float], threshold: float) -> int:
     return sum(a != b for a, b in zip(active, active[1:]))
 
 
-def highpass_peak_to_peak(values: list[float], half_window: int = 50) -> float:
+def highpass_peak_to_peak(values: list[float], half_window: int = 25) -> float:
     if len(values) <= 2 * half_window:
         return 0.0
     prefix = [0.0]
@@ -47,7 +47,8 @@ def main() -> None:
         all_rows = list(csv.DictReader(source))
     rows = [
         row for row in all_rows
-        if int(row["trajectory_id"]) == args.trajectory_id
+        if int(row.get("motion_id", row.get("trajectory_id", "0"))) ==
+        args.trajectory_id
         and int(row["planned_valid_mask"]) != 0
     ]
     if not rows:
@@ -85,8 +86,8 @@ def main() -> None:
             "peak_abs_planned_acceleration": max(abs(value) for value in planned_acceleration),
             "planned_q_range": max(planned_q) - min(planned_q),
             "actual_q_range": max(actual_q) - min(actual_q),
-            "actual_q_highpass_5hz_peak_to_peak": highpass_peak_to_peak(actual_q),
-            "tracking_error_highpass_5hz_peak_to_peak": highpass_peak_to_peak(tracking_error),
+            "actual_q_highpass_10hz_peak_to_peak": highpass_peak_to_peak(actual_q),
+            "tracking_error_highpass_10hz_peak_to_peak": highpass_peak_to_peak(tracking_error),
             "peak_abs_tracking_error": max(abs(value) for value in tracking_error),
         })
     result["joints"] = joints

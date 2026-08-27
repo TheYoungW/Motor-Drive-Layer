@@ -22,13 +22,18 @@ int main() {
   using RuntimeCall = int32_t (*)(ArticoreRuntime*);
   using ProductCommand = int32_t (*)(
       ArticoreRuntime*, const float*, uint32_t, float);
-  using StartTrajectory = int32_t (*)(
+  using MoveJointTrajectory = int32_t (*)(
       ArticoreRuntime*, const ArticoreTrajectoryWaypoint*, uint32_t,
       const ArticoreTrajectoryConfig*, uint64_t*);
-  using MoveLinear = int32_t (*)(
+  using MoveLinearTrajectory = int32_t (*)(
       ArticoreRuntime*, uint32_t, const float*, const float*, double,
       uint64_t*);
-  using MoveCircular = int32_t (*)(
+  using MoveLinearTrajectoryWithPointCount = int32_t (*)(
+      ArticoreRuntime*, uint32_t, const float*, const float*, double,
+      uint32_t, uint64_t*);
+  using MoveLinearPathTrajectory = int32_t (*)(
+      ArticoreRuntime*, uint32_t, const float*, uint32_t, double, uint64_t*);
+  using MoveCircularTrajectory = int32_t (*)(
       ArticoreRuntime*, uint32_t, const float*, const float*, const float*,
       double, uint64_t*);
   using MotionStatus = int32_t (*)(
@@ -49,11 +54,18 @@ int main() {
   static_assert(same_signature<
       decltype(&articore_runtime_set_joint_mit), ProductCommand>);
   static_assert(same_signature<
-      decltype(&articore_runtime_start_trajectory), StartTrajectory>);
+      decltype(&articore_runtime_move_joint_trajectory),
+      MoveJointTrajectory>);
   static_assert(same_signature<
-      decltype(&articore_runtime_move_linear), MoveLinear>);
+      decltype(&articore_runtime_move_linear_trajectory), MoveLinearTrajectory>);
   static_assert(same_signature<
-      decltype(&articore_runtime_move_circular), MoveCircular>);
+      decltype(&articore_runtime_move_linear_trajectory_with_point_count),
+      MoveLinearTrajectoryWithPointCount>);
+  static_assert(same_signature<
+      decltype(&articore_runtime_move_linear_path_trajectory),
+      MoveLinearPathTrajectory>);
+  static_assert(same_signature<
+      decltype(&articore_runtime_move_circular_trajectory), MoveCircularTrajectory>);
   static_assert(same_signature<
       decltype(&articore_runtime_get_motion_status), MotionStatus>);
   static_assert(same_signature<
@@ -205,7 +217,7 @@ int main() {
         articore_runtime_get_max_acceleration(
             metadata_runtime, &configured_acceleration) ==
             ARTICORE_OPERATION_OK &&
-        std::fabs(configured_acceleration - 4.0f) < 1e-6f &&
+        std::fabs(configured_acceleration - 6.0f) < 1e-6f &&
         articore_runtime_set_max_acceleration(metadata_runtime, 4.56f) ==
             ARTICORE_OPERATION_OK &&
         articore_runtime_get_max_acceleration(
@@ -224,11 +236,13 @@ int main() {
       &articore_runtime_set_max_acceleration &&
       &articore_runtime_get_max_acceleration &&
       &articore_runtime_submit_mit_frame &&
-      &articore_runtime_start_trajectory &&
+      &articore_runtime_move_joint_trajectory &&
       &articore_runtime_get_motion_status &&
       &articore_runtime_cancel_motion &&
       &articore_runtime_cancel_all_motions &&
-      &articore_runtime_move_pose &&
+      &articore_runtime_set_pose &&
+      &articore_runtime_move_linear_path_trajectory &&
+      &articore_runtime_move_linear_trajectory_with_point_count &&
       &articore_runtime_has_grippers &&
       &articore_runtime_get_joint_angle_vel_limits &&
       &articore_runtime_get_pose && &articore_runtime_set_tcp_offset &&
@@ -245,15 +259,15 @@ int main() {
       &articore_runtime_estop && &articore_runtime_recover &&
       &articore_robot_model_create && &articore_robot_model_fk;
 
-  if (articore_runtime_abi_version() != 0x000A0000U ||
+  if (articore_runtime_abi_version() != 0x000B0002U ||
       !symbols_present || !gripper_validation || !state_size_checked ||
       !state_runtime_checked || !health_size_checked ||
       !joint_limits_size_checked || !maximum_acceleration_validation ||
       !joint_command_validation || !factory_validation ||
       !product_limits_checked) {
-    std::cerr << "Articore Runtime ABI 10.0 contract is incomplete\n";
+    std::cerr << "Articore Runtime ABI 11.2 contract is incomplete\n";
     return 1;
   }
-  std::cout << "Articore Runtime ABI 10.0 smoke test passed\n";
+  std::cout << "Articore Runtime ABI 11.2 smoke test passed\n";
   return 0;
 }

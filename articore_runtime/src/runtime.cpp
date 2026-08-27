@@ -607,7 +607,8 @@ void SafetyRuntime::write_control_trace() noexcept {
     std::ofstream output(control_trace_path_, std::ios::out | std::ios::trunc);
     if (!output) return;
     output << "sequence,timestamp_ns,runtime_state,motion_state,motion_id,progress"
-              ",tracking_time_scale,tracking_position_error";
+              ",tracking_time_scale,tracking_position_error"
+              ",command_transmitted";
     constexpr const char* roles[ARTICORE_PRODUCT_DUAL_ARM_DOF] = {
         "l-joint1", "l-joint2", "l-joint3", "l-joint4", "l-joint5",
         "l-joint6", "l-joint7", "r-joint1", "r-joint2", "r-joint3",
@@ -625,7 +626,8 @@ void SafetyRuntime::write_control_trace() noexcept {
              << sample.runtime_state << ',' << sample.motion_state << ','
              << sample.motion_id << ',' << sample.progress << ','
              << sample.tracking_time_scale << ','
-             << sample.tracking_position_error;
+             << sample.tracking_position_error << ','
+             << (sample.command_transmitted ? 1 : 0);
       const auto write_values = [&](const auto& values) {
         for (float value : values) output << ',' << value;
       };

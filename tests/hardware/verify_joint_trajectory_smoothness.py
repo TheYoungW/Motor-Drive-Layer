@@ -74,7 +74,7 @@ class MotionStatus(ctypes.Structure):
 
 def native_functions(robot: ArxDCanDualArm) -> tuple[object, object]:
     library = robot._runtime._runtime_abi.lib
-    start = library.articore_runtime_start_trajectory
+    start = library.articore_runtime_move_joint_trajectory
     start.argtypes = [
         ctypes.c_void_p,
         ctypes.POINTER(TrajectoryWaypoint),
@@ -305,7 +305,9 @@ def main() -> None:
             ctypes.byref(config), ctypes.byref(motion_id),
         ))
         if code != 0:
-            raise RuntimeError(f"start_trajectory failed: {last_error(robot)}")
+            raise RuntimeError(
+                f"move_joint_trajectory failed: {last_error(robot)}"
+            )
         samples: list[dict[str, object]] = []
         last_sequence = -1
         completed_s: float | None = None

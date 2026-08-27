@@ -168,15 +168,15 @@ class Runtime final {
         "submit_mit_frame");
   }
 
-  uint64_t start_trajectory(
+  uint64_t move_joint_trajectory(
       const std::vector<ArticoreTrajectoryWaypoint>& waypoints,
       const ArticoreTrajectoryConfig& config) {
     uint64_t motion_id = 0;
     detail::check(
-        articore_runtime_start_trajectory(
+        articore_runtime_move_joint_trajectory(
             checked(), waypoints.data(),
             static_cast<uint32_t>(waypoints.size()), &config, &motion_id),
-        "start_trajectory");
+        "move_joint_trajectory");
     return motion_id;
   }
 
@@ -201,30 +201,49 @@ class Runtime final {
         "cancel_all_motions");
   }
 
-  void move_pose(const std::array<float, 6>& left_target_pose,
+  void set_pose(const std::array<float, 6>& left_target_pose,
                  const std::array<float, 6>& right_target_pose,
                  float speed_percent = 50.0f) {
     detail::check(
-        articore_runtime_move_pose(
+        articore_runtime_set_pose(
             checked(), left_target_pose.data(), right_target_pose.data(),
             speed_percent),
-        "move_pose");
+        "set_pose");
   }
 
-  uint64_t move_linear(uint32_t side,
+  uint64_t move_linear_trajectory(uint32_t side,
                        const std::array<float, 6>& start_pose,
                        const std::array<float, 6>& end_pose,
                        double duration_s) {
     uint64_t motion_id = 0;
     detail::check(
-        articore_runtime_move_linear(
+        articore_runtime_move_linear_trajectory(
             checked(), side, start_pose.data(), end_pose.data(),
             duration_s, &motion_id),
-        "move_linear");
+        "move_linear_trajectory");
     return motion_id;
   }
 
-  uint64_t move_circular(
+  uint64_t move_linear_trajectory(
+      uint32_t side,
+      const std::vector<std::array<float, 6>>& poses,
+      double segment_duration_s) {
+    std::vector<float> flattened;
+    flattened.reserve(poses.size() * 6U);
+    for (const auto& pose : poses) {
+      flattened.insert(flattened.end(), pose.begin(), pose.end());
+    }
+    uint64_t motion_id = 0;
+    detail::check(
+        articore_runtime_move_linear_path_trajectory(
+            checked(), side, flattened.data(),
+            static_cast<uint32_t>(poses.size()), segment_duration_s,
+            &motion_id),
+        "move_linear_trajectory");
+    return motion_id;
+  }
+
+  uint64_t move_circular_trajectory(
       uint32_t side,
       const std::array<float, 6>& start_pose,
       const std::array<float, 6>& via_pose,
@@ -232,10 +251,10 @@ class Runtime final {
       double duration_s) {
     uint64_t motion_id = 0;
     detail::check(
-        articore_runtime_move_circular(
+        articore_runtime_move_circular_trajectory(
             checked(), side, start_pose.data(), via_pose.data(),
             end_pose.data(), duration_s, &motion_id),
-        "move_circular");
+        "move_circular_trajectory");
     return motion_id;
   }
 

@@ -4019,8 +4019,8 @@ void test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct() {
     const auto available = static_cast<std::size_t>(
         driver.pv_history.end() - first_moving);
     require(available >= 100 &&
-                std::abs(first_moving[99][0].target_position - 0.08f) < 0.003f,
-            "ordinary PV accelerates to 0.8 rad/s over one hundred cycles");
+                std::abs(first_moving[99][0].target_position - 0.118f) < 0.003f,
+            "ordinary PV reaches 1 rad/s within one hundred cycles");
   }
   require(runtime.health().state == ARTICORE_RUNNING,
           "one-shot ordinary PV remains active beyond the watchdog");
@@ -4772,7 +4772,7 @@ void test_native_quintic_trajectory_executes_at_worker_rate() {
   runtime.disable();
 }
 
-void test_cartesian_pv_adapts_drive_limit_and_slows_for_tracking_error() {
+void test_cartesian_pv_adapts_drive_limit_without_soft_timeline_dilation() {
   FakeDriver driver;
   g_driver = &driver;
   driver.emulate_arm_feedback = true;
@@ -4790,13 +4790,13 @@ void test_cartesian_pv_adapts_drive_limit_and_slows_for_tracking_error() {
   runtime.enable(ARTICORE_MODE_PV);
 
   auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.4);
-  request.operation = ARTICORE_OPERATION_MOVE_CIRCULAR;
+  request.operation = ARTICORE_OPERATION_MOVE_CIRCULAR_TRAJECTORY;
   const auto id = runtime.start_trajectory(std::move(request));
   std::this_thread::sleep_for(300ms);
-  const auto slowed = runtime.motion_status(id);
-  require(slowed.state == ARTICORE_MOTION_RUNNING &&
-              slowed.elapsed_s > 0.10 && slowed.elapsed_s < 0.29,
-          "Cartesian tracking error slows the complete native timeline");
+  const auto timed = runtime.motion_status(id);
+  require(timed.state == ARTICORE_MOTION_RUNNING &&
+              timed.elapsed_s > 0.26 && timed.elapsed_s < 0.36,
+          "normal Cartesian tracking error preserves the requested timeline");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     bool saw_adaptive_limit = false;
@@ -4819,7 +4819,7 @@ void test_cartesian_pv_adapts_drive_limit_and_slows_for_tracking_error() {
             return runtime.motion_status(id).state ==
                 ARTICORE_MOTION_COMPLETED;
           }, 1800ms),
-          "Cartesian timeline resumes and completes after feedback catches up");
+      "Cartesian motion completes after feedback catches up");
   runtime.disable();
 }
 
@@ -4827,7 +4827,7 @@ void test_cartesian_tracking_pause_times_out_to_safe_stop() {
   FakeDriver driver;
   g_driver = &driver;
   driver.emulate_arm_feedback = true;
-  driver.emulated_pv_position_offset = 0.035f;
+  driver.emulated_pv_position_offset = 0.065f;
   auto motors = descriptors(driver);
   auto cfg = config();
   cfg.command_timeout_ms = 500;
@@ -4840,7 +4840,7 @@ void test_cartesian_tracking_pause_times_out_to_safe_stop() {
   runtime.enable(ARTICORE_MODE_PV);
 
   auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.4);
-  request.operation = ARTICORE_OPERATION_MOVE_CIRCULAR;
+  request.operation = ARTICORE_OPERATION_MOVE_CIRCULAR_TRAJECTORY;
   const auto id = runtime.start_trajectory(std::move(request));
   require(wait_for([&] {
             return runtime.motion_status(id).state ==
@@ -4854,6 +4854,377 @@ void test_cartesian_tracking_pause_times_out_to_safe_stop() {
                   std::string::npos &&
               status_error.find("position_error=") != std::string::npos,
           "tracking timeout reports the native error and measured magnitude");
+  runtime.disable();
+}
+
+void test_continuous_cartesian_fifo_hands_off_on_planned_time() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  auto first = trajectory_request(motors, ARTICORE_MODE_PV, 0.4);
+  first.operation = ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY;
+  const auto first_id = runtime.start_trajectory(
+      std::move(first), 0, nullptr, true);
+  auto second = trajectory_request(motors, ARTICORE_MODE_PV, 0.4);
+  second.operation = ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY;
+  second.waypoints.front().positions = {0.2f, 0.8f};
+  second.waypoints.back().positions = {0.4f, 0.6f};
+  auto transaction = runtime.begin_command_transaction();
+  const auto second_id = runtime.start_trajectory(
+      std::move(second), 0, &transaction, true);
+  transaction.unlock();
+
+  require(wait_for([&] {
+            return runtime.motion_status(first_id).state ==
+                       ARTICORE_MOTION_COMPLETED &&
+                runtime.motion_status(second_id).state ==
+                       ARTICORE_MOTION_RUNNING;
+          }, 520ms),
+          "continuous Cartesian FIFO starts its successor at planned time");
+  require(wait_for([&] {
+            return runtime.motion_status(second_id).state ==
+                ARTICORE_MOTION_COMPLETED;
+          }, 1000ms),
+          "continuous Cartesian FIFO still verifies physical final arrival");
+  runtime.disable();
+}
+
+void test_waypoint_pv_cartesian_fifo_has_no_settling_pause() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  auto first = trajectory_request(motors, ARTICORE_MODE_PV, 0.4);
+  first.operation = ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY;
+  first.execution = articore::NativeTrajectoryExecution::WaypointPv;
+  first.pv_reference_velocity = 1.0f;
+  first.pv_reference_acceleration = 4.0f;
+  first.pv_drive_velocity_limit = 3.0f;
+  const auto first_id = runtime.start_trajectory(
+      std::move(first), 0, nullptr, true);
+
+  auto second = trajectory_request(motors, ARTICORE_MODE_PV, 0.4);
+  second.operation = ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY;
+  second.execution = articore::NativeTrajectoryExecution::WaypointPv;
+  second.pv_reference_velocity = 1.0f;
+  second.pv_reference_acceleration = 4.0f;
+  second.pv_drive_velocity_limit = 3.0f;
+  second.waypoints.front().positions = {0.2f, 0.8f};
+  second.waypoints.back().positions = {0.4f, 0.6f};
+  auto transaction = runtime.begin_command_transaction();
+  const auto second_id = runtime.start_trajectory(
+      std::move(second), 0, &transaction, true);
+  transaction.unlock();
+
+  require(wait_for([&] {
+            return runtime.motion_status(first_id).state ==
+                       ARTICORE_MOTION_COMPLETED &&
+                runtime.motion_status(second_id).state ==
+                       ARTICORE_MOTION_RUNNING;
+          }, 520ms),
+          "continuous WaypointPv FIFO skips per-edge settling hold");
+  require(wait_for([&] {
+            return runtime.motion_status(second_id).state ==
+                ARTICORE_MOTION_COMPLETED;
+          }, 1200ms),
+          "continuous WaypointPv FIFO still verifies the final physical "
+          "endpoint");
+  runtime.disable();
+}
+
+void test_waypoint_pv_has_no_separate_cartesian_transport_rate() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.5);
+  request.operation = ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY;
+  request.execution = articore::NativeTrajectoryExecution::WaypointPv;
+  request.pv_reference_velocity = 1.0f;
+  request.pv_reference_acceleration = 4.0f;
+  request.pv_drive_velocity_limit = 3.0f;
+  uint32_t baseline_sends = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    baseline_sends = driver.pv_sends;
+  }
+  const auto id = runtime.start_trajectory(std::move(request));
+  auto slower = trajectory_request(motors, ARTICORE_MODE_PV, 1.0);
+  slower.operation = ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY;
+  slower.execution = articore::NativeTrajectoryExecution::WaypointPv;
+  slower.pv_reference_velocity = 1.0f;
+  slower.pv_reference_acceleration = 4.0f;
+  slower.pv_drive_velocity_limit = 3.0f;
+  slower.waypoints.front().positions = {0.2f, 0.8f};
+  slower.waypoints.back().positions = {0.4f, 0.6f};
+  auto transaction = runtime.begin_command_transaction();
+  const auto slower_id = runtime.start_trajectory(
+      std::move(slower), 0, &transaction, true);
+  transaction.unlock();
+  require(runtime.motion_status(slower_id).state == ARTICORE_MOTION_QUEUED &&
+              runtime.motion_status(slower_id).waypoint_count == 2 &&
+              runtime.motion_status(id).waypoint_count == 2,
+          "waypoint PV executes the supplied point list without generating "
+          "another quintic point list");
+  runtime.cancel_motion(slower_id);
+  std::this_thread::sleep_for(250ms);
+  uint32_t trajectory_sends = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    trajectory_sends = driver.pv_sends - baseline_sends;
+  }
+  const auto status = runtime.motion_status(id);
+  require(trajectory_sends >= 80 && trajectory_sends <= 180,
+          "waypoint PV refreshes the active command on the Runtime safety clock");
+  require(status.waypoint_count == 2 &&
+              status.waypoint_count < trajectory_sends,
+          "ordinary PV command refresh does not create trajectory points");
+  const auto sample = runtime.trajectory_sample();
+  require(sample.active && sample.positions.size() == 2 &&
+              sample.positions[0] > 0.05f && sample.positions[0] < 0.199f &&
+              sample.velocities[0] > 0.10f &&
+              sample.velocities[0] <= 1.001f,
+          "waypoint PV uses the ordinary speed-50 and acceleration-limited "
+          "reference generator");
+  require(status.state == ARTICORE_MOTION_RUNNING &&
+              status.elapsed_s > 0.20 && status.elapsed_s < 0.32,
+          "PV command refresh does not redefine planned waypoint time");
+  require(wait_for([&] {
+            return runtime.motion_status(id).state ==
+                ARTICORE_MOTION_COMPLETED;
+          }, 1200ms),
+          "waypoint PV retains physical completion semantics");
+  runtime.disable();
+}
+
+void test_waypoint_pv_does_not_treat_quintic_derivatives_as_commands() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
+  auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.20);
+  request.operation = ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY;
+  request.execution = articore::NativeTrajectoryExecution::WaypointPv;
+  request.pv_reference_velocity = 1.0f;
+  request.pv_reference_acceleration = 4.0f;
+  request.pv_drive_velocity_limit = 3.0f;
+  for (auto& joint : request.joints) {
+    joint.acceleration_limit = 8.0f;
+  }
+  const auto id = runtime.start_trajectory(std::move(request));
+  const auto status = runtime.motion_status(id);
+  require(status.state == ARTICORE_MOTION_RUNNING &&
+              status.waypoint_count == 2,
+          "WaypointPv accepts position-safe points without interpreting "
+          "their numerical derivatives as physical acceleration commands");
+  std::this_thread::sleep_for(50ms);
+  const auto sample = runtime.trajectory_sample();
+  require(sample.active && sample.velocities.size() == 2 &&
+              std::abs(sample.velocities[0]) <= 1.001f &&
+              std::abs(sample.velocities[1]) <= 1.001f,
+          "WaypointPv still enforces the ordinary PV reference speed");
+  runtime.cancel_all_motions();
+  runtime.disable();
+}
+
+void test_mit_trajectory_executes_quintic_approach() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_MIT);
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.group_mit_history.clear();
+  }
+
+  auto request = trajectory_request(motors, ARTICORE_MODE_MIT, 0.8);
+  auto middle = request.waypoints.back();
+  middle.time_s = 0.4;
+  middle.positions = {0.1f, 0.9f};
+  middle.velocities = {0.0f, 0.0f};
+  middle.accelerations = {0.0f, 0.0f};
+  middle.velocity_valid_mask = 0x3U;
+  middle.acceleration_valid_mask = 0x3U;
+  request.waypoints.insert(request.waypoints.begin() + 1, middle);
+  request.operation = ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY;
+  request.execution = articore::NativeTrajectoryExecution::Quintic;
+  request.approach_segment_count = 1;
+  request.approach_deadline_s = 0.4;
+  const auto id = runtime.start_trajectory(std::move(request));
+  const bool completed = wait_for([&] {
+            return runtime.motion_status(id).state ==
+                ARTICORE_MOTION_COMPLETED;
+          }, 2500ms);
+  const auto final_status = runtime.motion_status(id);
+  const auto completion_message =
+      "MIT quintic approach and following Linear segment complete; state=" +
+      std::to_string(final_status.state) +
+      " progress=" + std::to_string(final_status.progress) +
+      " elapsed=" + std::to_string(final_status.elapsed_s) +
+      " error=" + final_status.error;
+  require(completed, completion_message.c_str());
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    const auto moving = std::find_if(
+        driver.group_mit_history.begin(), driver.group_mit_history.end(),
+        [](const auto& commands) {
+          return commands.size() == 2 &&
+              std::abs(commands[0].target_velocity) > 1e-4f;
+        });
+    require(moving != driver.group_mit_history.end() &&
+                moving->at(0).stiffness == 20.0f &&
+                moving->at(0).damping == 3.0f,
+            "MIT Linear approach sends quintic q/dq with product gains");
+  }
+  runtime.disable();
+}
+
+void test_cartesian_linear_and_circular_complete_on_estimated_time() {
+  for (const auto operation : {
+           ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY,
+           ARTICORE_OPERATION_MOVE_CIRCULAR_TRAJECTORY}) {
+    FakeDriver driver;
+    g_driver = &driver;
+    driver.emulate_arm_feedback = true;
+    if (operation == ARTICORE_OPERATION_MOVE_CIRCULAR_TRAJECTORY) {
+      driver.emulated_pv_velocity = 0.08f;
+    }
+    auto motors = descriptors(driver);
+    auto cfg = config();
+    cfg.command_timeout_ms = 500;
+    articore::SafetyRuntime runtime(
+        cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+        g_right_controller, motors, nullptr, nullptr, false, {}, 500);
+    const auto configured = joint_configs(motors);
+    runtime.configure_joints(configured.data(), configured.size());
+    runtime.connect();
+    runtime.enable(ARTICORE_MODE_PV);
+
+    auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.25);
+    request.operation = operation;
+    request.completion_deadline_s = 0.55;
+    const auto started = std::chrono::steady_clock::now();
+    const auto id = runtime.start_trajectory(std::move(request));
+    std::this_thread::sleep_for(350ms);
+    const auto settling = runtime.motion_status(id);
+    require(settling.state == ARTICORE_MOTION_RUNNING &&
+                settling.progress > 0.55f && settling.progress < 0.75f &&
+                settling.elapsed_s > 0.30 && settling.elapsed_s < 0.42,
+            "Cartesian endpoint acquisition remains inside the estimated "
+            "duration instead of completing early");
+    require(wait_for([&] {
+              return runtime.motion_status(id).state ==
+                  ARTICORE_MOTION_COMPLETED;
+            }, 350ms),
+            "Linear and Circular complete near their estimated wall-clock "
+            "time after stable physical positions even when velocity "
+            "feedback is noisy");
+    const double wall_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - started).count();
+    const auto completed = runtime.motion_status(id);
+    require(wall_seconds >= 0.52 && wall_seconds <= 0.66 &&
+                std::abs(completed.elapsed_s - 0.55) < 1e-6 &&
+                std::abs(completed.duration_s - 0.55) < 1e-6 &&
+                std::abs(completed.progress - 1.0f) < 1e-6f,
+            "Cartesian status exposes one estimated total duration including "
+            "arrival and stability confirmation");
+    runtime.disable();
+  }
+}
+
+void test_cartesian_estimated_time_allows_late_physical_arrival() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, nullptr, nullptr, false, {}, 500);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(), configured.size());
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.30);
+  request.operation = ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY;
+  request.completion_deadline_s = 0.55;
+  const auto started = std::chrono::steady_clock::now();
+  const auto id = runtime.start_trajectory(std::move(request));
+  std::this_thread::sleep_for(650ms);
+  const double wall_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - started).count();
+  const auto late = runtime.motion_status(id);
+  require(wall_seconds >= 0.62 && late.state == ARTICORE_MOTION_RUNNING &&
+              std::abs(late.elapsed_s - 0.55) < 1e-6 &&
+              std::abs(late.progress - 1.0f) < 1e-6f && late.error[0] == '\0',
+          "duration_s is an estimate and does not fault a physically late "
+          "Cartesian task");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.emulate_arm_feedback = true;
+  }
+  require(wait_for([&] {
+            return runtime.motion_status(id).state ==
+                ARTICORE_MOTION_COMPLETED;
+          }, 800ms),
+          "a task that arrives after its estimate still completes from fresh "
+          "physical feedback");
+  const auto completed = runtime.motion_status(id);
+  require(std::abs(completed.elapsed_s - 0.55) < 1e-6 &&
+              std::abs(completed.duration_s - 0.55) < 1e-6 &&
+              std::abs(completed.progress - 1.0f) < 1e-6f,
+          "late completion retains the user's estimated duration in status");
   runtime.disable();
 }
 
@@ -4977,13 +5348,18 @@ void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
 
   const auto composite_request = [&] {
     auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.2);
-    request.operation = ARTICORE_OPERATION_MOVE_LINEAR;
+    request.operation = ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY;
     request.waypoints[1].positions = {0.1f, 0.9f};
-    auto end = request.waypoints[1];
-    end.time_s = 0.4;
+    auto approach_hold = request.waypoints[1];
+    approach_hold.time_s = 0.3;
+    request.waypoints.push_back(approach_hold);
+    auto end = approach_hold;
+    end.time_s = 0.5;
     end.positions = {0.2f, 0.8f};
     request.waypoints.push_back(end);
     request.approach_segment_count = 1;
+    request.approach_deadline_s = 0.3;
+    request.completion_deadline_s = 0.7;
     request.approach_convergence_check =
         [&](const std::vector<float>& actual, std::string& error) {
           if (actual.size() != 2) {
@@ -5020,7 +5396,7 @@ void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
             const auto status = runtime.motion_status(first_id);
             return status.motion_type == ARTICORE_MOTION_CARTESIAN_LINEAR &&
                    status.state == ARTICORE_MOTION_RUNNING &&
-                   status.progress >= 0.49f;
+                   status.progress >= 0.42f;
           }, 700ms),
           "composite motion reaches its approach feedback barrier");
   std::this_thread::sleep_for(100ms);
@@ -5038,9 +5414,10 @@ void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
   }
   {
     const auto status = runtime.motion_status(first_id);
-    require(status.progress >= 0.49f && status.progress <= 0.51f &&
+    require(status.progress >= 0.42f && status.progress <= 0.44f &&
                 status.active_segment == 0,
-            "status remains at the approach barrier until feedback settles");
+            "status remains at the estimated approach time without faulting "
+            "until feedback settles");
   }
 
   auto queued = trajectory_request(motors, ARTICORE_MODE_PV, 0.2);
@@ -5061,7 +5438,7 @@ void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
   std::this_thread::sleep_for(300ms);
   require(runtime.motion_status(first_id).state ==
               ARTICORE_MOTION_RUNNING &&
-              runtime.motion_status(first_id).progress <= 0.51f &&
+              runtime.motion_status(first_id).progress <= 0.44f &&
               runtime.motion_status(second_id).state ==
                   ARTICORE_MOTION_QUEUED,
           "joint arrival cannot bypass the Cartesian start-pose barrier");
@@ -5085,10 +5462,11 @@ void test_composite_cartesian_approach_waits_before_path_and_is_cancelable() {
   auto cancelable = composite_request();
   cancelable.waypoints.front().positions = {0.3f, 0.7f};
   cancelable.waypoints[1].positions = {0.4f, 0.6f};
-  cancelable.waypoints[2].positions = {0.5f, 0.5f};
+  cancelable.waypoints[2].positions = {0.4f, 0.6f};
+  cancelable.waypoints[3].positions = {0.5f, 0.5f};
   const auto cancel_id = runtime.start_trajectory(std::move(cancelable));
   require(wait_for([&] {
-            return runtime.motion_status(cancel_id).progress >= 0.49f;
+            return runtime.motion_status(cancel_id).progress >= 0.42f;
           }, 700ms),
           "cancel test reaches the approach feedback barrier");
   runtime.cancel_all_motions();
@@ -5397,7 +5775,7 @@ void test_native_trajectory_arrival_timeout_is_reported_in_health() {
           "arrival timeout status contains the failing target feedback detail");
   const auto health = runtime.health();
   require(health.state == ARTICORE_RUNNING &&
-              health.last_operation == ARTICORE_OPERATION_START_TRAJECTORY &&
+              health.last_operation == ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY &&
               health.last_operation_code == ARTICORE_OPERATION_FEEDBACK &&
               std::string(health.last_operation_error).find(
                   "arrival timed out") != std::string::npos &&
@@ -5463,7 +5841,7 @@ void test_native_point_target_replacement_is_validated_and_atomic() {
   runtime.enable(ARTICORE_MODE_PV);
 
   auto first = trajectory_request(motors, ARTICORE_MODE_PV, 1.0);
-  first.operation = ARTICORE_OPERATION_MOVE_POSE;
+  first.operation = ARTICORE_OPERATION_SET_POSE;
   const auto first_id = runtime.start_trajectory(std::move(first));
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
@@ -5472,14 +5850,14 @@ void test_native_point_target_replacement_is_validated_and_atomic() {
 
   const auto sampled = runtime.trajectory_sample();
   require(sampled.active && sampled.motion_id == first_id &&
-              sampled.operation == ARTICORE_OPERATION_MOVE_POSE &&
+              sampled.operation == ARTICORE_OPERATION_SET_POSE &&
               sampled.positions.size() == 2 &&
               sampled.velocities.size() == 2 &&
               sampled.accelerations.size() == 2,
           "running point target exposes one coherent native motion sample");
 
   auto invalid = trajectory_request(motors, ARTICORE_MODE_PV, 0.5);
-  invalid.operation = ARTICORE_OPERATION_MOVE_POSE;
+  invalid.operation = ARTICORE_OPERATION_SET_POSE;
   invalid.waypoints.front().positions = sampled.positions;
   invalid.waypoints.front().velocities = sampled.velocities;
   invalid.waypoints.front().accelerations = sampled.accelerations;
@@ -5495,7 +5873,7 @@ void test_native_point_target_replacement_is_validated_and_atomic() {
           "rejected replacement leaves the previous point target running");
 
   auto replacement = trajectory_request(motors, ARTICORE_MODE_PV, 0.8);
-  replacement.operation = ARTICORE_OPERATION_MOVE_POSE;
+  replacement.operation = ARTICORE_OPERATION_SET_POSE;
   replacement.waypoints.front().positions = sampled.positions;
   replacement.waypoints.front().velocities = sampled.velocities;
   replacement.waypoints.front().accelerations = sampled.accelerations;
@@ -5708,17 +6086,17 @@ void test_product_ptp_ik_uses_bounded_deterministic_fallback_seeds() {
       ARTICORE_ROBOT_RIGHT, right_lower, right_upper);
 
   require(left.size() == 8 && right.size() == 8 && left == repeated,
-          "PTP uses eight reproducible fallbacks after the live seed");
+          "set_pose IK uses eight reproducible fallbacks after the live seed");
   require(std::abs(left[0][3] - 1.5707963267948966) < 1e-12 &&
               std::all_of(
                   left[1].begin(), left[1].end(),
                   [](double value) { return value == 0.0; }),
-          "PTP fallback order starts with product Home and product zero");
+          "set_pose IK fallback order starts with product Home and product zero");
   for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
     require(std::abs(
                 left[2][joint] -
                 0.5 * (left_lower[joint] + left_upper[joint])) < 1e-12,
-            "the third PTP fallback is the joint-range midpoint");
+            "the third set_pose IK fallback is the joint-range midpoint");
   }
   for (std::size_t seed = 0; seed < left.size(); ++seed) {
     for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
@@ -5728,15 +6106,15 @@ void test_product_ptp_ik_uses_bounded_deterministic_fallback_seeds() {
                   std::isfinite(right[seed][joint]) &&
                   right[seed][joint] >= right_lower[joint] &&
                   right[seed][joint] <= right_upper[joint],
-              "every deterministic PTP seed remains inside product limits");
+              "every deterministic set_pose IK seed remains inside product limits");
     }
     require(std::abs(left[seed][1] + right[seed][1]) < 1e-12,
-            "left and right PTP seed sets mirror the asymmetric J2 range");
+            "left and right set_pose IK seeds mirror the asymmetric J2 range");
   }
   for (std::size_t first = 0; first < left.size(); ++first) {
     for (std::size_t second = first + 1; second < left.size(); ++second) {
       require(left[first] != left[second],
-              "the deterministic PTP fallback set contains no duplicates");
+              "the deterministic set_pose IK fallback set contains no duplicates");
     }
   }
 }
@@ -5763,8 +6141,8 @@ void test_nearest_endpoint_ik_returns_without_redundant_global_search() {
 }
 
 void test_bounded_endpoint_ik_preserves_accuracy_and_honours_deadline() {
-  require(articore::kYunyiMovePoseIkBudget == 8000us,
-          "move_pose reserves two milliseconds of each 100 Hz caller period");
+  require(articore::kYunyiSetPoseIkBudget == 8000us,
+          "set_pose reserves two milliseconds of each 100 Hz caller period");
   articore::RobotModel model("yunyi_v1_0", ARTICORE_ROBOT_LEFT);
   const std::array<double, ARTICORE_PRODUCT_ARM_DOF> seed{
       0.1, -0.05, 0.08, 1.2, -0.04, 0.03, -0.06};
@@ -5779,10 +6157,10 @@ void test_bounded_endpoint_ik_preserves_accuracy_and_honours_deadline() {
   model.ik_nearest_until(
       &target, seed.data(), seed.size(), &options,
       std::chrono::steady_clock::now() +
-          articore::kYunyiMovePoseIkBudget,
+          articore::kYunyiSetPoseIkBudget,
       &solved);
   require(solved.success && solved.error_norm < 1e-4,
-          "bounded move_pose IK retains the existing numerical tolerance");
+          "bounded set_pose IK retains the existing numerical tolerance");
 
   ArticoreIkResult expired{};
   expired.struct_size = sizeof(expired);
@@ -5793,7 +6171,7 @@ void test_bounded_endpoint_ik_preserves_accuracy_and_honours_deadline() {
             std::chrono::steady_clock::now() - 1ms, &expired);
       },
       "IK time budget exceeded",
-      "an expired move_pose IK deadline stops before installing a solution");
+      "an expired set_pose IK deadline stops before installing a solution");
 }
 
 void test_product_ptp_ik_selects_solution_nearest_live_seed() {
@@ -5833,7 +6211,7 @@ void test_product_ptp_ik_selects_solution_nearest_live_seed() {
   require(local.success &&
               std::abs(local.q[2] - seed[2]) > 1.5 &&
               std::abs(local.q[4] - seed[4]) > 1.5,
-          "reported live PTP target reproduces the distant J3/J5 local branch");
+          "reported live set_pose target reproduces the distant J3/J5 local branch");
 
   const auto global_options = articore::product_cartesian_ik_options(
       articore::CartesianIkSearch::GlobalEndpoint);
@@ -5853,19 +6231,19 @@ void test_product_ptp_ik_selects_solution_nearest_live_seed() {
     nearest_distance += std::pow(nearest.q[index] - seed[index], 2);
   }
   require(nearest_distance < 0.2 * local_distance,
-          "PTP ranks valid endpoint branches by distance to the live seed");
+          "set_pose ranks valid endpoint branches by distance to the live seed");
 
   ArticoreIkResult bounded{};
   bounded.struct_size = sizeof(bounded);
   model.ik_nearest_until(
       &target, seed.data(), seed.size(), &global_options,
       std::chrono::steady_clock::now() +
-          articore::kYunyiMovePoseIkBudget,
+          articore::kYunyiSetPoseIkBudget,
       &bounded);
   require(bounded.success && bounded.error_norm < 1e-4 &&
               std::abs(bounded.q[2] - seed[2]) < 0.1 &&
               std::abs(bounded.q[4] - seed[4]) < 0.1,
-          "bounded PTP multi-seed search keeps the reported J3/J5 branch "
+          "bounded set_pose multi-seed search keeps the reported J3/J5 branch "
           "continuous within the product IK budget");
 }
 
@@ -6090,30 +6468,30 @@ void test_three_point_circular_arc_geometry_and_degenerate_rejection() {
       "duplicate circular points are rejected");
 }
 
-void test_product_cartesian_motion_is_pv_only() {
+void test_set_pose_and_circular_remain_pv_only() {
   articore::cartesian::require_pv_mode(ARTICORE_MODE_PV);
   require_throws(
       [] { articore::cartesian::require_pv_mode(ARTICORE_MODE_MIT); },
       "requires PV mode",
-      "MIT product Runtime cannot start PTP, linear or circular Cartesian motion");
+      "set_pose and Circular retain their explicit PV-only guard");
 }
 
 void test_product_cartesian_trajectory_limits() {
   require(
-      std::abs(articore::kYunyiCartesianMaximumVelocity - 3.0f) < 1e-7f,
-      "linear and circular Cartesian path ceiling remains 3 rad/s");
+      std::abs(articore::kYunyiCartesianMaximumVelocity - 1.0f) < 1e-7f,
+      "Linear and Circular use the ordinary PV speed-50 ceiling of 1 rad/s");
   require(
       std::abs(articore::product_cartesian_reference_velocity_limit(
                    5.0f, 1.0f) -
-               3.0f) < 1e-7f &&
+               1.0f) < 1e-7f &&
           std::abs(articore::product_cartesian_reference_velocity_limit(
                        5.0f, 0.5f) -
-                   1.5f) < 1e-7f,
-      "Cartesian timing never raises the native reference above 3 rad/s");
+                   0.5f) < 1e-7f,
+      "Cartesian waypoint timing uses the ordinary PV speed-50 ceiling");
   require(
       std::abs(articore::product_cartesian_reference_velocity_limit(
                    2.0f, 1.0f) -
-               2.0f) < 1e-7f,
+               1.0f) < 1e-7f,
       "Cartesian product speed never exceeds a lower joint hard limit");
   require(
       std::abs(articore::product_pv_drive_velocity_limit(5.0f) -
@@ -6121,23 +6499,36 @@ void test_product_cartesian_trajectory_limits() {
       "PV drive product ceiling remains 3 rad/s");
   require(
       std::abs(articore::native_cartesian_pv_velocity_limit(
-                   0.126f, 0.05f, 3.0f) -
+                   0.126f, 0.0f, 0.05f, 3.0f) -
                0.239f) < 1e-6f &&
           std::abs(articore::native_cartesian_pv_velocity_limit(
-                       0.0f, 0.05f, 3.0f) -
-                   0.05f) < 1e-7f &&
+                       0.0f, 0.020f, 0.05f, 3.0f) -
+                   0.10f) < 1e-7f &&
           std::abs(articore::native_cartesian_pv_velocity_limit(
-                       3.0f, 0.05f, 3.0f) -
+                       3.0f, 0.0f, 0.05f, 3.0f) -
                    3.0f) < 1e-7f,
-      "Cartesian PV drive limit follows planned dq with a bounded margin");
+      "Cartesian PV drive limit follows planned dq and tracking catch-up demand");
   require(
-      std::abs(articore::native_cartesian_tracking_scale(0.012f) - 1.0f) <
+      std::abs(articore::native_cartesian_pv_final_velocity_limit(
+                   0.035f, 0.05f, 3.0f) -
+               0.35f) < 1e-7f &&
+          std::abs(articore::native_cartesian_pv_final_velocity_limit(
+                       0.080f, 0.05f, 3.0f) -
+                   0.50f) < 1e-7f,
+      "deadline acquisition raises only the final catch-up ceiling and caps it");
+  require(
+      std::abs(articore::native_cartesian_tracking_scale(0.040f) - 1.0f) <
               1e-7f &&
-          std::abs(articore::native_cartesian_tracking_scale(0.020f) -
-                   0.40f) < 1e-7f &&
-          std::abs(articore::native_cartesian_tracking_scale(0.030f)) <
+          std::abs(articore::native_cartesian_tracking_scale(0.060f)) <
               1e-7f,
-      "Cartesian tracking error maps to full speed, synchronized slowdown and pause");
+      "Cartesian tracking remains on schedule until the protective pause");
+  require(
+      !articore::native_cartesian_reference_update_due(0.00049f, 0.009) &&
+          articore::native_cartesian_reference_update_due(0.00050f, 0.001) &&
+          articore::native_cartesian_reference_update_due(0.00010f, 0.010) &&
+          articore::native_cartesian_reference_update_due(
+              0.00010f, 0.001, true),
+      "Cartesian reference updates on a meaningful step or at least 100 Hz");
   require(
       std::abs(articore::product_cartesian_acceleration_limit(3, 8.0f) -
                8.0f) < 1e-7f &&
@@ -6179,12 +6570,14 @@ void configure_cartesian_planning_product(
       output.velocity_limit = 5.0f;
       output.acceleration_limit = 20.0f;
       output.torque_limit = 20.0f;
+      output.kp = 20.0f;
+      output.kd = 3.0f;
       product.arm_motors[index] = output.motor;
     }
   }
 }
 
-void test_cartesian_duration_is_exact_and_too_short_is_atomic() {
+void test_cartesian_duration_controls_points_and_pv_executes_them() {
   articore::YunyiRuntimeResources product;
   configure_cartesian_planning_product(product);
   articore::NativeTrajectorySample reference;
@@ -6208,17 +6601,76 @@ void test_cartesian_duration_is_exact_and_too_short_is_atomic() {
   const auto plan = articore::build_linear_plan_from_reference(
       product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
       start_values.data(), end_values.data(), 5.0);
-  require(std::abs(plan.trajectory.waypoints.back().time_s - 5.0) < 1e-9 &&
-              plan.minimum_duration_s <= 5.0,
-          "Linear duration_s is the exact native planned duration");
+  const auto shorter_plan = articore::build_linear_plan_from_reference(
+      product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+      start_values.data(), end_values.data(), 1.0);
+  const bool fixed_two_millisecond_points = std::all_of(
+      plan.trajectory.waypoints.begin() + 1,
+      plan.trajectory.waypoints.end(),
+      [&](const auto& waypoint) {
+        const auto index = static_cast<std::size_t>(
+            &waypoint - plan.trajectory.waypoints.data());
+        return std::abs(
+            waypoint.time_s -
+            plan.trajectory.waypoints[index - 1].time_s - 0.002) < 1e-9;
+      });
+  const auto& smooth_points = plan.trajectory.waypoints;
+  const std::size_t middle = smooth_points.size() / 2U;
+  const double first_step = std::abs(
+      smooth_points[1].positions[3] - smooth_points[0].positions[3]);
+  const double middle_step = std::abs(
+      smooth_points[middle].positions[3] -
+      smooth_points[middle - 1U].positions[3]);
+  const double final_step = std::abs(
+      smooth_points.back().positions[3] -
+      smooth_points[smooth_points.size() - 2U].positions[3]);
+  require(plan.trajectory.waypoints.size() == 2501 &&
+              shorter_plan.trajectory.waypoints.size() == 501 &&
+              plan.trajectory.waypoints.size() >
+                  shorter_plan.trajectory.waypoints.size() &&
+              fixed_two_millisecond_points &&
+              first_step < middle_step * 0.01 &&
+              final_step < middle_step * 0.01 &&
+              std::abs(plan.trajectory.completion_deadline_s -
+                       plan.trajectory.waypoints.back().time_s) < 1e-9 &&
+              std::abs(plan.minimum_duration_s -
+                       plan.trajectory.waypoints.back().time_s) < 1e-9 &&
+              plan.trajectory.execution ==
+                  articore::NativeTrajectoryExecution::WaypointPv &&
+              std::abs(plan.trajectory.pv_reference_velocity - 1.0f) <
+                  1e-7f &&
+              std::abs(plan.trajectory.pv_reference_acceleration - 6.0f) <
+                  1e-7f &&
+              std::abs(plan.trajectory.pv_drive_velocity_limit - 3.0f) <
+                  1e-7f &&
+              plan.trajectory.cartesian_tracking_joint_mask ==
+                  (uint32_t{1} << ARTICORE_PRODUCT_ARM_DOF) - 1U,
+          "Linear duration selects finite IK point count and Runtime sends "
+          "the points at fixed 2 ms ordinary-PV intervals with speed 50");
+  const auto explicit_point_plan = articore::build_linear_plan_from_reference(
+      product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+      start_values.data(), end_values.data(), 5.0,
+      articore::kNativeOrdinaryPvDefaultAcceleration, 12);
+  require(explicit_point_plan.trajectory.waypoints.size() ==
+              plan.trajectory.waypoints.size(),
+          "legacy explicit point count no longer overrides duration-based "
+          "planning");
+  require_throws(
+      [&] {
+        (void)articore::build_linear_plan_from_reference(
+            product, ARTICORE_MODE_MIT, ARTICORE_ROBOT_LEFT, reference,
+            start_values.data(), end_values.data(), 5.0);
+      },
+      "requires PV mode",
+      "Linear uses ordinary PV only");
   require_throws(
       [&] {
         (void)articore::build_linear_plan_from_reference(
             product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
-            start_values.data(), end_values.data(), 0.001);
+            start_values.data(), end_values.data(), 0.0);
       },
-      "duration_s is too short",
-      "an unsafe Cartesian duration is rejected before installation");
+      "duration_s must be finite",
+      "a non-positive point-density duration is rejected before installation");
 
   auto via_q = start_q;
   via_q[3] = 0.075;
@@ -6231,9 +6683,10 @@ void test_cartesian_duration_is_exact_and_too_short_is_atomic() {
       product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
       start_values.data(), via_values.data(), end_values.data(), 8.0);
   require(
-      std::abs(circular.trajectory.waypoints.back().time_s - 8.0) < 1e-9 &&
-          circular.minimum_duration_s <= 8.0,
-      "Circular duration_s is the exact native planned duration");
+      circular.trajectory.waypoints.size() == 4001 &&
+          std::abs(circular.trajectory.completion_deadline_s -
+                   circular.trajectory.waypoints.back().time_s) < 1e-9,
+      "Circular uses duration to select points and ordinary PV timing");
 
   auto approached_end_q = start_q;
   approached_end_q[3] = 0.20;
@@ -6246,9 +6699,69 @@ void test_cartesian_duration_is_exact_and_too_short_is_atomic() {
       product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
       end_values.data(), approached_end_values.data(), 8.0);
   require(composite.trajectory.approach_segment_count == 1 &&
-              std::abs(
-                  composite.trajectory.waypoints.back().time_s - 8.0) < 1e-9,
-          "automatic PTP approach is included in the declared total duration");
+              std::abs(composite.trajectory.approach_deadline_s -
+                       composite.trajectory.waypoints[1].time_s) < 1e-9 &&
+              std::abs(composite.trajectory.completion_deadline_s -
+                       composite.trajectory.waypoints.back().time_s) < 1e-9 &&
+              composite.trajectory.execution ==
+                  articore::NativeTrajectoryExecution::WaypointPv,
+          "automatic approach and Linear path are one ordinary-PV point "
+          "sequence");
+}
+
+void test_linear_path_uses_default_ten_millimetre_corner_blend() {
+  articore::YunyiRuntimeResources product;
+  configure_cartesian_planning_product(product);
+  articore::NativeTrajectorySample reference;
+  reference.positions.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+
+  std::array<double, ARTICORE_PRODUCT_ARM_DOF> start_q{};
+  start_q[3] = 1.0;
+  reference.positions[3] = 1.0f;
+  ArticoreRobotPose start{};
+  start.struct_size = sizeof(start);
+  product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      start_q.data(), start_q.size(), &start);
+  auto first = pose_rpy(start);
+  auto corner = first;
+  auto end = first;
+  corner[1] += 0.04f;
+  end[1] += 0.04f;
+  end[2] += 0.04f;
+  std::array<float, 3U * ARTICORE_PRODUCT_POSE_DOF> poses{};
+  std::copy(first.begin(), first.end(), poses.begin());
+  std::copy(corner.begin(), corner.end(),
+            poses.begin() + ARTICORE_PRODUCT_POSE_DOF);
+  std::copy(end.begin(), end.end(),
+            poses.begin() + 2U * ARTICORE_PRODUCT_POSE_DOF);
+
+  const auto plan = articore::build_linear_path_plan_from_reference(
+      product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+      poses.data(), 3U, 1.0);
+  double minimum_corner_distance = std::numeric_limits<double>::infinity();
+  for (const auto& waypoint : plan.trajectory.waypoints) {
+    std::array<double, ARTICORE_PRODUCT_ARM_DOF> q{};
+    for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
+      q[index] = waypoint.positions[index];
+    }
+    ArticoreRobotPose actual{};
+    actual.struct_size = sizeof(actual);
+    product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+        q.data(), q.size(), &actual);
+    const double dy = actual.position[1] - corner[1];
+    const double dz = actual.position[2] - corner[2];
+    minimum_corner_distance = std::min(
+        minimum_corner_distance, std::sqrt(dy * dy + dz * dz));
+  }
+  require(
+      plan.trajectory.waypoints.size() == 1001U &&
+          std::abs(plan.trajectory.waypoints.back().time_s - 2.0) < 1e-9 &&
+          minimum_corner_distance > 0.0025 &&
+          minimum_corner_distance < 0.0070,
+      "a three-pose Linear path is one global two-segment motion and rounds "
+      "its 90-degree internal corner with the default 10 mm fillet");
 }
 
 void test_circular_arc_samples_support_continuous_native_ik() {
@@ -6634,8 +7147,15 @@ int main() {
     RUN_TEST(test_planned_trajectory_install_is_atomic_and_fifo_safe);
     RUN_TEST(test_trajectory_errors_use_product_roles_and_allow_inward_recovery);
     RUN_TEST(test_native_quintic_trajectory_executes_at_worker_rate);
-    RUN_TEST(test_cartesian_pv_adapts_drive_limit_and_slows_for_tracking_error);
+    RUN_TEST(test_cartesian_pv_adapts_drive_limit_without_soft_timeline_dilation);
     RUN_TEST(test_cartesian_tracking_pause_times_out_to_safe_stop);
+    RUN_TEST(test_continuous_cartesian_fifo_hands_off_on_planned_time);
+    RUN_TEST(test_waypoint_pv_cartesian_fifo_has_no_settling_pause);
+    RUN_TEST(test_waypoint_pv_has_no_separate_cartesian_transport_rate);
+    RUN_TEST(test_waypoint_pv_does_not_treat_quintic_derivatives_as_commands);
+    RUN_TEST(test_mit_trajectory_executes_quintic_approach);
+    RUN_TEST(test_cartesian_linear_and_circular_complete_on_estimated_time);
+    RUN_TEST(test_cartesian_estimated_time_allows_late_physical_arrival);
     RUN_TEST(test_native_trajectory_fifo_executes_without_replacement);
     RUN_TEST(test_composite_cartesian_approach_waits_before_path_and_is_cancelable);
     RUN_TEST(test_sampled_pv_trajectory_uses_direct_linear_references);
@@ -6658,9 +7178,10 @@ int main() {
     RUN_TEST(test_custom_tcp_offset_is_shared_by_fk_and_ik);
     RUN_TEST(test_cartesian_linear_samples_support_continuous_native_ik);
     RUN_TEST(test_three_point_circular_arc_geometry_and_degenerate_rejection);
-    RUN_TEST(test_product_cartesian_motion_is_pv_only);
+    RUN_TEST(test_set_pose_and_circular_remain_pv_only);
     RUN_TEST(test_product_cartesian_trajectory_limits);
-    RUN_TEST(test_cartesian_duration_is_exact_and_too_short_is_atomic);
+    RUN_TEST(test_cartesian_duration_controls_points_and_pv_executes_them);
+    RUN_TEST(test_linear_path_uses_default_ten_millimetre_corner_blend);
     RUN_TEST(test_circular_arc_samples_support_continuous_native_ik);
     RUN_TEST(test_native_trajectory_checks_segment_extrema_and_partial_power);
     RUN_TEST(test_gravity_compensation_is_an_exclusive_hand_guiding_mode);

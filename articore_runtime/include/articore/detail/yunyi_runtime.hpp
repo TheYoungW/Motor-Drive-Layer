@@ -23,7 +23,7 @@ inline constexpr float kYunyiPvDriveVelocityLimit = 3.0f;
 // second persistent speed cap: 100 percent must remain observably distinct
 // from 50 percent. Acceleration remains a physical product setting.
 inline constexpr float kYunyiOrdinaryPvMaximumAcceleration = 8.0f;
-inline constexpr float kYunyiDefaultPvMaximumAcceleration = 4.0f;
+inline constexpr float kYunyiDefaultPvMaximumAcceleration = 6.0f;
 inline constexpr float kYunyiPvMotionLimitResolution = 0.01f;
 inline constexpr float kYunyiOrdinaryMitMaximumVelocity = 5.0f;
 inline constexpr float yunyi_effective_pv_reference_velocity(
@@ -35,7 +35,7 @@ static_assert(kYunyiOrdinaryPvMaximumVelocity == 2.0f,
 static_assert(kYunyiPvDriveVelocityLimit == 3.0f,
               "ordinary PV must retain the independent 3 rad/s drive ceiling");
 static_assert(kYunyiOrdinaryPvMaximumAcceleration == 8.0f &&
-                  kYunyiDefaultPvMaximumAcceleration == 4.0f,
+                  kYunyiDefaultPvMaximumAcceleration == 6.0f,
               "ordinary PV acceleration limits use physical rad/s^2 units");
 static_assert(kYunyiDefaultPvMaximumAcceleration ==
                   kNativeOrdinaryPvDefaultAcceleration,

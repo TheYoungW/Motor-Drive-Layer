@@ -12,15 +12,17 @@
 
 namespace articore {
 
-// Linear/circular path timing retains its Cartesian reference ceiling. PTP
-// resolves endpoint IK and then uses ordinary PV reference stepping. The
-// Damiao POS_VEL V field remains a separate drive-level limit.
-inline constexpr float kYunyiCartesianMaximumVelocity = 3.0f;
+// PV Joint/Linear/Circular trajectory points use ordinary speed 50, i.e. a
+// 1 rad/s reference ceiling. set_pose resolves endpoint IK and then uses the
+// caller's ordinary PV speed. The Damiao POS_VEL V field remains a separate
+// drive-level limit.
+inline constexpr float kYunyiCartesianMaximumVelocity = 1.0f;
 inline constexpr float kYunyiCartesianPvDriveVelocityLimit = 3.0f;
 inline constexpr float kYunyiCartesianWristAccelerationLimit = 6.0f;
+inline constexpr double kYunyiCartesianDefaultBlendRadius = 0.010;
 // A 100 Hz caller has a 10 ms period. Keep two milliseconds outside the
 // numerical solve for ABI validation, locking and atomic command install.
-inline constexpr std::chrono::microseconds kYunyiMovePoseIkBudget{8000};
+inline constexpr std::chrono::microseconds kYunyiSetPoseIkBudget{8000};
 
 inline float product_cartesian_reference_velocity_limit(
     float joint_hard_velocity_limit, float speed_scale) {
@@ -122,7 +124,19 @@ NativeCartesianPlan build_linear_plan_from_reference(
     uint32_t side,
     const NativeTrajectorySample& reference,
     const float* end_pose,
-    double duration_s);
+    double duration_s,
+    float pv_reference_acceleration = kNativeOrdinaryPvDefaultAcceleration,
+    uint32_t point_count = 0);
+
+NativeCartesianPlan build_linear_path_plan_from_reference(
+    YunyiRuntimeResources& product,
+    ArticoreControlMode mode,
+    uint32_t side,
+    const NativeTrajectorySample& reference,
+    const float* poses,
+    uint32_t pose_count,
+    double segment_duration_s,
+    float pv_reference_acceleration = kNativeOrdinaryPvDefaultAcceleration);
 
 NativeCartesianPlan build_linear_plan_from_reference(
     YunyiRuntimeResources& product,
@@ -131,7 +145,9 @@ NativeCartesianPlan build_linear_plan_from_reference(
     const NativeTrajectorySample& reference,
     const float* start_pose,
     const float* end_pose,
-    double duration_s);
+    double duration_s,
+    float pv_reference_acceleration = kNativeOrdinaryPvDefaultAcceleration,
+    uint32_t point_count = 0);
 
 void validate_cartesian_start_pose(
     bool with_grippers,
@@ -161,7 +177,8 @@ NativeCartesianPlan build_circular_plan_from_reference(
     const NativeTrajectorySample& reference,
     const float* via_pose,
     const float* end_pose,
-    double duration_s);
+    double duration_s,
+    float pv_reference_acceleration = kNativeOrdinaryPvDefaultAcceleration);
 
 NativeCartesianPlan build_circular_plan_from_reference(
     YunyiRuntimeResources& product,
@@ -171,6 +188,7 @@ NativeCartesianPlan build_circular_plan_from_reference(
     const float* start_pose,
     const float* via_pose,
     const float* end_pose,
-    double duration_s);
+    double duration_s,
+    float pv_reference_acceleration = kNativeOrdinaryPvDefaultAcceleration);
 
 }  // namespace articore

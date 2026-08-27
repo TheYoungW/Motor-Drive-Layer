@@ -91,7 +91,7 @@ void wait_until_enabled_and_stationary(ArticoreRuntime* runtime,
 void run_ptp(ArticoreRuntime* runtime, const Pose& target,
              float speed_percent, const char* label) {
   const Pose right_target = read_pose(runtime, ARTICORE_ROBOT_RIGHT);
-  check(articore_runtime_move_pose(runtime, target.data(),
+  check(articore_runtime_set_pose(runtime, target.data(),
                                    right_target.data(), speed_percent),
         label);
   std::cout << "stage=" << label

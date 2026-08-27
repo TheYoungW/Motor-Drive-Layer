@@ -133,13 +133,14 @@ YunyiPtpFallbackSeeds yunyi_ptp_fallback_ik_seeds(
     const YunyiIkSeed& lower_limits,
     const YunyiIkSeed& upper_limits) {
   if (side != ARTICORE_ROBOT_LEFT && side != ARTICORE_ROBOT_RIGHT) {
-    throw std::invalid_argument("PTP IK seed side must be LEFT(0) or RIGHT(1)");
+    throw std::invalid_argument(
+        "set_pose IK seed side must be LEFT(0) or RIGHT(1)");
   }
   for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
     if (!std::isfinite(lower_limits[joint]) ||
         !std::isfinite(upper_limits[joint]) ||
         lower_limits[joint] > upper_limits[joint]) {
-      throw std::invalid_argument("PTP IK seed limits are invalid");
+      throw std::invalid_argument("set_pose IK seed limits are invalid");
     }
   }
 

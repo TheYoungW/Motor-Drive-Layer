@@ -23,12 +23,15 @@ const char* operation_name(ArticoreRuntimeOperation operation) {
     case ARTICORE_OPERATION_DISCONNECT: return "disconnect";
     case ARTICORE_OPERATION_COMMAND: return "command";
     case ARTICORE_OPERATION_RECOVER: return "recover";
-    case ARTICORE_OPERATION_START_TRAJECTORY: return "start trajectory";
+    case ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY:
+      return "move joint trajectory";
     case ARTICORE_OPERATION_CANCEL_MOTION: return "cancel motion";
     case ARTICORE_OPERATION_CANCEL_ALL_MOTIONS: return "cancel all motions";
-    case ARTICORE_OPERATION_MOVE_POSE: return "move pose";
-    case ARTICORE_OPERATION_MOVE_LINEAR: return "move linear";
-    case ARTICORE_OPERATION_MOVE_CIRCULAR: return "move circular";
+    case ARTICORE_OPERATION_SET_POSE: return "set pose";
+    case ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY:
+      return "move linear trajectory";
+    case ARTICORE_OPERATION_MOVE_CIRCULAR_TRAJECTORY:
+      return "move circular trajectory";
     case ARTICORE_OPERATION_START_BIMANUAL_FOLLOW:
       return "start bimanual follow";
     case ARTICORE_OPERATION_STOP_BIMANUAL_FOLLOW:
@@ -50,7 +53,7 @@ void SafetyRuntime::record_operation_result(
   last_operation_error_ = error;
   operation_failed_motors_ = failed_motors;
   if (!emergency_stop_latched_ && operation != ARTICORE_OPERATION_COMMAND &&
-      operation != ARTICORE_OPERATION_START_TRAJECTORY &&
+      operation != ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY &&
       operation != ARTICORE_OPERATION_CANCEL_MOTION &&
       operation != ARTICORE_OPERATION_CANCEL_ALL_MOTIONS &&
       code != ARTICORE_OPERATION_OK && !error.empty() &&

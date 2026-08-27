@@ -114,7 +114,7 @@ uint64_t submit_linear(ArticoreRuntime* runtime, const Pose& start,
                        const Pose& end, double duration_s,
                        const char* label) {
   uint64_t id = 0;
-  check(articore_runtime_move_linear(
+  check(articore_runtime_move_linear_trajectory(
             runtime, ARTICORE_ROBOT_RIGHT, start.data(), end.data(),
             duration_s, &id),
         label);
@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
     // This fails after CommandPlanningScope::begin() and therefore proves the
     // RAII failure path releases the token before the first real submission.
     uint64_t invalid_id = 0;
-    const int32_t invalid_result = articore_runtime_move_linear(
+    const int32_t invalid_result = articore_runtime_move_linear_trajectory(
         runtime, ARTICORE_ROBOT_RIGHT, original_right.data(),
         original_right.data(), 0.0, &invalid_id);
     if (invalid_result != ARTICORE_OPERATION_INVALID_ARGUMENT ||
@@ -202,7 +202,7 @@ int main(int argc, char** argv) {
     Pose circular_end = original_right;
     circular_end[2] += 0.010f;
     uint64_t circular_id = 0;
-    check(articore_runtime_move_circular(
+    check(articore_runtime_move_circular_trajectory(
               runtime, ARTICORE_ROBOT_RIGHT, original_right.data(),
               circular_via.data(), circular_end.data(), 3.0, &circular_id),
           "circular");
@@ -213,7 +213,7 @@ int main(int argc, char** argv) {
               << " submitted=true" << std::endl;
     wait_motion(runtime, circular_id, std::chrono::seconds(15), "circular");
 
-    check(articore_runtime_move_pose(
+    check(articore_runtime_set_pose(
               runtime, original_left.data(), original_right.data(), 20.0f),
           "return_original");
     wait_pose(runtime, ARTICORE_ROBOT_RIGHT, original_right,

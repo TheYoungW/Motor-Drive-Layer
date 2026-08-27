@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify atomic dual-arm ordinary PV PTP on a Yunyi dual arm."""
+"""Verify atomic dual-arm ordinary PV joint point-to-point control."""
 
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def main() -> None:
         print("start right pose", robot.get_pose("right"), flush=True)
 
         submitted_at = time.monotonic()
-        robot.move_pose(
+        robot.set_pose(
             left_target_pose=LEFT_TARGET,
             right_target_pose=RIGHT_TARGET,
             speed_percent=50.0,

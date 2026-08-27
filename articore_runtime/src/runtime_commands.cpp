@@ -645,6 +645,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
   bool gravity_active = false;
   bool degraded = false;
   bool adaptive_cartesian_tracking = false;
+  uint32_t cartesian_tracking_joint_mask = 0;
   bool bimanual_active = false;
   uint32_t bimanual_leader_side = ARTICORE_ROBOT_LEFT;
   std::vector<float> bimanual_start_positions;
@@ -664,10 +665,17 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     degraded = state_ == ARTICORE_DEGRADED;
     gravity_active =
         gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE;
+    // Every native Cartesian PV execution records physical tracking error so
+    // a continuous FIFO successor can be handed off without an artificial
+    // settling pause. WaypointPv still opts out of adaptive time scaling in
+    // prepare_trajectory_cycle(); it only uses this feedback for the guarded
+    // boundary handoff and final completion checks.
     adaptive_cartesian_tracking =
         trajectory_control_.state == ARTICORE_MOTION_RUNNING &&
         native_cartesian_operation(trajectory_control_.operation) &&
         trajectory_control_.approach_complete;
+    cartesian_tracking_joint_mask =
+        trajectory_control_.cartesian_tracking_joint_mask;
     bimanual_active = bimanual_follow_.active;
     bimanual_leader_side = bimanual_follow_.leader_side;
     bimanual_start_positions = bimanual_follow_.start_positions;
@@ -1026,7 +1034,6 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     }
     return false;
   }
-
   float cartesian_tracking_error = 0.0f;
   void* cartesian_tracking_worst_motor = nullptr;
   bool cartesian_tracking_feedback_valid =
@@ -1034,6 +1041,10 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
       command_count > 0;
   if (cartesian_tracking_feedback_valid) {
     for (uint32_t index = 0; index < command_count; ++index) {
+      if ((cartesian_tracking_joint_mask &
+           (uint32_t{1} << index)) == 0) {
+        continue;
+      }
       ArticoreFeedbackStats stats{};
       ArticoreMotorState actual{};
       if (backend_->get_feedback_stats(pv_data[index].motor, &stats) != 0 ||
@@ -1131,7 +1142,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
   record_control_trace(
       now, mode, pv_data,
       mode == ARTICORE_MODE_PV ? command_count : 0U,
-      mit_data, mode == ARTICORE_MODE_MIT ? command_count : 0U);
+      mit_data, mode == ARTICORE_MODE_MIT ? command_count : 0U, true);
   if (trajectory_completing) update_trajectory_completion(now);
   return true;
 }
@@ -1139,7 +1150,8 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
 void SafetyRuntime::record_control_trace(
     Clock::time_point now, ArticoreControlMode mode,
     const ArticorePosVelCommand* pv_commands, uint32_t pv_count,
-    const ArticoreMitCommand* mit_commands, uint32_t mit_count) {
+    const ArticoreMitCommand* mit_commands, uint32_t mit_count,
+    bool command_transmitted) {
   if (control_trace_path_.empty() ||
       control_trace_.size() >= control_trace_.capacity()) {
     return;
@@ -1169,8 +1181,9 @@ void SafetyRuntime::record_control_trace(
               0.0, 1.0))
         : 0.0f;
     sample.tracking_time_scale = trajectory_control_.tracking_time_scale;
-    sample.tracking_position_error =
+  sample.tracking_position_error =
         trajectory_control_.tracking_position_error;
+    sample.command_transmitted = command_transmitted;
     joints = trajectory_control_.joints;
     const auto planned = trajectory_sample_locked(now);
     const auto planned_count = std::min<std::size_t>(

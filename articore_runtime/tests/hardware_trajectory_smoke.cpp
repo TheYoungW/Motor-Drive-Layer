@@ -133,7 +133,7 @@ ArticoreMotionStatus run_trajectory(ArticoreRuntime* runtime,
   std::fill(std::begin(config.pv_velocity_limits),
             std::end(config.pv_velocity_limits), kPvVelocityLimit);
   uint64_t motion_id = 0;
-  check(articore_runtime_start_trajectory(
+  check(articore_runtime_move_joint_trajectory(
             runtime, waypoints, 2, &config, &motion_id),
         label);
 

@@ -113,7 +113,7 @@ class MotorBackend {
 // leaves the arrival window.
 inline constexpr float kNativePvFinalHoldVelocityLimit = 0.0f;
 inline constexpr float kNativePvSettlingVelocityLimit = 0.05f;
-inline constexpr float kNativeOrdinaryPvDefaultAcceleration = 4.0f;
+inline constexpr float kNativeOrdinaryPvDefaultAcceleration = 6.0f;
 inline constexpr float kNativeOrdinaryPvHoldPositionTolerance = 0.002f;
 inline constexpr float kNativeOrdinaryPvHoldReleaseTolerance = 0.020f;
 inline constexpr uint16_t kNativeOrdinaryPvHoldConfirmationCycles = 25;
@@ -121,51 +121,75 @@ inline constexpr uint16_t kNativeOrdinaryPvHoldConfirmationCycles = 25;
 // Cartesian PV references normally move much more slowly than the drive's
 // product ceiling. Keep the Damiao POS_VEL speed limit close to the native
 // reference so the internal position loop cannot repeatedly sprint at the
-// target. The complete trajectory slows as one product when feedback falls
-// behind, preserving Cartesian geometry across all enabled joints.
+// target. The 500 Hz Runtime still refreshes the drive watchdog every cycle,
+// but sub-feedback-resolution position changes are accumulated before a new
+// reference is installed. This avoids asking the drive to chase a different
+// target every 2 ms during short, slow Cartesian moves.
 inline constexpr float kNativeCartesianPvVelocityGain = 1.5f;
 inline constexpr float kNativeCartesianPvVelocityMargin = 0.05f;
-inline constexpr float kNativeCartesianTrackingSlowError = 0.012f;
-inline constexpr float kNativeCartesianTrackingMinimumScaleError = 0.020f;
-inline constexpr float kNativeCartesianTrackingPauseError = 0.030f;
-inline constexpr float kNativeCartesianTrackingMinimumScale = 0.40f;
-inline constexpr float kNativeCartesianTrackingDecelerationPerSecond = 5.0f;
-inline constexpr float kNativeCartesianTrackingAccelerationPerSecond = 1.0f;
+inline constexpr float kNativeCartesianPvTrackingCatchupGain = 5.0f;
+inline constexpr float kNativeCartesianPvFinalCatchupGain = 10.0f;
+inline constexpr float kNativeCartesianPvFinalCatchupMaximum = 0.50f;
+inline constexpr float kNativeCartesianReferenceMinimumStep = 0.0005f;
+inline constexpr double kNativeCartesianReferenceMaximumHoldSeconds = 0.010;
+inline constexpr float kNativeCartesianContinuousReferenceVelocity = 0.10f;
+inline constexpr float kNativeCartesianFifoHandoffMaximumError = 0.040f;
+inline constexpr float kNativeCartesianTrackingPauseError = 0.060f;
 inline constexpr auto kNativeCartesianTrackingPauseTimeout =
     std::chrono::seconds(1);
 
+// Cartesian duration_s is the estimated complete task time. Planning reserves
+// part of it for feedback catch-up and the 200 ms physical stability window,
+// but a robot that arrives late keeps tracking instead of faulting exactly at
+// duration_s. A separate bounded arrival timeout still catches stalled or
+// unreachable motion. The drive keeps its tracking-error-based catch-up limit
+// until the tighter final-position window is reached; only that final phase
+// uses the quiet settling limit. Product planning validates the faster motion
+// portion against velocity and acceleration limits before installing it.
+inline constexpr double kNativeCartesianTargetAcquisitionSeconds = 1.60;
+inline constexpr double kNativeCartesianMinimumAcquisitionSeconds = 0.25;
+
 inline bool native_cartesian_operation(ArticoreRuntimeOperation operation) {
-  return operation == ARTICORE_OPERATION_MOVE_LINEAR ||
-      operation == ARTICORE_OPERATION_MOVE_CIRCULAR;
+  return operation == ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY ||
+      operation == ARTICORE_OPERATION_MOVE_CIRCULAR_TRAJECTORY;
 }
 
 inline float native_cartesian_pv_velocity_limit(
-    float planned_velocity, float minimum_velocity, float product_ceiling) {
+    float planned_velocity, float tracking_position_error,
+    float minimum_velocity, float product_ceiling) {
   return std::clamp(
-      kNativeCartesianPvVelocityGain * std::abs(planned_velocity) +
-          kNativeCartesianPvVelocityMargin,
+      std::max(
+          kNativeCartesianPvVelocityGain * std::abs(planned_velocity) +
+              kNativeCartesianPvVelocityMargin,
+          kNativeCartesianPvTrackingCatchupGain *
+              std::abs(tracking_position_error)),
       minimum_velocity, product_ceiling);
 }
 
+inline float native_cartesian_pv_final_velocity_limit(
+    float tracking_position_error, float minimum_velocity,
+    float product_ceiling) {
+  return std::clamp(
+      kNativeCartesianPvFinalCatchupGain *
+          std::abs(tracking_position_error),
+      minimum_velocity,
+      std::min(product_ceiling, kNativeCartesianPvFinalCatchupMaximum));
+}
+
 inline float native_cartesian_tracking_scale(float position_error) {
-  if (!std::isfinite(position_error) || position_error <=
-          kNativeCartesianTrackingSlowError) {
-    return 1.0f;
-  }
-  if (position_error >= kNativeCartesianTrackingPauseError) return 0.0f;
-  if (position_error <= kNativeCartesianTrackingMinimumScaleError) {
-    const float ratio =
-        (position_error - kNativeCartesianTrackingSlowError) /
-        (kNativeCartesianTrackingMinimumScaleError -
-         kNativeCartesianTrackingSlowError);
-    return 1.0f -
-        ratio * (1.0f - kNativeCartesianTrackingMinimumScale);
-  }
-  const float ratio =
-      (position_error - kNativeCartesianTrackingMinimumScaleError) /
-      (kNativeCartesianTrackingPauseError -
-       kNativeCartesianTrackingMinimumScaleError);
-  return kNativeCartesianTrackingMinimumScale * (1.0f - ratio);
+  return std::isfinite(position_error) &&
+          position_error >= kNativeCartesianTrackingPauseError
+      ? 0.0f
+      : 1.0f;
+}
+
+inline bool native_cartesian_reference_update_due(
+    float maximum_position_change, double held_seconds,
+    bool force_update = false) {
+  return force_update || !std::isfinite(maximum_position_change) ||
+      !std::isfinite(held_seconds) ||
+      maximum_position_change >= kNativeCartesianReferenceMinimumStep ||
+      held_seconds >= kNativeCartesianReferenceMaximumHoldSeconds;
 }
 
 inline float advance_pv_position_reference(
@@ -248,17 +272,35 @@ struct NativeTrajectoryWaypoint {
 enum class NativeTrajectoryExecution {
   Quintic,
   SampledPv,
+  // Follow the supplied finite waypoint list with the same acceleration-
+  // limited reference generator used by ordinary PV commands. The 2 ms worker
+  // refresh is not a trajectory-point generation frequency.
+  WaypointPv,
 };
 
 struct NativeTrajectoryRequest {
   ArticoreControlMode mode = ARTICORE_MODE_MIT;
-  ArticoreRuntimeOperation operation = ARTICORE_OPERATION_START_TRAJECTORY;
+  ArticoreRuntimeOperation operation = ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY;
   NativeTrajectoryExecution execution = NativeTrajectoryExecution::Quintic;
+  float pv_reference_velocity = 0.0f;
+  float pv_reference_acceleration = 0.0f;
+  float pv_drive_velocity_limit = 0.0f;
   bool allow_out_of_limit_start_recovery = false;
   // Optional leading PV point-to-point segment(s). Runtime freezes at the
   // final approach waypoint until fresh physical feedback is stable, then
   // continues the already validated path under the same motion id.
   uint32_t approach_segment_count = 0;
+  // Optional estimated schedule markers used by native Cartesian plans. A zero
+  // completion_deadline_s retains the raw joint-trajectory behavior where the
+  // last waypoint time is followed by the normal arrival timeout. Cartesian
+  // plans set both values so status exposes the user's estimated total task
+  // time. Physical arrival may extend past these markers, up to the separate
+  // bounded arrival timeout.
+  double approach_deadline_s = 0.0;
+  double completion_deadline_s = 0.0;
+  // Joints that physically participate in Cartesian tracking. A zero mask
+  // means all trajectory joints for backwards-compatible native requests.
+  uint32_t cartesian_tracking_joint_mask = 0;
   std::vector<NativeTrajectoryJoint> joints;
   std::vector<NativeTrajectoryWaypoint> waypoints;
   std::function<bool(const std::vector<float>&, std::string&)>
@@ -556,7 +598,8 @@ class SafetyRuntime {
     std::vector<ArticoreMitCommand> mit;
     std::vector<float> final_positions;
     std::vector<float> pv_reference_velocities;
-    // Ordinary PV PTP has no motion status object, but it still needs the
+    // Ordinary PV joint point-to-point control has no motion status object,
+    // but it still needs the
     // same quiet final hold as native Cartesian paths. Each joint transitions
     // to V=0 only after fresh feedback remains close to its final target for a
     // bounded 500 Hz window; a larger error releases it for correction.
@@ -606,16 +649,22 @@ class SafetyRuntime {
     uint32_t active_segment = 0;
     double elapsed_s = 0.0;
     double duration_s = 0.0;
+    double reference_duration_s = 0.0;
     double approach_duration_s = 0.0;
+    double approach_deadline_s = 0.0;
     Clock::time_point started_at{};
     Clock::time_point tracking_updated_at{};
     Clock::time_point tracking_pause_started_at{};
     Clock::time_point settling_started_at{};
     Clock::time_point settling_stable_started_at{};
     Clock::time_point hold_unstable_started_at{};
-    ArticoreRuntimeOperation operation = ARTICORE_OPERATION_START_TRAJECTORY;
+    ArticoreRuntimeOperation operation = ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY;
     NativeTrajectoryExecution execution = NativeTrajectoryExecution::Quintic;
+    float pv_reference_velocity = 0.0f;
+    float pv_reference_acceleration = 0.0f;
+    float pv_drive_velocity_limit = 0.0f;
     uint32_t approach_segment_count = 0;
+    uint32_t cartesian_tracking_joint_mask = 0;
     bool approach_complete = true;
     std::vector<NativeTrajectoryJoint> joints;
     std::vector<TrajectorySegment> segments;
@@ -634,6 +683,11 @@ class SafetyRuntime {
     float tracking_time_scale = 1.0f;
     float tracking_position_error = 0.0f;
     bool tracking_feedback_valid = false;
+    double cartesian_reference_updated_elapsed_s = 0.0;
+    std::vector<float> cartesian_reference_positions;
+    Clock::time_point waypoint_pv_updated_at{};
+    std::vector<float> waypoint_pv_reference_positions;
+    std::vector<float> waypoint_pv_reference_velocities;
     std::string tracking_worst_role;
     std::string error;
   };
@@ -647,6 +701,7 @@ class SafetyRuntime {
     float progress = 0.0f;
     float tracking_time_scale = 1.0f;
     float tracking_position_error = 0.0f;
+    bool command_transmitted = false;
     std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> planned_positions{};
     std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> planned_velocities{};
     std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> command_positions{};
@@ -684,7 +739,8 @@ class SafetyRuntime {
                             const ArticorePosVelCommand* pv_commands,
                             uint32_t pv_count,
                             const ArticoreMitCommand* mit_commands,
-                            uint32_t mit_count);
+                            uint32_t mit_count,
+                            bool command_transmitted);
   void write_control_trace() noexcept;
   bool prepare_mit_torque_limited_commands(
       const std::vector<ArticoreMitCommand>& requested,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure native Cartesian PTP/linear/circular smoothness on Yunyi hardware."""
+"""Measure set_pose, Linear, and Circular smoothness on Yunyi hardware."""
 
 from __future__ import annotations
 
@@ -63,11 +63,17 @@ class _ProductState(ctypes.Structure):
 def temperatures(robot: ArxDCanDualArm) -> dict[str, object]:
     runtime = robot._runtime
     function = runtime._runtime_abi.lib.articore_runtime_get_state
-    function.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ProductState)]
-    function.restype = ctypes.c_int32
-    native = _ProductState()
-    native.struct_size = ctypes.sizeof(native)
-    result = int(function(runtime._require_open(), ctypes.byref(native)))
+    original_argtypes = function.argtypes
+    original_restype = function.restype
+    try:
+        function.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ProductState)]
+        function.restype = ctypes.c_int32
+        native = _ProductState()
+        native.struct_size = ctypes.sizeof(native)
+        result = int(function(runtime._require_open(), ctypes.byref(native)))
+    finally:
+        function.argtypes = original_argtypes
+        function.restype = original_restype
     if result != 0:
         raise RuntimeError("articore_runtime_get_state failed")
 
@@ -137,7 +143,7 @@ def wait_ptp(
     while time.monotonic() - started < timeout_s:
         health = robot.get_health()
         if health.safe_stopped or health.fault_reason:
-            raise RuntimeError(f"unsafe Runtime state during PTP: {health}")
+            raise RuntimeError(f"unsafe Runtime state during set_pose: {health}")
         item = sample(robot, started, "running")
         if item["sequence"] == last_sequence:
             time.sleep(0.0005)
@@ -156,7 +162,7 @@ def wait_ptp(
                 return float(item["elapsed_s"])
         else:
             stable_since = None
-    raise RuntimeError("PTP did not settle within timeout")
+    raise RuntimeError("set_pose did not settle within timeout")
 
 
 def wait_native_motion(
@@ -168,7 +174,7 @@ def wait_native_motion(
 ) -> tuple[float, dict[str, object]]:
     last_sequence = -1
     while time.monotonic() - started < timeout_s:
-        status = robot.get_cartesian_motion_status(motion_id)
+        status = robot.get_motion_status(motion_id)
         item = sample(robot, started, "running")
         if item["sequence"] != last_sequence:
             last_sequence = int(item["sequence"])
@@ -247,8 +253,11 @@ def summarize(samples: list[dict[str, object]], settled_s: float) -> dict[str, o
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--motion", choices=("ptp", "linear", "circular"), required=True)
+    parser.add_argument(
+        "--motion", choices=("set_pose", "linear", "circular"), required=True
+    )
     parser.add_argument("--speed", type=float, default=50.0)
+    parser.add_argument("--duration", type=float, default=3.0)
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--hold-seconds", type=float, default=1.0)
     parser.add_argument("--i-understand-the-right-arm-will-move", action="store_true")
@@ -263,6 +272,7 @@ def main() -> None:
         "motion": args.motion,
         "side": "right",
         "speed_percent": args.speed,
+        "duration_s": args.duration,
         "runtime_library": "/home/ubuntu/motorbridge/build/articore_runtime/libarticore_runtime.so",
     }
     connected = False
@@ -272,10 +282,28 @@ def main() -> None:
         result["initial_pose"] = robot.get_pose("right")
         result["initial_temperatures"] = temperatures(robot)
         robot.enable()
+        if args.motion in ("linear", "circular"):
+            path_start = (
+                RIGHT_CENTER if args.motion == "linear" else RIGHT_CIRCLE_START
+            )
+            preposition_started = time.monotonic()
+            robot.set_pose(
+                left_target_pose=robot.get_pose("left"),
+                right_target_pose=path_start,
+                speed_percent=50.0,
+            )
+            preposition_samples: list[dict[str, object]] = []
+            result["preposition_settled_s"] = wait_ptp(
+                robot,
+                preposition_started,
+                path_start,
+                preposition_samples,
+                timeout_s=args.timeout,
+            )
         started = time.monotonic()
-        if args.motion == "ptp":
+        if args.motion == "set_pose":
             result["target"] = RIGHT_CENTER
-            robot.move_pose(
+            robot.set_pose(
                 left_target_pose=robot.get_pose("left"),
                 right_target_pose=RIGHT_CENTER,
                 speed_percent=args.speed,
@@ -286,9 +314,9 @@ def main() -> None:
         elif args.motion == "linear":
             result["start"] = RIGHT_CENTER
             result["end"] = RIGHT_LINEAR_END
-            motion_id = robot.move_linear(
+            motion_id = robot.move_linear_trajectory(
                 side="right", start_pose=RIGHT_CENTER,
-                end_pose=RIGHT_LINEAR_END, speed_percent=args.speed,
+                end_pose=RIGHT_LINEAR_END, duration_s=args.duration,
             )
             settled_s, result["native_status"] = wait_native_motion(
                 robot, motion_id, started, samples, timeout_s=args.timeout
@@ -297,10 +325,10 @@ def main() -> None:
             result["start"] = RIGHT_CIRCLE_START
             result["via"] = RIGHT_CIRCLE_VIA
             result["end"] = RIGHT_CIRCLE_END
-            motion_id = robot.move_circular(
+            motion_id = robot.move_circular_trajectory(
                 side="right", start_pose=RIGHT_CIRCLE_START,
                 via_pose=RIGHT_CIRCLE_VIA, end_pose=RIGHT_CIRCLE_END,
-                speed_percent=args.speed,
+                duration_s=args.duration,
             )
             settled_s, result["native_status"] = wait_native_motion(
                 robot, motion_id, started, samples, timeout_s=args.timeout

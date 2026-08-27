@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""True-hardware verification for native approach-PTP Cartesian paths."""
+"""True-hardware verification for native paths with a joint-space approach."""
 
 from __future__ import annotations
 
@@ -140,12 +140,12 @@ def main() -> None:
         results["initial_start_position_error_m"] = initial_error[0]
         results["initial_start_orientation_error_rad"] = initial_error[1]
 
-        linear_id = robot.move_linear(
+        linear_id = robot.move_linear_trajectory(
             side="left", start_pose=START, end_pose=LINEAR_END, speed_percent=20.0
         )
         results["linear"] = wait_motion(robot, linear_id, START, LINEAR_END)
 
-        circular_id = robot.move_circular(
+        circular_id = robot.move_circular_trajectory(
             side="left",
             start_pose=START,
             via_pose=CIRCULAR_VIA,
@@ -156,7 +156,7 @@ def main() -> None:
 
         robot.set_joint_pv(left=home[:7], right=home[7:], velocity=50.0)
         wait_joint_target(robot, home, 10.0)
-        cancel_id = robot.move_linear(
+        cancel_id = robot.move_linear_trajectory(
             side="left", start_pose=START, end_pose=LINEAR_END, speed_percent=20.0
         )
         time.sleep(0.5)

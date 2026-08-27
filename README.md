@@ -28,8 +28,8 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.19.0`
-- Runtime ABI: `10.0` / `0x000A0000`
+- package version: `0.21.0`
+- Runtime ABI: `11.2` / `0x000B0002`
 
 Runtime health includes a product-order snapshot for every installed Motor,
 with role, CAN ID, feedback age, status, issue bits, and a scope that separates
@@ -45,11 +45,23 @@ The SDK creates the product with
 Motor mapping, controllers, limits, models, TCP offsets, workers and resource
 lifetime.
 
-Ordinary PV and `move_pose()` share one 500 Hz reference generator. Each
-command maps `speed=0..100` directly onto `0..2 rad/s`; there is no second
+Ordinary PV and `set_pose()` share one reference generator. The 500 Hz Runtime
+loop is the safety/feedback and active-command refresh clock, not a
+point-to-point planning frequency. Each command maps `speed=0..100` directly
+onto `0..2 rad/s`; there is no second
 persistent maximum-speed cap. Persistent maximum acceleration uses physical
 units with `0.01` resolution, accepts `0.01..8.00 rad/s^2`, and defaults to
-`4.00 rad/s^2`. It does not affect MIT or native Joint/Linear/Circular motions.
+`6.00 rad/s^2`. It does not affect MIT. Linear/Circular first solve a sparse
+5 mm / 0.035 rad Cartesian IK path, then apply one global quintic time law to
+generate fixed 2 ms ordinary-PV references. Thus `duration_s=3` produces 1500
+segments and 1501 points over about three reference seconds; physical arrival
+may be later due to PV limits and feedback stability. Intermediate points are
+continuous tracking references and only the final endpoint commands braking.
+The 500 Hz loop advances exactly one point per cycle, never in bulk or at
+variable planned intervals. PV still uses speed 50 and the configured maximum
+acceleration; numerical waypoint derivatives do not reject the plan.
+Automatic approach also uses ordinary PV. Linear, Circular and `set_pose()` require PV product mode;
+ordinary MIT and MIT joint trajectories are unchanged.
 
 See [the Runtime reference](articore_runtime/README.md) for the current API.
 
