@@ -323,14 +323,14 @@ void SafetyRuntime::stop_bimanual_follow() {
         }
         const auto index = static_cast<std::size_t>(
             std::distance(arm_mailbox_.pv.begin(), command));
-        command->target_position = positions[side][joint];
         if (arm_mailbox_.pv_reference_velocities.size() !=
             arm_mailbox_.pv.size()) {
           throw std::runtime_error(
-              "PV bimanual hold lost reference velocity state");
+              "PV bimanual reference state lost the product layout");
         }
-        arm_mailbox_.pv_reference_velocities[index] = 0.0f;
+        command->target_position = positions[side][joint];
         arm_mailbox_.final_positions[index] = positions[side][joint];
+        arm_mailbox_.pv_reference_velocities[index] = 0.0f;
         arm_mailbox_.pv_hold_confirmation_cycles[index] = 0;
         arm_mailbox_.pv_stationary_hold[index] = 0;
       } else {
@@ -348,13 +348,6 @@ void SafetyRuntime::stop_bimanual_follow() {
         arm_mailbox_.final_positions[index] = positions[side][joint];
       }
     }
-  }
-  if (mode_ == ARTICORE_MODE_PV) {
-    arm_mailbox_.pv_ptp_start_positions = arm_mailbox_.final_positions;
-    arm_mailbox_.pv_ptp_duration_s = 0.0;
-    arm_mailbox_.pv_ptp_elapsed_s = 0.0;
-    arm_mailbox_.pv_ptp_updated_at = Clock::now();
-    arm_mailbox_.pv_ptp_paused = false;
   }
   reset_bimanual_follow_locked();
   wakeup_.notify_all();

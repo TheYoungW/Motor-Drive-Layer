@@ -48,6 +48,18 @@ void SafetyRuntime::set_joint_mit(
       max_reference_velocity);
 }
 
+void SafetyRuntime::set_joint_mit_planned(
+    const ArticoreJointMitTarget* targets, uint32_t count,
+    float max_reference_velocity,
+    CommandTransaction& transaction, uint64_t planning_token) {
+  if (planning_token == 0) {
+    throw std::logic_error("planned MIT command requires a planning token");
+  }
+  install_joint_position(
+      ARTICORE_MODE_MIT, collect_targets(targets, count, "MIT"),
+      max_reference_velocity, 0.0f, 0.0f, &transaction, planning_token);
+}
+
 void SafetyRuntime::set_joint_pv(
     const ArticoreJointPvTarget* targets, uint32_t count,
     float max_reference_velocity) {
@@ -70,23 +82,21 @@ void SafetyRuntime::set_joint_pv(
   install_joint_position(
       ARTICORE_MODE_PV, collect_targets(targets, count, "PV"),
       max_reference_velocity, max_reference_acceleration, pv_velocity_limit,
-      nullptr, 0, true);
+      nullptr, 0);
 }
 
 void SafetyRuntime::set_joint_pv_planned(
     const ArticoreJointPvTarget* targets, uint32_t count,
     float max_reference_velocity, float max_reference_acceleration,
     float pv_velocity_limit,
-    CommandTransaction& transaction, uint64_t planning_token,
-    bool synchronized_septic) {
+    CommandTransaction& transaction, uint64_t planning_token) {
   if (planning_token == 0) {
     throw std::logic_error("planned PV command requires a planning token");
   }
   install_joint_position(
       ARTICORE_MODE_PV, collect_targets(targets, count, "PV"),
       max_reference_velocity, max_reference_acceleration, pv_velocity_limit,
-      &transaction,
-      planning_token, synchronized_septic);
+      &transaction, planning_token);
 }
 
 float SafetyRuntime::ordinary_velocity_from_percent(
@@ -149,7 +159,7 @@ void SafetyRuntime::update_joint_pv_motion_limits(
   if (!arm_mailbox_.valid || !arm_mailbox_.joint_position) return;
   if (arm_mailbox_.pv.empty()) {
     throw std::runtime_error(
-        "PV reference velocity update requires an active ordinary PV command");
+        "PV motion-limit update requires an active ordinary PV command");
   }
   for (const auto& command : arm_mailbox_.pv) {
     const auto& limits = joint_config(command.motor);
@@ -163,33 +173,6 @@ void SafetyRuntime::update_joint_pv_motion_limits(
   arm_mailbox_.max_reference_velocity = max_reference_velocity;
   arm_mailbox_.max_reference_acceleration = max_reference_acceleration;
   arm_mailbox_.pv_velocity_limit = pv_velocity_limit;
-  if (arm_mailbox_.pv_synchronized_septic) {
-    arm_mailbox_.pv_ptp_start_positions.clear();
-    arm_mailbox_.pv_ptp_start_positions.reserve(arm_mailbox_.pv.size());
-    double maximum_displacement = 0.0;
-    for (std::size_t index = 0; index < arm_mailbox_.pv.size(); ++index) {
-      const float current = arm_mailbox_.pv[index].target_position;
-      arm_mailbox_.pv_ptp_start_positions.push_back(current);
-      maximum_displacement = std::max(
-          maximum_displacement,
-          std::abs(static_cast<double>(arm_mailbox_.final_positions[index]) -
-                   static_cast<double>(current)));
-    }
-    arm_mailbox_.pv_reference_velocities.assign(arm_mailbox_.pv.size(), 0.0f);
-    arm_mailbox_.pv_hold_confirmation_cycles.assign(
-        arm_mailbox_.pv.size(), 0);
-    arm_mailbox_.pv_stationary_hold.assign(arm_mailbox_.pv.size(), 0);
-    arm_mailbox_.pv_ptp_elapsed_s = 0.0;
-    arm_mailbox_.pv_ptp_updated_at = Clock::now();
-    arm_mailbox_.pv_ptp_paused =
-        maximum_displacement > 0.0 && max_reference_velocity == 0.0f;
-    arm_mailbox_.pv_ptp_duration_s = arm_mailbox_.pv_ptp_paused
-        ? 0.0
-        : synchronized_septic_duration(
-              maximum_displacement,
-              static_cast<double>(max_reference_velocity),
-              static_cast<double>(max_reference_acceleration));
-  }
   for (auto& command : arm_mailbox_.pv) {
     command.velocity_limit = std::max(
         config_.safe_pv_velocity_limit, pv_velocity_limit);
@@ -202,8 +185,7 @@ void SafetyRuntime::install_joint_position(
     const std::vector<std::pair<void*, float>>& targets,
     float max_reference_velocity, float max_reference_acceleration,
     float pv_velocity_limit,
-    CommandTransaction* transaction, uint64_t planning_token,
-    bool synchronized_septic) {
+    CommandTransaction* transaction, uint64_t planning_token) {
   const char* const label = mode_name(requested_mode);
   if (!finite(max_reference_velocity) || max_reference_velocity < 0.0f) {
     throw std::invalid_argument(
@@ -317,22 +299,16 @@ void SafetyRuntime::install_joint_position(
   next.lifetime = ARTICORE_COMMAND_HOLD_UNTIL_REPLACED;
   next.generation = next_arm_generation();
   next.submitted_at = now;
-  next.pv_ptp_updated_at = now;
   next.joint_position = true;
   next.max_reference_velocity = max_reference_velocity;
   next.max_reference_acceleration = max_reference_acceleration;
   next.pv_velocity_limit = pv_velocity_limit;
-  next.pv_synchronized_septic =
-      requested_mode == ARTICORE_MODE_PV && synchronized_septic;
   next.final_positions.reserve(targets.size());
   if (requested_mode == ARTICORE_MODE_PV) {
     next.pv.reserve(targets.size());
     next.pv_reference_velocities.reserve(targets.size());
     next.pv_hold_confirmation_cycles.assign(targets.size(), 0);
     next.pv_stationary_hold.assign(targets.size(), 0);
-    if (next.pv_synchronized_septic) {
-      next.pv_ptp_start_positions.reserve(targets.size());
-    }
   } else {
     next.mit.reserve(targets.size());
   }
@@ -356,6 +332,7 @@ void SafetyRuntime::install_joint_position(
     }
 
     float current_position = state.pos;
+    float current_reference_velocity = 0.0f;
     if (continuing) {
       if (requested_mode == ARTICORE_MODE_PV) {
         const auto previous = std::find_if(
@@ -363,11 +340,17 @@ void SafetyRuntime::install_joint_position(
             [&](const ArticorePosVelCommand& command) {
               return command.motor == motor_handle;
             });
-        if (previous == arm_mailbox_.pv.end()) {
+        if (previous == arm_mailbox_.pv.end() ||
+            arm_mailbox_.pv_reference_velocities.size() !=
+                arm_mailbox_.pv.size()) {
           throw std::runtime_error(
-              "ordinary PV position state does not match the active arm layout");
+              "ordinary PV reference state does not match the active arm layout");
         }
         current_position = previous->target_position;
+        const auto previous_index = static_cast<std::size_t>(
+            std::distance(arm_mailbox_.pv.begin(), previous));
+        current_reference_velocity =
+            arm_mailbox_.pv_reference_velocities[previous_index];
       } else {
         const auto previous = std::find_if(
             arm_mailbox_.mit.begin(), arm_mailbox_.mit.end(),
@@ -385,12 +368,8 @@ void SafetyRuntime::install_joint_position(
     if (requested_mode == ARTICORE_MODE_PV) {
       next.pv.push_back(ArticorePosVelCommand{
           motor_handle, current_position,
-          std::max(config_.safe_pv_velocity_limit,
-                   pv_velocity_limit)});
-      next.pv_reference_velocities.push_back(0.0f);
-      if (next.pv_synchronized_septic) {
-        next.pv_ptp_start_positions.push_back(current_position);
-      }
+          std::max(config_.safe_pv_velocity_limit, pv_velocity_limit)});
+      next.pv_reference_velocities.push_back(current_reference_velocity);
     } else {
       const auto& config = joint_config(motor_handle);
       next.mit.push_back(ArticoreMitCommand{
@@ -398,23 +377,6 @@ void SafetyRuntime::install_joint_position(
           config.mit_kp, config.mit_kd, 0.0f});
     }
     next.final_positions.push_back(final_position);
-  }
-
-  if (next.pv_synchronized_septic) {
-    double maximum_displacement = 0.0;
-    for (std::size_t index = 0; index < next.final_positions.size(); ++index) {
-      maximum_displacement = std::max(
-          maximum_displacement,
-          std::abs(static_cast<double>(next.final_positions[index]) -
-                   static_cast<double>(next.pv_ptp_start_positions[index])));
-    }
-    next.pv_ptp_paused =
-        maximum_displacement > 0.0 && max_reference_velocity == 0.0f;
-    if (!next.pv_ptp_paused) {
-      next.pv_ptp_duration_s = synchronized_septic_duration(
-          maximum_displacement, static_cast<double>(max_reference_velocity),
-          static_cast<double>(max_reference_acceleration));
-    }
   }
 
   clear_pending_arm_mailbox();

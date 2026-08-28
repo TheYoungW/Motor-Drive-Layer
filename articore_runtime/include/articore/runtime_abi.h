@@ -256,13 +256,13 @@ typedef struct ArticoreTrajectoryWaypoint {
   double time_s;
   float left_positions[ARTICORE_PRODUCT_ARM_DOF];
   float right_positions[ARTICORE_PRODUCT_ARM_DOF];
+  /* Reserved for ABI layout compatibility; callers must zero these fields.
+   * Runtime derives all trajectory velocity, acceleration and jerk from joint
+   * positions and timestamps. */
   float left_velocities[ARTICORE_PRODUCT_ARM_DOF];
   float right_velocities[ARTICORE_PRODUCT_ARM_DOF];
   float left_accelerations[ARTICORE_PRODUCT_ARM_DOF];
   float right_accelerations[ARTICORE_PRODUCT_ARM_DOF];
-  // Bits 0..6 describe the left arm and bits 7..13 the right arm. Missing
-  // endpoint derivatives default to zero. Missing intermediate derivatives
-  // are computed once by the native planner and shared by adjacent segments.
   uint32_t velocity_valid_mask;
   uint32_t acceleration_valid_mask;
 } ArticoreTrajectoryWaypoint;
@@ -274,6 +274,8 @@ typedef struct ArticoreTrajectoryConfig {
   float mit_kp[ARTICORE_PRODUCT_DUAL_ARM_DOF];
   float mit_kd[ARTICORE_PRODUCT_DUAL_ARM_DOF];
   float mit_feedforward_torque[ARTICORE_PRODUCT_DUAL_ARM_DOF];
+  /* Reserved for ABI layout compatibility; callers must zero this array.
+   * Runtime owns trajectory PV drive limits. */
   float pv_velocity_limits[ARTICORE_PRODUCT_DUAL_ARM_DOF];
 } ArticoreTrajectoryConfig;
 
@@ -562,12 +564,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(
     ArticoreRuntime* runtime);
 
 /* Ordinary product joint commands use fixed left J1..J7, right J1..J7 order.
- * PV speed_percent maps directly onto 0..2 rad/s for this command. Persistent
- * acceleration shapes the shared seventh-order rest-to-rest time law. The
- * joint-space reference and physical POS_VEL transmission both run at 100 Hz.
- * Runtime retains separate 500 Hz safety/watchdog scheduling. The native jerk
- * policy is j_max = a_max / 0.10 s; no independent jerk setting is exposed by
- * this ABI.
+ * PV is the public latest-target-wins step mode: positions and speed_percent
+ * replace the preceding complete endpoint. Runtime advances POS_VEL P toward
+ * it online at 500 Hz; speed_percent selects the 0..2 rad/s P reference-speed
+ * scale, while the Motor POS_VEL V ceiling is independent.
  */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
@@ -585,10 +585,12 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
 ARTICORE_RUNTIME_API int32_t articore_runtime_solve_ik(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float* positions, uint32_t count);
-/* Persistent ordinary PV acceleration uses physical units and 0.01
+/* Persistent ordinary-PV acceleration uses physical units and 0.01
  * resolution. It accepts 0.01..8.00 rad/s^2 and defaults to 6.00 rad/s^2.
- * It also limits PV Joint/Linear/Circular trajectory references. It does not
- * alter MIT commands or MIT joint trajectories.
+ * It shapes ordinary step PV acceleration/braking/reversal only. Complete
+ * Joint/Linear/Circular trajectories own independent acceleration and jerk
+ * constraints derived internally from positions/path and time; those limits
+ * are not user-configurable. It does not alter any trajectory or MIT command.
  */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_acceleration(
     ArticoreRuntime* runtime, float max_acceleration_rad_s2);
@@ -603,8 +605,11 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
 /* Asynchronous dual-arm trajectory. Inputs are copied before return and the
  * task joins the same FIFO and motion-id namespace as Linear/Circular. In PV
  * mode Runtime converts the finite plan into its internal 100 Hz real-time PV
- * sequence. There is no public raw/streaming PV command. MIT mode samples the
- * validated quintic directly on the worker clock. */
+ * sequence. Product callers provide joint positions and timestamps only;
+ * waypoint derivative fields and PV limit fields are reserved and must be
+ * zero. Runtime owns velocity, acceleration and jerk planning. There is no
+ * public raw/streaming PV command. MIT mode samples the validated quintic
+ * directly on the worker clock. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_joint_trajectory(
     ArticoreRuntime* runtime,
     const ArticoreTrajectoryWaypoint* waypoints,
@@ -612,18 +617,17 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_joint_trajectory(
     const ArticoreTrajectoryConfig* config,
     uint64_t* motion_id);
 
-/* ABI compatibility convenience. New callers should use solve_ik() followed
- * by set_joint_pv(), so joint PTP remains the only point-to-point planner.
- * This entry performs that same IK-to-synchronized-joint-PTP operation
- * atomically. It does not plan a Cartesian path and has no motion ID. */
+/* ABI compatibility convenience. This entry solves IK once, then atomically
+ * installs that joint endpoint through the Runtime's current ordinary PV or
+ * MIT mode. It does not plan a Cartesian path and has no motion ID. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_pose(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float speed_percent);
 /* Asynchronous FIFO Cartesian trajectories. Linear interpolates XYZ on a
  * Cartesian line, uses shortest-path quaternion SLERP for orientation, and
  * seeds each IK solve from the preceding joint solution. Geometry is sampled
- * at 2 mm / 0.1 rad or better. One global quintic time law generates 100 Hz
- * ordinary-PV references, each transmitted once on the 100 Hz PV command
+ * at 2 mm / 0.1 rad or better. One global quintic time law generates an
+ * internal 100 Hz real-time-PV sequence, each reference transmitted once
  * clock without a second executor-side interpolation or step generator. The
  * separate 500 Hz Runtime scheduling continues safety and feedback work.
  * Runtime stretches an undersized duration to satisfy the discrete PV

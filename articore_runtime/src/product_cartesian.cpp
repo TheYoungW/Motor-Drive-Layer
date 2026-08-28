@@ -15,7 +15,7 @@
 namespace articore {
 static_assert(
     kYunyiCartesianPvDriveVelocityLimit == kYunyiPvDriveVelocityLimit,
-    "Cartesian and ordinary PV must share the same drive velocity ceiling");
+    "Cartesian trajectory PV must use the product drive velocity ceiling");
 
 namespace {
 
@@ -24,7 +24,7 @@ namespace {
 constexpr double kCircularPvCommandPeriodSeconds =
     1.0 / static_cast<double>(kYunyiCircularReferenceHz);
 constexpr double kLinearPvCommandPeriodSeconds =
-    kNativeOrdinaryPvCommandPeriodSeconds;
+    kNativeRealtimePvTrajectoryPeriodSeconds;
 constexpr float kCartesianRealtimePvSpeedPercent = 50.0f;
 constexpr uint32_t kCartesianMaximumExecutionSegments =
     ARTICORE_MAX_TRAJECTORY_WAYPOINTS - 3U;
@@ -290,8 +290,9 @@ NativeTrajectoryJoint trajectory_joint(
   joint.mit_kp = source.kp;
   joint.mit_kd = source.kd;
   joint.mit_feedforward_torque = 0.0f;
-  // Cartesian points execute through ordinary PV speed 50. Damiao's POS_VEL
-  // V field is a separate product ceiling and remains 3 rad/s.
+  // Cartesian points execute through internal real-time PV with the speed-50
+  // reference policy. Damiao's POS_VEL V field remains a separate 3 rad/s
+  // trajectory catch-up ceiling.
   joint.pv_velocity_limit = product_pv_drive_velocity_limit(
       source.velocity_limit);
   joint.pv_hold_velocity_limit = std::min(
@@ -448,7 +449,7 @@ NativeCartesianPlan assemble_cartesian_plan(
     uint32_t completion_side,
     double command_period_s,
     float maximum_reference_acceleration =
-        kYunyiDefaultPvMaximumAcceleration) {
+        kYunyiTrajectoryPvAccelerationLimit) {
   require_cartesian_duration(duration_s, command_period_s);
   cartesian::require_pv_mode(mode);
   if (!std::isfinite(maximum_reference_acceleration) ||

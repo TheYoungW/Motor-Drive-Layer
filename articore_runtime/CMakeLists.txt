@@ -276,14 +276,6 @@ if(BUILD_TESTING)
     PRIVATE articore_runtime
   )
   add_executable(
-    articore_runtime_hardware_joint_ptp_septic_diagnostic EXCLUDE_FROM_ALL
-    tests/hardware_joint_ptp_septic_diagnostic.cpp
-  )
-  target_link_libraries(
-    articore_runtime_hardware_joint_ptp_septic_diagnostic
-    PRIVATE articore_runtime
-  )
-  add_executable(
     articore_runtime_hardware_joint_ptp_j4_90_diagnostic EXCLUDE_FROM_ALL
     tests/hardware_joint_ptp_j4_90_diagnostic.cpp
   )

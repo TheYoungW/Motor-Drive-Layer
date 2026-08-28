@@ -24,13 +24,16 @@ objects, joint tables or product bindings.
 - Lifecycle: `connect`, `disconnect`, `enable`, `disable`, `estop`, `recover`.
 - Maintenance: `configure_mode`, `clear_faults`, `set_zero`.
 - Joint control: `set_joint_pv`, `set_joint_mit`, `submit_mit_frame`.
-- Ordinary PV: each command carries `speed_percent`, which maps directly onto
-  `0..2 rad/s`. There is no persistent maximum-speed setting.
-  `set_max_acceleration` and `get_max_acceleration` use `rad/s^2` with `0.01`
-  physical-unit resolution.
+- Ordinary PV: each command replaces the preceding complete joint endpoint.
+  Runtime advances POS_VEL `P` online at 500 Hz; `speed_percent` selects its
+  `0..2 rad/s` reference-speed scale while Motor `V` is an independent ceiling.
+- PV acceleration: `set_max_acceleration` and `get_max_acceleration` use
+  `rad/s^2` with `0.01` resolution and shape ordinary PV only. Complete
+  trajectories own internal velocity, acceleration and jerk constraints;
+  callers provide positions/path and time, not trajectory derivative limits.
 - Native trajectories: joint trajectory plus Linear and Circular motion. PV
-  follows the supplied/generated finite point list through ordinary PV at
-  speed 50; MIT joint trajectories remain direct quintic mode.
+  follows the supplied/generated finite point list through internal real-time
+  PV at speed 50; MIT joint trajectories remain direct quintic mode.
 - Grippers: one paired `set_grippers` call using opening `0..1000`, strength
   `0..10`, and protected/direct mode.
 - State: one coherent cached `get_state`, `get_pose`, joint limits and health.
@@ -41,28 +44,22 @@ never contain native Motor pointers.
 
 ## Motion semantics
 
-`set_joint_pv(left, right, speed)` is synchronized joint point-to-point
-control. Runtime snapshots the current 14-joint reference, computes one common
-rest-to-rest seventh-order progress law
-`s(u)=35u^4-84u^5+70u^6-20u^7`, and applies that same progress to every joint.
-The shared duration is the largest duration required by the commanded speed,
-configured acceleration and native jerk-shaping policy, rounded up to a 10 ms
-sample. Because the current ABI has no independent jerk setting, the native
-policy uses `j_max = a_max / 0.10 s` (60 rad/s^3 at the default acceleration).
-This gives simultaneous start/finish, monotonic joint motion and zero
-velocity, acceleration and jerk at both endpoints. Joint reference updates and
-physical POS_VEL packets both run at 100 Hz, with every point sent once. The
-separate 500 Hz Runtime scheduling continues safety, feedback and command-
-watchdog supervision.
-Joint PTP is the only point-to-point planner. The pure
+`set_joint_pv(left, right, speed)` is ordinary latest-target-wins step control.
+Runtime validates and atomically installs the complete 14-joint endpoint, then
+advances the outgoing POS_VEL `P` reference toward it on the 500 Hz Runtime
+control clock. A newer call replaces only the endpoint and preserves the current
+reference position and velocity, so acceleration, braking and reversal stay
+continuous. This is an online step generator, not a finite quintic/septic plan,
+queue item or Motion ID. `speed=0..100` controls the P reference-speed scale;
+Motor `V` remains a separate product drive ceiling. The pure
 `articore_runtime_solve_ik(left_pose, right_pose, positions, 14)` query uses one
 planned-reference snapshot (or fresh connected feedback before enable), the
 active TCP and product limits to return fixed
 left-J1..J7/right-J1..J7 joint order. It never enables Motors, sends commands or
 changes the queue. Callers pass that result to `articore_runtime_set_joint_pv`.
-The legacy `articore_runtime_set_pose` symbol remains as an atomic compatibility
-shortcut for the same IK-to-synchronized-joint-PTP chain. It has no motion ID,
-status or cancellation API and is not a Linear/Circular planner. Endpoint IK retains
+The `articore_runtime_set_pose` compatibility symbol solves IK once and installs
+the result through the currently selected ordinary PV or MIT mode. It has no
+motion ID, status or cancellation API and is not a trajectory planner. Endpoint IK retains
 the `1e-4` SE(3)
 tolerance, reuses each arm's Pinocchio model and limits global fallback to an
 8 ms soft steady-clock budget. Timeout or either-side failure leaves the active
@@ -70,8 +67,8 @@ target unchanged. Linear and Circular are asynchronous FIFO trajectory tasks.
 Linear interpolates XYZ on the Cartesian line and orientation with true
 shortest-path quaternion SLERP. Each pose uses the preceding IK result as its
 seed, with geometry sampled at 2 mm / 0.1 rad or better. Runtime applies one
-global quintic time law and generates one ordinary-PV Linear reference every
-10 ms. Each reference is sent once on the 100 Hz POS_VEL command clock, without
+global quintic time law and generates one internal real-time-PV Linear reference
+every 10 ms. Each reference is sent once on the 100 Hz POS_VEL command clock, without
 executor-side interpolation, step generation or repeated packets. Separate
 500 Hz Runtime scheduling continues safety and feedback work. Circular builds
 the directed circle through start/via/end, samples it at 2 mm / 0.1 rad or
@@ -81,7 +78,7 @@ Contiguous Cartesian FIFO items hand off at
 their planned shared endpoint without an extra 200 ms settling window when
 physical tracking error is at most 0.04 rad; otherwise Runtime waits for safe
 tracking recovery. Linear checks finite differences of its 10 ms joint
-references against speed 50 and the configured acceleration, automatically
+references against speed 50 and their own trajectory acceleration, automatically
 stretching the duration to a complete 10 ms sample when necessary. Both paths
 execute through internal real-time PV at speed 50.
 Linear uses explicit `start_pose -> end_pose`; Circular uses explicit
@@ -107,22 +104,25 @@ Linear and Circular accept `duration_s` instead of a speed percentage. Both
 select `ceil(duration_s / 0.010)` execution segments. The reference list has
 one more point and nominally spans the requested duration. Physical completion
 may be later. Linear and Circular geometry enforce at least 2 mm / 0.1 rad
-sampling. Ordinary PV command speed values remain
-`0..100` and map directly onto `0..2 rad/s`. Persistent maximum acceleration
+sampling. Ordinary PV command speed values remain `0..100` and select a
+`0..2 rad/s` online P reference-speed scale. Persistent maximum acceleration
 defaults to `6.00 rad/s^2`; its configured range is `0.01..8.00 rad/s^2`.
-Runtime applies that acceleration limit to ordinary PV, `set_pose()` and PV
-Joint/Linear/Circular trajectory references. MIT commands and MIT joint
-trajectories remain unchanged. The Damiao POS_VEL drive ceiling remains
-independent at `3 rad/s`.
+Runtime applies it only to ordinary PV (including PV `set_pose()`).
+Joint/Linear/Circular own separate trajectory velocity, acceleration, jerk,
+timing and synchronization constraints; changing ordinary PV acceleration does
+not change any trajectory. Those trajectory derivative limits are not exposed;
+callers provide positions/path and time. MIT commands and MIT joint trajectories remain
+unchanged. The Damiao POS_VEL `V` drive ceiling remains independent at `3 rad/s`.
 
-The public `set_joint_pv()` command is the ordinary stepped/P2P PV interface.
+The public `set_joint_pv()` command is the ordinary latest-target-wins step PV
+interface.
 `RealtimePv` is an internal trajectory execution type: only a finite validated
 Joint/Linear/Circular plan may install it, its period must be exactly 10 ms,
 and no raw or streaming PV symbol is exported through the C or C++ product API.
 
-Linear, Circular and `set_pose()` require PV product mode. Automatic approach
-is part of the same ordinary-PV point sequence. Ordinary MIT and direct
-quintic MIT joint trajectories remain available through their existing APIs.
+Linear and Circular require PV product mode. Automatic approach is part of the
+same internal trajectory-PV point sequence. `set_pose()` supports the current
+ordinary PV or MIT mode, and MIT joint trajectories remain available.
 
 ## State and diagnostics
 

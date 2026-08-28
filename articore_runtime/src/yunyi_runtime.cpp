@@ -33,9 +33,9 @@ constexpr float kUpper[2][7] = {
     {2.745f, .3489f, 2.5294f, 2.2678f, 2.0933f, .785f, 1.3956f},
 };
 // Per-joint hard safety limit for native trajectory validation. Public
-// ordinary-PV and Cartesian percentage commands both apply their separate
-// 3 rad/s product command ceilings before reaching this limit. Protocol
-// encoding ranges are separate and must not be treated as product limits.
+// ordinary PV maps speed_percent to the 0..2 rad/s P-reference scale; its
+// independent Motor V ceiling is 3 rad/s. Protocol encoding ranges are separate
+// and must not be treated as product limits.
 constexpr float kVelocityLimit[7] = {5, 5, 5, 5, 5, 5, 5};
 // Conservative logical-coordinate trajectory limits. These are native product
 // policy, not user-tunable scheduler parameters.

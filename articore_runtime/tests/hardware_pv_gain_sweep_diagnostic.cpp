@@ -63,8 +63,8 @@ constexpr Arm kPoint98{
     0.135614395f, 0.530822754f, -1.274700165f, -0.174400000f,
     -0.888647079f, 0.785000000f, -0.394636154f};
 
-// Product speed_percent=50 maps to a 1 rad/s ordinary-PV reference. Keep the
-// independent Damiao POS_VEL ceiling at 3 rad/s, matching the public Runtime.
+// Internal trajectory speed 50 maps to a 1 rad/s reference. Keep the
+// independent Damiao POS_VEL catch-up ceiling at 3 rad/s.
 constexpr float kReferenceVelocity = 1.0f;
 constexpr float kVelocityLimit = 3.0f;
 constexpr float kAbortMoveVelocity = 3.5f;

@@ -366,11 +366,12 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
   if (!std::isfinite(request.pv_reference_period_s) ||
       (request.execution == NativeTrajectoryExecution::RealtimePv
            ? std::abs(request.pv_reference_period_s -
-                      kNativeOrdinaryPvCommandPeriodSeconds) > kLimitTolerance
+                      kNativeRealtimePvTrajectoryPeriodSeconds) >
+                  kLimitTolerance
            : request.pv_reference_period_s != 0.0)) {
     throw std::invalid_argument(
-        "real-time PV trajectory references must use the ordinary 100 Hz "
-        "command period");
+        "real-time PV trajectory references must use the internal 100 Hz "
+        "trajectory period");
   }
   if (joint_count == 0 || joint_count > 32) {
     throw std::invalid_argument("trajectory joint count is invalid");

@@ -20,10 +20,12 @@ namespace articore {
 inline constexpr float kYunyiOrdinaryPvMaximumVelocity = 2.0f;
 inline constexpr float kYunyiPvDriveVelocityLimit = 3.0f;
 // Ordinary command speed_percent directly selects 0..2 rad/s. There is no
-// second persistent speed cap: 100 percent must remain observably distinct
-// from 50 percent. Acceleration remains a physical product setting.
+// second persistent P-reference speed cap: 100 percent must remain observably
+// distinct from 50 percent. The persistent acceleration setting belongs only
+// to ordinary online PV stepping; complete trajectories own separate limits.
 inline constexpr float kYunyiOrdinaryPvMaximumAcceleration = 8.0f;
-inline constexpr float kYunyiDefaultPvMaximumAcceleration = 6.0f;
+inline constexpr float kYunyiDefaultOrdinaryPvAcceleration = 6.0f;
+inline constexpr float kYunyiTrajectoryPvAccelerationLimit = 6.0f;
 inline constexpr float kYunyiPvMotionLimitResolution = 0.01f;
 inline constexpr float kYunyiOrdinaryMitMaximumVelocity = 5.0f;
 inline constexpr float yunyi_effective_pv_reference_velocity(
@@ -33,13 +35,16 @@ inline constexpr float yunyi_effective_pv_reference_velocity(
 static_assert(kYunyiOrdinaryPvMaximumVelocity == 2.0f,
               "ordinary PV 100 percent must map to 2 rad/s");
 static_assert(kYunyiPvDriveVelocityLimit == 3.0f,
-              "ordinary PV must retain the independent 3 rad/s drive ceiling");
+              "PV must retain the independent 3 rad/s Motor V ceiling");
 static_assert(kYunyiOrdinaryPvMaximumAcceleration == 8.0f &&
-                  kYunyiDefaultPvMaximumAcceleration == 6.0f,
-              "ordinary PV acceleration limits use physical rad/s^2 units");
-static_assert(kYunyiDefaultPvMaximumAcceleration ==
+                  kYunyiDefaultOrdinaryPvAcceleration == 6.0f,
+              "ordinary PV acceleration uses physical rad/s^2 units");
+static_assert(kYunyiDefaultOrdinaryPvAcceleration ==
                   kNativeOrdinaryPvDefaultAcceleration,
-              "product and native ordinary PV acceleration defaults must match");
+              "product and native ordinary-PV defaults must match");
+static_assert(kYunyiTrajectoryPvAccelerationLimit ==
+                  kNativeRealtimePvTrajectoryAccelerationLimit,
+              "trajectory acceleration must remain independent from ordinary PV");
 static_assert(kYunyiOrdinaryMitMaximumVelocity == 5.0f,
               "ordinary MIT 100 percent must map to 5 rad/s");
 static_assert(yunyi_effective_pv_reference_velocity(50.0f) == 1.0f &&

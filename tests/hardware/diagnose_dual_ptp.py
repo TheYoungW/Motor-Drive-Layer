@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify atomic dual-arm ordinary PV joint point-to-point control."""
+"""Verify atomic dual-arm ordinary PV latest-target step control."""
 
 from __future__ import annotations
 

@@ -18,9 +18,9 @@ using detail::copy_text;
 void SafetyRuntime::worker_loop() {
   const auto control_period = std::chrono::nanoseconds(
       1'000'000'000ULL / control_hz_);
-  const auto pv_control_period = std::chrono::nanoseconds(
+  const auto realtime_pv_trajectory_period = std::chrono::nanoseconds(
       1'000'000'000ULL /
-      std::min(control_hz_, kNativeOrdinaryPvCommandHz));
+      std::min(control_hz_, kNativeRealtimePvTrajectoryHz));
   const auto idle_poll_period = std::chrono::milliseconds(2);
   const auto feedback_period = std::chrono::nanoseconds(
       1'000'000'000ULL / config_.feedback_check_hz);
@@ -86,9 +86,13 @@ void SafetyRuntime::worker_loop() {
            state_ == ARTICORE_PARTIALLY_ENABLED) &&
           now >= next_control_tick_) {
         run_arm_control = true;
+        const bool pv_trajectory =
+            mode_ == ARTICORE_MODE_PV &&
+            trajectory_control_.state == ARTICORE_MOTION_RUNNING;
         detail::advance_periodic_deadline(
             next_control_tick_,
-            mode_ == ARTICORE_MODE_PV ? pv_control_period : control_period,
+            pv_trajectory
+                ? realtime_pv_trajectory_period : control_period,
             now);
       }
       if (state_ == ARTICORE_READY &&

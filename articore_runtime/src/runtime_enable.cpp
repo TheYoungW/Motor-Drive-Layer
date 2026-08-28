@@ -1916,12 +1916,7 @@ void SafetyRuntime::recover() {
   const float recovery_velocity =
       ordinary_velocity_from_percent(mode_, kRecoverySpeedPercent);
   const auto expected_seconds = recovery_velocity > 0.0f
-      ? (mode_ == ARTICORE_MODE_PV
-             ? static_cast<float>(synchronized_septic_duration(
-                   maximum_distance, recovery_velocity,
-                   kNativeOrdinaryPvDefaultAcceleration))
-             : maximum_distance / recovery_velocity) +
-            3.0f
+      ? maximum_distance / recovery_velocity + 3.0f
       : 120.0f;
   const auto timeout_seconds = std::clamp(expected_seconds, 5.0f, 120.0f);
   const auto deadline = Clock::now() + std::chrono::milliseconds(

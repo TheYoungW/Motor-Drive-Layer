@@ -28,7 +28,7 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.22.0`
+- package version: `0.22.2`
 - Runtime ABI: `11.3` / `0x000B0003`
 
 Runtime health includes a product-order snapshot for every installed Motor,
@@ -45,43 +45,43 @@ The SDK creates the product with
 Motor mapping, controllers, limits, models, TCP offsets, workers and resource
 lifetime.
 
-Ordinary joint PV applies one common seventh-order rest-to-rest progress law
-to all 14 joints. Reference updates and physical POS_VEL packets both run at
-100 Hz; each point is sent once. Separate 500 Hz Runtime scheduling retains
-safety, feedback and command-watchdog supervision. Each command maps
-`speed=0..100` directly onto
-`0..2 rad/s`; there is no second
-persistent maximum-speed cap. Persistent maximum acceleration uses physical
+Ordinary joint PV is the public user-development step mode. One
+`set_joint_pv()` call replaces the preceding complete 14-joint target; Runtime
+does not generate a finite quintic/septic profile or a Motion-ID task. On each
+500 Hz control cycle it advances the outgoing POS_VEL `P` reference toward the
+latest endpoint. `speed=0..100` selects the `P` reference-speed scale from
+`0..2 rad/s`; the Motor POS_VEL `V` ceiling remains independent at `3 rad/s`.
+Persistent maximum acceleration uses physical
 units with `0.01` resolution, accepts `0.01..8.00 rad/s^2`, and defaults to
-`6.00 rad/s^2`. Runtime selects one shared duration from velocity,
-acceleration and its native jerk-shaping constraint, rounded up to a complete
-10 ms sample. The current ABI has no separate jerk setting, so the native
-policy uses `j_max = a_max / 0.10 s` (60 rad/s^3 at the default acceleration).
-Joint PTP is the only point-to-point planner. Pose callers use the pure
-`solve_ik(left_pose, right_pose)` query to obtain 14 joint angles and pass them
-to `set_joint_pv()`. The legacy `set_pose()` symbol remains as a compatibility
-shortcut for that same IK-to-joint-PTP chain. These changes do not affect MIT.
+`6.00 rad/s^2`; it shapes only ordinary PV acceleration, braking and reversal.
+Joint/Linear/Circular own independent trajectory velocity, acceleration, jerk,
+timing and synchronization constraints. Users provide positions/path and time;
+trajectory acceleration and jerk remain internal Runtime policy.
+Pose callers use the pure `solve_ik(left_pose, right_pose)` query to obtain 14
+joint angles and pass them to ordinary PV or MIT. The compatibility
+`set_pose()` symbol solves IK once and atomically installs that endpoint through
+the Runtime's current ordinary PV or MIT mode; it is not a trajectory planner.
 Linear constructs a true Cartesian line from the current/start FK pose: XYZ is
 linearly interpolated, orientation follows shortest-path quaternion SLERP, and
 each pose is solved by IK from the preceding joint solution. Geometry is
 sampled at 2 mm / 0.1 rad or better, then one global quintic time law generates
-fixed 10 ms ordinary-PV references. Thus `duration_s=3` normally produces 300
-segments and 301 points. Each Linear reference is sent once through ordinary
-PV at 100 Hz, with no second executor-side interpolation or step generator.
+fixed 10 ms internal real-time-PV references. Thus `duration_s=3` normally
+produces 300 segments and 301 points. Each Linear reference is sent once at
+100 Hz, with no second executor-side interpolation or step generator.
 The separate 500 Hz Runtime scheduling continues safety and feedback work.
 Circular constructs the directed circle through start/via/end, samples the arc
 at 2 mm / 0.1 rad or better, applies shortest-path SLERP through the via
 orientation, and uses the same global quintic/10 ms real-time-PV chain.
 Physical arrival may be later due to PV limits and feedback stability. Linear
-and Circular check their 10 ms joint differences against speed 50 and the
-configured maximum acceleration, automatically stretching the reference duration to a complete
+and Circular check their 10 ms joint differences against speed 50 and their
+trajectory acceleration limits, automatically stretching the reference duration to a complete
 10 ms sample when needed.
-The public `set_joint_pv()` command is the ordinary stepped/P2P interface.
+The public `set_joint_pv()` command is the ordinary stepped interface.
 Real-time PV is internal-only and can be selected only by a validated finite
 Joint/Linear/Circular trajectory; no raw or streaming PV entry point is
-exported. Automatic approach also uses ordinary PV. Linear, Circular and
-`set_pose()` require PV product mode;
-ordinary MIT and MIT joint trajectories are unchanged.
+exported. Automatic approach stays inside that trajectory execution path.
+Linear and Circular require PV product mode; `set_pose()` supports either
+ordinary PV or ordinary MIT, and MIT joint trajectories are unchanged.
 
 See [the Runtime reference](articore_runtime/README.md) for the current API.
 

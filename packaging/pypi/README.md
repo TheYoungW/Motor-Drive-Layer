@@ -2,7 +2,7 @@
 
 Binary-only Yunyi product Runtime for Linux.
 
-Version 0.22.1 ships Runtime ABI 11.3 (`0x000B0003`). The wheel contains the
+Version 0.22.2 ships Runtime ABI 11.3 (`0x000B0003`). The wheel contains the
 native `libarticore_runtime.so` and required data; it contains no Python module,
 ctypes declarations or Motor ABI library.
 
