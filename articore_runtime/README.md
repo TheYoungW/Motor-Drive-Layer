@@ -65,8 +65,16 @@ tolerance, reuses each arm's Pinocchio model and limits global fallback to an
 8 ms soft steady-clock budget. Timeout or either-side failure leaves the active
 target unchanged. Linear and Circular are asynchronous FIFO trajectory tasks.
 Linear interpolates XYZ on the Cartesian line and orientation with true
-shortest-path quaternion SLERP. Each pose uses the preceding IK result as its
-seed, with geometry sampled at 2 mm / 0.1 rad or better. Runtime applies one
+shortest-path quaternion SLERP. The first path pose uses only the current
+planned joints as its IK seed; each later pose uses only the preceding IK
+result. Linear and Circular path IK never retry from fallback or random seeds,
+and a null-space posture term keeps each solve near that preceding seed. The
+preceding joint step also predicts a half-step-ahead preferred posture, biasing
+the redundant solution toward continuous joint velocity instead of +/- chatter.
+This is an optimization objective, not a reversal rejection rule: motion may
+reverse whenever the Cartesian path requires it. Runtime rejects only a true
+per-sample branch jump above 0.35 rad. Geometry is sampled at 2 mm / 0.1 rad or
+better. Runtime applies one
 global quintic time law and generates one internal real-time-PV Linear reference
 every 10 ms. Each reference is sent once on the 100 Hz POS_VEL command clock, without
 executor-side interpolation, step generation or repeated packets. Separate

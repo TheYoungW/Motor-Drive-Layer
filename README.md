@@ -28,7 +28,7 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.22.2`
+- package version: `0.22.3`
 - Runtime ABI: `11.3` / `0x000B0003`
 
 Runtime health includes a product-order snapshot for every installed Motor,
@@ -63,7 +63,14 @@ joint angles and pass them to ordinary PV or MIT. The compatibility
 the Runtime's current ordinary PV or MIT mode; it is not a trajectory planner.
 Linear constructs a true Cartesian line from the current/start FK pose: XYZ is
 linearly interpolated, orientation follows shortest-path quaternion SLERP, and
-each pose is solved by IK from the preceding joint solution. Geometry is
+the first pose is solved only from the current planned joints while each later
+pose is solved only from the preceding joint solution. Linear/Circular path IK
+does not use fallback or random seeds. A null-space posture term keeps each
+solution near its seed, while the preceding joint step predicts a half-step-
+ahead preferred posture for the next solve. This biases redundant joints toward
+continuous velocity instead of +/- chatter without rejecting a reversal that
+the Cartesian path actually requires. Only an unsolved target or a true branch
+jump above 0.35 rad fails. Geometry is
 sampled at 2 mm / 0.1 rad or better, then one global quintic time law generates
 fixed 10 ms internal real-time-PV references. Thus `duration_s=3` normally
 produces 300 segments and 301 points. Each Linear reference is sent once at

@@ -33,6 +33,12 @@ inline constexpr uint32_t kYunyiLinearReferenceHz = 100;
 inline constexpr double kYunyiCircularTranslationSampleDistance = 0.002;
 inline constexpr double kYunyiCircularOrientationSampleDistance = 0.1;
 inline constexpr uint32_t kYunyiCircularReferenceHz = 100;
+// Cartesian geometry samples are close, so a large per-sample joint move still
+// indicates a branch jump. Smaller direction changes are not rejected: path IK
+// predicts its preferred redundant posture from the preceding joint step and
+// uses that only as a null-space continuity objective.
+inline constexpr double kYunyiCartesianMaximumIkJointStep = 0.35;
+inline constexpr double kYunyiCartesianIkStepPredictionGain = 0.5;
 // A 100 Hz caller has a 10 ms period. Keep two milliseconds outside the
 // numerical solve for ABI validation, locking and atomic command install.
 inline constexpr std::chrono::microseconds kYunyiProductIkBudget{8000};
@@ -66,10 +72,32 @@ struct NativeCartesianPlan {
   double minimum_duration_s = 0.0;
 };
 
-enum class CartesianIkSearch {
-  LocalPath,
-  GlobalEndpoint,
+struct CartesianIkContinuityState {
+  std::array<double, ARTICORE_PRODUCT_ARM_DOF> previous_steps{};
+  bool has_previous_step = false;
 };
+
+inline std::array<double, ARTICORE_PRODUCT_ARM_DOF>
+predicted_cartesian_ik_posture(
+    const std::array<double, ARTICORE_PRODUCT_ARM_DOF>& current,
+    const CartesianIkContinuityState* state) {
+  auto predicted = current;
+  if (state && state->has_previous_step) {
+    for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+      predicted[joint] += kYunyiCartesianIkStepPredictionGain *
+          state->previous_steps[joint];
+    }
+  }
+  return predicted;
+}
+
+void require_cartesian_ik_continuity(
+    uint32_t side,
+    const std::array<double, ARTICORE_PRODUCT_ARM_DOF>& previous,
+    const std::array<double, ARTICORE_PRODUCT_ARM_DOF>& current,
+    CartesianIkContinuityState& state,
+    const char* context,
+    std::size_t sample_index);
 
 inline void require_unchanged_planned_reference(
     const NativeTrajectorySample& before,
@@ -94,16 +122,23 @@ inline void require_unchanged_planned_reference(
   }
 }
 
-// Product Cartesian planning uses a small local search for sequential path
-// samples and a deterministic, fixed-seed global search for user endpoints.
-inline ArticoreIkOptions product_cartesian_ik_options(
-    CartesianIkSearch search) {
+// Continuous Cartesian path samples solve only from the current/previous
+// planned configuration. Random retries are disabled by the seed-only model
+// entry point; these options provide only its numerical solver settings.
+inline ArticoreIkOptions product_path_ik_options() {
   ArticoreIkOptions options{};
   options.struct_size = sizeof(options);
   options.max_iterations = 1000;
-  options.max_retries = search == CartesianIkSearch::GlobalEndpoint
-      ? 1000U
-      : 8U;
+  options.random_seed = 0;
+  return options;
+}
+
+// A discrete set_pose endpoint has no continuous path branch to preserve, so
+// it retains the deterministic global search and selects the solution nearest
+// to the current/planned seed.
+inline ArticoreIkOptions product_endpoint_ik_options() {
+  auto options = product_path_ik_options();
+  options.max_retries = 1000;
   options.random_seed = 0;
   return options;
 }
@@ -112,14 +147,12 @@ std::vector<NativeTrajectoryJoint> product_cartesian_joints(
     const YunyiRuntimeResources& product);
 
 std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
-solve_point_to_point_target_from_reference(
+solve_path_start_target_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
     const NativeTrajectorySample& reference,
-    const float* target_pose,
-    std::chrono::steady_clock::time_point deadline =
-        std::chrono::steady_clock::time_point::max());
+    const float* target_pose);
 
 std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
 solve_dual_point_to_point_targets_from_reference(

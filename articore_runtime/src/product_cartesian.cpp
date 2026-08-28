@@ -180,43 +180,33 @@ ArticoreRobotPose robot_pose_from_rpy(const float* values) {
   return pose;
 }
 
-std::array<double, ARTICORE_PRODUCT_ARM_DOF> solve_ik(
+std::array<double, ARTICORE_PRODUCT_ARM_DOF> solve_path_ik(
     RobotModel& planning_model,
     YunyiRuntimeResources& product, uint32_t side,
     const ArticoreRobotPose& target,
     const std::array<double, ARTICORE_PRODUCT_ARM_DOF>& seed,
-    const char* context,
-    CartesianIkSearch search = CartesianIkSearch::LocalPath) {
-  auto options = product_cartesian_ik_options(search);
+    const CartesianIkContinuityState* continuity,
+    const char* context) {
+  auto options = product_path_ik_options();
+  auto preferred = predicted_cartesian_ik_posture(seed, continuity);
+  const uint32_t offset = side * ARTICORE_PRODUCT_ARM_DOF;
+  for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+    preferred[joint] = std::clamp(
+        preferred[joint],
+        static_cast<double>(product.joints[offset + joint].lower),
+        static_cast<double>(product.joints[offset + joint].upper));
+  }
   ArticoreIkResult ik{};
   ik.struct_size = sizeof(ik);
-  if (search == CartesianIkSearch::GlobalEndpoint) {
-    planning_model.ik_nearest(
-        &target, seed.data(), seed.size(), &options, &ik);
-  } else {
-    planning_model.ik(
-        &target, seed.data(), seed.size(), &options, &ik);
-    bool distant_from_seed = false;
-    if (ik.success && ik.dof == ARTICORE_PRODUCT_ARM_DOF) {
-      for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
-        distant_from_seed = distant_from_seed ||
-            std::abs(ik.q[index] - seed[index]) > 0.35;
-      }
-    }
-    if (distant_from_seed) {
-      ik = {};
-      ik.struct_size = sizeof(ik);
-      planning_model.ik_nearest(
-          &target, seed.data(), seed.size(), &options, &ik);
-    }
-  }
+  planning_model.ik_from_seed(
+      &target, seed.data(), seed.size(), &options, &ik,
+      preferred.data(), preferred.size());
   if (!ik.success || ik.dof != ARTICORE_PRODUCT_ARM_DOF) {
     throw std::invalid_argument(
         std::string(context) + " is unreachable; IK error_norm=" +
         std::to_string(ik.error_norm));
   }
   std::array<double, ARTICORE_PRODUCT_ARM_DOF> result{};
-  const uint32_t offset = side * ARTICORE_PRODUCT_ARM_DOF;
   for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
     const auto& joint = product.joints[offset + index];
     if (!std::isfinite(ik.q[index]) || ik.q[index] < joint.lower ||
@@ -243,8 +233,7 @@ std::array<double, ARTICORE_PRODUCT_ARM_DOF> solve_endpoint_ik(
   // set_pose has no sequential Cartesian samples to constrain the redundant arm.
   // Search the deterministic endpoint budget and select the valid joint
   // solution closest to the measured/planned seed.
-  auto options = product_cartesian_ik_options(
-      CartesianIkSearch::GlobalEndpoint);
+  auto options = product_endpoint_ik_options();
   ArticoreIkResult ik{};
   ik.struct_size = sizeof(ik);
   planning_model.ik_nearest_until(
@@ -784,19 +773,16 @@ NativeCartesianPlan build_linear_path_plan_common(
   std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>> joint_path;
   joint_path.reserve(pose_path.size());
   joint_path.push_back(start_positions);
+  CartesianIkContinuityState ik_continuity;
   for (std::size_t sample = 1; sample < pose_path.size(); ++sample) {
-    const auto solved = solve_ik(
+    const char* const context = sample + 1U == pose_path.size()
+        ? "Cartesian linear path target"
+        : "Cartesian blended linear path sample";
+    const auto solved = solve_path_ik(
         planning_model, product, side, pose_path[sample], seed,
-        sample + 1U == pose_path.size()
-            ? "Cartesian linear path target"
-            : "Cartesian blended linear path sample");
-    for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
-      if (std::abs(solved[index] - seed[index]) > 0.35) {
-        throw std::invalid_argument(
-            "Cartesian blended linear path changes to a discontinuous IK "
-            "branch at sample " + std::to_string(sample));
-      }
-    }
+        &ik_continuity, context);
+    require_cartesian_ik_continuity(
+        side, seed, solved, ik_continuity, context, sample);
     seed = solved;
     auto waypoint = start_positions;
     for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
@@ -875,6 +861,7 @@ NativeCartesianPlan build_linear_plan_common(
   path.reserve(sample_count);
   path.push_back(start_positions);
   auto seed = start_q;
+  CartesianIkContinuityState ik_continuity;
   for (uint32_t sample = 1; sample < sample_count; ++sample) {
     const double amount = static_cast<double>(sample) /
         static_cast<double>(sample_count - 1);
@@ -886,18 +873,14 @@ NativeCartesianPlan build_linear_plan_common(
     const auto orientation = cartesian::slerp(
         start_orientation, end_orientation, amount);
     cartesian::rotation_from_quaternion(orientation, sample_pose.rotation);
-    const auto solved = solve_ik(
+    const char* const context = sample + 1 == sample_count
+        ? "Cartesian linear target"
+        : "Cartesian linear path sample";
+    const auto solved = solve_path_ik(
         planning_model, product, side, sample_pose, seed,
-        sample + 1 == sample_count
-            ? "Cartesian linear target"
-            : "Cartesian linear path sample");
-    for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
-      if (std::abs(solved[index] - seed[index]) > 0.35) {
-        throw std::invalid_argument(
-            "Cartesian linear path changes to a discontinuous IK branch at "
-            "sample " + std::to_string(sample));
-      }
-    }
+        &ik_continuity, context);
+    require_cartesian_ik_continuity(
+        side, seed, solved, ik_continuity, context, sample);
     seed = solved;
     auto waypoint = start_positions;
     for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
@@ -918,6 +901,39 @@ NativeCartesianPlan build_linear_plan_common(
 }
 
 }  // namespace
+
+void require_cartesian_ik_continuity(
+    uint32_t side,
+    const std::array<double, ARTICORE_PRODUCT_ARM_DOF>& previous,
+    const std::array<double, ARTICORE_PRODUCT_ARM_DOF>& current,
+    CartesianIkContinuityState& state,
+    const char* context,
+    std::size_t sample_index) {
+  if (side != ARTICORE_ROBOT_LEFT && side != ARTICORE_ROBOT_RIGHT) {
+    throw std::invalid_argument("Cartesian IK continuity side is invalid");
+  }
+  const std::string label = context ? context : "Cartesian path";
+  for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+    const double step = current[joint] - previous[joint];
+    if (!std::isfinite(step)) {
+      throw std::invalid_argument(
+          label + " contains a non-finite IK joint step");
+    }
+    if (std::abs(step) > kYunyiCartesianMaximumIkJointStep) {
+      std::ostringstream message;
+      message << label << " changes to a discontinuous IK branch at sample "
+              << sample_index << ": "
+              << product_joint_role(
+                     side * ARTICORE_PRODUCT_ARM_DOF + joint)
+              << " step=" << step << " rad exceeds "
+              << kYunyiCartesianMaximumIkJointStep << " rad";
+      throw std::invalid_argument(message.str());
+    }
+
+    state.previous_steps[joint] = step;
+  }
+  state.has_previous_step = true;
+}
 
 NativeCartesianPlan build_linear_plan_from_reference(
     YunyiRuntimeResources& product,
@@ -958,7 +974,7 @@ NativeCartesianPlan build_linear_plan_from_reference(
     }
   }
 
-  const auto approach_target = solve_point_to_point_target_from_reference(
+  const auto approach_target = solve_path_start_target_from_reference(
       product, mode, side, reference, start_pose_values);
   auto path_reference = reference;
   path_reference.positions.assign(
@@ -1016,7 +1032,7 @@ NativeCartesianPlan build_linear_path_plan_from_reference(
     }
   }
 
-  const auto approach_target = solve_point_to_point_target_from_reference(
+  const auto approach_target = solve_path_start_target_from_reference(
       product, mode, side, reference, pose_values);
   auto path_reference = reference;
   path_reference.positions.assign(
@@ -1032,13 +1048,12 @@ NativeCartesianPlan build_linear_path_plan_from_reference(
 }
 
 std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
-solve_point_to_point_target_from_reference(
+solve_path_start_target_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
     const NativeTrajectorySample& reference,
-    const float* target_pose_values,
-    std::chrono::steady_clock::time_point deadline) {
+    const float* target_pose_values) {
   if (mode != ARTICORE_MODE_PV && mode != ARTICORE_MODE_MIT) {
     throw std::invalid_argument(
         "Cartesian point-to-point control mode is invalid");
@@ -1062,9 +1077,9 @@ solve_point_to_point_target_from_reference(
     if (!product.pose_models[side]) {
       throw std::runtime_error("Cartesian point-to-point model is unavailable");
     }
-    target_q = solve_endpoint_ik(
+    target_q = solve_path_ik(
         *product.pose_models[side], product, side, target, start_q,
-        "Cartesian point-to-point target", deadline);
+        nullptr, "Cartesian path start");
   }
 
   auto result = start_positions;
@@ -1218,11 +1233,11 @@ NativeCartesianPlan build_circular_plan_common(
   path.reserve(first_segments + second_segments + 1U);
   path.push_back(start_positions);
   auto seed = start_q;
+  CartesianIkContinuityState ik_continuity;
   const auto append_sample = [&](double angle,
                                  const cartesian::Quaternion& orientation,
                                  const char* context,
                                  uint32_t sample_index,
-                                 CartesianIkSearch search,
                                  auto& mutable_seed,
                                  auto& mutable_path) {
     ArticoreRobotPose sample_pose{};
@@ -1231,17 +1246,11 @@ NativeCartesianPlan build_circular_plan_common(
     std::copy(position.begin(), position.end(), sample_pose.position);
     cartesian::rotation_from_quaternion(
         orientation, sample_pose.rotation);
-    const auto solved = solve_ik(
-        planning_model, product, side, sample_pose, mutable_seed, context,
-        search);
-    for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
-      if (std::abs(solved[index] - mutable_seed[index]) > 0.35) {
-        throw std::invalid_argument(
-            std::string(context) +
-            " changes to a discontinuous IK branch at sample " +
-            std::to_string(sample_index));
-      }
-    }
+    const auto solved = solve_path_ik(
+        planning_model, product, side, sample_pose, mutable_seed,
+        &ik_continuity, context);
+    require_cartesian_ik_continuity(
+        side, mutable_seed, solved, ik_continuity, context, sample_index);
     mutable_seed = solved;
     auto waypoint = start_positions;
     for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
@@ -1260,8 +1269,7 @@ NativeCartesianPlan build_circular_plan_common(
         cartesian::circular_slerp_through_via(
             geometric_start_orientation, via_orientation, end_orientation,
             via_path_amount, angle / arc.end_angle),
-        "Cartesian circular start-to-via path", sample,
-        CartesianIkSearch::LocalPath, seed, path);
+        "Cartesian circular start-to-via path", sample, seed, path);
   }
   for (uint32_t sample = 1; sample <= second_segments; ++sample) {
     const double amount = static_cast<double>(sample) /
@@ -1274,8 +1282,7 @@ NativeCartesianPlan build_circular_plan_common(
             geometric_start_orientation, via_orientation, end_orientation,
             via_path_amount, angle / arc.end_angle),
         "Cartesian circular via-to-end path",
-        first_segments + sample, CartesianIkSearch::LocalPath,
-        seed, path);
+        first_segments + sample, seed, path);
   }
 
   auto execution_path = resample_realtime_pv_path_with_limits(
@@ -1330,7 +1337,7 @@ NativeCartesianPlan build_circular_plan_from_reference(
     }
   }
 
-  const auto approach_target = solve_point_to_point_target_from_reference(
+  const auto approach_target = solve_path_start_target_from_reference(
       product, mode, side, reference, start_pose_values);
   auto path_reference = reference;
   path_reference.positions.assign(

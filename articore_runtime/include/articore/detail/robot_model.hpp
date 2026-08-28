@@ -62,6 +62,15 @@ class RobotModel final {
   void ik(const ArticoreRobotPose* target, const double* initial_q,
           uint32_t initial_q_count, const ArticoreIkOptions* options,
           ArticoreIkResult* result) const;
+  // Continuous Cartesian paths stay on the branch defined by the current
+  // planned configuration. Solve only from that seed: no deterministic
+  // fallback set and no random retry seeds.
+  void ik_from_seed(const ArticoreRobotPose* target, const double* initial_q,
+                    uint32_t initial_q_count,
+                    const ArticoreIkOptions* options,
+                    ArticoreIkResult* result,
+                    const double* preferred_q = nullptr,
+                    uint32_t preferred_q_count = 0) const;
   // set_pose endpoint IK searches the configured retry budget and selects the
   // successful solution nearest to the measured/planned seed.
   void ik_nearest(const ArticoreRobotPose* target, const double* initial_q,
@@ -85,7 +94,11 @@ class RobotModel final {
                bool prefer_nearest_success,
                const std::chrono::steady_clock::time_point* deadline,
                const detail::YunyiPtpFallbackSeeds* fallback_seeds =
-                   nullptr) const;
+                   nullptr,
+               bool allow_random_retries = true,
+               bool regularize_to_seed = false,
+               const double* preferred_q = nullptr,
+               uint32_t preferred_q_count = 0) const;
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

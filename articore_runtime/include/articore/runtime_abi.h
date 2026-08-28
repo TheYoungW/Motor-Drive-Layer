@@ -625,8 +625,14 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_pose(
     const float* right_target_pose, float speed_percent);
 /* Asynchronous FIFO Cartesian trajectories. Linear interpolates XYZ on a
  * Cartesian line, uses shortest-path quaternion SLERP for orientation, and
- * seeds each IK solve from the preceding joint solution. Geometry is sampled
- * at 2 mm / 0.1 rad or better. One global quintic time law generates an
+ * solves the first path pose only from the current planned joints, then solves
+ * every later pose only from the preceding joint solution. Path IK never uses
+ * fallback or random seeds. The preceding joint step predicts a preferred
+ * posture for the next null-space solve, biasing the result away from +/- IK
+ * chatter without rejecting a kinematically required reversal. Only a true
+ * per-sample branch jump remains a hard failure. Geometry is sampled at
+ * 2 mm / 0.1 rad or better.
+ * One global quintic time law generates an
  * internal 100 Hz real-time-PV sequence, each reference transmitted once
  * clock without a second executor-side interpolation or step generator. The
  * separate 500 Hz Runtime scheduling continues safety and feedback work.
@@ -653,7 +659,8 @@ articore_runtime_move_linear_trajectory_with_point_count(
     uint64_t* motion_id);
 /* Standard directed circular path through start/via/end. Position is sampled
  * at 2 mm or better, orientation uses shortest-path SLERP through the via
- * orientation, sequential IK preserves the local joint branch, and one global
+ * orientation, seed-only sequential IK plus joint-step posture prediction
+ * preserve the current local branch without random retries, and one global
  * quintic time law produces 100 Hz internal real-time PV references. Runtime
  * stretches an undersized duration to satisfy joint speed and acceleration. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular_trajectory(

@@ -29,6 +29,10 @@ namespace {
 
 constexpr uint32_t kDof = 7;
 constexpr double kHalfPi = 1.57079632679489661923;
+// Path IK is redundant (7 joints for a 6D task). Keep its null-space motion
+// close to the preceding path solution instead of allowing numerically valid
+// but mechanically noisy posture drift.
+constexpr double kPathIkSeedPostureGain = 0.10;
 
 // Fixed Yunyi gripper-center control frame relative to link7. This is the
 // midpoint of the two gripper slide origins in the product URDF. Products
@@ -416,6 +420,16 @@ void RobotModel::ik(const ArticoreRobotPose* target, const double* initial_q,
       target, initial_q, initial_q_count, options, result, false, nullptr);
 }
 
+void RobotModel::ik_from_seed(
+    const ArticoreRobotPose* target, const double* initial_q,
+    uint32_t initial_q_count, const ArticoreIkOptions* options,
+    ArticoreIkResult* result, const double* preferred_q,
+    uint32_t preferred_q_count) const {
+  ik_impl(
+      target, initial_q, initial_q_count, options, result, false, nullptr,
+      nullptr, false, true, preferred_q, preferred_q_count);
+}
+
 void RobotModel::ik_nearest(
     const ArticoreRobotPose* target, const double* initial_q,
     uint32_t initial_q_count, const ArticoreIkOptions* options,
@@ -456,7 +470,11 @@ void RobotModel::ik_impl(
     uint32_t initial_q_count, const ArticoreIkOptions* options,
     ArticoreIkResult* result, bool prefer_nearest_success,
     const std::chrono::steady_clock::time_point* deadline,
-    const detail::YunyiPtpFallbackSeeds* fallback_seeds) const {
+    const detail::YunyiPtpFallbackSeeds* fallback_seeds,
+    bool allow_random_retries,
+    bool regularize_to_seed,
+    const double* preferred_q,
+    uint32_t preferred_q_count) const {
   if (!target || target->struct_size != sizeof(*target))
     throw std::invalid_argument("IK target pose is null or too small");
   if (!result || result->struct_size != sizeof(*result))
@@ -489,6 +507,13 @@ void RobotModel::ik_impl(
   const pinocchio::SE3 desired =
       pinocchio::SE3(rotation, translation) * impl_->end_placement.inverse();
   Eigen::VectorXd seed = impl_->vector(initial_q, initial_q_count, "initial_q");
+  if ((preferred_q == nullptr) != (preferred_q_count == 0)) {
+    throw std::invalid_argument(
+        "preferred_q and preferred_q_count must be supplied together");
+  }
+  const Eigen::VectorXd preferred = preferred_q
+      ? impl_->vector(preferred_q, preferred_q_count, "preferred_q")
+      : seed;
   struct Attempt { Eigen::VectorXd q; double error; uint32_t iterations; bool success; };
   bool deadline_expired = false;
   const auto check_deadline = [&] {
@@ -513,7 +538,19 @@ void RobotModel::ik_impl(
       pinocchio::getJointJacobian(impl_->model, data, impl_->end_joint, pinocchio::LOCAL, jacobian);
       Eigen::Matrix<double, 6, 6> normal = jacobian * jacobian.transpose();
       normal.diagonal().array() += damping * std::max(1.0, attempt.error * 10.0);
-      const Eigen::VectorXd delta = step_size * jacobian.transpose() * normal.ldlt().solve(error.toVector());
+      const auto normal_solver = normal.ldlt();
+      const Eigen::Matrix<double, 7, 6> damped_pseudoinverse =
+          jacobian.transpose() * normal_solver.solve(
+              Eigen::Matrix<double, 6, 6>::Identity());
+      Eigen::VectorXd delta =
+          step_size * damped_pseudoinverse * error.toVector();
+      if (regularize_to_seed) {
+        const Eigen::Matrix<double, 7, 7> nullspace =
+            Eigen::Matrix<double, 7, 7>::Identity() -
+            damped_pseudoinverse * jacobian;
+        delta += kPathIkSeedPostureGain * nullspace *
+            (preferred - attempt.q);
+      }
       double alpha = 1.0;
       bool accepted = false;
       for (int line = 0; line < 4; ++line) {
@@ -545,7 +582,7 @@ void RobotModel::ik_impl(
   // nearest local redundant-arm branch. Exhausting every global retry after
   // this point only adds seconds of latency and does not improve continuity.
   const bool run_global_nearest_search =
-      prefer_nearest_success && !best.success;
+      allow_random_retries && prefer_nearest_success && !best.success;
   auto seed_distance = [&](const Eigen::VectorXd& q) {
     return (q - seed).squaredNorm();
   };
@@ -575,7 +612,7 @@ void RobotModel::ik_impl(
   const bool deterministic_success = best.success;
   std::mt19937_64 rng(options ? options->random_seed : 0);
   for (uint32_t retry = 0;
-       retry < max_retries && !deadline_expired &&
+       allow_random_retries && retry < max_retries && !deadline_expired &&
        (!best.success ||
         (run_global_nearest_search && !deterministic_success));
        ++retry) {

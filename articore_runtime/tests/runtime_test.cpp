@@ -6120,38 +6120,39 @@ void test_product_cartesian_endpoint_ik_search_is_global_and_deterministic() {
   target.struct_size = sizeof(target);
   model.fk(reachable_q.data(), reachable_q.size(), &target);
 
-  const auto local_options = articore::product_cartesian_ik_options(
-      articore::CartesianIkSearch::LocalPath);
-  const auto global_options = articore::product_cartesian_ik_options(
-      articore::CartesianIkSearch::GlobalEndpoint);
-  require(local_options.max_retries == 8 &&
-              global_options.max_retries == 1000 &&
+  const auto local_options = articore::product_path_ik_options();
+  const auto global_options = articore::product_endpoint_ik_options();
+  require(global_options.max_retries == 1000 &&
               global_options.random_seed == 0,
-          "product endpoint IK has an explicit deterministic global-search budget");
+          "path and endpoint IK use separate explicit search policies");
 
-  ArticoreIkOptions documented_defaults{};
-  documented_defaults.struct_size = sizeof(documented_defaults);
-  ArticoreIkResult default_result{};
-  default_result.struct_size = sizeof(default_result);
-  model.ik(
-      &target, seed.data(), seed.size(), &documented_defaults,
-      &default_result);
-  ArticoreIkResult local_result{};
-  local_result.struct_size = sizeof(local_result);
-  model.ik(
-      &target, seed.data(), seed.size(), &local_options, &local_result);
-  require(default_result.success == local_result.success &&
-              std::abs(default_result.error_norm - local_result.error_norm) <
-                  1e-15,
-          "zero-valued IK options select the documented eight-retry default");
+  ArticoreIkResult path_once{};
+  path_once.struct_size = sizeof(path_once);
+  model.ik_from_seed(
+      &target, seed.data(), seed.size(), &local_options, &path_once);
+  ArticoreIkResult path_with_global_budget{};
+  path_with_global_budget.struct_size = sizeof(path_with_global_budget);
+  model.ik_from_seed(
+      &target, seed.data(), seed.size(), &global_options,
+      &path_with_global_budget);
+  require(path_once.success == path_with_global_budget.success &&
+              std::abs(path_once.error_norm -
+                       path_with_global_budget.error_norm) < 1e-15 &&
+              std::equal(
+                  path_once.q, path_once.q + ARTICORE_PRODUCT_ARM_DOF,
+                  path_with_global_budget.q,
+                  [](double lhs, double rhs) {
+                    return std::abs(lhs - rhs) < 1e-15;
+                  }),
+          "path IK uses only its supplied seed regardless of retry budget");
 
   ArticoreIkResult first{};
   first.struct_size = sizeof(first);
-  model.ik(
+  model.ik_nearest(
       &target, seed.data(), seed.size(), &global_options, &first);
   ArticoreIkResult second{};
   second.struct_size = sizeof(second);
-  model.ik(
+  model.ik_nearest(
       &target, seed.data(), seed.size(), &global_options, &second);
   require(first.success && second.success &&
               first.error_norm < 1e-4 && second.error_norm < 1e-4,
@@ -6233,8 +6234,7 @@ void test_nearest_endpoint_ik_returns_without_redundant_global_search() {
   ArticoreRobotPose target{};
   target.struct_size = sizeof(target);
   model.fk(seed.data(), seed.size(), &target);
-  const auto options = articore::product_cartesian_ik_options(
-      articore::CartesianIkSearch::GlobalEndpoint);
+  const auto options = articore::product_endpoint_ik_options();
   ArticoreIkResult result{};
   result.struct_size = sizeof(result);
   const auto started = std::chrono::steady_clock::now();
@@ -6256,8 +6256,7 @@ void test_bounded_endpoint_ik_preserves_accuracy_and_honours_deadline() {
   ArticoreRobotPose target{};
   target.struct_size = sizeof(target);
   model.fk(seed.data(), seed.size(), &target);
-  const auto options = articore::product_cartesian_ik_options(
-      articore::CartesianIkSearch::GlobalEndpoint);
+  const auto options = articore::product_endpoint_ik_options();
 
   ArticoreIkResult solved{};
   solved.struct_size = sizeof(solved);
@@ -6309,19 +6308,21 @@ void test_product_ptp_ik_selects_solution_nearest_live_seed() {
       -sp, cp * sr, cp * cr};
   std::copy(std::begin(rotation), std::end(rotation), target.rotation);
 
-  const auto local_options = articore::product_cartesian_ik_options(
-      articore::CartesianIkSearch::LocalPath);
+  ArticoreIkOptions former_short_search{};
+  former_short_search.struct_size = sizeof(former_short_search);
+  former_short_search.max_iterations = 1000;
+  former_short_search.max_retries = 8;
+  former_short_search.random_seed = 0;
   ArticoreIkResult local{};
   local.struct_size = sizeof(local);
   model.ik(
-      &target, seed.data(), seed.size(), &local_options, &local);
+      &target, seed.data(), seed.size(), &former_short_search, &local);
   require(local.success &&
               std::abs(local.q[2] - seed[2]) > 1.5 &&
               std::abs(local.q[4] - seed[4]) > 1.5,
           "reported live set_pose target reproduces the distant J3/J5 local branch");
 
-  const auto global_options = articore::product_cartesian_ik_options(
-      articore::CartesianIkSearch::GlobalEndpoint);
+  const auto global_options = articore::product_endpoint_ik_options();
   ArticoreIkResult nearest{};
   nearest.struct_size = sizeof(nearest);
   model.ik_nearest(
@@ -6487,11 +6488,10 @@ void test_cartesian_linear_samples_support_continuous_native_ik() {
         start_orientation, end_orientation, amount);
     articore::cartesian::rotation_from_quaternion(
         orientation, target.rotation);
-    ArticoreIkOptions options{};
-    options.struct_size = sizeof(options);
+    auto options = articore::product_path_ik_options();
     ArticoreIkResult result{};
     result.struct_size = sizeof(result);
-    model.ik(
+    model.ik_from_seed(
         &target, seed.data(), seed.size(), &options, &result);
     require(result.success && result.error_norm < 1e-4,
             "every Cartesian line/SLERP sample has a continuous native IK solution");
@@ -6501,6 +6501,77 @@ void test_cartesian_linear_samples_support_continuous_native_ik() {
       seed[joint] = result.q[joint];
     }
   }
+}
+
+void test_cartesian_ik_continuity_biases_motion_without_rejecting_reversals() {
+  using ArmQ = std::array<double, ARTICORE_PRODUCT_ARM_DOF>;
+
+  articore::CartesianIkContinuityState jump_state;
+  const ArmQ zero{};
+  auto jump = zero;
+  jump[2] = articore::kYunyiCartesianMaximumIkJointStep + 0.001;
+  require_throws(
+      [&] {
+        articore::require_cartesian_ik_continuity(
+            ARTICORE_ROBOT_LEFT, zero, jump, jump_state,
+            "synthetic Linear", 1);
+      },
+      "discontinuous IK branch",
+      "Cartesian IK continuity rejects one large joint branch jump");
+
+  articore::CartesianIkContinuityState abrupt_state;
+  auto positive = zero;
+  positive[4] = 0.02;
+  articore::require_cartesian_ik_continuity(
+      ARTICORE_ROBOT_LEFT, zero, positive, abrupt_state,
+      "synthetic Circular", 1);
+  const auto predicted = articore::predicted_cartesian_ik_posture(
+      positive, &abrupt_state);
+  require(
+      std::abs(predicted[4] - 0.03) < 1e-12,
+      "Cartesian IK posture prediction continues half the previous joint step");
+  auto negative = positive;
+  negative[4] = 0.0;
+  articore::require_cartesian_ik_continuity(
+      ARTICORE_ROBOT_LEFT, positive, negative, abrupt_state,
+      "synthetic Circular", 2);
+
+  articore::CartesianIkContinuityState repeated_state;
+  auto small_positive = zero;
+  small_positive[6] = 0.004;
+  articore::require_cartesian_ik_continuity(
+      ARTICORE_ROBOT_RIGHT, zero, small_positive, repeated_state,
+      "synthetic Linear", 1);
+  auto small_negative = small_positive;
+  small_negative[6] = 0.0;
+  articore::require_cartesian_ik_continuity(
+      ARTICORE_ROBOT_RIGHT, small_positive, small_negative, repeated_state,
+      "synthetic Linear", 2);
+  auto repeated_positive = small_negative;
+  repeated_positive[6] = 0.004;
+  articore::require_cartesian_ik_continuity(
+      ARTICORE_ROBOT_RIGHT, small_negative, repeated_positive,
+      repeated_state, "synthetic Linear", 3);
+  require(
+      std::abs(repeated_state.previous_steps[6] - 0.004) < 1e-12,
+      "Cartesian IK continuity records +/- motion instead of rejecting it");
+
+  articore::CartesianIkContinuityState smooth_state;
+  auto smooth_up = zero;
+  smooth_up[3] = 0.004;
+  articore::require_cartesian_ik_continuity(
+      ARTICORE_ROBOT_LEFT, zero, smooth_up, smooth_state,
+      "synthetic arc", 1);
+  auto smooth_peak = smooth_up;
+  smooth_peak[3] += 0.001;
+  articore::require_cartesian_ik_continuity(
+      ARTICORE_ROBOT_LEFT, smooth_up, smooth_peak, smooth_state,
+      "synthetic arc", 2);
+  auto smooth_down = smooth_peak;
+  smooth_down[3] -= 0.0005;
+  articore::require_cartesian_ik_continuity(
+      ARTICORE_ROBOT_LEFT, smooth_peak, smooth_down, smooth_state,
+      "synthetic arc", 3);
 }
 
 void test_three_point_circular_arc_geometry_and_degenerate_rejection() {
@@ -7125,11 +7196,11 @@ void test_circular_arc_samples_support_continuous_native_ik() {
               via_orientation, end_orientation, local);
     articore::cartesian::rotation_from_quaternion(
         orientation, target.rotation);
-    ArticoreIkOptions options{};
-    options.struct_size = sizeof(options);
+    auto options = articore::product_path_ik_options();
     ArticoreIkResult result{};
     result.struct_size = sizeof(result);
-    model.ik(&target, seed.data(), seed.size(), &options, &result);
+    model.ik_from_seed(
+        &target, seed.data(), seed.size(), &options, &result);
     require(result.success && result.error_norm < 1e-4,
             "every circular position/SLERP sample has a native IK solution");
     for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
@@ -7496,6 +7567,7 @@ int main() {
     RUN_TEST(test_product_pose_selects_gripper_tool_center);
     RUN_TEST(test_custom_tcp_offset_is_shared_by_fk_and_ik);
     RUN_TEST(test_cartesian_linear_samples_support_continuous_native_ik);
+    RUN_TEST(test_cartesian_ik_continuity_biases_motion_without_rejecting_reversals);
     RUN_TEST(test_three_point_circular_arc_geometry_and_degenerate_rejection);
     RUN_TEST(test_cartesian_trajectories_remain_pv_only);
     RUN_TEST(test_product_cartesian_trajectory_limits);
