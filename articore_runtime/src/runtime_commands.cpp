@@ -183,6 +183,7 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
   initialized.lifetime = ARTICORE_COMMAND_HOLD_UNTIL_REPLACED;
   initialized.generation = next_arm_generation();
   initialized.submitted_at = Clock::now();
+  initialized.pv_ptp_updated_at = initialized.submitted_at;
   initialized.joint_position = true;
   initialized.max_reference_velocity = 0.0f;
   initialized.max_reference_acceleration =
@@ -213,6 +214,7 @@ void SafetyRuntime::initialize_arm_mailbox_from_feedback(
       initialized.pv_hold_confirmation_cycles.push_back(0);
       initialized.pv_stationary_hold.push_back(0);
       initialized.pv_reference_velocities.push_back(0.0f);
+      initialized.pv_ptp_start_positions.push_back(state.pos);
     } else {
       const auto configured = joint_configs_.find(motor.descriptor.motor);
       const auto kp = configured == joint_configs_.end()
@@ -667,7 +669,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
         gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE;
     // Every native Cartesian PV execution records physical tracking error so
     // a continuous FIFO successor can be handed off without an artificial
-    // settling pause. WaypointPv still opts out of adaptive time scaling in
+    // settling pause. RealtimePv still opts out of adaptive time scaling in
     // prepare_trajectory_cycle(); it only uses this feedback for the guarded
     // boundary handoff and final completion checks.
     adaptive_cartesian_tracking =
@@ -714,6 +716,11 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
           arm_mailbox_.max_reference_acceleration <= 0.0f ||
           arm_mailbox_.pv_reference_velocities.size() !=
               arm_mailbox_.pv.size() ||
+          (arm_mailbox_.pv_synchronized_septic &&
+           (arm_mailbox_.pv_ptp_start_positions.size() !=
+                arm_mailbox_.pv.size() ||
+            !std::isfinite(arm_mailbox_.pv_ptp_duration_s) ||
+            arm_mailbox_.pv_ptp_duration_s < 0.0)) ||
           !finite(arm_mailbox_.pv_velocity_limit) ||
           arm_mailbox_.pv_velocity_limit < 0.0f))) {
       throw std::runtime_error(
@@ -721,9 +728,6 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     }
     const float command_scale = degraded ? 0.25f : 1.0f;
     if (mode == ARTICORE_MODE_PV) {
-      const float period_s = 1.0f / static_cast<float>(control_hz_);
-      const float maximum_velocity =
-          arm_mailbox_.max_reference_velocity * command_scale;
       if (arm_mailbox_.pv_hold_confirmation_cycles.size() !=
               arm_mailbox_.pv.size() ||
           arm_mailbox_.pv_stationary_hold.size() != arm_mailbox_.pv.size()) {
@@ -731,15 +735,66 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
             arm_mailbox_.pv.size(), 0);
         arm_mailbox_.pv_stationary_hold.assign(arm_mailbox_.pv.size(), 0);
       }
+      if (arm_mailbox_.pv_synchronized_septic) {
+        if (arm_mailbox_.pv_ptp_updated_at == Clock::time_point{}) {
+          arm_mailbox_.pv_ptp_updated_at = now;
+        }
+        const double elapsed_since_update = std::max(
+            0.0, std::chrono::duration<double>(
+                now - arm_mailbox_.pv_ptp_updated_at).count());
+        arm_mailbox_.pv_ptp_updated_at = now;
+        if (!arm_mailbox_.pv_ptp_paused) {
+          arm_mailbox_.pv_ptp_elapsed_s = std::min(
+              arm_mailbox_.pv_ptp_duration_s,
+              arm_mailbox_.pv_ptp_elapsed_s +
+                  elapsed_since_update * static_cast<double>(command_scale));
+        }
+        const double reference_period_s =
+            1.0 / static_cast<double>(kNativeJointPtpReferenceHz);
+        const double sampled_time_s = arm_mailbox_.pv_ptp_duration_s > 0.0
+            ? std::min(
+                  arm_mailbox_.pv_ptp_duration_s,
+                  std::floor(
+                      arm_mailbox_.pv_ptp_elapsed_s / reference_period_s +
+                      1.0e-9) * reference_period_s)
+            : 0.0;
+        const double normalized_time = arm_mailbox_.pv_ptp_paused
+            ? 0.0
+            : (arm_mailbox_.pv_ptp_duration_s > 0.0
+                   ? sampled_time_s / arm_mailbox_.pv_ptp_duration_s
+                   : 1.0);
+        const auto septic = sample_synchronized_septic(normalized_time);
+        for (std::size_t i = 0; i < arm_mailbox_.pv.size(); ++i) {
+          const double displacement =
+              static_cast<double>(arm_mailbox_.final_positions[i]) -
+              static_cast<double>(arm_mailbox_.pv_ptp_start_positions[i]);
+          arm_mailbox_.pv[i].target_position = static_cast<float>(
+              static_cast<double>(arm_mailbox_.pv_ptp_start_positions[i]) +
+              displacement * septic.progress);
+          arm_mailbox_.pv_reference_velocities[i] =
+              arm_mailbox_.pv_ptp_duration_s > 0.0
+              ? static_cast<float>(
+                    displacement * septic.progress_velocity /
+                    arm_mailbox_.pv_ptp_duration_s)
+              : 0.0f;
+        }
+      } else {
+        const float period_s = 1.0f / static_cast<float>(
+            std::min(control_hz_, kNativeOrdinaryPvCommandHz));
+        const float maximum_velocity =
+            arm_mailbox_.max_reference_velocity * command_scale;
+        for (std::size_t i = 0; i < arm_mailbox_.pv.size(); ++i) {
+          const auto reference = advance_acceleration_limited_pv_reference(
+              arm_mailbox_.pv[i].target_position,
+              arm_mailbox_.pv_reference_velocities[i],
+              arm_mailbox_.final_positions[i], maximum_velocity,
+              arm_mailbox_.max_reference_acceleration, period_s);
+          arm_mailbox_.pv[i].target_position = reference.position;
+          arm_mailbox_.pv_reference_velocities[i] = reference.velocity;
+        }
+      }
       for (std::size_t i = 0; i < arm_mailbox_.pv.size(); ++i) {
         auto& command = arm_mailbox_.pv[i];
-        const auto reference = advance_acceleration_limited_pv_reference(
-            command.target_position,
-            arm_mailbox_.pv_reference_velocities[i],
-            arm_mailbox_.final_positions[i], maximum_velocity,
-            arm_mailbox_.max_reference_acceleration, period_s);
-        command.target_position = reference.position;
-        arm_mailbox_.pv_reference_velocities[i] = reference.velocity;
         const float final_position = arm_mailbox_.final_positions[i];
         const bool reference_reached =
             std::abs(command.target_position - final_position) <= 1.0e-6f;
@@ -809,7 +864,10 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
                             static_cast<float>(control_hz_);
     const float maximum_velocity =
         arm_mailbox_.max_reference_velocity * command_scale;
-    const float period_s = 1.0f / static_cast<float>(control_hz_);
+    const float period_s = mode == ARTICORE_MODE_PV
+        ? 1.0f / static_cast<float>(
+              std::min(control_hz_, kNativeOrdinaryPvCommandHz))
+        : 1.0f / static_cast<float>(control_hz_);
     for (std::size_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
       void* leader_motor =
           gravity_arms_[bimanual_leader_side].joints[joint];

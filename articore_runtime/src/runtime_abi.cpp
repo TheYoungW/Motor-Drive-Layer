@@ -162,7 +162,8 @@ void install_product_joint_positions(
     float speed_percent,
     articore::SafetyRuntime::CommandTransaction* transaction = nullptr,
     uint64_t planning_token = 0,
-    std::unique_lock<std::mutex>* product_acceleration_transaction = nullptr) {
+    std::unique_lock<std::mutex>* product_acceleration_transaction = nullptr,
+    bool synchronized_septic = true) {
   auto& product = checked_yunyi(runtime);
   require_product_count(count);
   require_finite(positions, count, "positions");
@@ -223,7 +224,7 @@ void install_product_joint_positions(
     safety.set_joint_pv_planned(
         pv.data(), count, selected_reference_velocity,
         selected_reference_acceleration, selected_pv_velocity_limit,
-        *transaction, planning_token);
+        *transaction, planning_token, synchronized_septic);
   } else {
     safety.set_joint_pv(
         pv.data(), count, selected_reference_velocity,
@@ -244,6 +245,84 @@ int32_t record_product_command_error(
   return code;
 }
 
+articore::NativeTrajectorySample product_ik_reference(
+    articore::SafetyRuntime& safety,
+    const articore::YunyiRuntimeResources& product,
+    const std::vector<articore::NativeTrajectoryJoint>& joints) {
+  try {
+    auto transaction = safety.begin_command_transaction();
+    return safety.planned_arm_sample(joints, transaction);
+  } catch (const std::runtime_error& error) {
+    if (std::string(error.what()) !=
+        "current planned arm reference is unavailable") {
+      throw;
+    }
+  }
+
+  articore::NativeTrajectorySample reference;
+  reference.positions.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
+  reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  const uint64_t fresh_limit = safety.feedback_max_age_ns();
+  for (uint32_t index = 0; index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
+    const auto& joint = product.joints[index];
+    ArticoreMotorState motor{};
+    ArticoreFeedbackStats stats{};
+    if (!articore::read_yunyi_motor_state(joint.motor, motor, stats) ||
+        !motor.has_value || !stats.has_feedback ||
+        stats.age_ns > fresh_limit || !std::isfinite(motor.pos)) {
+      throw std::runtime_error(
+          "solve_ik requires fresh complete joint feedback at " +
+          articore::yunyi_joint_role(index));
+    }
+    reference.positions.push_back(joint.direction * motor.pos);
+  }
+  return reference;
+}
+
+int32_t solve_product_ik_impl(
+    ArticoreRuntime* runtime, const float* left_target_pose,
+    const float* right_target_pose, float* positions, uint32_t count) {
+  try {
+    if (!left_target_pose || !right_target_pose) {
+      throw std::invalid_argument(
+          "solve_ik requires both left and right target poses");
+    }
+    if (!positions) {
+      throw std::invalid_argument("solve_ik joint output is null");
+    }
+    if (count != ARTICORE_PRODUCT_DUAL_ARM_DOF) {
+      throw std::invalid_argument("solve_ik joint output count must be 14");
+    }
+    require_finite(
+        left_target_pose, ARTICORE_PRODUCT_POSE_DOF, "left target pose");
+    require_finite(
+        right_target_pose, ARTICORE_PRODUCT_POSE_DOF, "right target pose");
+    if (!runtime) throw std::invalid_argument("runtime is null");
+
+    std::lock_guard<std::mutex> motion_lock(runtime->motion_mutex);
+    auto& safety = checked(runtime);
+    auto& product = checked_yunyi(runtime);
+    const auto joints = articore::product_cartesian_joints(product);
+    const auto reference = product_ik_reference(safety, product, joints);
+    const auto ik_deadline = std::chrono::steady_clock::now() +
+        articore::kYunyiProductIkBudget;
+    const auto target =
+        articore::solve_dual_point_to_point_targets_from_reference(
+            product, runtime->product_mode, reference,
+            left_target_pose, right_target_pose, ik_deadline);
+    std::copy(target.begin(), target.end(), positions);
+    g_last_error = "ok";
+    return ARTICORE_OPERATION_OK;
+  } catch (const std::invalid_argument& error) {
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_STATE;
+  }
+}
+
 int32_t set_pose_impl(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float speed_percent) {
@@ -256,9 +335,12 @@ int32_t set_pose_impl(
     }
     std::lock_guard<std::mutex> motion_lock(runtime->motion_mutex);
     const auto ik_deadline = std::chrono::steady_clock::now() +
-        articore::kYunyiSetPoseIkBudget;
+        articore::kYunyiProductIkBudget;
     auto& safety = checked(runtime);
     auto& product = checked_yunyi(runtime);
+    if (runtime->product_mode != ARTICORE_MODE_PV) {
+      throw std::runtime_error("product Cartesian motion requires PV mode");
+    }
     const auto joints = articore::product_cartesian_joints(product);
     articore::NativeTrajectorySample reference;
     CommandPlanningScope planning(safety);
@@ -281,7 +363,7 @@ int32_t set_pose_impl(
     install_product_joint_positions(
         runtime, target.data(), static_cast<uint32_t>(target.size()),
         speed_percent, &transaction, planning.token(),
-        &product_acceleration_transaction);
+        &product_acceleration_transaction, true);
     safety.record_operation_result(
         ARTICORE_OPERATION_SET_POSE, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
@@ -608,7 +690,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (11U << 16) | 2U;
+  return (11U << 16) | 3U;
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -1089,7 +1171,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_joint_trajectory(
     articore::NativeTrajectoryRequest request;
     request.mode = static_cast<ArticoreControlMode>(config->control_mode);
     if (request.mode == ARTICORE_MODE_PV) {
-      request.execution = articore::NativeTrajectoryExecution::WaypointPv;
+      request.execution = articore::NativeTrajectoryExecution::RealtimePv;
       request.pv_reference_velocity =
           articore::yunyi_effective_pv_reference_velocity(50.0f);
       {
@@ -1100,6 +1182,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_joint_trajectory(
       }
       request.pv_drive_velocity_limit =
           std::numeric_limits<float>::infinity();
+      request.pv_reference_period_s =
+          articore::kNativeOrdinaryPvCommandPeriodSeconds;
     }
     request.joints.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
     for (uint32_t index = 0;
@@ -1246,6 +1330,13 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_pose(
     const float* right_target_pose, float speed_percent) {
   return set_pose_impl(
       runtime, left_target_pose, right_target_pose, speed_percent);
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_solve_ik(
+    ArticoreRuntime* runtime, const float* left_target_pose,
+    const float* right_target_pose, float* positions, uint32_t count) {
+  return solve_product_ik_impl(
+      runtime, left_target_pose, right_target_pose, positions, count);
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_trajectory(

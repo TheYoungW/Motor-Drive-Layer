@@ -232,6 +232,22 @@ inline Quaternion slerp(
       start_weight * start.z + end_weight * end.z};
 }
 
+inline Quaternion circular_slerp_through_via(
+    const Quaternion& start, const Quaternion& via, const Quaternion& end,
+    double via_amount, double amount) {
+  if (!std::isfinite(via_amount) || via_amount <= 0.0 || via_amount >= 1.0 ||
+      !std::isfinite(amount)) {
+    throw std::invalid_argument(
+        "circular orientation progress is invalid");
+  }
+  const double bounded = std::clamp(amount, 0.0, 1.0);
+  if (bounded <= via_amount) {
+    return slerp(start, via, bounded / via_amount);
+  }
+  return slerp(
+      via, end, (bounded - via_amount) / (1.0 - via_amount));
+}
+
 inline void rotation_from_quaternion(
     const Quaternion& value, double* rotation) {
   const double xx = value.x * value.x;

@@ -248,10 +248,9 @@ void validate_segment_extrema(
       }
     }
 
-    // WaypointPv sends only the planned positions to ordinary PV. Polynomial
-    // derivatives are neither motor commands nor safety inputs in that mode;
-    // ordinary PV owns the physical velocity/acceleration-limited reference.
-    // Direct MIT, Quintic and SampledPv execution still require full checks.
+    // RealtimePv sends the trajectory planner's already validated 100 Hz
+    // positions directly through POS_VEL. Polynomial derivatives are neither
+    // motor commands nor safety inputs in that mode.
     if (!validate_velocity_and_acceleration) continue;
 
     std::vector<double> velocity_candidates{0.0, 1.0};
@@ -349,13 +348,12 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
   if (request.mode != ARTICORE_MODE_MIT && request.mode != ARTICORE_MODE_PV) {
     throw std::invalid_argument("trajectory control mode is invalid");
   }
-  if ((request.execution == NativeTrajectoryExecution::SampledPv ||
-       request.execution == NativeTrajectoryExecution::WaypointPv) &&
+  if (request.execution == NativeTrajectoryExecution::RealtimePv &&
       request.mode != ARTICORE_MODE_PV) {
     throw std::invalid_argument(
         "PV trajectory execution requires PV control mode");
   }
-  if (request.execution == NativeTrajectoryExecution::WaypointPv &&
+  if (request.execution == NativeTrajectoryExecution::RealtimePv &&
       (!finite(request.pv_reference_velocity) ||
        request.pv_reference_velocity <= 0.0f ||
        !finite(request.pv_reference_acceleration) ||
@@ -363,7 +361,16 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
        !finite(request.pv_drive_velocity_limit) ||
        request.pv_drive_velocity_limit <= 0.0f)) {
     throw std::invalid_argument(
-        "waypoint PV execution requires positive finite PV motion limits");
+        "real-time PV trajectory requires positive finite PV motion limits");
+  }
+  if (!std::isfinite(request.pv_reference_period_s) ||
+      (request.execution == NativeTrajectoryExecution::RealtimePv
+           ? std::abs(request.pv_reference_period_s -
+                      kNativeOrdinaryPvCommandPeriodSeconds) > kLimitTolerance
+           : request.pv_reference_period_s != 0.0)) {
+    throw std::invalid_argument(
+        "real-time PV trajectory references must use the ordinary 100 Hz "
+        "command period");
   }
   if (joint_count == 0 || joint_count > 32) {
     throw std::invalid_argument("trajectory joint count is invalid");
@@ -436,12 +443,12 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
             "trajectory contains invalid PV final-hold velocity limit for " +
             joint_role(joint));
       }
-      if (request.execution == NativeTrajectoryExecution::WaypointPv &&
+      if (request.execution == NativeTrajectoryExecution::RealtimePv &&
           (request.pv_reference_velocity > joint.velocity_limit ||
            request.pv_reference_acceleration > joint.acceleration_limit ||
            request.pv_drive_velocity_limit > joint.velocity_limit)) {
         throw std::invalid_argument(
-            "waypoint PV motion limits exceed product limits for " +
+            "real-time PV trajectory limits exceed product limits for " +
             joint_role(joint));
       }
     }
@@ -574,7 +581,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
         "estimated total time");
   }
 
-  if (request.execution != NativeTrajectoryExecution::WaypointPv) {
+  if (request.execution != NativeTrajectoryExecution::RealtimePv) {
     for (std::size_t joint_index = 0; joint_index < joint_count;
          ++joint_index) {
       const uint32_t bit = uint32_t{1} << joint_index;
@@ -627,8 +634,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
     source_segment.duration_s = end.time_s - start.time_s;
     source_segment.coefficients.reserve(joint_count);
     for (std::size_t joint_index = 0; joint_index < joint_count; ++joint_index) {
-      if (request.execution == NativeTrajectoryExecution::WaypointPv ||
-          request.execution == NativeTrajectoryExecution::SampledPv) {
+      if (request.execution == NativeTrajectoryExecution::RealtimePv) {
         source_segment.coefficients.push_back(sampled_pv_coefficients(
             start.positions[joint_index], end.positions[joint_index]));
       } else {
@@ -644,7 +650,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
                              request.joints, recovery_directions,
                              static_cast<uint32_t>(segment_index),
                              request.execution !=
-                                 NativeTrajectoryExecution::WaypointPv);
+                                 NativeTrajectoryExecution::RealtimePv);
     segments.push_back(std::move(source_segment));
   }
 
@@ -804,6 +810,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
     prepared.pv_reference_velocity = request.pv_reference_velocity;
     prepared.pv_reference_acceleration = request.pv_reference_acceleration;
     prepared.pv_drive_velocity_limit = request.pv_drive_velocity_limit;
+    prepared.pv_reference_period_s = request.pv_reference_period_s;
     prepared.joints = std::move(request.joints);
     prepared.segments = std::move(segments);
     prepared.final_convergence_check =
@@ -933,16 +940,16 @@ void SafetyRuntime::activate_trajectory_locked(
   trajectory.tracking_feedback_valid = false;
   trajectory.cartesian_reference_updated_elapsed_s = 0.0;
   trajectory.cartesian_reference_positions.clear();
-  trajectory.waypoint_pv_updated_at = now;
-  trajectory.waypoint_pv_reference_positions.clear();
-  trajectory.waypoint_pv_reference_velocities.clear();
-  if (trajectory.execution == NativeTrajectoryExecution::WaypointPv &&
+  trajectory.realtime_pv_updated_at = now;
+  trajectory.realtime_pv_reference_positions.clear();
+  trajectory.realtime_pv_reference_velocities.clear();
+  if (trajectory.execution == NativeTrajectoryExecution::RealtimePv &&
       !trajectory.segments.empty()) {
     const auto& first = trajectory.segments.front().coefficients;
-    trajectory.waypoint_pv_reference_positions.reserve(first.size());
-    trajectory.waypoint_pv_reference_velocities.assign(first.size(), 0.0f);
+    trajectory.realtime_pv_reference_positions.reserve(first.size());
+    trajectory.realtime_pv_reference_velocities.assign(first.size(), 0.0f);
     for (const auto& coefficients : first) {
-      trajectory.waypoint_pv_reference_positions.push_back(
+      trajectory.realtime_pv_reference_positions.push_back(
           static_cast<float>(sample_polynomial(coefficients, 0.0)));
     }
   }
@@ -988,16 +995,16 @@ NativeTrajectorySample SafetyRuntime::trajectory_sample_locked(
   }
 
   if (trajectory_control_.execution ==
-          NativeTrajectoryExecution::WaypointPv &&
-      trajectory_control_.waypoint_pv_reference_positions.size() ==
+          NativeTrajectoryExecution::RealtimePv &&
+      trajectory_control_.realtime_pv_reference_positions.size() ==
           trajectory_control_.joints.size() &&
-      trajectory_control_.waypoint_pv_reference_velocities.size() ==
+      trajectory_control_.realtime_pv_reference_velocities.size() ==
           trajectory_control_.joints.size()) {
     result.active = true;
     result.motion_id = trajectory_control_.id;
     result.operation = trajectory_control_.operation;
-    result.positions = trajectory_control_.waypoint_pv_reference_positions;
-    result.velocities = trajectory_control_.waypoint_pv_reference_velocities;
+    result.positions = trajectory_control_.realtime_pv_reference_positions;
+    result.velocities = trajectory_control_.realtime_pv_reference_velocities;
     result.accelerations.assign(trajectory_control_.joints.size(), 0.0f);
     return result;
   }
@@ -1134,7 +1141,7 @@ bool SafetyRuntime::prepare_trajectory_cycle(
   const bool adaptive_cartesian_pv =
       mode_ == ARTICORE_MODE_PV &&
       native_cartesian_operation(trajectory_control_.operation) &&
-      trajectory_control_.execution != NativeTrajectoryExecution::WaypointPv &&
+      trajectory_control_.execution != NativeTrajectoryExecution::RealtimePv &&
       trajectory_control_.approach_complete;
   if (adaptive_cartesian_pv) {
     const double tracking_dt = std::max(
@@ -1200,10 +1207,19 @@ bool SafetyRuntime::prepare_trajectory_cycle(
       at_approach_reference || at_final_reference;
   const bool use_stationary_hold =
       at_settling_reference && trajectory_control_.stationary_hold_active;
+  double sample_elapsed = elapsed;
+  if (trajectory_control_.execution ==
+          NativeTrajectoryExecution::RealtimePv &&
+      !at_settling_reference) {
+    sample_elapsed = std::floor(
+        elapsed / trajectory_control_.pv_reference_period_s + 1.0e-9) *
+        trajectory_control_.pv_reference_period_s;
+  }
   std::size_t segment_index = trajectory_control_.active_segment;
   while (segment_index + 1 < trajectory_control_.segments.size() &&
-         elapsed >= trajectory_control_.segments[segment_index].start_s +
-                        trajectory_control_.segments[segment_index].duration_s) {
+         sample_elapsed >=
+             trajectory_control_.segments[segment_index].start_s +
+                 trajectory_control_.segments[segment_index].duration_s) {
     ++segment_index;
   }
   if (at_approach_reference) {
@@ -1211,7 +1227,7 @@ bool SafetyRuntime::prepare_trajectory_cycle(
   }
   auto& segment = trajectory_control_.segments[segment_index];
   const double local = std::clamp(
-      elapsed - segment.start_s, 0.0, segment.duration_s);
+      sample_elapsed - segment.start_s, 0.0, segment.duration_s);
   const double u = local / segment.duration_s;
 
   std::array<float, 32> sampled_positions{};
@@ -1232,56 +1248,24 @@ bool SafetyRuntime::prepare_trajectory_cycle(
   }
 
   if (trajectory_control_.execution ==
-      NativeTrajectoryExecution::WaypointPv) {
+      NativeTrajectoryExecution::RealtimePv) {
     const std::size_t joint_count = trajectory_control_.joints.size();
-    if (trajectory_control_.waypoint_pv_reference_positions.size() !=
+    if (trajectory_control_.realtime_pv_reference_positions.size() !=
             joint_count ||
-        trajectory_control_.waypoint_pv_reference_velocities.size() !=
+        trajectory_control_.realtime_pv_reference_velocities.size() !=
             joint_count) {
-      error = "waypoint PV reference state is internally inconsistent";
+      error = "real-time PV reference state is internally inconsistent";
       return false;
     }
-    const float period_s = 1.0f / static_cast<float>(control_hz_);
     for (std::size_t joint_index = 0; joint_index < joint_count;
          ++joint_index) {
-      // Intermediate points describe one continuous path. Slew velocity toward
-      // the moving 2 ms reference without computing a stopping velocity for
-      // every point. Only the final/approach endpoint uses braking-to-target.
-      const float target = static_cast<float>(sample_polynomial(
-          segment.coefficients[joint_index], 1.0));
-      const float current_position =
-          trajectory_control_.waypoint_pv_reference_positions[joint_index];
-      const float current_velocity =
-          trajectory_control_.waypoint_pv_reference_velocities[joint_index];
-      NativePvReferenceStep reference;
-      if (at_settling_reference) {
-        reference = advance_acceleration_limited_pv_reference(
-            current_position, current_velocity, target,
-            trajectory_control_.pv_reference_velocity,
-            trajectory_control_.pv_reference_acceleration, period_s);
-      } else {
-        const float desired_velocity = std::clamp(
-            (target - current_position) / period_s,
-            -trajectory_control_.pv_reference_velocity,
-            trajectory_control_.pv_reference_velocity);
-        const float maximum_velocity_change =
-            trajectory_control_.pv_reference_acceleration * period_s;
-        const float next_velocity = std::clamp(
-            desired_velocity,
-            current_velocity - maximum_velocity_change,
-            current_velocity + maximum_velocity_change);
-        reference.velocity = next_velocity;
-        reference.position = current_position +
-            0.5f * (current_velocity + next_velocity) * period_s;
-      }
-      trajectory_control_.waypoint_pv_reference_positions[joint_index] =
-          reference.position;
-      trajectory_control_.waypoint_pv_reference_velocities[joint_index] =
-          reference.velocity;
-      sampled_positions[joint_index] = reference.position;
-      sampled_velocities[joint_index] = reference.velocity;
+      trajectory_control_.realtime_pv_reference_positions[joint_index] =
+          sampled_positions[joint_index];
+      trajectory_control_.realtime_pv_reference_velocities[joint_index] =
+          at_settling_reference ? 0.0f : sampled_velocities[joint_index];
+      if (at_settling_reference) sampled_velocities[joint_index] = 0.0f;
     }
-    trajectory_control_.waypoint_pv_updated_at = now;
+    trajectory_control_.realtime_pv_updated_at = now;
   }
 
   bool use_held_cartesian_reference = false;
@@ -1369,7 +1353,7 @@ bool SafetyRuntime::prepare_trajectory_cycle(
               ? std::min(joint.pv_velocity_limit,
                          kNativePvSettlingVelocityLimit)
               : trajectory_control_.execution ==
-                    NativeTrajectoryExecution::WaypointPv
+                    NativeTrajectoryExecution::RealtimePv
               ? trajectory_control_.pv_drive_velocity_limit
               : adaptive_cartesian_pv
               ? at_final_reference &&
@@ -2098,7 +2082,7 @@ void SafetyRuntime::cancel_motion(uint64_t motion_id) {
         const double step = std::abs(
             target - static_cast<double>(predecessor.positions[index]));
         double velocity_limit = joint.velocity_limit;
-        if (rebound.execution == NativeTrajectoryExecution::WaypointPv) {
+        if (rebound.execution == NativeTrajectoryExecution::RealtimePv) {
           velocity_limit = std::min(
               velocity_limit,
               static_cast<double>(rebound.pv_reference_velocity));
@@ -2115,7 +2099,7 @@ void SafetyRuntime::cancel_motion(uint64_t motion_id) {
             std::sqrt(8.0 * step / std::max(
                 0.01, static_cast<double>(
                     rebound.execution ==
-                            NativeTrajectoryExecution::WaypointPv
+                            NativeTrajectoryExecution::RealtimePv
                         ? rebound.pv_reference_acceleration
                         : joint.acceleration_limit))));
       }
@@ -2132,8 +2116,7 @@ void SafetyRuntime::cancel_motion(uint64_t motion_id) {
         const double target_acceleration = sample_acceleration(
             original, 0.0, original_first.duration_s);
         approach.coefficients.push_back(
-            rebound.execution == NativeTrajectoryExecution::SampledPv ||
-                    rebound.execution == NativeTrajectoryExecution::WaypointPv
+            rebound.execution == NativeTrajectoryExecution::RealtimePv
                 ? sampled_pv_coefficients(
                       predecessor.positions[index], target_position)
                 : quintic_coefficients(

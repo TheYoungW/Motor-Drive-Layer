@@ -563,7 +563,11 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(
 
 /* Ordinary product joint commands use fixed left J1..J7, right J1..J7 order.
  * PV speed_percent maps directly onto 0..2 rad/s for this command. Persistent
- * acceleration shapes only ordinary PV references, including set_pose().
+ * acceleration shapes the shared seventh-order rest-to-rest time law. The
+ * joint-space reference and physical POS_VEL transmission both run at 100 Hz.
+ * Runtime retains separate 500 Hz safety/watchdog scheduling. The native jerk
+ * policy is j_max = a_max / 0.10 s; no independent jerk setting is exposed by
+ * this ABI.
  */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
@@ -571,6 +575,16 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
     float speed_percent);
+/* Pure product inverse kinematics. Both poses use
+ * [x,y,z,roll,pitch,yaw] in metres/radians. positions receives exactly 14
+ * logical joint angles in fixed left J1..J7, right J1..J7 order. Runtime uses
+ * one coherent planned reference, or fresh connected feedback before enable,
+ * as the nearest-branch seed and applies the active TCP and product limits.
+ * This call never enables Motors,
+ * sends a command, or changes the motion queue. */
+ARTICORE_RUNTIME_API int32_t articore_runtime_solve_ik(
+    ArticoreRuntime* runtime, const float* left_target_pose,
+    const float* right_target_pose, float* positions, uint32_t count);
 /* Persistent ordinary PV acceleration uses physical units and 0.01
  * resolution. It accepts 0.01..8.00 rad/s^2 and defaults to 6.00 rad/s^2.
  * It also limits PV Joint/Linear/Circular trajectory references. It does not
@@ -586,10 +600,11 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
     const float* velocities, const float* feedforward_torques,
     const float* kp, const float* kd, uint32_t count);
 
-/* Asynchronous dual-arm trajectory. Inputs are copied before return
- * and the task joins the same FIFO and motion-id namespace as Linear/Circular.
- * PV follows the caller's finite waypoint list through ordinary PV at speed
- * 50; MIT mode samples the validated quintic directly on the worker clock. */
+/* Asynchronous dual-arm trajectory. Inputs are copied before return and the
+ * task joins the same FIFO and motion-id namespace as Linear/Circular. In PV
+ * mode Runtime converts the finite plan into its internal 100 Hz real-time PV
+ * sequence. There is no public raw/streaming PV command. MIT mode samples the
+ * validated quintic directly on the worker clock. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_joint_trajectory(
     ArticoreRuntime* runtime,
     const ArticoreTrajectoryWaypoint* waypoints,
@@ -597,19 +612,23 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_joint_trajectory(
     const ArticoreTrajectoryConfig* config,
     uint64_t* motion_id);
 
-/* Atomic dual-arm endpoint-pose setting. Runtime solves both endpoint poses
- * from one planned-reference snapshot, then installs one ordinary 14-joint PV
- * target. It does not plan a Cartesian path and has no motion ID, status, or
- * cancellation API. */
+/* ABI compatibility convenience. New callers should use solve_ik() followed
+ * by set_joint_pv(), so joint PTP remains the only point-to-point planner.
+ * This entry performs that same IK-to-synchronized-joint-PTP operation
+ * atomically. It does not plan a Cartesian path and has no motion ID. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_pose(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float speed_percent);
-/* Asynchronous FIFO Cartesian trajectories. duration_s generates one global
- * quintic reference every 2 ms; physical arrival may be later than this
- * nominal reference duration. Geometry still enforces the minimum path
- * resolution. Linear orientation uses shortest-path quaternion SLERP.
- * Intermediate points are continuous ordinary-PV references at speed 50 and
- * only the final endpoint brakes. Linear and Circular require PV mode. */
+/* Asynchronous FIFO Cartesian trajectories. Linear interpolates XYZ on a
+ * Cartesian line, uses shortest-path quaternion SLERP for orientation, and
+ * seeds each IK solve from the preceding joint solution. Geometry is sampled
+ * at 2 mm / 0.1 rad or better. One global quintic time law generates 100 Hz
+ * ordinary-PV references, each transmitted once on the 100 Hz PV command
+ * clock without a second executor-side interpolation or step generator. The
+ * separate 500 Hz Runtime scheduling continues safety and feedback work.
+ * Runtime stretches an undersized duration to satisfy the discrete PV
+ * speed/acceleration limits. Physical arrival may be later than the nominal
+ * duration. Linear and Circular require PV mode. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* end_pose, double duration_s, uint64_t* motion_id);
@@ -628,7 +647,11 @@ articore_runtime_move_linear_trajectory_with_point_count(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* end_pose, double duration_s, uint32_t point_count,
     uint64_t* motion_id);
-/* Standard circular path with an explicit, validated geometric start pose. */
+/* Standard directed circular path through start/via/end. Position is sampled
+ * at 2 mm or better, orientation uses shortest-path SLERP through the via
+ * orientation, sequential IK preserves the local joint branch, and one global
+ * quintic time law produces 100 Hz internal real-time PV references. Runtime
+ * stretches an undersized duration to satisfy joint speed and acceleration. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* via_pose, const float* end_pose, double duration_s,

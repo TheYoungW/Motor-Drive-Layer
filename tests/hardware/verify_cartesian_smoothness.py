@@ -7,6 +7,7 @@ import argparse
 import ctypes
 import json
 import math
+import os
 import time
 from pathlib import Path
 
@@ -14,7 +15,6 @@ from arx_d_can import ArxDCanDualArm
 
 
 RIGHT_CENTER = [0.403537, -0.231889, 0.381639, 0.0, -1.570796, 0.0]
-RIGHT_LINEAR_END = [0.403537, -0.231889, 0.451639, 0.0, -1.570796, 0.0]
 RIGHT_CIRCLE_START = [0.403537, -0.231889, 0.301639, 0.0, -1.570796, 0.0]
 RIGHT_CIRCLE_VIA = [0.403537, -0.311889, 0.381639, 0.0, -1.570796, 0.0]
 RIGHT_CIRCLE_END = [0.403537, -0.231889, 0.461639, 0.0, -1.570796, 0.0]
@@ -258,6 +258,12 @@ def main() -> None:
     )
     parser.add_argument("--speed", type=float, default=50.0)
     parser.add_argument("--duration", type=float, default=3.0)
+    parser.add_argument(
+        "--linear-distance-m",
+        type=float,
+        default=0.07,
+        help="Linear +Z distance in metres, within (0, 0.14] (default: 0.07)",
+    )
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--hold-seconds", type=float, default=1.0)
     parser.add_argument("--i-understand-the-right-arm-will-move", action="store_true")
@@ -265,6 +271,12 @@ def main() -> None:
     args = parser.parse_args()
     if not args.i_understand_the_right_arm_will_move:
         parser.error("--i-understand-the-right-arm-will-move is required")
+    if (
+        not math.isfinite(args.linear_distance_m)
+        or args.linear_distance_m <= 0.0
+        or args.linear_distance_m > 0.14
+    ):
+        parser.error("--linear-distance-m must be within (0, 0.14]")
 
     robot = ArxDCanDualArm(control_mode="pv", with_grippers=True)
     samples: list[dict[str, object]] = []
@@ -273,7 +285,7 @@ def main() -> None:
         "side": "right",
         "speed_percent": args.speed,
         "duration_s": args.duration,
-        "runtime_library": "/home/ubuntu/motorbridge/build/articore_runtime/libarticore_runtime.so",
+        "runtime_library": os.environ.get("ARTICORE_RUNTIME_LIB"),
     }
     connected = False
     try:
@@ -312,11 +324,14 @@ def main() -> None:
                 robot, started, RIGHT_CENTER, samples, timeout_s=args.timeout
             )
         elif args.motion == "linear":
+            linear_end = list(RIGHT_CENTER)
+            linear_end[2] += args.linear_distance_m
             result["start"] = RIGHT_CENTER
-            result["end"] = RIGHT_LINEAR_END
+            result["end"] = linear_end
+            result["linear_distance_m"] = args.linear_distance_m
             motion_id = robot.move_linear_trajectory(
                 side="right", start_pose=RIGHT_CENTER,
-                end_pose=RIGHT_LINEAR_END, duration_s=args.duration,
+                end_pose=linear_end, duration_s=args.duration,
             )
             settled_s, result["native_status"] = wait_native_motion(
                 robot, motion_id, started, samples, timeout_s=args.timeout

@@ -28,8 +28,8 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.21.0`
-- Runtime ABI: `11.2` / `0x000B0002`
+- package version: `0.22.0`
+- Runtime ABI: `11.3` / `0x000B0003`
 
 Runtime health includes a product-order snapshot for every installed Motor,
 with role, CAN ID, feedback age, status, issue bits, and a scope that separates
@@ -45,22 +45,42 @@ The SDK creates the product with
 Motor mapping, controllers, limits, models, TCP offsets, workers and resource
 lifetime.
 
-Ordinary PV and `set_pose()` share one reference generator. The 500 Hz Runtime
-loop is the safety/feedback and active-command refresh clock, not a
-point-to-point planning frequency. Each command maps `speed=0..100` directly
-onto `0..2 rad/s`; there is no second
+Ordinary joint PV applies one common seventh-order rest-to-rest progress law
+to all 14 joints. Reference updates and physical POS_VEL packets both run at
+100 Hz; each point is sent once. Separate 500 Hz Runtime scheduling retains
+safety, feedback and command-watchdog supervision. Each command maps
+`speed=0..100` directly onto
+`0..2 rad/s`; there is no second
 persistent maximum-speed cap. Persistent maximum acceleration uses physical
 units with `0.01` resolution, accepts `0.01..8.00 rad/s^2`, and defaults to
-`6.00 rad/s^2`. It does not affect MIT. Linear/Circular first solve a sparse
-5 mm / 0.035 rad Cartesian IK path, then apply one global quintic time law to
-generate fixed 2 ms ordinary-PV references. Thus `duration_s=3` produces 1500
-segments and 1501 points over about three reference seconds; physical arrival
-may be later due to PV limits and feedback stability. Intermediate points are
-continuous tracking references and only the final endpoint commands braking.
-The 500 Hz loop advances exactly one point per cycle, never in bulk or at
-variable planned intervals. PV still uses speed 50 and the configured maximum
-acceleration; numerical waypoint derivatives do not reject the plan.
-Automatic approach also uses ordinary PV. Linear, Circular and `set_pose()` require PV product mode;
+`6.00 rad/s^2`. Runtime selects one shared duration from velocity,
+acceleration and its native jerk-shaping constraint, rounded up to a complete
+10 ms sample. The current ABI has no separate jerk setting, so the native
+policy uses `j_max = a_max / 0.10 s` (60 rad/s^3 at the default acceleration).
+Joint PTP is the only point-to-point planner. Pose callers use the pure
+`solve_ik(left_pose, right_pose)` query to obtain 14 joint angles and pass them
+to `set_joint_pv()`. The legacy `set_pose()` symbol remains as a compatibility
+shortcut for that same IK-to-joint-PTP chain. These changes do not affect MIT.
+Linear constructs a true Cartesian line from the current/start FK pose: XYZ is
+linearly interpolated, orientation follows shortest-path quaternion SLERP, and
+each pose is solved by IK from the preceding joint solution. Geometry is
+sampled at 2 mm / 0.1 rad or better, then one global quintic time law generates
+fixed 10 ms ordinary-PV references. Thus `duration_s=3` normally produces 300
+segments and 301 points. Each Linear reference is sent once through ordinary
+PV at 100 Hz, with no second executor-side interpolation or step generator.
+The separate 500 Hz Runtime scheduling continues safety and feedback work.
+Circular constructs the directed circle through start/via/end, samples the arc
+at 2 mm / 0.1 rad or better, applies shortest-path SLERP through the via
+orientation, and uses the same global quintic/10 ms real-time-PV chain.
+Physical arrival may be later due to PV limits and feedback stability. Linear
+and Circular check their 10 ms joint differences against speed 50 and the
+configured maximum acceleration, automatically stretching the reference duration to a complete
+10 ms sample when needed.
+The public `set_joint_pv()` command is the ordinary stepped/P2P interface.
+Real-time PV is internal-only and can be selected only by a validated finite
+Joint/Linear/Circular trajectory; no raw or streaming PV entry point is
+exported. Automatic approach also uses ordinary PV. Linear, Circular and
+`set_pose()` require PV product mode;
 ordinary MIT and MIT joint trajectories are unchanged.
 
 See [the Runtime reference](articore_runtime/README.md) for the current API.

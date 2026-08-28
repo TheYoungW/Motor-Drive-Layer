@@ -22,6 +22,8 @@ int main() {
   using RuntimeCall = int32_t (*)(ArticoreRuntime*);
   using ProductCommand = int32_t (*)(
       ArticoreRuntime*, const float*, uint32_t, float);
+  using ProductIk = int32_t (*)(
+      ArticoreRuntime*, const float*, const float*, float*, uint32_t);
   using MoveJointTrajectory = int32_t (*)(
       ArticoreRuntime*, const ArticoreTrajectoryWaypoint*, uint32_t,
       const ArticoreTrajectoryConfig*, uint64_t*);
@@ -53,6 +55,8 @@ int main() {
       decltype(&articore_runtime_set_joint_pv), ProductCommand>);
   static_assert(same_signature<
       decltype(&articore_runtime_set_joint_mit), ProductCommand>);
+  static_assert(same_signature<
+      decltype(&articore_runtime_solve_ik), ProductIk>);
   static_assert(same_signature<
       decltype(&articore_runtime_move_joint_trajectory),
       MoveJointTrajectory>);
@@ -168,6 +172,29 @@ int main() {
           ARTICORE_OPERATION_INVALID_ARGUMENT;
 
   std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> positions{};
+  std::array<float, ARTICORE_PRODUCT_POSE_DOF> pose{};
+  const bool product_ik_validation =
+      articore_runtime_solve_ik(
+          nullptr, nullptr, pose.data(), positions.data(), positions.size()) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(
+          articore_runtime_last_error(),
+          "solve_ik requires both left and right target poses") == 0 &&
+      articore_runtime_solve_ik(
+          nullptr, pose.data(), pose.data(), nullptr, positions.size()) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(
+          articore_runtime_last_error(), "solve_ik joint output is null") == 0 &&
+      articore_runtime_solve_ik(
+          nullptr, pose.data(), pose.data(), positions.data(),
+          positions.size() - 1) == ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(
+          articore_runtime_last_error(),
+          "solve_ik joint output count must be 14") == 0 &&
+      articore_runtime_solve_ik(
+          nullptr, pose.data(), pose.data(), positions.data(),
+          positions.size()) == ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(), "runtime is null") == 0;
   const bool joint_command_validation =
       articore_runtime_set_joint_pv(
           nullptr, positions.data(), positions.size(), 50.0f) ==
@@ -240,6 +267,7 @@ int main() {
       &articore_runtime_get_motion_status &&
       &articore_runtime_cancel_motion &&
       &articore_runtime_cancel_all_motions &&
+      &articore_runtime_solve_ik &&
       &articore_runtime_set_pose &&
       &articore_runtime_move_linear_path_trajectory &&
       &articore_runtime_move_linear_trajectory_with_point_count &&
@@ -259,15 +287,15 @@ int main() {
       &articore_runtime_estop && &articore_runtime_recover &&
       &articore_robot_model_create && &articore_robot_model_fk;
 
-  if (articore_runtime_abi_version() != 0x000B0002U ||
+  if (articore_runtime_abi_version() != 0x000B0003U ||
       !symbols_present || !gripper_validation || !state_size_checked ||
       !state_runtime_checked || !health_size_checked ||
       !joint_limits_size_checked || !maximum_acceleration_validation ||
-      !joint_command_validation || !factory_validation ||
-      !product_limits_checked) {
-    std::cerr << "Articore Runtime ABI 11.2 contract is incomplete\n";
+      !product_ik_validation || !joint_command_validation ||
+      !factory_validation || !product_limits_checked) {
+    std::cerr << "Articore Runtime ABI 11.3 contract is incomplete\n";
     return 1;
   }
-  std::cout << "Articore Runtime ABI 11.2 smoke test passed\n";
+  std::cout << "Articore Runtime ABI 11.3 smoke test passed\n";
   return 0;
 }

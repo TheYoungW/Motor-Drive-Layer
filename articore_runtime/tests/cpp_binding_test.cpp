@@ -36,6 +36,11 @@ int main() {
       const std::array<float, 6>&, const std::array<float, 6>&, float);
   static_assert(std::is_same_v<decltype(&articore::Runtime::set_pose),
                                SetPose>);
+  using SolveIk = std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
+      (articore::Runtime::*)(
+          const std::array<float, ARTICORE_PRODUCT_POSE_DOF>&,
+          const std::array<float, ARTICORE_PRODUCT_POSE_DOF>&) const;
+  static_assert(std::is_same_v<decltype(&articore::Runtime::solve_ik), SolveIk>);
   using MoveLinearTrajectory = uint64_t (articore::Runtime::*)(
       uint32_t, const std::array<float, 6>&,
       const std::array<float, 6>&, double);

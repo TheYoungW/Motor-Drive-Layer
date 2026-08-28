@@ -349,6 +349,13 @@ void SafetyRuntime::stop_bimanual_follow() {
       }
     }
   }
+  if (mode_ == ARTICORE_MODE_PV) {
+    arm_mailbox_.pv_ptp_start_positions = arm_mailbox_.final_positions;
+    arm_mailbox_.pv_ptp_duration_s = 0.0;
+    arm_mailbox_.pv_ptp_elapsed_s = 0.0;
+    arm_mailbox_.pv_ptp_updated_at = Clock::now();
+    arm_mailbox_.pv_ptp_paused = false;
+  }
   reset_bimanual_follow_locked();
   wakeup_.notify_all();
 }

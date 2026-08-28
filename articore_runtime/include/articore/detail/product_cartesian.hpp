@@ -13,16 +13,29 @@
 namespace articore {
 
 // PV Joint/Linear/Circular trajectory points use ordinary speed 50, i.e. a
-// 1 rad/s reference ceiling. set_pose resolves endpoint IK and then uses the
-// caller's ordinary PV speed. The Damiao POS_VEL V field remains a separate
-// drive-level limit.
+// 1 rad/s reference ceiling. Product inverse kinematics is a pure computation;
+// the compatibility set_pose entry resolves IK and then uses the caller's
+// ordinary PV speed. The Damiao POS_VEL V field remains a separate drive-level
+// limit.
 inline constexpr float kYunyiCartesianMaximumVelocity = 1.0f;
 inline constexpr float kYunyiCartesianPvDriveVelocityLimit = 3.0f;
 inline constexpr float kYunyiCartesianWristAccelerationLimit = 6.0f;
 inline constexpr double kYunyiCartesianDefaultBlendRadius = 0.010;
+// Linear preserves its Cartesian geometry with at most 2 mm translation or
+// 0.1 rad orientation between consecutive IK targets. The resulting joint
+// references are sent through internal real-time PV at 100 Hz, once per point.
+inline constexpr double kYunyiLinearTranslationSampleDistance = 0.002;
+inline constexpr double kYunyiLinearOrientationSampleDistance = 0.1;
+inline constexpr uint32_t kYunyiLinearReferenceHz = 100;
+// Circular uses the same geometric density and real-time PV command clock as
+// Linear. Its positional path is the unique directed arc through start/via/end;
+// orientation follows shortest-path SLERP through the via orientation.
+inline constexpr double kYunyiCircularTranslationSampleDistance = 0.002;
+inline constexpr double kYunyiCircularOrientationSampleDistance = 0.1;
+inline constexpr uint32_t kYunyiCircularReferenceHz = 100;
 // A 100 Hz caller has a 10 ms period. Keep two milliseconds outside the
 // numerical solve for ABI validation, locking and atomic command install.
-inline constexpr std::chrono::microseconds kYunyiSetPoseIkBudget{8000};
+inline constexpr std::chrono::microseconds kYunyiProductIkBudget{8000};
 
 inline float product_cartesian_reference_velocity_limit(
     float joint_hard_velocity_limit, float speed_scale) {

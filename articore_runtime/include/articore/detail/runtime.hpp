@@ -116,15 +116,88 @@ inline constexpr float kNativePvSettlingVelocityLimit = 0.05f;
 inline constexpr float kNativeOrdinaryPvDefaultAcceleration = 6.0f;
 inline constexpr float kNativeOrdinaryPvHoldPositionTolerance = 0.002f;
 inline constexpr float kNativeOrdinaryPvHoldReleaseTolerance = 0.020f;
-inline constexpr uint16_t kNativeOrdinaryPvHoldConfirmationCycles = 25;
+inline constexpr uint16_t kNativeOrdinaryPvHoldConfirmationCycles = 5;
+
+// Ordinary PV reference generation and physical POS_VEL transmission both run
+// at 100 Hz. The native worker still wakes at 500 Hz for command-watchdog and
+// safety scheduling. A seventh-order rest-to-rest time law gives every joint
+// one common phase and zero velocity, acceleration and jerk at both endpoints.
+inline constexpr uint32_t kNativeOrdinaryPvCommandHz = 100;
+inline constexpr double kNativeOrdinaryPvCommandPeriodSeconds =
+    1.0 / static_cast<double>(kNativeOrdinaryPvCommandHz);
+inline constexpr uint32_t kNativeJointPtpReferenceHz =
+    kNativeOrdinaryPvCommandHz;
+inline constexpr double kNativeJointPtpMaximumNormalizedVelocity = 2.1875;
+inline constexpr double kNativeJointPtpMaximumNormalizedAcceleration =
+    7.513188404399293;
+inline constexpr double kNativeJointPtpMaximumNormalizedJerk = 52.5;
+// There is no public jerk setting in the current product ABI. Bound jerk by
+// requiring that the configured acceleration would take at least 100 ms to
+// build. This is a trajectory-shaping policy, independent of the drive's PV
+// velocity ceiling.
+inline constexpr double kNativeJointPtpAccelerationRiseSeconds = 0.10;
+
+struct NativeSynchronizedSepticSample {
+  double progress = 0.0;
+  double progress_velocity = 0.0;
+  double progress_acceleration = 0.0;
+  double progress_jerk = 0.0;
+};
+
+inline NativeSynchronizedSepticSample sample_synchronized_septic(
+    double normalized_time) {
+  const double u = std::clamp(normalized_time, 0.0, 1.0);
+  const double u2 = u * u;
+  const double u3 = u2 * u;
+  const double u4 = u3 * u;
+  const double u5 = u4 * u;
+  const double u6 = u5 * u;
+  const double u7 = u6 * u;
+  return {
+      35.0 * u4 - 84.0 * u5 + 70.0 * u6 - 20.0 * u7,
+      140.0 * u3 - 420.0 * u4 + 420.0 * u5 - 140.0 * u6,
+      420.0 * u2 - 1680.0 * u3 + 2100.0 * u4 - 840.0 * u5,
+      840.0 * u - 5040.0 * u2 + 8400.0 * u3 - 4200.0 * u4,
+  };
+}
+
+inline double synchronized_septic_duration(
+    double maximum_displacement, double maximum_velocity,
+    double maximum_acceleration) {
+  if (!std::isfinite(maximum_displacement) || maximum_displacement < 0.0) {
+    throw std::invalid_argument(
+        "septic point-to-point displacement must be finite and non-negative");
+  }
+  if (maximum_displacement == 0.0) return 0.0;
+  if (!std::isfinite(maximum_velocity) || maximum_velocity <= 0.0 ||
+      !std::isfinite(maximum_acceleration) || maximum_acceleration <= 0.0) {
+    throw std::invalid_argument(
+        "septic point-to-point limits must be finite and positive");
+  }
+  const double maximum_jerk =
+      maximum_acceleration / kNativeJointPtpAccelerationRiseSeconds;
+  const double velocity_duration =
+      kNativeJointPtpMaximumNormalizedVelocity * maximum_displacement /
+      maximum_velocity;
+  const double acceleration_duration = std::sqrt(
+      kNativeJointPtpMaximumNormalizedAcceleration * maximum_displacement /
+      maximum_acceleration);
+  const double jerk_duration = std::cbrt(
+      kNativeJointPtpMaximumNormalizedJerk * maximum_displacement /
+      maximum_jerk);
+  const double unconstrained = std::max(
+      {velocity_duration, acceleration_duration, jerk_duration});
+  const double samples = std::ceil(
+      unconstrained * static_cast<double>(kNativeJointPtpReferenceHz));
+  return std::max(1.0, samples) /
+      static_cast<double>(kNativeJointPtpReferenceHz);
+}
 
 // Cartesian PV references normally move much more slowly than the drive's
 // product ceiling. Keep the Damiao POS_VEL speed limit close to the native
 // reference so the internal position loop cannot repeatedly sprint at the
-// target. The 500 Hz Runtime still refreshes the drive watchdog every cycle,
-// but sub-feedback-resolution position changes are accumulated before a new
-// reference is installed. This avoids asking the drive to chase a different
-// target every 2 ms during short, slow Cartesian moves.
+// target. Ordinary PV references and POS_VEL packets share the 100 Hz command
+// clock; the separate 500 Hz worker scheduling remains available to safety.
 inline constexpr float kNativeCartesianPvVelocityGain = 1.5f;
 inline constexpr float kNativeCartesianPvVelocityMargin = 0.05f;
 inline constexpr float kNativeCartesianPvTrackingCatchupGain = 5.0f;
@@ -271,11 +344,11 @@ struct NativeTrajectoryWaypoint {
 
 enum class NativeTrajectoryExecution {
   Quintic,
-  SampledPv,
-  // Follow the supplied finite waypoint list with the same acceleration-
-  // limited reference generator used by ordinary PV commands. The 2 ms worker
-  // refresh is not a trajectory-point generation frequency.
-  WaypointPv,
+  // Internal-only real-time PV execution. A trajectory planner must provide a
+  // finite, validated 100 Hz reference sequence. Runtime sends each reference
+  // once through POS_VEL; there is deliberately no public raw/streaming PV
+  // command that can select this execution path.
+  RealtimePv,
 };
 
 struct NativeTrajectoryRequest {
@@ -285,6 +358,7 @@ struct NativeTrajectoryRequest {
   float pv_reference_velocity = 0.0f;
   float pv_reference_acceleration = 0.0f;
   float pv_drive_velocity_limit = 0.0f;
+  double pv_reference_period_s = 0.0;
   bool allow_out_of_limit_start_recovery = false;
   // Optional leading PV point-to-point segment(s). Runtime freezes at the
   // final approach waypoint until fresh physical feedback is stable, then
@@ -426,7 +500,7 @@ class SafetyRuntime {
   void set_joint_pv(const ArticoreJointPvTarget* targets,
                     uint32_t count,
                     float max_reference_velocity);
-  // Keeps the control-rate reference slew separate from the Damiao PV
+  // Keeps the seventh-order reference limits separate from the Damiao PV
   // velocity ceiling. This lets product tuning leave catch-up headroom at the
   // drive without changing the user-visible motion-speed limit.
   void set_joint_pv(const ArticoreJointPvTarget* targets,
@@ -442,7 +516,8 @@ class SafetyRuntime {
       const ArticoreJointPvTarget* targets, uint32_t count,
       float max_reference_velocity, float max_reference_acceleration,
       float pv_velocity_limit,
-      CommandTransaction& transaction, uint64_t planning_token);
+      CommandTransaction& transaction, uint64_t planning_token,
+      bool synchronized_septic = true);
   void set_joint_mit_speed(const ArticoreJointMitTarget* targets,
                            uint32_t count, float speed_percent);
   void set_joint_pv_speed(const ArticoreJointPvTarget* targets,
@@ -598,11 +673,17 @@ class SafetyRuntime {
     std::vector<ArticoreMitCommand> mit;
     std::vector<float> final_positions;
     std::vector<float> pv_reference_velocities;
+    std::vector<float> pv_ptp_start_positions;
+    double pv_ptp_duration_s = 0.0;
+    double pv_ptp_elapsed_s = 0.0;
+    Clock::time_point pv_ptp_updated_at{};
+    bool pv_ptp_paused = false;
+    bool pv_synchronized_septic = false;
     // Ordinary PV joint point-to-point control has no motion status object,
-    // but it still needs the
-    // same quiet final hold as native Cartesian paths. Each joint transitions
+    // but it still needs the same quiet final hold as native Cartesian paths.
+    // Each joint transitions
     // to V=0 only after fresh feedback remains close to its final target for a
-    // bounded 500 Hz window; a larger error releases it for correction.
+    // bounded 100 Hz PV window; a larger error releases it for correction.
     std::vector<uint16_t> pv_hold_confirmation_cycles;
     std::vector<uint8_t> pv_stationary_hold;
   };
@@ -663,6 +744,7 @@ class SafetyRuntime {
     float pv_reference_velocity = 0.0f;
     float pv_reference_acceleration = 0.0f;
     float pv_drive_velocity_limit = 0.0f;
+    double pv_reference_period_s = 0.0;
     uint32_t approach_segment_count = 0;
     uint32_t cartesian_tracking_joint_mask = 0;
     bool approach_complete = true;
@@ -685,9 +767,9 @@ class SafetyRuntime {
     bool tracking_feedback_valid = false;
     double cartesian_reference_updated_elapsed_s = 0.0;
     std::vector<float> cartesian_reference_positions;
-    Clock::time_point waypoint_pv_updated_at{};
-    std::vector<float> waypoint_pv_reference_positions;
-    std::vector<float> waypoint_pv_reference_velocities;
+    Clock::time_point realtime_pv_updated_at{};
+    std::vector<float> realtime_pv_reference_positions;
+    std::vector<float> realtime_pv_reference_velocities;
     std::string tracking_worst_role;
     std::string error;
   };
@@ -787,7 +869,8 @@ class SafetyRuntime {
       float max_reference_acceleration = 0.0f,
       float pv_velocity_limit = 0.0f,
       CommandTransaction* transaction = nullptr,
-      uint64_t planning_token = 0);
+      uint64_t planning_token = 0,
+      bool synchronized_septic = false);
   float ordinary_velocity_from_percent(ArticoreControlMode mode,
                                        float speed_percent) const;
   bool enter_safe_hold_from_feedback(const std::string& reason,

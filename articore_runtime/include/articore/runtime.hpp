@@ -211,6 +211,19 @@ class Runtime final {
         "set_pose");
   }
 
+  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> solve_ik(
+      const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& left_target_pose,
+      const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& right_target_pose)
+      const {
+    std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> positions{};
+    detail::check(
+        articore_runtime_solve_ik(
+            checked(), left_target_pose.data(), right_target_pose.data(),
+            positions.data(), static_cast<uint32_t>(positions.size())),
+        "solve_ik");
+    return positions;
+  }
+
   uint64_t move_linear_trajectory(uint32_t side,
                        const std::array<float, 6>& start_pose,
                        const std::array<float, 6>& end_pose,

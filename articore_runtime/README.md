@@ -1,8 +1,8 @@
 # Yunyi product Runtime
 
-`libarticore_runtime.so` is the only public native library. Runtime ABI 11.2 is
+`libarticore_runtime.so` is the only public native library. Runtime ABI 11.3 is
 an exact contract: the SDK must require `articore_runtime_abi_version() ==
-0x000B0002` and bind only the declarations in `articore/runtime_abi.h`.
+0x000B0003` and bind only the declarations in `articore/runtime_abi.h`.
 
 ## Ownership
 
@@ -41,29 +41,49 @@ never contain native Motor pointers.
 
 ## Motion semantics
 
-`set_joint_pv(left, right, speed)` is joint point-to-point control: its inputs
-are joint angles and it installs one complete ordinary-PV target.
-`articore_runtime_set_pose(left_pose, right_pose, speed)` is an endpoint-pose
-convenience command, not a Linear/Circular path planner. It performs one
-endpoint IK solve per arm and then installs the same kind of complete ordinary
-PV joint target. Both solutions use one planned-reference snapshot and the
-complete 14-joint PV target is installed atomically only after both succeed.
-`set_pose` has no motion ID, status or cancellation API. Endpoint IK retains
+`set_joint_pv(left, right, speed)` is synchronized joint point-to-point
+control. Runtime snapshots the current 14-joint reference, computes one common
+rest-to-rest seventh-order progress law
+`s(u)=35u^4-84u^5+70u^6-20u^7`, and applies that same progress to every joint.
+The shared duration is the largest duration required by the commanded speed,
+configured acceleration and native jerk-shaping policy, rounded up to a 10 ms
+sample. Because the current ABI has no independent jerk setting, the native
+policy uses `j_max = a_max / 0.10 s` (60 rad/s^3 at the default acceleration).
+This gives simultaneous start/finish, monotonic joint motion and zero
+velocity, acceleration and jerk at both endpoints. Joint reference updates and
+physical POS_VEL packets both run at 100 Hz, with every point sent once. The
+separate 500 Hz Runtime scheduling continues safety, feedback and command-
+watchdog supervision.
+Joint PTP is the only point-to-point planner. The pure
+`articore_runtime_solve_ik(left_pose, right_pose, positions, 14)` query uses one
+planned-reference snapshot (or fresh connected feedback before enable), the
+active TCP and product limits to return fixed
+left-J1..J7/right-J1..J7 joint order. It never enables Motors, sends commands or
+changes the queue. Callers pass that result to `articore_runtime_set_joint_pv`.
+The legacy `articore_runtime_set_pose` symbol remains as an atomic compatibility
+shortcut for the same IK-to-synchronized-joint-PTP chain. It has no motion ID,
+status or cancellation API and is not a Linear/Circular planner. Endpoint IK retains
 the `1e-4` SE(3)
 tolerance, reuses each arm's Pinocchio model and limits global fallback to an
 8 ms soft steady-clock budget. Timeout or either-side failure leaves the active
 target unchanged. Linear and Circular are asynchronous FIFO trajectory tasks.
-Their sparse IK paths preserve Cartesian geometry at 5 mm / 0.035 rad or
-better. Runtime applies one global quintic time law and generates one ordinary-
-PV reference for every 2 ms of `duration_s`. Intermediate references use
-look-ahead continuous velocity slew instead of braking at each point; only the
-individual motion endpoint brakes. Contiguous Cartesian FIFO items hand off at
+Linear interpolates XYZ on the Cartesian line and orientation with true
+shortest-path quaternion SLERP. Each pose uses the preceding IK result as its
+seed, with geometry sampled at 2 mm / 0.1 rad or better. Runtime applies one
+global quintic time law and generates one ordinary-PV Linear reference every
+10 ms. Each reference is sent once on the 100 Hz POS_VEL command clock, without
+executor-side interpolation, step generation or repeated packets. Separate
+500 Hz Runtime scheduling continues safety and feedback work. Circular builds
+the directed circle through start/via/end, samples it at 2 mm / 0.1 rad or
+better, and applies shortest-path SLERP through the via orientation. It uses
+the same global quintic time law and 10 ms command period.
+Contiguous Cartesian FIFO items hand off at
 their planned shared endpoint without an extra 200 ms settling window when
 physical tracking error is at most 0.04 rad; otherwise Runtime waits for safe
-tracking recovery. Numerical waypoint derivatives are not physical PV
-commands and do not reject the plan. The 500 Hz loop advances one point per
-cycle at speed 50 while supervising safety/feedback; points are never sent in
-bulk or scheduled at variable planned intervals.
+tracking recovery. Linear checks finite differences of its 10 ms joint
+references against speed 50 and the configured acceleration, automatically
+stretching the duration to a complete 10 ms sample when necessary. Both paths
+execute through internal real-time PV at speed 50.
 Linear uses explicit `start_pose -> end_pose`; Circular uses explicit
 `start_pose -> via_pose -> end_pose`. Runtime validates and plans the complete
 task before installing it. Joint, Linear and Circular trajectories share one
@@ -83,10 +103,10 @@ the radius on short adjacent segments so blends cannot overlap. One global
 quintic time law covers the complete path, one Motion ID owns it, and
 `segment_duration_s` retains the duration meaning for each original segment.
 
-Linear and Circular accept `duration_s` instead of a speed percentage. It
-selects `ceil(duration_s / 0.002)` execution segments, so the reference list
-has one more point and nominally spans the requested duration. Physical
-completion may be later. Geometry still enforces at least 5 mm / 0.035 rad
+Linear and Circular accept `duration_s` instead of a speed percentage. Both
+select `ceil(duration_s / 0.010)` execution segments. The reference list has
+one more point and nominally spans the requested duration. Physical completion
+may be later. Linear and Circular geometry enforce at least 2 mm / 0.1 rad
 sampling. Ordinary PV command speed values remain
 `0..100` and map directly onto `0..2 rad/s`. Persistent maximum acceleration
 defaults to `6.00 rad/s^2`; its configured range is `0.01..8.00 rad/s^2`.
@@ -94,6 +114,11 @@ Runtime applies that acceleration limit to ordinary PV, `set_pose()` and PV
 Joint/Linear/Circular trajectory references. MIT commands and MIT joint
 trajectories remain unchanged. The Damiao POS_VEL drive ceiling remains
 independent at `3 rad/s`.
+
+The public `set_joint_pv()` command is the ordinary stepped/P2P PV interface.
+`RealtimePv` is an internal trajectory execution type: only a finite validated
+Joint/Linear/Circular plan may install it, its period must be exactly 10 ms,
+and no raw or streaming PV symbol is exported through the C or C++ product API.
 
 Linear, Circular and `set_pose()` require PV product mode. Automatic approach
 is part of the same ordinary-PV point sequence. Ordinary MIT and direct
@@ -114,7 +139,7 @@ right receive path, and both receive paths. Side `last_error` strings aggregate
 all affected Motor roles instead of retaining only the last failure.
 
 Every public structure must set `struct_size` to its exact `sizeof(...)`.
-ABI 11.2 does not branch on older layouts or capability bits.
+ABI 11.3 does not branch on older layouts or capability bits.
 
 ## Shutdown
 
