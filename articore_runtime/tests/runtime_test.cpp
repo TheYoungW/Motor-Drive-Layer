@@ -7013,6 +7013,108 @@ void test_linear_path_uses_default_ten_millimetre_corner_blend() {
       "stretching to a safe complete 10 ms sample when needed");
 }
 
+void test_cartesian_approach_keeps_timestamps_strictly_increasing() {
+  articore::YunyiRuntimeResources product;
+  configure_cartesian_planning_product(product);
+  articore::NativeTrajectorySample reference;
+  reference.positions.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+
+  std::array<double, ARTICORE_PRODUCT_ARM_DOF> p0_q{};
+  p0_q[3] = 0.15;
+  auto linear_end_q = p0_q;
+  linear_end_q[3] = 0.20;
+  auto p1_q = p0_q;
+  p1_q[3] = 0.16;
+  auto p2_q = p0_q;
+  p2_q[3] = 0.17;
+  auto circular_via_q = p0_q;
+  circular_via_q[3] = 0.075;
+  std::array<double, ARTICORE_PRODUCT_ARM_DOF> circular_end_q{};
+  ArticoreRobotPose p0{};
+  p0.struct_size = sizeof(p0);
+  ArticoreRobotPose linear_end{};
+  linear_end.struct_size = sizeof(linear_end);
+  ArticoreRobotPose circular_via{};
+  circular_via.struct_size = sizeof(circular_via);
+  ArticoreRobotPose circular_end{};
+  circular_end.struct_size = sizeof(circular_end);
+  ArticoreRobotPose p1{};
+  p1.struct_size = sizeof(p1);
+  ArticoreRobotPose p2{};
+  p2.struct_size = sizeof(p2);
+  product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      p0_q.data(), p0_q.size(), &p0);
+  product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      linear_end_q.data(), linear_end_q.size(), &linear_end);
+  product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      circular_via_q.data(), circular_via_q.size(), &circular_via);
+  product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      circular_end_q.data(), circular_end_q.size(), &circular_end);
+  product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      p1_q.data(), p1_q.size(), &p1);
+  product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      p2_q.data(), p2_q.size(), &p2);
+  const auto p0_values = pose_rpy(p0);
+  const auto linear_end_values = pose_rpy(linear_end);
+  const auto circular_via_values = pose_rpy(circular_via);
+  const auto circular_end_values = pose_rpy(circular_end);
+  const auto p1_values = pose_rpy(p1);
+  const auto p2_values = pose_rpy(p2);
+
+  const auto verify = [](const articore::NativeCartesianPlan& plan,
+                         const char* context) {
+    const auto& waypoints = plan.trajectory.waypoints;
+    const bool strictly_increasing =
+        waypoints.size() > 2U &&
+        std::all_of(
+            waypoints.begin() + 1, waypoints.end(),
+            [&](const auto& waypoint) {
+              const auto index = static_cast<std::size_t>(
+                  &waypoint - waypoints.data());
+              return std::isfinite(waypoint.time_s) &&
+                  waypoint.time_s > waypoints[index - 1U].time_s;
+            });
+    const std::string message = std::string(context) +
+        " automatic approach shares the shifted path-start waypoint "
+        "without a duplicate timestamp";
+    require(
+        std::abs(waypoints.front().time_s) < 1e-12 &&
+            strictly_increasing &&
+            plan.trajectory.approach_segment_count == 1U &&
+            std::abs(plan.trajectory.approach_deadline_s -
+                     waypoints[1].time_s) < 1e-12 &&
+            std::abs(plan.trajectory.completion_deadline_s -
+                     waypoints.back().time_s) < 1e-12,
+        message.c_str());
+  };
+
+  const auto linear = articore::build_linear_plan_from_reference(
+      product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+      p0_values.data(), linear_end_values.data(), 1.0);
+  verify(linear, "Linear");
+
+  std::array<float, 4U * ARTICORE_PRODUCT_POSE_DOF> path_values{};
+  std::copy(p0_values.begin(), p0_values.end(), path_values.begin());
+  std::copy(p1_values.begin(), p1_values.end(),
+            path_values.begin() + ARTICORE_PRODUCT_POSE_DOF);
+  std::copy(p2_values.begin(), p2_values.end(),
+            path_values.begin() + 2U * ARTICORE_PRODUCT_POSE_DOF);
+  std::copy(p0_values.begin(), p0_values.end(),
+            path_values.begin() + 3U * ARTICORE_PRODUCT_POSE_DOF);
+  const auto linear_path = articore::build_linear_path_plan_from_reference(
+      product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+      path_values.data(), 4U, 10.0);
+  verify(linear_path, "Linear Path");
+
+  const auto circular = articore::build_circular_plan_from_reference(
+      product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+      p0_values.data(), circular_via_values.data(),
+      circular_end_values.data(), 2.0);
+  verify(circular, "Circular");
+}
+
 void test_circular_arc_samples_support_continuous_native_ik() {
   articore::RobotModel model("yunyi_v1_0", ARTICORE_ROBOT_LEFT);
   std::array<double, ARTICORE_PRODUCT_ARM_DOF> start_q{};
@@ -7433,6 +7535,7 @@ int main() {
     RUN_TEST(test_product_cartesian_trajectory_limits);
     RUN_TEST(test_cartesian_duration_controls_points_and_pv_executes_them);
     RUN_TEST(test_linear_path_uses_default_ten_millimetre_corner_blend);
+    RUN_TEST(test_cartesian_approach_keeps_timestamps_strictly_increasing);
     RUN_TEST(test_circular_arc_samples_support_continuous_native_ik);
     RUN_TEST(test_native_trajectory_checks_segment_extrema_and_partial_power);
     RUN_TEST(test_gravity_compensation_is_an_exclusive_hand_guiding_mode);

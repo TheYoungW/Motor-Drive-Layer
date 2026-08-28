@@ -419,17 +419,15 @@ void prepend_cartesian_approach(
       (uint32_t{1} << ARTICORE_PRODUCT_DUAL_ARM_DOF) - 1U;
   current.velocity_valid_mask = all_joints;
   current.acceleration_valid_mask = all_joints;
-  NativeTrajectoryWaypoint approach_end =
-      plan.trajectory.waypoints.front();
-  approach_end.time_s = approach_duration;
+  // The shifted original first waypoint is already the approach endpoint and
+  // the Cartesian path start. Reuse it so the boundary has one timestamp.
+  auto& approach_end = plan.trajectory.waypoints.front();
   approach_end.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
   approach_end.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
   approach_end.velocity_valid_mask = all_joints;
   approach_end.acceleration_valid_mask = all_joints;
   plan.trajectory.waypoints.insert(
       plan.trajectory.waypoints.begin(), std::move(current));
-  plan.trajectory.waypoints.insert(
-      plan.trajectory.waypoints.begin() + 1, std::move(approach_end));
   plan.trajectory.approach_segment_count = 1;
   plan.trajectory.approach_deadline_s = path_start_s;
   plan.minimum_duration_s = minimum_total_duration;
