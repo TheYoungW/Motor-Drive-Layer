@@ -248,9 +248,9 @@ void validate_segment_extrema(
       }
     }
 
-    // RealtimePv sends the trajectory planner's already validated 100 Hz
-    // positions directly through POS_VEL. Polynomial derivatives are neither
-    // motor commands nor safety inputs in that mode.
+    // RealtimePv linearly resamples the trajectory planner's already validated
+    // 100 Hz position knots on the 500 Hz Runtime clock. Polynomial
+    // derivatives are neither motor commands nor safety inputs in that mode.
     if (!validate_velocity_and_acceleration) continue;
 
     std::vector<double> velocity_candidates{0.0, 1.0};
@@ -370,8 +370,8 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
                   kLimitTolerance
            : request.pv_reference_period_s != 0.0)) {
     throw std::invalid_argument(
-        "real-time PV trajectory references must use the internal 100 Hz "
-        "trajectory period");
+        "real-time PV trajectory plans must use the internal 100 Hz "
+        "reference-knot period");
   }
   if (joint_count == 0 || joint_count > 32) {
     throw std::invalid_argument("trajectory joint count is invalid");
@@ -1208,14 +1208,13 @@ bool SafetyRuntime::prepare_trajectory_cycle(
       at_approach_reference || at_final_reference;
   const bool use_stationary_hold =
       at_settling_reference && trajectory_control_.stationary_hold_active;
-  double sample_elapsed = elapsed;
-  if (trajectory_control_.execution ==
-          NativeTrajectoryExecution::RealtimePv &&
-      !at_settling_reference) {
-    sample_elapsed = std::floor(
-        elapsed / trajectory_control_.pv_reference_period_s + 1.0e-9) *
-        trajectory_control_.pv_reference_period_s;
-  }
+  // RealtimePv waypoints are finite, validated 100 Hz planner knots, but the
+  // outgoing reference is sampled from the connecting segment at the current
+  // Runtime time. Do not quantize elapsed time back to the preceding 10 ms
+  // knot: that creates a staircase target and makes slow motion repeatedly
+  // catch and release each waypoint. The worker clock provides the 500 Hz
+  // resampling cadence and skips missed deadlines instead of replaying history.
+  const double sample_elapsed = elapsed;
   std::size_t segment_index = trajectory_control_.active_segment;
   while (segment_index + 1 < trajectory_control_.segments.size() &&
          sample_elapsed >=

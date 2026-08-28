@@ -23,7 +23,8 @@ inline constexpr float kYunyiCartesianWristAccelerationLimit = 6.0f;
 inline constexpr double kYunyiCartesianDefaultBlendRadius = 0.010;
 // Linear preserves its Cartesian geometry with at most 2 mm translation or
 // 0.1 rad orientation between consecutive IK targets. The resulting joint
-// references are sent through internal real-time PV at 100 Hz, once per point.
+// plan uses 100 Hz real-time-PV knots, linearly resampled at the Runtime's
+// 500 Hz command cadence.
 inline constexpr double kYunyiLinearTranslationSampleDistance = 0.002;
 inline constexpr double kYunyiLinearOrientationSampleDistance = 0.1;
 inline constexpr uint32_t kYunyiLinearReferenceHz = 100;

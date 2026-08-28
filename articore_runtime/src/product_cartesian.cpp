@@ -20,7 +20,8 @@ static_assert(
 namespace {
 
 // A sparse Cartesian IK path preserves geometry. It is then resampled through
-// one global quintic time law into a finite 100 Hz real-time PV reference list.
+// one global quintic time law into a finite 100 Hz real-time PV knot list. The
+// Runtime executor linearly resamples adjacent knots on its 500 Hz clock.
 constexpr double kCircularPvCommandPeriodSeconds =
     1.0 / static_cast<double>(kYunyiCircularReferenceHz);
 constexpr double kLinearPvCommandPeriodSeconds =

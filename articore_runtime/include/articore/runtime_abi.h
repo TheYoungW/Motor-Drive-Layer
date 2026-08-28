@@ -604,8 +604,9 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
 
 /* Asynchronous dual-arm trajectory. Inputs are copied before return and the
  * task joins the same FIFO and motion-id namespace as Linear/Circular. In PV
- * mode Runtime converts the finite plan into its internal 100 Hz real-time PV
- * sequence. Product callers provide joint positions and timestamps only;
+ * mode Runtime converts the finite plan into internal 100 Hz real-time-PV
+ * knots and linearly resamples them on its 500 Hz command clock. Product
+ * callers provide joint positions and timestamps only;
  * waypoint derivative fields and PV limit fields are reserved and must be
  * zero. Runtime owns velocity, acceleration and jerk planning. There is no
  * public raw/streaming PV command. MIT mode samples the validated quintic
@@ -632,10 +633,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_pose(
  * chatter without rejecting a kinematically required reversal. Only a true
  * per-sample branch jump remains a hard failure. Geometry is sampled at
  * 2 mm / 0.1 rad or better.
- * One global quintic time law generates an
- * internal 100 Hz real-time-PV sequence, each reference transmitted once
- * clock without a second executor-side interpolation or step generator. The
- * separate 500 Hz Runtime scheduling continues safety and feedback work.
+ * One global quintic time law generates internal 100 Hz real-time-PV knots.
+ * Runtime linearly resamples adjacent knots and transmits the resulting
+ * reference on its 500 Hz command clock, without applying the ordinary-PV
+ * endpoint step generator.
  * Runtime stretches an undersized duration to satisfy the discrete PV
  * speed/acceleration limits. Physical arrival may be later than the nominal
  * duration. Linear and Circular require PV mode. */
@@ -661,8 +662,9 @@ articore_runtime_move_linear_trajectory_with_point_count(
  * at 2 mm or better, orientation uses shortest-path SLERP through the via
  * orientation, seed-only sequential IK plus joint-step posture prediction
  * preserve the current local branch without random retries, and one global
- * quintic time law produces 100 Hz internal real-time PV references. Runtime
- * stretches an undersized duration to satisfy joint speed and acceleration. */
+ * quintic time law produces 100 Hz internal real-time-PV knots, which Runtime
+ * linearly resamples on its 500 Hz command clock. Runtime stretches an
+ * undersized duration to satisfy joint speed and acceleration. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* via_pose, const float* end_pose, double duration_s,

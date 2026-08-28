@@ -28,7 +28,7 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.22.3`
+- package version: `0.22.4`
 - Runtime ABI: `11.3` / `0x000B0003`
 
 Runtime health includes a product-order snapshot for every installed Motor,
@@ -72,10 +72,10 @@ continuous velocity instead of +/- chatter without rejecting a reversal that
 the Cartesian path actually requires. Only an unsolved target or a true branch
 jump above 0.35 rad fails. Geometry is
 sampled at 2 mm / 0.1 rad or better, then one global quintic time law generates
-fixed 10 ms internal real-time-PV references. Thus `duration_s=3` normally
-produces 300 segments and 301 points. Each Linear reference is sent once at
-100 Hz, with no second executor-side interpolation or step generator.
-The separate 500 Hz Runtime scheduling continues safety and feedback work.
+fixed 10 ms internal real-time-PV knots. Thus `duration_s=3` normally produces
+300 segments and 301 points. Runtime linearly resamples adjacent knots and
+sends the resulting reference at 500 Hz, without applying the ordinary-PV
+endpoint step generator.
 Circular constructs the directed circle through start/via/end, samples the arc
 at 2 mm / 0.1 rad or better, applies shortest-path SLERP through the via
 orientation, and uses the same global quintic/10 ms real-time-PV chain.
@@ -85,8 +85,9 @@ trajectory acceleration limits, automatically stretching the reference duration 
 10 ms sample when needed.
 The public `set_joint_pv()` command is the ordinary stepped interface.
 Real-time PV is internal-only and can be selected only by a validated finite
-Joint/Linear/Circular trajectory; no raw or streaming PV entry point is
-exported. Automatic approach stays inside that trajectory execution path.
+Joint/Linear/Circular trajectory; its 100 Hz plan knots are resampled on the
+500 Hz Runtime command clock. No raw or streaming PV entry point is exported.
+Automatic approach stays inside that trajectory execution path.
 Linear and Circular require PV product mode; `set_pose()` supports either
 ordinary PV or ordinary MIT, and MIT joint trajectories are unchanged.
 

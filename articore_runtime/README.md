@@ -75,10 +75,10 @@ This is an optimization objective, not a reversal rejection rule: motion may
 reverse whenever the Cartesian path requires it. Runtime rejects only a true
 per-sample branch jump above 0.35 rad. Geometry is sampled at 2 mm / 0.1 rad or
 better. Runtime applies one
-global quintic time law and generates one internal real-time-PV Linear reference
-every 10 ms. Each reference is sent once on the 100 Hz POS_VEL command clock, without
-executor-side interpolation, step generation or repeated packets. Separate
-500 Hz Runtime scheduling continues safety and feedback work. Circular builds
+global quintic time law and generates one internal real-time-PV Linear knot
+every 10 ms. Runtime linearly resamples adjacent knots and sends the resulting
+POS_VEL reference on its 500 Hz command clock, without applying the ordinary-PV
+endpoint step generator. Circular builds
 the directed circle through start/via/end, samples it at 2 mm / 0.1 rad or
 better, and applies shortest-path SLERP through the via orientation. It uses
 the same global quintic time law and 10 ms command period.
@@ -125,8 +125,10 @@ unchanged. The Damiao POS_VEL `V` drive ceiling remains independent at `3 rad/s`
 The public `set_joint_pv()` command is the ordinary latest-target-wins step PV
 interface.
 `RealtimePv` is an internal trajectory execution type: only a finite validated
-Joint/Linear/Circular plan may install it, its period must be exactly 10 ms,
-and no raw or streaming PV symbol is exported through the C or C++ product API.
+Joint/Linear/Circular plan may install it, its planner-knot period must be
+exactly 10 ms, and Runtime linearly resamples those knots on the 500 Hz command
+clock. No raw or streaming PV symbol is exported through the C or C++ product
+API.
 
 Linear and Circular require PV product mode. Automatic approach is part of the
 same internal trajectory-PV point sequence. `set_pose()` supports the current

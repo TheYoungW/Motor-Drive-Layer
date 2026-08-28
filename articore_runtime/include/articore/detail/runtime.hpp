@@ -122,8 +122,8 @@ inline constexpr uint16_t kNativeOrdinaryPvHoldConfirmationCycles = 5;
 // Ordinary PV is a latest-endpoint-wins online step command. Runtime advances
 // P toward that endpoint with the commanded reference speed and acceleration
 // on its 500 Hz control clock. This online generator is not a finite planned
-// trajectory. Only Runtime-owned real-time PV trajectories use the lower
-// 100 Hz reference/send clock below.
+// trajectory. Runtime-owned real-time PV trajectories retain finite 100 Hz
+// planner knots but linearly resample them on the same 500 Hz send clock.
 inline constexpr uint32_t kNativeRealtimePvTrajectoryHz = 100;
 inline constexpr double kNativeRealtimePvTrajectoryPeriodSeconds =
     1.0 / static_cast<double>(kNativeRealtimePvTrajectoryHz);
@@ -131,8 +131,8 @@ inline constexpr double kNativeRealtimePvTrajectoryPeriodSeconds =
 // Cartesian PV references normally move much more slowly than the drive's
 // product ceiling. Keep the Damiao POS_VEL speed limit close to the native
 // reference so the internal position loop cannot repeatedly sprint at the
-// target. These finite trajectory references use the internal 100 Hz command
-// clock; ordinary PV remains on the 500 Hz Runtime control clock.
+// target. Finite trajectory plans use 100 Hz validated knots; their outgoing
+// references and ordinary PV both use the 500 Hz Runtime control clock.
 inline constexpr float kNativeCartesianPvVelocityGain = 1.5f;
 inline constexpr float kNativeCartesianPvVelocityMargin = 0.05f;
 inline constexpr float kNativeCartesianPvTrackingCatchupGain = 5.0f;
@@ -281,9 +281,9 @@ struct NativeTrajectoryWaypoint {
 enum class NativeTrajectoryExecution {
   Quintic,
   // Internal-only real-time PV execution. A trajectory planner must provide a
-  // finite, validated 100 Hz reference sequence. Runtime sends each reference
-  // once through POS_VEL; there is deliberately no public raw/streaming PV
-  // command that can select this execution path.
+  // finite, validated 100 Hz reference sequence. Runtime linearly resamples
+  // adjacent knots through POS_VEL on its 500 Hz control clock; there is
+  // deliberately no public raw/streaming PV command that can select this path.
   RealtimePv,
 };
 

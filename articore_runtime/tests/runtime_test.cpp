@@ -4725,7 +4725,7 @@ void test_trajectory_errors_use_product_roles_and_allow_inward_recovery() {
   runtime.disable();
 }
 
-void test_native_quintic_pv_trajectory_sends_at_100_hz() {
+void test_native_quintic_pv_trajectory_sends_at_500_hz() {
   FakeDriver driver;
   g_driver = &driver;
   driver.emulate_arm_feedback = true;
@@ -4770,8 +4770,11 @@ void test_native_quintic_pv_trajectory_sends_at_100_hz() {
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     const auto trajectory_frames = driver.pv_history.size() - baseline_frames;
-    require(trajectory_frames >= 45 && trajectory_frames <= 80,
-            "PV trajectory sends at 100 Hz while retaining physical settling");
+    const auto frame_count_message =
+        "PV trajectory sends at 500 Hz while retaining physical settling; "
+        "frames=" + std::to_string(trajectory_frames);
+    require(trajectory_frames >= 180 && trajectory_frames <= 300,
+            frame_count_message.c_str());
     float previous = -1.0f;
     for (const auto& frame : driver.pv_history) {
       if (frame.size() != 2) continue;
@@ -4988,7 +4991,7 @@ void test_realtime_pv_cartesian_fifo_has_no_settling_pause() {
   runtime.disable();
 }
 
-void test_realtime_pv_uses_internal_100_hz_transport_rate() {
+void test_realtime_pv_uses_internal_500_hz_transport_rate() {
   FakeDriver driver;
   g_driver = &driver;
   driver.emulate_arm_feedback = true;
@@ -5042,8 +5045,8 @@ void test_realtime_pv_uses_internal_100_hz_transport_rate() {
     trajectory_sends = driver.pv_sends - baseline_sends;
   }
   const auto status = runtime.motion_status(id);
-  require(trajectory_sends >= 20 && trajectory_sends <= 35,
-          "real-time PV uses the internal 100 Hz command clock");
+  require(trajectory_sends >= 100 && trajectory_sends <= 150,
+          "real-time PV uses the internal 500 Hz command clock");
   require(status.waypoint_count == 2 &&
               status.waypoint_count < trajectory_sends,
           "ordinary PV command refresh does not create trajectory points");
@@ -5061,7 +5064,7 @@ void test_realtime_pv_uses_internal_100_hz_transport_rate() {
   runtime.disable();
 }
 
-void test_realtime_pv_sends_each_100_hz_reference_once() {
+void test_realtime_pv_resamples_100_hz_knots_at_500_hz() {
   FakeDriver driver;
   g_driver = &driver;
   driver.emulate_arm_feedback = true;
@@ -5084,7 +5087,7 @@ void test_realtime_pv_sends_each_100_hz_reference_once() {
   require_throws(
       [&] { (void)runtime.start_trajectory(std::move(invalid)); },
       "100 Hz",
-      "real-time PV cannot be installed without a finite 100 Hz trajectory");
+      "real-time PV cannot be installed without finite 100 Hz planner knots");
 
   auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.3);
   request.operation = ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY;
@@ -5103,26 +5106,30 @@ void test_realtime_pv_sends_each_100_hz_reference_once() {
             std::lock_guard<std::mutex> lock(driver.mutex);
             return driver.pv_history.size() >= baseline + 25U;
           }, 500ms),
-          "internal real-time PV sends references on the 100 Hz clock");
+          "internal real-time PV starts sending references on the 500 Hz clock");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     const auto available = driver.pv_history.size() - baseline;
     const auto inspected = std::min<std::size_t>(available, 25U);
     std::size_t reference_changes = 0;
     std::size_t repeated_frames = 0;
+    float maximum_reference_step = 0.0f;
     for (std::size_t index = 1; index < inspected; ++index) {
       const float current =
           driver.pv_history[baseline + index][0].target_position;
       const float previous =
           driver.pv_history[baseline + index - 1U][0].target_position;
-      if (std::abs(current - previous) > 1.0e-8f) {
+      const float step = std::abs(current - previous);
+      maximum_reference_step = std::max(maximum_reference_step, step);
+      if (step > 1.0e-8f) {
         ++reference_changes;
       } else {
         ++repeated_frames;
       }
     }
-    require(reference_changes >= 20U && repeated_frames <= 3U,
-            "each 100 Hz Linear reference is sent once without 500 Hz repeats");
+    require(reference_changes >= 20U && repeated_frames <= 3U &&
+                maximum_reference_step < 0.006f,
+            "500 Hz execution interpolates between adjacent 100 Hz plan knots");
   }
   runtime.cancel_motion(id);
   runtime.disable();
@@ -5376,8 +5383,8 @@ void test_native_trajectory_fifo_executes_without_replacement() {
     std::lock_guard<std::mutex> lock(driver.mutex);
     require(std::abs(driver.last_pv[0].target_position - 0.4f) < 1e-5f &&
                 std::abs(driver.last_pv[1].target_position - 0.6f) < 1e-5f,
-            "FIFO execution reaches the second endpoint through ordinary "
-            "100 Hz PV");
+            "FIFO execution reaches the second endpoint through 500 Hz "
+            "trajectory PV");
   }
 
   auto third = trajectory_request(motors, ARTICORE_MODE_PV, 0.5);
@@ -6693,8 +6700,7 @@ void test_product_cartesian_trajectory_limits() {
           std::abs(articore::kYunyiCircularOrientationSampleDistance - 0.1) <
               1e-12 &&
           articore::kYunyiCircularReferenceHz == 100,
-      "Circular uses 2 mm / 0.1 rad geometry and the 100 Hz internal PV "
-      "clock");
+      "Circular uses 2 mm / 0.1 rad geometry and 100 Hz planner knots");
   require(
       std::abs(articore::product_cartesian_reference_velocity_limit(
                    5.0f, 1.0f) -
@@ -6964,7 +6970,7 @@ void test_cartesian_duration_controls_points_and_pv_executes_them() {
           stretched_circular.trajectory.waypoints.back().time_s > 0.1 &&
           maximum_circular_velocity <= 1.0001 &&
           maximum_circular_acceleration <= 6.001,
-      "Circular produces a safe internal 100 Hz real-time PV sequence and "
+      "Circular produces safe internal 100 Hz real-time-PV knots and "
       "stretches an undersized duration");
 
   auto approached_end_q = start_q;
@@ -7535,13 +7541,13 @@ int main() {
     RUN_TEST(test_deadline_skips_missed_periods_and_reenable_seeds_feedback);
     RUN_TEST(test_planned_trajectory_install_is_atomic_and_fifo_safe);
     RUN_TEST(test_trajectory_errors_use_product_roles_and_allow_inward_recovery);
-    RUN_TEST(test_native_quintic_pv_trajectory_sends_at_100_hz);
+    RUN_TEST(test_native_quintic_pv_trajectory_sends_at_500_hz);
     RUN_TEST(test_cartesian_pv_adapts_drive_limit_without_soft_timeline_dilation);
     RUN_TEST(test_cartesian_tracking_pause_times_out_to_safe_stop);
     RUN_TEST(test_continuous_cartesian_fifo_hands_off_on_planned_time);
     RUN_TEST(test_realtime_pv_cartesian_fifo_has_no_settling_pause);
-    RUN_TEST(test_realtime_pv_uses_internal_100_hz_transport_rate);
-    RUN_TEST(test_realtime_pv_sends_each_100_hz_reference_once);
+    RUN_TEST(test_realtime_pv_uses_internal_500_hz_transport_rate);
+    RUN_TEST(test_realtime_pv_resamples_100_hz_knots_at_500_hz);
     RUN_TEST(test_realtime_pv_does_not_treat_quintic_derivatives_as_commands);
     RUN_TEST(test_mit_trajectory_executes_quintic_approach);
     RUN_TEST(test_cartesian_linear_and_circular_complete_on_estimated_time);
