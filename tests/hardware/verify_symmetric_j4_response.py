@@ -136,7 +136,6 @@ def main() -> None:
         robot.connect()
         connected = True
         robot.enable()
-        robot.set_max_acceleration(4.0)
         initial = robot.read_state()
         common = [
             0.5 * (left + right)

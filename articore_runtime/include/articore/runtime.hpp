@@ -122,21 +122,6 @@ class Runtime final {
     return result != 0;
   }
 
-  void set_max_acceleration(float max_acceleration_rad_s2) {
-    detail::check(
-        articore_runtime_set_max_acceleration(
-            checked(), max_acceleration_rad_s2),
-        "set_max_acceleration");
-  }
-
-  float get_max_acceleration() const {
-    float result = 0.0f;
-    detail::check(
-        articore_runtime_get_max_acceleration(checked(), &result),
-        "get_max_acceleration");
-    return result;
-  }
-
   void set_joint_pv(const std::vector<float>& positions,
                     float speed_percent) {
     detail::check(
@@ -146,6 +131,8 @@ class Runtime final {
         "set_joint_pv");
   }
 
+  // ABI/source compatibility for the former variable-speed stepped MIT API.
+  // New callers should use one of the position-only overloads below.
   void set_joint_mit(const std::vector<float>& positions,
                      float speed_percent) {
     detail::check(
@@ -153,6 +140,20 @@ class Runtime final {
             checked(), positions.data(), detail::size(positions),
             speed_percent),
         "set_joint_mit");
+  }
+
+  void set_joint_mit(const std::vector<float>& positions) {
+    detail::check(
+        articore_runtime_set_joint_mit_direct(
+            checked(), positions.data(), detail::size(positions)),
+        "set_joint_mit");
+  }
+
+  void set_joint_mit_fast_follow(const std::vector<float>& positions) {
+    detail::check(
+        articore_runtime_set_joint_mit_fast_follow(
+            checked(), positions.data(), detail::size(positions)),
+        "set_joint_mit_fast_follow");
   }
 
   void submit_mit_frame(const std::vector<float>& positions,

@@ -61,7 +61,11 @@ void SafetyRuntime::configure_joints(
         !finite(value.mit_kp) || value.mit_kp < 0.0f ||
         !finite(value.mit_kd) || value.mit_kd < 0.0f ||
         !finite(value.mit_feedforward_torque) ||
-        std::abs(value.mit_feedforward_torque) > value.torque_limit) {
+        std::abs(value.mit_feedforward_torque) > value.torque_limit ||
+        !finite(value.mit_fast_follow_kp) ||
+        value.mit_fast_follow_kp < 0.0f ||
+        !finite(value.mit_fast_follow_kd) ||
+        value.mit_fast_follow_kd < 0.0f) {
       throw std::invalid_argument("invalid joint control configuration");
     }
     if (!configured.emplace(
@@ -71,7 +75,9 @@ void SafetyRuntime::configure_joints(
                                0.0f, 0.0f,
                                value.velocity_limit, value.torque_limit,
                                value.mit_kp, value.mit_kd,
-                               value.mit_feedforward_torque}).second) {
+                               value.mit_feedforward_torque,
+                               value.mit_fast_follow_kp,
+                               value.mit_fast_follow_kd}).second) {
       throw std::invalid_argument("duplicate joint control configuration");
     }
   }
@@ -712,6 +718,13 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
         (mode == ARTICORE_MODE_PV &&
          (arm_mailbox_.pv_reference_velocities.size() !=
               arm_mailbox_.pv.size() ||
+          (arm_mailbox_.pv_per_joint_profile &&
+           (arm_mailbox_.pv_reference_velocity_limits.size() !=
+                arm_mailbox_.pv.size() ||
+            arm_mailbox_.pv_reference_acceleration_limits.size() !=
+                arm_mailbox_.pv.size() ||
+            arm_mailbox_.pv_drive_velocity_commands.size() !=
+                arm_mailbox_.pv.size())) ||
           !finite(arm_mailbox_.max_reference_acceleration) ||
           arm_mailbox_.max_reference_acceleration <= 0.0f ||
           !finite(arm_mailbox_.pv_velocity_limit) ||
@@ -729,21 +742,38 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
         arm_mailbox_.pv_stationary_hold.assign(arm_mailbox_.pv.size(), 0);
       }
       const float period_s = 1.0f / static_cast<float>(control_hz_);
-      const float maximum_velocity =
-          arm_mailbox_.max_reference_velocity * command_scale;
       for (std::size_t i = 0; i < arm_mailbox_.pv.size(); ++i) {
         auto& command = arm_mailbox_.pv[i];
         const float final_position = arm_mailbox_.final_positions[i];
-        const auto reference = advance_acceleration_limited_pv_reference(
-            command.target_position,
-            arm_mailbox_.pv_reference_velocities[i], final_position,
-            maximum_velocity, arm_mailbox_.max_reference_acceleration,
-            period_s);
-        command.target_position = reference.position;
-        arm_mailbox_.pv_reference_velocities[i] = reference.velocity;
-        const bool reference_reached =
-            std::abs(command.target_position - final_position) <= 1.0e-6f &&
-            std::abs(arm_mailbox_.pv_reference_velocities[i]) <= 1.0e-6f;
+        const float maximum_velocity =
+            (arm_mailbox_.pv_per_joint_profile
+                 ? arm_mailbox_.pv_reference_velocity_limits[i]
+                 : arm_mailbox_.max_reference_velocity) *
+            command_scale;
+        const float maximum_acceleration =
+            (arm_mailbox_.pv_per_joint_profile
+                 ? arm_mailbox_.pv_reference_acceleration_limits[i]
+                 : arm_mailbox_.max_reference_acceleration) *
+            (arm_mailbox_.pv_per_joint_profile
+                 ? command_scale * command_scale : 1.0f);
+        bool reference_reached = true;
+        if (arm_mailbox_.pv_per_joint_profile) {
+          // Public ordinary PV sends the endpoint immediately. Only V is
+          // shaped online; there is no intermediate P reference sequence.
+          command.target_position = final_position;
+          arm_mailbox_.pv_reference_velocities[i] = 0.0f;
+        } else {
+          const auto reference = advance_acceleration_limited_pv_reference(
+              command.target_position,
+              arm_mailbox_.pv_reference_velocities[i], final_position,
+              maximum_velocity, maximum_acceleration,
+              period_s);
+          command.target_position = reference.position;
+          arm_mailbox_.pv_reference_velocities[i] = reference.velocity;
+          reference_reached =
+              std::abs(command.target_position - final_position) <= 1.0e-6f &&
+              std::abs(arm_mailbox_.pv_reference_velocities[i]) <= 1.0e-6f;
+        }
         ArticoreFeedbackStats stats{};
         ArticoreMotorState actual{};
         const bool fresh_feedback =
@@ -772,10 +802,26 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
             arm_mailbox_.pv_hold_confirmation_cycles[i] = 0;
           }
         }
-        command.velocity_limit = arm_mailbox_.pv_stationary_hold[i] != 0
-            ? kNativePvFinalHoldVelocityLimit
-            : std::max(config_.safe_pv_velocity_limit,
-                       arm_mailbox_.pv_velocity_limit);
+        if (arm_mailbox_.pv_stationary_hold[i] != 0) {
+          command.velocity_limit = kNativePvFinalHoldVelocityLimit;
+          if (arm_mailbox_.pv_per_joint_profile) {
+            arm_mailbox_.pv_drive_velocity_commands[i] = 0.0f;
+          }
+        } else if (arm_mailbox_.pv_per_joint_profile) {
+          const float remaining_distance = fresh_feedback
+              ? std::abs(command.target_position - actual.pos)
+              : 0.0f;
+          command.velocity_limit = advance_ordinary_pv_drive_velocity(
+              arm_mailbox_.pv_drive_velocity_commands[i],
+              remaining_distance, maximum_velocity, maximum_acceleration,
+              period_s);
+          arm_mailbox_.pv_drive_velocity_commands[i] =
+              command.velocity_limit;
+        } else {
+          command.velocity_limit = std::max(
+              config_.safe_pv_velocity_limit,
+              arm_mailbox_.pv_velocity_limit);
+        }
       }
     } else {
       const float max_delta =
@@ -783,9 +829,11 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
           static_cast<float>(control_hz_);
       for (std::size_t i = 0; i < arm_mailbox_.mit.size(); ++i) {
         auto& command = arm_mailbox_.mit[i];
-        command.target_position = advance_pv_position_reference(
-            command.target_position, arm_mailbox_.final_positions[i],
-            max_delta);
+        command.target_position = arm_mailbox_.mit_direct
+            ? arm_mailbox_.final_positions[i]
+            : advance_pv_position_reference(
+                  command.target_position, arm_mailbox_.final_positions[i],
+                  max_delta);
         command.target_velocity = 0.0f;
         command.feedforward_torque = 0.0f;
       }
@@ -805,8 +853,6 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     const float command_scale = degraded ? 0.25f : 1.0f;
     const float max_delta = arm_mailbox_.max_reference_velocity * command_scale /
                             static_cast<float>(control_hz_);
-    const float maximum_velocity =
-        arm_mailbox_.max_reference_velocity * command_scale;
     const float period_s = 1.0f / static_cast<float>(control_hz_);
     for (std::size_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
       void* leader_motor =
@@ -886,13 +932,31 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
       }
 
       if (mode == ARTICORE_MODE_PV) {
-        const auto reference = advance_acceleration_limited_pv_reference(
-            bimanual_follower_reference[joint],
-            bimanual_follower_reference_velocity[joint], desired,
-            maximum_velocity, arm_mailbox_.max_reference_acceleration,
-            period_s);
-        bimanual_follower_reference[joint] = reference.position;
-        bimanual_follower_reference_velocity[joint] = reference.velocity;
+        const std::size_t profile_index =
+            follower_side * ARTICORE_PRODUCT_ARM_DOF + joint;
+        const float maximum_velocity =
+            (arm_mailbox_.pv_per_joint_profile
+                 ? arm_mailbox_.pv_reference_velocity_limits[profile_index]
+                 : arm_mailbox_.max_reference_velocity) *
+            command_scale;
+        const float maximum_acceleration =
+            (arm_mailbox_.pv_per_joint_profile
+                 ? arm_mailbox_.pv_reference_acceleration_limits[profile_index]
+                 : arm_mailbox_.max_reference_acceleration) *
+            (arm_mailbox_.pv_per_joint_profile
+                 ? command_scale * command_scale : 1.0f);
+        if (arm_mailbox_.pv_per_joint_profile) {
+          bimanual_follower_reference[joint] = desired;
+          bimanual_follower_reference_velocity[joint] = 0.0f;
+        } else {
+          const auto reference = advance_acceleration_limited_pv_reference(
+              bimanual_follower_reference[joint],
+              bimanual_follower_reference_velocity[joint], desired,
+              maximum_velocity, maximum_acceleration,
+              period_s);
+          bimanual_follower_reference[joint] = reference.position;
+          bimanual_follower_reference_velocity[joint] = reference.velocity;
+        }
         const auto command = std::find_if(
             arm_mailbox_.pv.begin(), arm_mailbox_.pv.end(),
             [&](const ArticorePosVelCommand& value) {
@@ -910,11 +974,23 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
         arm_mailbox_.final_positions[index] = desired;
         arm_mailbox_.pv_hold_confirmation_cycles[index] = 0;
         arm_mailbox_.pv_stationary_hold[index] = 0;
-        command->velocity_limit = std::max(
-            config_.safe_pv_velocity_limit, arm_mailbox_.pv_velocity_limit);
+        if (arm_mailbox_.pv_per_joint_profile) {
+          command->velocity_limit = advance_ordinary_pv_drive_velocity(
+              arm_mailbox_.pv_drive_velocity_commands[index],
+              std::abs(command->target_position - follower.pos),
+              maximum_velocity, maximum_acceleration, period_s);
+          arm_mailbox_.pv_drive_velocity_commands[index] =
+              command->velocity_limit;
+        } else {
+          command->velocity_limit = std::max(
+              config_.safe_pv_velocity_limit,
+              arm_mailbox_.pv_velocity_limit);
+        }
       } else {
-        bimanual_follower_reference[joint] = advance_pv_position_reference(
-            bimanual_follower_reference[joint], desired, max_delta);
+        bimanual_follower_reference[joint] = arm_mailbox_.mit_direct
+            ? desired
+            : advance_pv_position_reference(
+                  bimanual_follower_reference[joint], desired, max_delta);
         const auto command = std::find_if(
             arm_mailbox_.mit.begin(), arm_mailbox_.mit.end(),
             [&](const ArticoreMitCommand& value) {

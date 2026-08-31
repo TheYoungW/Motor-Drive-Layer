@@ -20,7 +20,6 @@ using Product = std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>;
 
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kSpeedPercent = 50.0f;
-constexpr float kAccelerationRadS2 = 4.0f;
 constexpr float kPositionToleranceRad = 0.02f;
 constexpr float kVelocityToleranceRadS = 0.05f;
 constexpr float kAbortVelocityRadS = 3.0f;
@@ -161,14 +160,11 @@ int main(int argc, char** argv) {
     const Product connected_position = positions(read_state(runtime));
     print_product("connected_q", connected_position);
     print_product("target_q", target);
-    std::cout << "speed_percent=" << kSpeedPercent
-              << " acceleration_rad_s2=" << kAccelerationRadS2 << '\n';
+    std::cout << "speed_percent=" << kSpeedPercent << '\n';
 
     check(articore_runtime_enable(runtime), "enable");
     enabled = true;
     wait_enabled_and_stationary(runtime);
-    check(articore_runtime_set_max_acceleration(runtime, kAccelerationRadS2),
-          "set_max_acceleration");
     const Product start = positions(read_state(runtime));
     const auto started = Clock::now();
     check(articore_runtime_set_joint_pv(

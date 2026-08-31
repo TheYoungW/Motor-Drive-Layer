@@ -28,8 +28,8 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.22.5`
-- Runtime ABI: `11.3` / `0x000B0003`
+- package version: `0.23.0`
+- Runtime ABI: `11.4` / `0x000B0004`
 
 Runtime health includes a product-order snapshot for every installed Motor,
 with role, CAN ID, feedback age, status, issue bits, and a scope that separates
@@ -45,15 +45,30 @@ The SDK creates the product with
 Motor mapping, controllers, limits, models, TCP offsets, workers and resource
 lifetime.
 
-Ordinary joint PV is the public user-development step mode. One
+Ordinary joint PV is public latest-target-wins endpoint control. One
 `set_joint_pv()` call replaces the preceding complete 14-joint target; Runtime
 does not generate a finite quintic/septic profile or a Motion-ID task. On each
-500 Hz control cycle it advances the outgoing POS_VEL `P` reference toward the
-latest endpoint. `speed=0..100` selects the `P` reference-speed scale from
-`0..2 rad/s`; the Motor POS_VEL `V` ceiling remains independent at `3 rad/s`.
-Persistent maximum acceleration uses physical
-units with `0.01` resolution, accepts `0.01..8.00 rad/s^2`, and defaults to
-`6.00 rad/s^2`; it shapes only ordinary PV acceleration, braking and reversal.
+500 Hz control cycle it refreshes the final endpoint P and dynamically updates
+only the Motor V envelope. A replacement sends the new final P directly while
+preserving the current V ramp state; it does not generate intermediate P points.
+`speed=1..100` is its only public motion parameter. At 100%, J1..J7 velocity
+hard limits are `[180,180,180,225,225,225,225] deg/s` and acceleration hard
+limits are `[450,450,900,900,900,900,900] deg/s^2`; speed scaling multiplies
+velocity by `s` and acceleration by `s²`. Runtime derives each POS_VEL `V` from
+the current reference velocity and measured tracking error instead of sending
+a fixed user-selected value. The legacy acceleration setter/getter remain only
+as ABI symbols and SDKs should not expose them.
+MIT product mode exposes two position-only endpoint methods. Ordinary
+`set_joint_mit()` sends each newest complete 14-joint endpoint directly, with
+fixed J1..J7 `Kp=[15,15,12,12,8,7,6]` and
+`Kd=[0.8,0.8,0.7,0.7,0.5,0.5,0.4]`; it does not generate intermediate
+position references. `set_joint_mit_fast_follow()` is the high-frequency
+teleoperation method: users provide only the newest joint angles, while
+Runtime applies fixed J1..J7 `Kp=[190,190,100,100,70,60,50]`,
+`Kd=[4.55,4.50,2.50,2.50,0.70,0.60,0.50]`, and an internal 100-percent
+(5 rad/s) position-reference step limit. The former MIT function with a public
+speed percentage remains an ABI-compatibility symbol only and new SDKs must not
+expose it.
 Joint/Linear/Circular own independent trajectory velocity, acceleration, jerk,
 timing and synchronization constraints. Users provide positions/path and time;
 trajectory acceleration and jerk remain internal Runtime policy.
@@ -75,7 +90,13 @@ sampled at 2 mm / 0.1 rad or better, then one global quintic time law generates
 fixed 10 ms internal real-time-PV knots. Thus `duration_s=3` normally produces
 300 segments and 301 points. Runtime linearly resamples adjacent knots and
 sends the resulting reference at 500 Hz, without applying the ordinary-PV
-endpoint step generator.
+endpoint step generator. Per-cycle P changes smaller than one Damiao 16-bit
+position-feedback quantum (25/65535 rad, about 0.02186 degrees) accumulate
+against the last effective P; Runtime repeats that P until the threshold is
+reached and always forces the exact endpoint without shortening duration.
+POS_VEL P itself remains float32. The internal POS_VEL V limit follows the
+current planned joint speed, bounded by the product ceiling, so slow
+trajectories do not repeatedly chase discrete P targets at 3 rad/s.
 Circular constructs the directed circle through start/via/end, samples the arc
 at 2 mm / 0.1 rad or better, applies shortest-path SLERP through the via
 orientation, and uses the same global quintic/10 ms real-time-PV chain.
@@ -83,13 +104,14 @@ Physical arrival may be later due to PV limits and feedback stability. Linear
 and Circular check their 10 ms joint differences against speed 50 and their
 trajectory acceleration limits, automatically stretching the reference duration to a complete
 10 ms sample when needed.
-The public `set_joint_pv()` command is the ordinary stepped interface.
+The public `set_joint_pv()` command is the ordinary endpoint interface.
 Real-time PV is internal-only and can be selected only by a validated finite
 Joint/Linear/Circular trajectory; its 100 Hz plan knots are resampled on the
 500 Hz Runtime command clock. No raw or streaming PV entry point is exported.
 Automatic approach stays inside that trajectory execution path.
 Linear and Circular require PV product mode; `set_pose()` supports either
-ordinary PV or ordinary MIT, and MIT joint trajectories are unchanged.
+ordinary PV or direct ordinary MIT. MIT joint trajectories remain independent
+from both ordinary MIT endpoint methods.
 
 See [the Runtime reference](articore_runtime/README.md) for the current API.
 

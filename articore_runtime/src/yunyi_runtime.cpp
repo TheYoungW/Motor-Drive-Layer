@@ -17,8 +17,6 @@ constexpr const char* kGripperProfile = "yunyi_gripper_v1";
 constexpr const char* kChannels[2] = {"can-left", "can-right"};
 constexpr const char* kModels[8] = {
     "8009", "8009", "4340P", "4340P", "4310", "4310", "4310", "4310"};
-constexpr float kKp[7] = {190, 190, 70, 125, 10, 22, 28};
-constexpr float kKd[7] = {4.55f, 4.5f, 2, 2.9f, .7f, .89f, .84f};
 // Both model joint1 axes use +Y. The right physical motor direction is the
 // inverse mapping that keeps product-level joint angles symmetric.
 static_assert(kYunyiJointDirection[ARTICORE_ROBOT_RIGHT][0] == -1.0f,
@@ -33,9 +31,9 @@ constexpr float kUpper[2][7] = {
     {2.745f, .3489f, 2.5294f, 2.2678f, 2.0933f, .785f, 1.3956f},
 };
 // Per-joint hard safety limit for native trajectory validation. Public
-// ordinary PV maps speed_percent to the 0..2 rad/s P-reference scale; its
-// independent Motor V ceiling is 3 rad/s. Protocol encoding ranges are separate
-// and must not be treated as product limits.
+// ordinary PV owns separate per-joint limits and sends final P directly;
+// protocol encoding ranges are separate and must not be treated as product
+// limits.
 constexpr float kVelocityLimit[7] = {5, 5, 5, 5, 5, 5, 5};
 // Conservative logical-coordinate trajectory limits. These are native product
 // policy, not user-tunable scheduler parameters.
@@ -396,8 +394,8 @@ std::vector<ArticoreJointControlConfig> configure_joint_table(
           kYunyiNativeTorqueRange[index] / kYunyiLogicalTorqueRange[index];
       product_joint.torque_feedback_scale =
           kYunyiLogicalTorqueRange[index] / kYunyiNativeTorqueRange[index];
-      product_joint.kp = kKp[index];
-      product_joint.kd = kKd[index];
+      product_joint.kp = kYunyiMitDirectKp[index];
+      product_joint.kd = kYunyiMitDirectKd[index];
 
       ArticoreJointControlConfig joint{};
       joint.motor = product_joint.motor;
@@ -407,8 +405,10 @@ std::vector<ArticoreJointControlConfig> configure_joint_table(
           ? product_joint.upper : -product_joint.lower;
       joint.velocity_limit = kNativeVelocityRange[index];
       joint.torque_limit = kYunyiNativeTorqueRange[index];
-      joint.mit_kp = kKp[index];
-      joint.mit_kd = kKd[index];
+      joint.mit_kp = kYunyiMitDirectKp[index];
+      joint.mit_kd = kYunyiMitDirectKd[index];
+      joint.mit_fast_follow_kp = kYunyiMitFastFollowKp[index];
+      joint.mit_fast_follow_kd = kYunyiMitFastFollowKd[index];
       joints.push_back(joint);
     }
   }

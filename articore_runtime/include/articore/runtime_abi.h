@@ -564,14 +564,35 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(
     ArticoreRuntime* runtime);
 
 /* Ordinary product joint commands use fixed left J1..J7, right J1..J7 order.
- * PV is the public latest-target-wins step mode: positions and speed_percent
- * replace the preceding complete endpoint. Runtime advances POS_VEL P toward
- * it online at 500 Hz; speed_percent selects the 0..2 rad/s P reference-speed
- * scale, while the Motor POS_VEL V ceiling is independent.
+ * PV is public latest-target-wins endpoint control, not a complete trajectory
+ * task. Runtime sends the final P directly and preserves the current Motor-V
+ * speed envelope when a target is replaced. Its 500 Hz worker refreshes the
+ * ordinary POS_VEL command and shapes V; it does not generate intermediate P.
+ * speed_percent is the only public PV motion parameter and accepts 1..100.
+ * At 100 percent, J1..J7 velocity hard limits are
+ * [180,180,180,225,225,225,225] deg/s and acceleration hard limits are
+ * [450,450,900,900,900,900,900] deg/s^2. Runtime time-scales velocity by s
+ * and acceleration by s^2, and derives the POS_VEL V field every cycle from
+ * the reference velocity and measured tracking error.
  */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
     float speed_percent);
+/* Ordinary MIT endpoint control. Each complete command immediately replaces
+ * the prior target without an intermediate position-reference step. Runtime
+ * owns the fixed product gains and refreshes the persistent command at 500 Hz.
+ */
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_direct(
+    ArticoreRuntime* runtime, const float* positions, uint32_t count);
+/* High-frequency teleoperation endpoint control. Callers provide only the
+ * newest complete joint angles. Runtime applies the fast-follow gains and the
+ * fixed internal 100-percent (5 rad/s) position-reference step limit.
+ */
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_fast_follow(
+    ArticoreRuntime* runtime, const float* positions, uint32_t count);
+/* Deprecated ABI-compatibility entry point for the former user-selectable MIT
+ * step speed. New SDKs must expose direct and fast-follow MIT instead.
+ */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
     float speed_percent);
@@ -585,12 +606,11 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
 ARTICORE_RUNTIME_API int32_t articore_runtime_solve_ik(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float* positions, uint32_t count);
-/* Persistent ordinary-PV acceleration uses physical units and 0.01
- * resolution. It accepts 0.01..8.00 rad/s^2 and defaults to 6.00 rad/s^2.
- * It shapes ordinary step PV acceleration/braking/reversal only. Complete
- * Joint/Linear/Circular trajectories own independent acceleration and jerk
- * constraints derived internally from positions/path and time; those limits
- * are not user-configurable. It does not alter any trajectory or MIT command.
+/* Deprecated ABI-compatibility symbols. Ordinary product PV acceleration is
+ * fixed per joint and speed_percent is its only public motion parameter, so a
+ * valid product Runtime returns ARTICORE_OPERATION_INVALID_STATE here. SDKs
+ * should no longer expose these methods. Complete Joint/Linear/Circular
+ * trajectories remain independent and are not affected by this deprecation.
  */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_acceleration(
     ArticoreRuntime* runtime, float max_acceleration_rad_s2);
@@ -620,7 +640,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_joint_trajectory(
 
 /* ABI compatibility convenience. This entry solves IK once, then atomically
  * installs that joint endpoint through the Runtime's current ordinary PV or
- * MIT mode. It does not plan a Cartesian path and has no motion ID. */
+ * direct ordinary MIT mode. It does not plan a Cartesian path and has no
+ * motion ID. The speed percentage is ignored in MIT mode. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_pose(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float speed_percent);

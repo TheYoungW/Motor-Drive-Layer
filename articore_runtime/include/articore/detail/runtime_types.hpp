@@ -130,6 +130,8 @@ typedef struct ArticoreJointControlConfig {
   float mit_kp;
   float mit_kd;
   float mit_feedforward_torque;
+  float mit_fast_follow_kp;
+  float mit_fast_follow_kd;
 } ArticoreJointControlConfig;
 
 typedef struct ArticoreJointSafetyLimits {

@@ -48,6 +48,13 @@ void SafetyRuntime::set_joint_mit(
       max_reference_velocity);
 }
 
+void SafetyRuntime::set_joint_mit_direct(
+    const ArticoreJointMitTarget* targets, uint32_t count) {
+  install_joint_position(
+      ARTICORE_MODE_MIT, collect_targets(targets, count, "MIT"),
+      0.0f, 0.0f, 0.0f, nullptr, 0, nullptr, nullptr, true);
+}
+
 void SafetyRuntime::set_joint_mit_planned(
     const ArticoreJointMitTarget* targets, uint32_t count,
     float max_reference_velocity,
@@ -58,6 +65,18 @@ void SafetyRuntime::set_joint_mit_planned(
   install_joint_position(
       ARTICORE_MODE_MIT, collect_targets(targets, count, "MIT"),
       max_reference_velocity, 0.0f, 0.0f, &transaction, planning_token);
+}
+
+void SafetyRuntime::set_joint_mit_direct_planned(
+    const ArticoreJointMitTarget* targets, uint32_t count,
+    CommandTransaction& transaction, uint64_t planning_token) {
+  if (planning_token == 0) {
+    throw std::logic_error("planned direct MIT command requires a planning token");
+  }
+  install_joint_position(
+      ARTICORE_MODE_MIT, collect_targets(targets, count, "MIT"),
+      0.0f, 0.0f, 0.0f, &transaction, planning_token,
+      nullptr, nullptr, true);
 }
 
 void SafetyRuntime::set_joint_pv(
@@ -97,6 +116,51 @@ void SafetyRuntime::set_joint_pv_planned(
       ARTICORE_MODE_PV, collect_targets(targets, count, "PV"),
       max_reference_velocity, max_reference_acceleration, pv_velocity_limit,
       &transaction, planning_token);
+}
+
+void SafetyRuntime::set_joint_pv_profile(
+    const ArticoreJointPvTarget* targets, uint32_t count,
+    const std::vector<float>& maximum_velocities,
+    const std::vector<float>& maximum_accelerations) {
+  const auto collected = collect_targets(targets, count, "PV");
+  if (maximum_velocities.size() != collected.size() ||
+      maximum_accelerations.size() != collected.size()) {
+    throw std::invalid_argument(
+        "ordinary PV per-joint limits must match the target count");
+  }
+  const float shared_velocity = *std::max_element(
+      maximum_velocities.begin(), maximum_velocities.end());
+  const float shared_acceleration = *std::max_element(
+      maximum_accelerations.begin(), maximum_accelerations.end());
+  install_joint_position(
+      ARTICORE_MODE_PV, collected, shared_velocity, shared_acceleration,
+      shared_velocity, nullptr, 0,
+      &maximum_velocities, &maximum_accelerations);
+}
+
+void SafetyRuntime::set_joint_pv_profile_planned(
+    const ArticoreJointPvTarget* targets, uint32_t count,
+    const std::vector<float>& maximum_velocities,
+    const std::vector<float>& maximum_accelerations,
+    CommandTransaction& transaction, uint64_t planning_token) {
+  if (planning_token == 0) {
+    throw std::logic_error(
+        "planned PV profile command requires a planning token");
+  }
+  const auto collected = collect_targets(targets, count, "PV");
+  if (maximum_velocities.size() != collected.size() ||
+      maximum_accelerations.size() != collected.size()) {
+    throw std::invalid_argument(
+        "ordinary PV per-joint limits must match the target count");
+  }
+  const float shared_velocity = *std::max_element(
+      maximum_velocities.begin(), maximum_velocities.end());
+  const float shared_acceleration = *std::max_element(
+      maximum_accelerations.begin(), maximum_accelerations.end());
+  install_joint_position(
+      ARTICORE_MODE_PV, collected, shared_velocity, shared_acceleration,
+      shared_velocity, &transaction, planning_token,
+      &maximum_velocities, &maximum_accelerations);
 }
 
 float SafetyRuntime::ordinary_velocity_from_percent(
@@ -185,7 +249,10 @@ void SafetyRuntime::install_joint_position(
     const std::vector<std::pair<void*, float>>& targets,
     float max_reference_velocity, float max_reference_acceleration,
     float pv_velocity_limit,
-    CommandTransaction* transaction, uint64_t planning_token) {
+    CommandTransaction* transaction, uint64_t planning_token,
+    const std::vector<float>* pv_reference_velocity_limits,
+    const std::vector<float>* pv_reference_acceleration_limits,
+    bool mit_direct) {
   const char* const label = mode_name(requested_mode);
   if (!finite(max_reference_velocity) || max_reference_velocity < 0.0f) {
     throw std::invalid_argument(
@@ -196,11 +263,26 @@ void SafetyRuntime::install_joint_position(
     throw std::invalid_argument(
         "pv_velocity_limit must be finite and non-negative");
   }
+  if (requested_mode != ARTICORE_MODE_MIT && mit_direct) {
+    throw std::invalid_argument("direct MIT behavior requires MIT mode");
+  }
   if (requested_mode == ARTICORE_MODE_PV &&
       (!finite(max_reference_acceleration) ||
        max_reference_acceleration <= 0.0f)) {
     throw std::invalid_argument(
         "max_reference_acceleration must be finite and positive");
+  }
+  const bool per_joint_profile =
+      pv_reference_velocity_limits != nullptr ||
+      pv_reference_acceleration_limits != nullptr;
+  if (per_joint_profile &&
+      (requested_mode != ARTICORE_MODE_PV ||
+       !pv_reference_velocity_limits ||
+       !pv_reference_acceleration_limits ||
+       pv_reference_velocity_limits->size() != targets.size() ||
+       pv_reference_acceleration_limits->size() != targets.size())) {
+    throw std::invalid_argument(
+        "ordinary PV per-joint limits must match the complete target layout");
   }
 
   const auto expected = static_cast<std::size_t>(std::count_if(
@@ -214,7 +296,9 @@ void SafetyRuntime::install_joint_position(
   }
 
   std::set<void*> unique;
-  for (const auto& [motor_handle, target_position] : targets) {
+  for (std::size_t target_index = 0;
+       target_index < targets.size(); ++target_index) {
+    const auto& [motor_handle, target_position] = targets[target_index];
     const auto motor = std::find_if(
         motors_.begin(), motors_.end(), [&](const MotorRecord& record) {
           return !record.descriptor.is_gripper &&
@@ -242,6 +326,19 @@ void SafetyRuntime::install_joint_position(
       throw std::invalid_argument(
           std::string(motor->descriptor.name) +
           ": PV velocity limit exceeds joint safety limit");
+    }
+    if (per_joint_profile) {
+      const float joint_velocity =
+          pv_reference_velocity_limits->at(target_index);
+      const float joint_acceleration =
+          pv_reference_acceleration_limits->at(target_index);
+      if (!finite(joint_velocity) || joint_velocity <= 0.0f ||
+          joint_velocity > limits.velocity_limit ||
+          !finite(joint_acceleration) || joint_acceleration <= 0.0f) {
+        throw std::invalid_argument(
+            std::string(motor->descriptor.name) +
+            ": invalid ordinary PV per-joint motion limit");
+      }
     }
     validate_position_velocity_torque(
         motor_handle, target_position, 0.0f, 0.0f);
@@ -300,6 +397,8 @@ void SafetyRuntime::install_joint_position(
   next.generation = next_arm_generation();
   next.submitted_at = now;
   next.joint_position = true;
+  next.mit_direct = requested_mode == ARTICORE_MODE_MIT && mit_direct;
+  next.pv_per_joint_profile = per_joint_profile;
   next.max_reference_velocity = max_reference_velocity;
   next.max_reference_acceleration = max_reference_acceleration;
   next.pv_velocity_limit = pv_velocity_limit;
@@ -309,6 +408,13 @@ void SafetyRuntime::install_joint_position(
     next.pv_reference_velocities.reserve(targets.size());
     next.pv_hold_confirmation_cycles.assign(targets.size(), 0);
     next.pv_stationary_hold.assign(targets.size(), 0);
+    if (per_joint_profile) {
+      next.pv_reference_velocity_limits =
+          *pv_reference_velocity_limits;
+      next.pv_reference_acceleration_limits =
+          *pv_reference_acceleration_limits;
+      next.pv_drive_velocity_commands.reserve(targets.size());
+    }
   } else {
     next.mit.reserve(targets.size());
   }
@@ -333,6 +439,7 @@ void SafetyRuntime::install_joint_position(
 
     float current_position = state.pos;
     float current_reference_velocity = 0.0f;
+    float current_drive_velocity = 0.0f;
     if (continuing) {
       if (requested_mode == ARTICORE_MODE_PV) {
         const auto previous = std::find_if(
@@ -340,17 +447,29 @@ void SafetyRuntime::install_joint_position(
             [&](const ArticorePosVelCommand& command) {
               return command.motor == motor_handle;
             });
-        if (previous == arm_mailbox_.pv.end() ||
-            arm_mailbox_.pv_reference_velocities.size() !=
-                arm_mailbox_.pv.size()) {
+        if (previous == arm_mailbox_.pv.end()) {
           throw std::runtime_error(
               "ordinary PV reference state does not match the active arm layout");
         }
-        current_position = previous->target_position;
         const auto previous_index = static_cast<std::size_t>(
             std::distance(arm_mailbox_.pv.begin(), previous));
-        current_reference_velocity =
-            arm_mailbox_.pv_reference_velocities[previous_index];
+        if (per_joint_profile) {
+          if (arm_mailbox_.pv_per_joint_profile &&
+              arm_mailbox_.pv_drive_velocity_commands.size() ==
+                  arm_mailbox_.pv.size()) {
+            current_drive_velocity =
+                arm_mailbox_.pv_drive_velocity_commands[previous_index];
+          }
+        } else {
+          if (arm_mailbox_.pv_reference_velocities.size() !=
+              arm_mailbox_.pv.size()) {
+            throw std::runtime_error(
+                "ordinary PV reference velocity state is inconsistent");
+          }
+          current_position = previous->target_position;
+          current_reference_velocity =
+              arm_mailbox_.pv_reference_velocities[previous_index];
+        }
       } else {
         const auto previous = std::find_if(
             arm_mailbox_.mit.begin(), arm_mailbox_.mit.end(),
@@ -367,14 +486,21 @@ void SafetyRuntime::install_joint_position(
 
     if (requested_mode == ARTICORE_MODE_PV) {
       next.pv.push_back(ArticorePosVelCommand{
-          motor_handle, current_position,
-          std::max(config_.safe_pv_velocity_limit, pv_velocity_limit)});
+          motor_handle,
+          per_joint_profile ? final_position : current_position,
+          per_joint_profile
+              ? current_drive_velocity
+              : std::max(config_.safe_pv_velocity_limit, pv_velocity_limit)});
       next.pv_reference_velocities.push_back(current_reference_velocity);
+      if (per_joint_profile) {
+        next.pv_drive_velocity_commands.push_back(current_drive_velocity);
+      }
     } else {
       const auto& config = joint_config(motor_handle);
       next.mit.push_back(ArticoreMitCommand{
-          motor_handle, current_position, 0.0f,
-          config.mit_kp, config.mit_kd, 0.0f});
+          motor_handle, mit_direct ? final_position : current_position, 0.0f,
+          mit_direct ? config.mit_kp : config.mit_fast_follow_kp,
+          mit_direct ? config.mit_kd : config.mit_fast_follow_kd, 0.0f});
     }
     next.final_positions.push_back(final_position);
   }

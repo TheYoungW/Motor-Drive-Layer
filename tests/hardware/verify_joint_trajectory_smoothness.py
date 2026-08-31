@@ -24,10 +24,6 @@ TRAJECTORY_COMPLETED = 2
 TRAJECTORY_CANCELLED = 3
 TRAJECTORY_FAULT = 4
 START = [0.0, 0.0, 0.0, math.pi / 2.0, 0.0, 0.0, 0.0]
-RIGHT_TARGET = [
-    -math.pi / 4.0, -math.pi / 4.0, 0.0,
-    math.pi / 2.0, 0.0, 0.0, 0.0,
-]
 
 
 class TrajectoryWaypoint(ctypes.Structure):
@@ -170,12 +166,12 @@ def wait_joint_target(
 
 
 def build_request(
-    duration_s: float, pv_velocity_limit: float,
+    duration_s: float, right_target: list[float],
 ) -> tuple[ctypes.Array[TrajectoryWaypoint], TrajectoryConfig]:
     waypoints = (TrajectoryWaypoint * 2)()
     for waypoint, time_s, right in (
         (waypoints[0], 0.0, START),
-        (waypoints[1], duration_s, RIGHT_TARGET),
+        (waypoints[1], duration_s, right_target),
     ):
         waypoint.struct_size = ctypes.sizeof(TrajectoryWaypoint)
         waypoint.time_s = time_s
@@ -187,7 +183,6 @@ def build_request(
     config.struct_size = ctypes.sizeof(config)
     config.interpolation = INTERPOLATION_QUINTIC
     config.control_mode = MODE_PV
-    config.pv_velocity_limits[:] = [pv_velocity_limit] * PRODUCT_DOF
     return waypoints, config
 
 
@@ -217,6 +212,7 @@ def direction_reversals(values: list[float], threshold: float = 0.01) -> int:
 
 def summarize(
     samples: list[dict[str, object]], completed_s: float,
+    right_target: list[float],
 ) -> dict[str, object]:
     moving = [item for item in samples
               if float(item["elapsed_s"]) <= completed_s]
@@ -232,7 +228,7 @@ def summarize(
         moving_dq = [float(item["right_dq"][joint]) for item in moving]
         hold_q = [float(item["right_q"][joint]) for item in hold]
         hold_dq = [float(item["right_dq"][joint]) for item in hold]
-        target = RIGHT_TARGET[joint]
+        target = right_target[joint]
         direction = 1.0 if target >= START[joint] else -1.0
         joints.append({
             "joint": joint + 1,
@@ -263,7 +259,10 @@ def summarize(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--duration", type=float, required=True)
-    parser.add_argument("--pv-v", type=float, required=True)
+    parser.add_argument(
+        "--right-j1-deg", type=float, required=True,
+        help="right joint 1 target in degrees; all other joints stay at START",
+    )
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--hold-seconds", type=float, default=2.0)
     parser.add_argument("--output", type=Path, required=True)
@@ -275,18 +274,20 @@ def main() -> None:
         parser.error("--i-understand-both-arms-will-move is required")
     if not math.isfinite(args.duration) or args.duration <= 0.0:
         parser.error("--duration must be positive and finite")
-    if not math.isfinite(args.pv_v) or args.pv_v <= 0.0:
-        parser.error("--pv-v must be positive and finite")
+    if not math.isfinite(args.right_j1_deg):
+        parser.error("--right-j1-deg must be finite")
+
+    right_target = list(START)
+    right_target[0] = math.radians(args.right_j1_deg)
 
     result: dict[str, object] = {
         "control_mode": "pv",
         "interpolation": "quintic",
         "duration_s": args.duration,
-        "pv_velocity_limit_rad_s": args.pv_v,
         "left_start": START,
         "left_target": START,
         "right_start": START,
-        "right_target": RIGHT_TARGET,
+        "right_target": right_target,
     }
     robot = ArxDCanDualArm(control_mode="pv", with_grippers=True)
     connected = False
@@ -294,10 +295,9 @@ def main() -> None:
         robot.connect()
         connected = True
         robot.enable()
-        robot.set_max_acceleration(4.0)
         wait_joint_target(robot, START, START, timeout_s=args.timeout)
         start_function, status_function = native_functions(robot)
-        waypoints, config = build_request(args.duration, args.pv_v)
+        waypoints, config = build_request(args.duration, right_target)
         started = time.monotonic()
         motion_id = ctypes.c_uint64()
         code = int(start_function(
@@ -335,7 +335,7 @@ def main() -> None:
                 break
         if completed_s is None:
             raise RuntimeError("native trajectory did not complete")
-        result["metrics"] = summarize(samples, completed_s)
+        result["metrics"] = summarize(samples, completed_s, right_target)
         result["temperatures"] = temperatures(robot)
         result["health"] = str(robot.get_health())
         result["samples"] = samples

@@ -1,8 +1,8 @@
 # Yunyi product Runtime
 
-`libarticore_runtime.so` is the only public native library. Runtime ABI 11.3 is
+`libarticore_runtime.so` is the only public native library. Runtime ABI 11.4 is
 an exact contract: the SDK must require `articore_runtime_abi_version() ==
-0x000B0003` and bind only the declarations in `articore/runtime_abi.h`.
+0x000B0004` and bind only the declarations in `articore/runtime_abi.h`.
 
 ## Ownership
 
@@ -23,14 +23,26 @@ objects, joint tables or product bindings.
 
 - Lifecycle: `connect`, `disconnect`, `enable`, `disable`, `estop`, `recover`.
 - Maintenance: `configure_mode`, `clear_faults`, `set_zero`.
-- Joint control: `set_joint_pv`, `set_joint_mit`, `submit_mit_frame`.
+- Joint control: `set_joint_pv`, `set_joint_mit_direct`,
+  `set_joint_mit_fast_follow`, `submit_mit_frame`.
 - Ordinary PV: each command replaces the preceding complete joint endpoint.
-  Runtime advances POS_VEL `P` online at 500 Hz; `speed_percent` selects its
-  `0..2 rad/s` reference-speed scale while Motor `V` is an independent ceiling.
-- PV acceleration: `set_max_acceleration` and `get_max_acceleration` use
-  `rad/s^2` with `0.01` resolution and shape ordinary PV only. Complete
-  trajectories own internal velocity, acceleration and jerk constraints;
-  callers provide positions/path and time, not trajectory derivative limits.
+  Runtime sends final P directly and shapes only the per-joint Motor V envelope
+  while refreshing POS_VEL at 500 Hz. `speed_percent=1..100` is the only public motion parameter. The
+  100% J1..J7 hard limits are 180/180/180/225/225/225/225 deg/s and
+  450/450/900/900/900/900/900 deg/s^2; velocity scales by `s`, acceleration by
+  `s^2`, and Motor `V` is derived per cycle from reference speed and tracking
+  error. `set/get_max_acceleration` are deprecated ABI-only symbols.
+- Ordinary MIT direct: each complete 14-joint target replaces the previous
+  endpoint and is sent without intermediate position-reference steps. Runtime
+  owns J1..J7 `Kp=[15,15,12,12,8,7,6]` and
+  `Kd=[0.8,0.8,0.7,0.7,0.5,0.5,0.4]`.
+- MIT fast follow: a high-frequency teleoperation endpoint interface accepting
+  joint angles only. Runtime owns J1..J7
+  `Kp=[190,190,100,100,70,60,50]`,
+  `Kd=[4.55,4.50,2.50,2.50,0.70,0.60,0.50]`, and the fixed internal
+  100-percent (5 rad/s) position-reference step limit. The old MIT symbol with
+  public `speed_percent` remains ABI-only compatibility and must not be exposed
+  by a new SDK.
 - Native trajectories: joint trajectory plus Linear and Circular motion. PV
   follows the supplied/generated finite point list through internal real-time
   PV at speed 50; MIT joint trajectories remain direct quintic mode.
@@ -44,19 +56,27 @@ never contain native Motor pointers.
 
 ## Motion semantics
 
-`set_joint_pv(left, right, speed)` is ordinary latest-target-wins step control.
+`set_joint_pv(left, right, speed)` is ordinary latest-target-wins endpoint control.
 Runtime validates and atomically installs the complete 14-joint endpoint, then
-advances the outgoing POS_VEL `P` reference toward it on the 500 Hz Runtime
-control clock. A newer call replaces only the endpoint and preserves the current
-reference position and velocity, so acceleration, braking and reversal stay
-continuous. This is an online step generator, not a finite quintic/septic plan,
-queue item or Motion ID. `speed=0..100` controls the P reference-speed scale;
-Motor `V` remains a separate product drive ceiling. The pure
+sends that final POS_VEL `P` directly. Its 500 Hz control clock refreshes the
+same endpoint and updates only Motor `V`. A newer call replaces the endpoint
+and preserves the current V envelope. This is an ordinary endpoint controller,
+not a finite quintic/septic plan, queue item or Motion ID. `speed=1..100`
+time-scales the fixed per-joint velocity and acceleration limits; Runtime
+derives Motor `V` every cycle without generating intermediate P. The pure
 `articore_runtime_solve_ik(left_pose, right_pose, positions, 14)` query uses one
 planned-reference snapshot (or fresh connected feedback before enable), the
 active TCP and product limits to return fixed
 left-J1..J7/right-J1..J7 joint order. It never enables Motors, sends commands or
 changes the queue. Callers pass that result to `articore_runtime_set_joint_pv`.
+In MIT product mode, callers choose one of two position-only endpoint methods:
+`articore_runtime_set_joint_mit_direct` sends the new target directly with the
+ordinary low-gain profile, while
+`articore_runtime_set_joint_mit_fast_follow` advances the Runtime-owned
+reference at the fixed 100-percent limit with the fast-follow gain profile.
+Both are persistent latest-target-wins commands refreshed on the 500 Hz Runtime
+clock and neither creates a Motion ID. Only the fast-follow method generates
+intermediate MIT position references.
 The `articore_runtime_set_pose` compatibility symbol solves IK once and installs
 the result through the currently selected ordinary PV or MIT mode. It has no
 motion ID, status or cancellation API and is not a trajectory planner. Endpoint IK retains
@@ -112,27 +132,32 @@ Linear and Circular accept `duration_s` instead of a speed percentage. Both
 select `ceil(duration_s / 0.010)` execution segments. The reference list has
 one more point and nominally spans the requested duration. Physical completion
 may be later. Linear and Circular geometry enforce at least 2 mm / 0.1 rad
-sampling. Ordinary PV command speed values remain `0..100` and select a
-`0..2 rad/s` online P reference-speed scale. Persistent maximum acceleration
-defaults to `6.00 rad/s^2`; its configured range is `0.01..8.00 rad/s^2`.
-Runtime applies it only to ordinary PV (including PV `set_pose()`).
+sampling. Ordinary PV command speed values are `1..100` and time-scale its
+fixed per-joint online limits. The same policy applies to PV `set_pose()` after
+its one IK solve.
 Joint/Linear/Circular own separate trajectory velocity, acceleration, jerk,
-timing and synchronization constraints; changing ordinary PV acceleration does
-not change any trajectory. Those trajectory derivative limits are not exposed;
-callers provide positions/path and time. MIT commands and MIT joint trajectories remain
-unchanged. The Damiao POS_VEL `V` drive ceiling remains independent at `3 rad/s`.
+timing and synchronization constraints; ordinary PV does not change any
+trajectory. Those trajectory derivative limits are not exposed;
+callers provide positions/path and time. MIT joint trajectories remain
+independent from both ordinary MIT endpoint methods.
 
-The public `set_joint_pv()` command is the ordinary latest-target-wins step PV
+The public `set_joint_pv()` command is ordinary latest-target-wins endpoint PV
 interface.
 `RealtimePv` is an internal trajectory execution type: only a finite validated
 Joint/Linear/Circular plan may install it, its planner-knot period must be
 exactly 10 ms, and Runtime linearly resamples those knots on the 500 Hz command
-clock. No raw or streaming PV symbol is exported through the C or C++ product
-API.
+clock. Per-cycle P changes smaller than one Damiao 16-bit position-feedback
+quantum (25/65535 rad, about 0.02186 degrees) accumulate against the last
+effective command; Runtime repeats that P until the threshold is reached and
+always forces the exact final endpoint without shortening duration. POS_VEL P
+itself remains float32. The internal POS_VEL V field follows planned joint
+speed while remaining bounded by the product drive ceiling. No raw or streaming
+PV symbol is exported through the C or C++ product API.
 
 Linear and Circular require PV product mode. Automatic approach is part of the
 same internal trajectory-PV point sequence. `set_pose()` supports the current
-ordinary PV or MIT mode, and MIT joint trajectories remain available.
+ordinary PV or direct ordinary MIT mode, and MIT joint trajectories remain
+available.
 
 ## State and diagnostics
 
@@ -149,7 +174,7 @@ right receive path, and both receive paths. Side `last_error` strings aggregate
 all affected Motor roles instead of retaining only the last failure.
 
 Every public structure must set `struct_size` to its exact `sizeof(...)`.
-ABI 11.3 does not branch on older layouts or capability bits.
+ABI 11.4 does not branch on older layouts or capability bits.
 
 ## Shutdown
 

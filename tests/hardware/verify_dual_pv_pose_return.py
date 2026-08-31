@@ -238,7 +238,6 @@ def main() -> None:
             "right_enabled": list(before_enable.right.arm.enabled),
         }
         robot.enable()
-        robot.set_max_acceleration(4.0)
 
         outbound, outbound_settled, outbound_initial = collect_leg(
             robot, left_target, right_target, speed_percent=args.speed

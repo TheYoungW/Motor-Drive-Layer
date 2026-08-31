@@ -127,6 +127,23 @@ inline constexpr uint16_t kNativeOrdinaryPvHoldConfirmationCycles = 5;
 inline constexpr uint32_t kNativeRealtimePvTrajectoryHz = 100;
 inline constexpr double kNativeRealtimePvTrajectoryPeriodSeconds =
     1.0 / static_cast<double>(kNativeRealtimePvTrajectoryHz);
+// POS_VEL P is transported as float32, but every installed Yunyi Damiao model
+// reports position as 16 bits over [-12.5, 12.5] rad. Treat one feedback code
+// as the minimum meaningful outgoing trajectory-P change. Runtime keeps the
+// ideal time reference moving and accumulates the unsent difference, so this
+// deadband neither shortens duration nor loses the exact final endpoint.
+inline constexpr float kNativePvPositionFeedbackQuantum =
+    25.0f / 65535.0f;
+
+inline float native_realtime_pv_effective_position(
+    float ideal_position, float previous_command_position,
+    bool force_exact = false) {
+  return force_exact ||
+          std::abs(ideal_position - previous_command_position) >=
+              kNativePvPositionFeedbackQuantum
+      ? ideal_position
+      : previous_command_position;
+}
 
 // Cartesian PV references normally move much more slowly than the drive's
 // product ceiling. Keep the Damiao POS_VEL speed limit close to the native
@@ -145,6 +162,14 @@ inline constexpr float kNativeCartesianFifoHandoffMaximumError = 0.040f;
 inline constexpr float kNativeCartesianTrackingPauseError = 0.060f;
 inline constexpr auto kNativeCartesianTrackingPauseTimeout =
     std::chrono::seconds(1);
+
+inline float native_realtime_pv_velocity_limit(
+    float planned_velocity, float minimum_velocity, float product_ceiling) {
+  return std::clamp(
+      kNativeCartesianPvVelocityGain * std::abs(planned_velocity) +
+          kNativeCartesianPvVelocityMargin,
+      minimum_velocity, product_ceiling);
+}
 
 // Cartesian duration_s is the estimated complete task time. Planning reserves
 // part of it for feedback catch-up and the 200 ms physical stability window,
@@ -211,7 +236,8 @@ struct NativePvReferenceStep {
   float velocity = 0.0f;
 };
 
-// Online ordinary-PV and bimanual-follow reference shaping.
+// Legacy native scalar-PV and MIT-style reference shaping. Product ordinary
+// PV sends final P directly and does not use this helper.
 inline NativePvReferenceStep advance_acceleration_limited_pv_reference(
     float current_position, float current_velocity, float target_position,
     float maximum_velocity, float maximum_acceleration, float period_s) {
@@ -238,6 +264,31 @@ inline NativePvReferenceStep advance_acceleration_limited_pv_reference(
     return {target_position, 0.0f};
   }
   return {next_position, next_velocity};
+}
+
+// Ordinary product PV sends the final P directly. This online speed envelope
+// is therefore applied only to the Damiao POS_VEL V field.
+inline float advance_ordinary_pv_drive_velocity(
+    float current_velocity_limit, float remaining_distance,
+    float maximum_velocity, float maximum_acceleration, float period_s) {
+  if (!std::isfinite(current_velocity_limit) ||
+      current_velocity_limit < 0.0f ||
+      !std::isfinite(remaining_distance) || remaining_distance < 0.0f ||
+      !std::isfinite(maximum_velocity) || maximum_velocity <= 0.0f ||
+      !std::isfinite(maximum_acceleration) || maximum_acceleration <= 0.0f ||
+      !std::isfinite(period_s) || period_s <= 0.0f) {
+    return 0.0f;
+  }
+  const float braking_velocity = std::sqrt(
+      std::max(0.0f, 2.0f * maximum_acceleration * remaining_distance));
+  const float desired_velocity = std::min(maximum_velocity, braking_velocity);
+  const float maximum_change = maximum_acceleration * period_s;
+  const float bounded_current = std::min(
+      current_velocity_limit, maximum_velocity);
+  return std::clamp(
+      desired_velocity,
+      std::max(0.0f, bounded_current - maximum_change),
+      std::min(maximum_velocity, bounded_current + maximum_change));
 }
 
 inline std::string yunyi_joint_role(uint32_t index) {
@@ -329,6 +380,11 @@ struct NativeTrajectorySample {
   std::vector<float> velocities;
   std::vector<float> accelerations;
 };
+
+std::vector<NativeTrajectoryWaypoint> resample_realtime_pv_joint_trajectory(
+    const std::vector<NativeTrajectoryWaypoint>& waypoints,
+    const std::vector<NativeTrajectoryJoint>& joints,
+    double maximum_period_s);
 
 namespace detail {
 
@@ -433,9 +489,14 @@ class SafetyRuntime {
   void set_joint_mit(const ArticoreJointMitTarget* targets,
                      uint32_t count,
                      float max_reference_velocity);
+  void set_joint_mit_direct(const ArticoreJointMitTarget* targets,
+                            uint32_t count);
   void set_joint_mit_planned(
       const ArticoreJointMitTarget* targets, uint32_t count,
       float max_reference_velocity,
+      CommandTransaction& transaction, uint64_t planning_token);
+  void set_joint_mit_direct_planned(
+      const ArticoreJointMitTarget* targets, uint32_t count,
       CommandTransaction& transaction, uint64_t planning_token);
   void set_joint_pv(const ArticoreJointPvTarget* targets,
                     uint32_t count,
@@ -455,6 +516,17 @@ class SafetyRuntime {
       const ArticoreJointPvTarget* targets, uint32_t count,
       float max_reference_velocity, float max_reference_acceleration,
       float pv_velocity_limit,
+      CommandTransaction& transaction, uint64_t planning_token);
+  // Product ordinary PV uses independent limits for every joint. The vectors
+  // follow target order and describe the current 1..100 percent time scale.
+  void set_joint_pv_profile(
+      const ArticoreJointPvTarget* targets, uint32_t count,
+      const std::vector<float>& maximum_velocities,
+      const std::vector<float>& maximum_accelerations);
+  void set_joint_pv_profile_planned(
+      const ArticoreJointPvTarget* targets, uint32_t count,
+      const std::vector<float>& maximum_velocities,
+      const std::vector<float>& maximum_accelerations,
       CommandTransaction& transaction, uint64_t planning_token);
   void set_joint_mit_speed(const ArticoreJointMitTarget* targets,
                            uint32_t count, float speed_percent);
@@ -591,6 +663,8 @@ class SafetyRuntime {
     float mit_kp = 0.0f;
     float mit_kd = 0.0f;
     float mit_feedforward_torque = 0.0f;
+    float mit_fast_follow_kp = 0.0f;
+    float mit_fast_follow_kd = 0.0f;
     bool layered_limits_configured = false;
   };
 
@@ -601,9 +675,14 @@ class SafetyRuntime {
     uint64_t generation = 0;
     uint64_t sent_generation = 0;
     Clock::time_point submitted_at{};
-    // Ordinary PV/MIT own the latest endpoint in final_positions and advance
-    // their online references toward it without creating a trajectory task.
+    // Ordinary PV/MIT own the latest endpoint without creating a trajectory
+    // task. Product PV sends final P directly and shapes only Motor V.
     bool joint_position = false;
+    // Direct MIT sends the newest validated endpoint without generating
+    // intermediate position references. Stepped MIT retains the legacy
+    // reference generator used by the fast-follow product API.
+    bool mit_direct = false;
+    bool pv_per_joint_profile = false;
     float max_reference_velocity = 0.0f;
     float max_reference_acceleration = 0.0f;
     float pv_velocity_limit = 0.0f;
@@ -611,6 +690,9 @@ class SafetyRuntime {
     std::vector<ArticoreMitCommand> mit;
     std::vector<float> final_positions;
     std::vector<float> pv_reference_velocities;
+    std::vector<float> pv_reference_velocity_limits;
+    std::vector<float> pv_reference_acceleration_limits;
+    std::vector<float> pv_drive_velocity_commands;
     // Ordinary PV has no motion status object, but it still needs the same
     // quiet final hold as native Cartesian paths.
     // Each joint transitions
@@ -702,6 +784,7 @@ class SafetyRuntime {
     Clock::time_point realtime_pv_updated_at{};
     std::vector<float> realtime_pv_reference_positions;
     std::vector<float> realtime_pv_reference_velocities;
+    std::vector<float> realtime_pv_command_positions;
     std::string tracking_worst_role;
     std::string error;
   };
@@ -801,7 +884,10 @@ class SafetyRuntime {
       float max_reference_acceleration = 0.0f,
       float pv_velocity_limit = 0.0f,
       CommandTransaction* transaction = nullptr,
-      uint64_t planning_token = 0);
+      uint64_t planning_token = 0,
+      const std::vector<float>* pv_reference_velocity_limits = nullptr,
+      const std::vector<float>* pv_reference_acceleration_limits = nullptr,
+      bool mit_direct = false);
   float ordinary_velocity_from_percent(ArticoreControlMode mode,
                                        float speed_percent) const;
   bool enter_safe_hold_from_feedback(const std::string& reason,

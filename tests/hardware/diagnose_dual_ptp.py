@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify atomic dual-arm ordinary PV latest-target step control."""
+"""Verify atomic dual-arm ordinary PV latest-target endpoint control."""
 
 from __future__ import annotations
 
@@ -37,7 +37,6 @@ def main() -> None:
         robot.connect()
         connected = True
         robot.enable()
-        robot.set_max_acceleration(4.0)
         home = (0.0,) * 7
         robot.set_joint_pv(left=home, right=home, velocity=50.0)
         home_deadline = time.monotonic() + 8.0

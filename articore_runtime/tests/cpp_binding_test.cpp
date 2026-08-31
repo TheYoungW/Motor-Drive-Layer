@@ -12,20 +12,25 @@ int main() {
   static_assert(std::is_same_v<
       decltype(&articore::Runtime::joint_angle_vel_limits),
       JointLimitsGetter>);
-  using SpeedGetter = float (articore::Runtime::*)() const;
-  using SpeedSetter = void (articore::Runtime::*)(float);
-  static_assert(std::is_same_v<
-      decltype(&articore::Runtime::get_max_acceleration), SpeedGetter>);
-  static_assert(std::is_same_v<
-      decltype(&articore::Runtime::set_max_acceleration), SpeedSetter>);
   using JointPvSetter =
       void (articore::Runtime::*)(const std::vector<float>&, float);
   using JointMitSetter =
       void (articore::Runtime::*)(const std::vector<float>&, float);
+  using JointMitDirectSetter =
+      void (articore::Runtime::*)(const std::vector<float>&);
   static_assert(std::is_same_v<decltype(&articore::Runtime::set_joint_pv),
                                JointPvSetter>);
-  static_assert(std::is_same_v<decltype(&articore::Runtime::set_joint_mit),
-                               JointMitSetter>);
+  static_assert(std::is_same_v<
+      decltype(static_cast<JointMitSetter>(
+          &articore::Runtime::set_joint_mit)),
+      JointMitSetter>);
+  static_assert(std::is_same_v<
+      decltype(static_cast<JointMitDirectSetter>(
+          &articore::Runtime::set_joint_mit)),
+      JointMitDirectSetter>);
+  static_assert(std::is_same_v<
+      decltype(&articore::Runtime::set_joint_mit_fast_follow),
+      JointMitDirectSetter>);
   using MoveJointTrajectory = uint64_t (articore::Runtime::*)(
       const std::vector<ArticoreTrajectoryWaypoint>&,
       const ArticoreTrajectoryConfig&);

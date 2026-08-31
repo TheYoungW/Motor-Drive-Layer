@@ -14,42 +14,92 @@
 
 namespace articore {
 
-// Ordinary PV uses the reference-slew range selected by real-hardware tracking
-// and settling tests. The Damiao POS_VEL V field is a separate drive ceiling;
-// never scale it down with the public percentage.
+// Complete trajectories keep their existing internal PV limits. Ordinary
+// product PV owns a separate per-joint online profile below; do not reuse one
+// set of limits for the other execution path.
+// Historical name retained because this scalar is already used by the
+// complete-trajectory planner. Ordinary product PV does not use it.
 inline constexpr float kYunyiOrdinaryPvMaximumVelocity = 2.0f;
 inline constexpr float kYunyiPvDriveVelocityLimit = 3.0f;
-// Ordinary command speed_percent directly selects 0..2 rad/s. There is no
-// second persistent P-reference speed cap: 100 percent must remain observably
-// distinct from 50 percent. The persistent acceleration setting belongs only
-// to ordinary online PV stepping; complete trajectories own separate limits.
-inline constexpr float kYunyiOrdinaryPvMaximumAcceleration = 8.0f;
-inline constexpr float kYunyiDefaultOrdinaryPvAcceleration = 6.0f;
 inline constexpr float kYunyiTrajectoryPvAccelerationLimit = 6.0f;
-inline constexpr float kYunyiPvMotionLimitResolution = 0.01f;
-inline constexpr float kYunyiOrdinaryMitMaximumVelocity = 5.0f;
+inline constexpr float kYunyiMitFastFollowMaximumVelocity = 5.0f;
+inline constexpr std::array<float, ARTICORE_PRODUCT_ARM_DOF>
+    kYunyiMitDirectKp = {15, 15, 12, 12, 8, 7, 6};
+inline constexpr std::array<float, ARTICORE_PRODUCT_ARM_DOF>
+    kYunyiMitDirectKd = {.8f, .8f, .7f, .7f, .5f, .5f, .4f};
+inline constexpr std::array<float, ARTICORE_PRODUCT_ARM_DOF>
+    kYunyiMitFastFollowKp = {190, 190, 100, 100, 70, 60, 50};
+inline constexpr std::array<float, ARTICORE_PRODUCT_ARM_DOF>
+    kYunyiMitFastFollowKd = {
+        4.55f, 4.5f, 2.5f, 2.5f, .7f, .6f, .5f};
 inline constexpr float yunyi_effective_pv_reference_velocity(
     float command_speed_percent) {
   return kYunyiOrdinaryPvMaximumVelocity * command_speed_percent / 100.0f;
 }
 static_assert(kYunyiOrdinaryPvMaximumVelocity == 2.0f,
-              "ordinary PV 100 percent must map to 2 rad/s");
+              "trajectory PV reference policy must remain 2 rad/s");
 static_assert(kYunyiPvDriveVelocityLimit == 3.0f,
               "PV must retain the independent 3 rad/s Motor V ceiling");
-static_assert(kYunyiOrdinaryPvMaximumAcceleration == 8.0f &&
-                  kYunyiDefaultOrdinaryPvAcceleration == 6.0f,
-              "ordinary PV acceleration uses physical rad/s^2 units");
-static_assert(kYunyiDefaultOrdinaryPvAcceleration ==
-                  kNativeOrdinaryPvDefaultAcceleration,
-              "product and native ordinary-PV defaults must match");
 static_assert(kYunyiTrajectoryPvAccelerationLimit ==
                   kNativeRealtimePvTrajectoryAccelerationLimit,
               "trajectory acceleration must remain independent from ordinary PV");
-static_assert(kYunyiOrdinaryMitMaximumVelocity == 5.0f,
-              "ordinary MIT 100 percent must map to 5 rad/s");
+static_assert(kYunyiMitFastFollowMaximumVelocity == 5.0f,
+              "fast-follow MIT must use the fixed 5 rad/s step limit");
 static_assert(yunyi_effective_pv_reference_velocity(50.0f) == 1.0f &&
                   yunyi_effective_pv_reference_velocity(100.0f) == 2.0f,
-              "PV command speed must map directly onto 0..2 rad/s");
+              "trajectory PV reference scaling must remain unchanged");
+
+inline constexpr float kRadiansPerDegree =
+    3.14159265358979323846f / 180.0f;
+
+// Ordinary public PV hard limits, in logical J1..J7 order. These limits apply
+// independently to both arms and never alter complete trajectory planning.
+inline constexpr std::array<float, ARTICORE_PRODUCT_ARM_DOF>
+    kYunyiOrdinaryPvJointMaximumVelocities = {
+        180.0f * kRadiansPerDegree,
+        180.0f * kRadiansPerDegree,
+        180.0f * kRadiansPerDegree,
+        225.0f * kRadiansPerDegree,
+        225.0f * kRadiansPerDegree,
+        225.0f * kRadiansPerDegree,
+        225.0f * kRadiansPerDegree,
+    };
+inline constexpr std::array<float, ARTICORE_PRODUCT_ARM_DOF>
+    kYunyiOrdinaryPvJointMaximumAccelerations = {
+        450.0f * kRadiansPerDegree,
+        450.0f * kRadiansPerDegree,
+        900.0f * kRadiansPerDegree,
+        900.0f * kRadiansPerDegree,
+        900.0f * kRadiansPerDegree,
+        900.0f * kRadiansPerDegree,
+        900.0f * kRadiansPerDegree,
+    };
+
+inline constexpr float yunyi_ordinary_pv_velocity_limit(
+    uint32_t joint_index, float speed_percent) {
+  return kYunyiOrdinaryPvJointMaximumVelocities[
+             joint_index % ARTICORE_PRODUCT_ARM_DOF] *
+      speed_percent / 100.0f;
+}
+
+inline constexpr float yunyi_ordinary_pv_acceleration_limit(
+    uint32_t joint_index, float speed_percent) {
+  const float time_scale = speed_percent / 100.0f;
+  return kYunyiOrdinaryPvJointMaximumAccelerations[
+             joint_index % ARTICORE_PRODUCT_ARM_DOF] *
+      time_scale * time_scale;
+}
+
+static_assert(kYunyiOrdinaryPvJointMaximumVelocities[0] > 3.14159f &&
+                  kYunyiOrdinaryPvJointMaximumVelocities[0] < 3.14160f &&
+                  kYunyiOrdinaryPvJointMaximumVelocities[3] > 3.9269f &&
+                  kYunyiOrdinaryPvJointMaximumVelocities[3] < 3.9271f,
+              "ordinary PV joint velocity limits must be rad/s conversions");
+static_assert(kYunyiOrdinaryPvJointMaximumAccelerations[0] > 7.85398f &&
+                  kYunyiOrdinaryPvJointMaximumAccelerations[0] < 7.85399f &&
+                  kYunyiOrdinaryPvJointMaximumAccelerations[2] > 15.70796f &&
+                  kYunyiOrdinaryPvJointMaximumAccelerations[2] < 15.70797f,
+              "ordinary PV joint acceleration limits must be rad/s^2 conversions");
 
 // Complete native ownership for the only supported robot product. Nothing in
 // this structure crosses the public ABI or needs to be assembled by Python.
@@ -88,8 +138,8 @@ struct YunyiRuntimeResources {
   // native session configuration shared by pose reporting and every IK path.
   std::array<std::array<float, ARTICORE_PRODUCT_POSE_DOF>, 2> tcp_offsets{};
   bool with_grippers = true;
-  float default_mit_reference_velocity =
-      kYunyiOrdinaryMitMaximumVelocity;
+  float mit_fast_follow_reference_velocity =
+      kYunyiMitFastFollowMaximumVelocity;
   float default_pv_reference_velocity =
       kYunyiOrdinaryPvMaximumVelocity;
 };
