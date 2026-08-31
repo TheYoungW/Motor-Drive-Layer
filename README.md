@@ -28,8 +28,8 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.24.0`
-- Runtime ABI: `12.0` / `0x000C0000`
+- package version: `0.25.0`
+- Runtime ABI: `13.0` / `0x000D0000`
 
 Runtime health includes a product-order snapshot for every installed Motor,
 with role, CAN ID, feedback age, status, issue bits, and a scope that separates
@@ -51,7 +51,9 @@ does not generate a finite quintic/septic profile or a Motion-ID task. On each
 500 Hz control cycle it refreshes the final endpoint P and dynamically updates
 only the Motor V envelope. A replacement sends the new final P directly while
 preserving the current V ramp state; it does not generate intermediate P points.
-`speed=1..100` time-scales its motion limits. Without a user override, the
+The shared `set_speed_percent(1..100)` value time-scales its motion limits;
+legacy per-command PV and `set_pose` percentages update that same value.
+Without a user override, the
 100% J1..J7 velocity limits are `[180,180,180,225,225,225,225] deg/s` and
 acceleration limits are `[450,450,900,900,900,900,900] deg/s^2`. Optional
 `set_max_speed()` and `set_max_acceleration()` values become the common
@@ -70,9 +72,11 @@ Runtime applies fixed J1..J7 `Kp=[190,190,100,100,70,60,50]`,
 (5 rad/s) position-reference step limit. The former MIT function with a public
 speed percentage remains an ABI-compatibility symbol only and new SDKs must not
 expose it.
-Linear/Circular own independent trajectory velocity, acceleration, jerk,
-timing and synchronization constraints. Users provide path and time;
-trajectory acceleration and jerk remain internal Runtime policy.
+Linear/Circular retain independent internal base velocity, acceleration,
+timing and synchronization constraints, but use the same shared Runtime speed
+percentage as ordinary PV. Users provide only the path geometry; Runtime
+automatically selects a safe duration, and trajectory base limits remain
+internal policy.
 Pose callers use the pure `solve_ik(left_pose, right_pose)` query to obtain 14
 joint angles and pass them to ordinary PV or MIT. The compatibility
 `set_pose()` symbol solves IK once and atomically installs that endpoint through
@@ -88,13 +92,15 @@ continuous velocity instead of +/- chatter without rejecting a reversal that
 the Cartesian path actually requires. Only an unsolved target or a true branch
 jump above 0.35 rad fails. Geometry is
 sampled at 2 mm / 0.1 rad or better, then one global quintic time law generates
-fixed 10 ms internal real-time-PV knots. Thus `duration_s=3` normally produces
-300 segments and 301 points. Runtime linearly resamples adjacent knots and
+fixed 10 ms internal real-time-PV knots. Runtime automatically chooses the
+shortest complete 10 ms duration that satisfies the scaled joint-reference
+limits. At 50%, a comparable path takes about twice as long as at 100%.
+Runtime linearly resamples adjacent knots and
 sends the resulting reference at 500 Hz, without applying the ordinary-PV
 endpoint step generator. Per-cycle P changes smaller than one Damiao 16-bit
 position-feedback quantum (25/65535 rad, about 0.02186 degrees) accumulate
 against the last effective P; Runtime repeats that P until the threshold is
-reached and always forces the exact endpoint without shortening duration.
+reached and always forces the exact endpoint.
 POS_VEL P itself remains float32. The internal POS_VEL V limit follows the
 current planned joint speed, bounded by the product ceiling, so slow
 trajectories do not repeatedly chase discrete P targets at 3 rad/s.
@@ -102,9 +108,9 @@ Circular constructs the directed circle through start/via/end, samples the arc
 at 2 mm / 0.1 rad or better, applies shortest-path SLERP through the via
 orientation, and uses the same global quintic/10 ms real-time-PV chain.
 Physical arrival may be later due to PV limits and feedback stability. Linear
-and Circular check their 10 ms joint differences against speed 50 and their
-trajectory acceleration limits, automatically stretching the reference duration to a complete
-10 ms sample when needed.
+and Circular check their 10 ms joint differences against the shared percentage
+of the internal 1 rad/s velocity and 6 rad/s^2 acceleration bases,
+using automatic time parameterization.
 The public `set_joint_pv()` command is the ordinary endpoint interface.
 Real-time PV is internal-only and can be selected only by a validated finite
 Linear/Circular trajectory; its 100 Hz plan knots are resampled on the

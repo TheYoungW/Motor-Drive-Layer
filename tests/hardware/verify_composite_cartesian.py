@@ -139,8 +139,9 @@ def main() -> None:
         results["initial_start_position_error_m"] = initial_error[0]
         results["initial_start_orientation_error_rad"] = initial_error[1]
 
+        robot.set_speed_percent(20.0)
         linear_id = robot.move_linear_trajectory(
-            side="left", start_pose=START, end_pose=LINEAR_END, speed_percent=20.0
+            side="left", start_pose=START, end_pose=LINEAR_END
         )
         results["linear"] = wait_motion(robot, linear_id, START, LINEAR_END)
 
@@ -149,14 +150,14 @@ def main() -> None:
             start_pose=START,
             via_pose=CIRCULAR_VIA,
             end_pose=CIRCULAR_END,
-            speed_percent=20.0,
         )
         results["circular"] = wait_motion(robot, circular_id, START, CIRCULAR_END)
 
         robot.set_joint_pv(left=home[:7], right=home[7:], velocity=50.0)
         wait_joint_target(robot, home, 10.0)
+        robot.set_speed_percent(20.0)
         cancel_id = robot.move_linear_trajectory(
-            side="left", start_pose=START, end_pose=LINEAR_END, speed_percent=20.0
+            side="left", start_pose=START, end_pose=LINEAR_END
         )
         time.sleep(0.5)
         before_cancel = robot.read_state().left.positions

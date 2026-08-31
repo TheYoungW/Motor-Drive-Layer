@@ -22,6 +22,10 @@ int main() {
                                JointPvSetter>);
   using PvLimitSetter = void (articore::Runtime::*)(float);
   using PvLimitGetter = float (articore::Runtime::*)() const;
+  static_assert(std::is_same_v<decltype(&articore::Runtime::set_speed_percent),
+                               PvLimitSetter>);
+  static_assert(std::is_same_v<decltype(&articore::Runtime::speed_percent),
+                               PvLimitGetter>);
   static_assert(std::is_same_v<decltype(&articore::Runtime::set_max_speed),
                                PvLimitSetter>);
   static_assert(std::is_same_v<decltype(&articore::Runtime::max_speed),
@@ -52,20 +56,20 @@ int main() {
   static_assert(std::is_same_v<decltype(&articore::Runtime::solve_ik), SolveIk>);
   using MoveLinearTrajectory = uint64_t (articore::Runtime::*)(
       uint32_t, const std::array<float, 6>&,
-      const std::array<float, 6>&, double);
+      const std::array<float, 6>&);
   static_assert(std::is_same_v<
       decltype(static_cast<MoveLinearTrajectory>(
           &articore::Runtime::move_linear_trajectory)),
       MoveLinearTrajectory>);
   using MoveLinearPathTrajectory = uint64_t (articore::Runtime::*)(
-      uint32_t, const std::vector<std::array<float, 6>>&, double);
+      uint32_t, const std::vector<std::array<float, 6>>&);
   static_assert(std::is_same_v<
       decltype(static_cast<MoveLinearPathTrajectory>(
           &articore::Runtime::move_linear_trajectory)),
       MoveLinearPathTrajectory>);
   using MoveCircularTrajectory = uint64_t (articore::Runtime::*)(
       uint32_t, const std::array<float, 6>&,
-      const std::array<float, 6>&, const std::array<float, 6>&, double);
+      const std::array<float, 6>&, const std::array<float, 6>&);
   static_assert(std::is_same_v<decltype(&articore::Runtime::move_circular_trajectory),
                                MoveCircularTrajectory>);
 

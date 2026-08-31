@@ -3991,7 +3991,7 @@ void test_yunyi_ordinary_pv_uses_per_joint_time_scaled_hard_limits() {
                        1.0f) < 1.0e-6f &&
               std::abs(articore::kYunyiTrajectoryPvAccelerationLimit - 6.0f) <
                        1.0e-6f,
-          "complete trajectory PV limits remain independent and unchanged");
+          "complete trajectory PV base limits remain internal and unchanged");
   require(std::abs(articore::kYunyiPvDriveVelocityLimit - 3.0f) < 1.0e-6f,
           "complete trajectory Motor V policy remains unchanged");
 
@@ -7054,7 +7054,7 @@ void test_cartesian_trajectories_remain_pv_only() {
 void test_product_cartesian_trajectory_limits() {
   require(
       std::abs(articore::kYunyiCartesianMaximumVelocity - 1.0f) < 1e-7f,
-      "Linear and Circular use the internal speed-50 ceiling of 1 rad/s");
+      "Linear and Circular use an internal 100-percent ceiling of 1 rad/s");
   require(
       std::abs(articore::kYunyiCircularTranslationSampleDistance - 0.002) <
               1e-12 &&
@@ -7069,7 +7069,7 @@ void test_product_cartesian_trajectory_limits() {
           std::abs(articore::product_cartesian_reference_velocity_limit(
                        5.0f, 0.5f) -
                    0.5f) < 1e-7f,
-      "Cartesian waypoint timing uses the internal speed-50 ceiling");
+      "Cartesian waypoint timing scales its internal velocity ceiling");
   require(
       std::abs(articore::product_cartesian_reference_velocity_limit(
                    2.0f, 1.0f) -
@@ -7178,7 +7178,7 @@ void configure_cartesian_planning_product(
   }
 }
 
-void test_cartesian_duration_controls_points_and_pv_executes_them() {
+void test_cartesian_auto_timing_and_pv_execution() {
   articore::YunyiRuntimeResources product;
   configure_cartesian_planning_product(product);
   articore::NativeTrajectorySample reference;
@@ -7201,22 +7201,21 @@ void test_cartesian_duration_controls_points_and_pv_executes_them() {
   const auto end_values = pose_rpy(end);
   const auto plan = articore::build_linear_plan_from_reference(
       product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
-      start_values.data(), end_values.data(), 5.0);
-  const auto shorter_plan = articore::build_linear_plan_from_reference(
+      start_values.data(), end_values.data());
+  const auto half_speed_plan = articore::build_linear_plan_from_reference(
       product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
-      start_values.data(), end_values.data(), 1.0);
-  const auto stretched_plan = articore::build_linear_plan_from_reference(
-      product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
-      start_values.data(), end_values.data(), 0.1);
+      start_values.data(), end_values.data(),
+      articore::kYunyiTrajectoryPvAccelerationLimit * 0.25f,
+      articore::kYunyiCartesianMaximumVelocity * 0.5f);
   std::array<double, ARTICORE_PRODUCT_DUAL_ARM_DOF> previous_velocity{};
   double maximum_discrete_velocity = 0.0;
   double maximum_discrete_acceleration = 0.0;
   for (std::size_t sample = 1;
-       sample < stretched_plan.trajectory.waypoints.size(); ++sample) {
+       sample < plan.trajectory.waypoints.size(); ++sample) {
     for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++joint) {
       const double velocity =
-          (stretched_plan.trajectory.waypoints[sample].positions[joint] -
-           stretched_plan.trajectory.waypoints[sample - 1U].positions[joint]) /
+          (plan.trajectory.waypoints[sample].positions[joint] -
+           plan.trajectory.waypoints[sample - 1U].positions[joint]) /
           0.01;
       maximum_discrete_velocity = std::max(
           maximum_discrete_velocity, std::abs(velocity));
@@ -7250,16 +7249,20 @@ void test_cartesian_duration_controls_points_and_pv_executes_them() {
   const double final_step = std::abs(
       smooth_points.back().positions[3] -
       smooth_points[smooth_points.size() - 2U].positions[3]);
-  require(plan.trajectory.waypoints.size() == 501 &&
-              shorter_plan.trajectory.waypoints.size() == 101 &&
-              stretched_plan.trajectory.waypoints.back().time_s > 0.1 &&
+  require(plan.trajectory.waypoints.size() > 2U &&
+              half_speed_plan.minimum_duration_s >=
+                  plan.minimum_duration_s * 1.9 &&
+              std::abs(
+                  half_speed_plan.trajectory.pv_reference_velocity - 0.5f) <
+                  1e-7f &&
+              std::abs(
+                  half_speed_plan.trajectory.pv_reference_acceleration -
+                  1.5f) < 1e-7f &&
               maximum_discrete_velocity <= 1.0001 &&
               maximum_discrete_acceleration <= 6.001 &&
-              plan.trajectory.waypoints.size() >
-                  shorter_plan.trajectory.waypoints.size() &&
               fixed_ten_millisecond_points &&
-              first_step < middle_step * 0.01 &&
-              final_step < middle_step * 0.01 &&
+              first_step < middle_step * 0.1 &&
+              final_step < middle_step * 0.1 &&
               std::abs(plan.trajectory.completion_deadline_s -
                        plan.trajectory.waypoints.back().time_s) < 1e-9 &&
               std::abs(plan.minimum_duration_s -
@@ -7276,33 +7279,16 @@ void test_cartesian_duration_controls_points_and_pv_executes_them() {
                   1e-12 &&
               plan.trajectory.cartesian_tracking_joint_mask ==
                   (uint32_t{1} << ARTICORE_PRODUCT_ARM_DOF) - 1U,
-          "Linear duration selects finite IK point count and Runtime sends "
-          "the points at fixed 10 ms real-time-PV intervals with speed 50");
-  const auto explicit_point_plan = articore::build_linear_plan_from_reference(
-      product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
-      start_values.data(), end_values.data(), 5.0,
-      articore::kNativeRealtimePvTrajectoryAccelerationLimit, 12);
-  require(explicit_point_plan.trajectory.waypoints.size() ==
-              plan.trajectory.waypoints.size(),
-          "legacy explicit point count no longer overrides duration-based "
-          "planning");
+          "Linear automatically selects a safe finite duration and Runtime "
+          "sends fixed 10 ms real-time-PV references");
   require_throws(
       [&] {
         (void)articore::build_linear_plan_from_reference(
             product, ARTICORE_MODE_MIT, ARTICORE_ROBOT_LEFT, reference,
-            start_values.data(), end_values.data(), 5.0);
+            start_values.data(), end_values.data());
       },
       "requires PV mode",
       "Linear uses internal real-time PV only");
-  require_throws(
-      [&] {
-        (void)articore::build_linear_plan_from_reference(
-            product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
-            start_values.data(), end_values.data(), 0.0);
-      },
-      "duration_s must be finite",
-      "a non-positive point-density duration is rejected before installation");
-
   auto via_q = start_q;
   via_q[3] = 0.075;
   ArticoreRobotPose via{};
@@ -7312,20 +7298,23 @@ void test_cartesian_duration_controls_points_and_pv_executes_them() {
   const auto via_values = pose_rpy(via);
   const auto circular = articore::build_circular_plan_from_reference(
       product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
-      start_values.data(), via_values.data(), end_values.data(), 8.0);
-  const auto stretched_circular = articore::build_circular_plan_from_reference(
-      product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
-      start_values.data(), via_values.data(), end_values.data(), 0.1);
+      start_values.data(), via_values.data(), end_values.data());
+  const auto half_speed_circular =
+      articore::build_circular_plan_from_reference(
+          product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+          start_values.data(), via_values.data(), end_values.data(),
+          articore::kYunyiTrajectoryPvAccelerationLimit * 0.25f,
+          articore::kYunyiCartesianMaximumVelocity * 0.5f);
   std::array<double, ARTICORE_PRODUCT_DUAL_ARM_DOF>
       previous_circular_velocity{};
   double maximum_circular_velocity = 0.0;
   double maximum_circular_acceleration = 0.0;
   for (std::size_t sample = 1;
-       sample < stretched_circular.trajectory.waypoints.size(); ++sample) {
+       sample < circular.trajectory.waypoints.size(); ++sample) {
     for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++joint) {
       const double velocity =
-          (stretched_circular.trajectory.waypoints[sample].positions[joint] -
-           stretched_circular.trajectory.waypoints[sample - 1U]
+          (circular.trajectory.waypoints[sample].positions[joint] -
+           circular.trajectory.waypoints[sample - 1U]
                .positions[joint]) /
           0.01;
       maximum_circular_velocity =
@@ -7341,17 +7330,24 @@ void test_cartesian_duration_controls_points_and_pv_executes_them() {
         maximum_circular_acceleration, std::abs(velocity) / 0.01);
   }
   require(
-      circular.trajectory.waypoints.size() == 801 &&
+      circular.trajectory.waypoints.size() > 2U &&
+          half_speed_circular.minimum_duration_s >=
+              circular.minimum_duration_s * 1.9 &&
+          std::abs(
+              half_speed_circular.trajectory.pv_reference_velocity - 0.5f) <
+              1e-7f &&
+          std::abs(
+              half_speed_circular.trajectory.pv_reference_acceleration -
+              1.5f) < 1e-7f &&
           circular.trajectory.execution ==
               articore::NativeTrajectoryExecution::RealtimePv &&
           std::abs(circular.trajectory.pv_reference_period_s - 0.01) < 1e-12 &&
           std::abs(circular.trajectory.completion_deadline_s -
                    circular.trajectory.waypoints.back().time_s) < 1e-9 &&
-          stretched_circular.trajectory.waypoints.back().time_s > 0.1 &&
           maximum_circular_velocity <= 1.0001 &&
           maximum_circular_acceleration <= 6.001,
-      "Circular produces safe internal 100 Hz real-time-PV knots and "
-      "stretches an undersized duration");
+      "Circular automatically produces safe internal 100 Hz real-time-PV "
+      "knots at the selected speed percentage");
 
   auto approached_end_q = start_q;
   approached_end_q[3] = 0.20;
@@ -7362,7 +7358,7 @@ void test_cartesian_duration_controls_points_and_pv_executes_them() {
   const auto approached_end_values = pose_rpy(approached_end);
   const auto composite = articore::build_linear_plan_from_reference(
       product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
-      end_values.data(), approached_end_values.data(), 8.0);
+      end_values.data(), approached_end_values.data());
   require(composite.trajectory.approach_segment_count == 1 &&
               std::abs(composite.trajectory.approach_deadline_s -
                        composite.trajectory.waypoints[1].time_s) < 1e-9 &&
@@ -7404,7 +7400,7 @@ void test_linear_path_uses_default_ten_millimetre_corner_blend() {
 
   const auto plan = articore::build_linear_path_plan_from_reference(
       product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
-      poses.data(), 3U, 1.0);
+      poses.data(), 3U);
   double minimum_corner_distance = std::numeric_limits<double>::infinity();
   for (const auto& waypoint : plan.trajectory.waypoints) {
     std::array<double, ARTICORE_PRODUCT_ARM_DOF> q{};
@@ -7421,8 +7417,8 @@ void test_linear_path_uses_default_ten_millimetre_corner_blend() {
         minimum_corner_distance, std::sqrt(dy * dy + dz * dz));
   }
   require(
-      plan.trajectory.waypoints.size() >= 201U &&
-          plan.trajectory.waypoints.back().time_s >= 2.0 &&
+      plan.trajectory.waypoints.size() > 2U &&
+          plan.trajectory.waypoints.back().time_s > 0.0 &&
           std::abs(
               plan.trajectory.waypoints.back().time_s *
                   articore::kYunyiLinearReferenceHz -
@@ -7515,7 +7511,7 @@ void test_cartesian_approach_keeps_timestamps_strictly_increasing() {
 
   const auto linear = articore::build_linear_plan_from_reference(
       product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
-      p0_values.data(), linear_end_values.data(), 1.0);
+      p0_values.data(), linear_end_values.data());
   verify(linear, "Linear");
 
   std::array<float, 4U * ARTICORE_PRODUCT_POSE_DOF> path_values{};
@@ -7528,13 +7524,13 @@ void test_cartesian_approach_keeps_timestamps_strictly_increasing() {
             path_values.begin() + 3U * ARTICORE_PRODUCT_POSE_DOF);
   const auto linear_path = articore::build_linear_path_plan_from_reference(
       product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
-      path_values.data(), 4U, 10.0);
+      path_values.data(), 4U);
   verify(linear_path, "Linear Path");
 
   const auto circular = articore::build_circular_plan_from_reference(
       product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
       p0_values.data(), circular_via_values.data(),
-      circular_end_values.data(), 2.0);
+      circular_end_values.data());
   verify(circular, "Circular");
 }
 
@@ -7961,7 +7957,7 @@ int main() {
     RUN_TEST(test_three_point_circular_arc_geometry_and_degenerate_rejection);
     RUN_TEST(test_cartesian_trajectories_remain_pv_only);
     RUN_TEST(test_product_cartesian_trajectory_limits);
-    RUN_TEST(test_cartesian_duration_controls_points_and_pv_executes_them);
+    RUN_TEST(test_cartesian_auto_timing_and_pv_execution);
     RUN_TEST(test_linear_path_uses_default_ten_millimetre_corner_blend);
     RUN_TEST(test_cartesian_approach_keeps_timestamps_strictly_increasing);
     RUN_TEST(test_circular_arc_samples_support_continuous_native_ik);

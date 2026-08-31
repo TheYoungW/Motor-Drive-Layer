@@ -111,12 +111,11 @@ void wait_pose(ArticoreRuntime* runtime, uint32_t side, const Pose& target,
 }
 
 uint64_t submit_linear(ArticoreRuntime* runtime, const Pose& start,
-                       const Pose& end, double duration_s,
-                       const char* label) {
+                       const Pose& end, const char* label) {
   uint64_t id = 0;
   check(articore_runtime_move_linear_trajectory(
             runtime, ARTICORE_ROBOT_RIGHT, start.data(), end.data(),
-            duration_s, &id),
+            &id),
         label);
   if (id == 0) throw std::runtime_error("Linear returned a zero motion id");
   std::cout << "stage=" << label << " motion_id=" << id
@@ -157,11 +156,11 @@ int main(int argc, char** argv) {
     uint64_t invalid_id = 0;
     const int32_t invalid_result = articore_runtime_move_linear_trajectory(
         runtime, ARTICORE_ROBOT_RIGHT, original_right.data(),
-        original_right.data(), 0.0, &invalid_id);
+        nullptr, &invalid_id);
     if (invalid_result != ARTICORE_OPERATION_INVALID_ARGUMENT ||
         invalid_id != 0) {
       throw std::runtime_error(
-          "zero-duration Linear did not fail atomically as expected");
+          "invalid Linear did not fail atomically as expected");
     }
     std::cout << "stage=planning_failure token_released=pending_probe"
               << std::endl;
@@ -169,7 +168,7 @@ int main(int argc, char** argv) {
     Pose first_end = original_right;
     first_end[2] += 0.005f;
     const uint64_t first_id = submit_linear(
-        runtime, original_right, first_end, 2.0, "first_linear");
+        runtime, original_right, first_end, "first_linear");
     wait_motion(runtime, first_id, std::chrono::seconds(12), "first_linear");
 
     Pose fifo_one = first_end;
@@ -177,9 +176,9 @@ int main(int argc, char** argv) {
     Pose fifo_two = fifo_one;
     fifo_two[1] -= 0.005f;
     const uint64_t fifo_ids[3] = {
-        submit_linear(runtime, first_end, fifo_one, 2.0, "fifo_linear_1"),
-        submit_linear(runtime, fifo_one, fifo_two, 2.0, "fifo_linear_2"),
-        submit_linear(runtime, fifo_two, original_right, 2.0,
+        submit_linear(runtime, first_end, fifo_one, "fifo_linear_1"),
+        submit_linear(runtime, fifo_one, fifo_two, "fifo_linear_2"),
+        submit_linear(runtime, fifo_two, original_right,
                       "fifo_linear_3"),
     };
     if (motion_status(runtime, fifo_ids[0]).state !=
@@ -204,7 +203,7 @@ int main(int argc, char** argv) {
     uint64_t circular_id = 0;
     check(articore_runtime_move_circular_trajectory(
               runtime, ARTICORE_ROBOT_RIGHT, original_right.data(),
-              circular_via.data(), circular_end.data(), 3.0, &circular_id),
+              circular_via.data(), circular_end.data(), &circular_id),
           "circular");
     if (circular_id == 0) {
       throw std::runtime_error("Circular returned a zero motion id");

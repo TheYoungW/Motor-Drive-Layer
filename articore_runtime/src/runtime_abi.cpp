@@ -35,7 +35,7 @@ struct ArticoreRuntime {
       articore::kYunyiOrdinaryPvDefaultLimitSelection;
   float product_pv_max_acceleration =
       articore::kYunyiOrdinaryPvDefaultLimitSelection;
-  float product_pv_command_speed_percent = 100.0f;
+  float product_speed_percent = 100.0f;
   std::mutex motion_mutex;
 };
 
@@ -143,6 +143,20 @@ effective_product_pv_limits(
         index, speed_percent, configured_maximum_acceleration));
   }
   return {std::move(velocities), std::move(accelerations)};
+}
+
+struct CartesianSpeedScale {
+  float reference_velocity = articore::kYunyiCartesianMaximumVelocity;
+  float reference_acceleration =
+      articore::kYunyiTrajectoryPvAccelerationLimit;
+};
+
+CartesianSpeedScale cartesian_speed_scale(ArticoreRuntime* runtime) {
+  std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
+  const float scale = runtime->product_speed_percent / 100.0f;
+  return {
+      articore::kYunyiCartesianMaximumVelocity * scale,
+      articore::kYunyiTrajectoryPvAccelerationLimit * scale * scale};
 }
 
 void validate_product_position(
@@ -258,7 +272,7 @@ void install_product_joint_positions(
         pv.data(), count, pv_velocity_limits, pv_acceleration_limits);
   }
   if (runtime->product_mode == ARTICORE_MODE_PV) {
-    runtime->product_pv_command_speed_percent = speed_percent;
+    runtime->product_speed_percent = speed_percent;
   }
 }
 
@@ -422,8 +436,7 @@ int32_t set_pose_impl(
 
 int32_t move_linear_trajectory_impl(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* end_pose, double duration_s, uint32_t point_count,
-    uint64_t* motion_id) {
+    const float* end_pose, uint64_t* motion_id) {
   try {
     if (!runtime) throw std::invalid_argument("runtime is null");
     if (!motion_id) throw std::invalid_argument("motion_id output is null");
@@ -439,10 +452,10 @@ int32_t move_linear_trajectory_impl(
       planning.begin(snapshot, true);
       reference = safety.planned_trajectory_tail_sample(joints, snapshot);
     }
+    const auto speed = cartesian_speed_scale(runtime);
     auto plan = articore::build_linear_plan_from_reference(
         product, runtime->product_mode, side, reference, start_pose, end_pose,
-        duration_s, articore::kYunyiTrajectoryPvAccelerationLimit,
-        point_count);
+        speed.reference_acceleration, speed.reference_velocity);
 
     auto transaction = safety.begin_command_transaction();
     const auto current =
@@ -478,7 +491,7 @@ int32_t move_linear_trajectory_impl(
 
 int32_t move_linear_path_trajectory_impl(
     ArticoreRuntime* runtime, uint32_t side, const float* poses,
-    uint32_t pose_count, double segment_duration_s, uint64_t* motion_id) {
+    uint32_t pose_count, uint64_t* motion_id) {
   try {
     if (!runtime) throw std::invalid_argument("runtime is null");
     if (!motion_id) throw std::invalid_argument("motion_id output is null");
@@ -494,10 +507,10 @@ int32_t move_linear_path_trajectory_impl(
       planning.begin(snapshot, true);
       reference = safety.planned_trajectory_tail_sample(joints, snapshot);
     }
+    const auto speed = cartesian_speed_scale(runtime);
     auto plan = articore::build_linear_path_plan_from_reference(
         product, runtime->product_mode, side, reference, poses, pose_count,
-        segment_duration_s,
-        articore::kYunyiTrajectoryPvAccelerationLimit);
+        speed.reference_acceleration, speed.reference_velocity);
 
     auto transaction = safety.begin_command_transaction();
     const auto current =
@@ -532,8 +545,7 @@ int32_t move_linear_path_trajectory_impl(
 
 int32_t move_circular_trajectory_impl(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* via_pose, const float* end_pose, double duration_s,
-    uint64_t* motion_id) {
+    const float* via_pose, const float* end_pose, uint64_t* motion_id) {
   try {
     if (!runtime) throw std::invalid_argument("runtime is null");
     if (!motion_id) throw std::invalid_argument("motion_id output is null");
@@ -549,10 +561,11 @@ int32_t move_circular_trajectory_impl(
       planning.begin(snapshot, true);
       reference = safety.planned_trajectory_tail_sample(joints, snapshot);
     }
+    const auto speed = cartesian_speed_scale(runtime);
     auto plan = articore::build_circular_plan_from_reference(
         product, runtime->product_mode, side, reference, start_pose,
-        via_pose, end_pose, duration_s,
-        articore::kYunyiTrajectoryPvAccelerationLimit);
+        via_pose, end_pose,
+        speed.reference_acceleration, speed.reference_velocity);
 
     auto transaction = safety.begin_command_transaction();
     const auto current =
@@ -719,7 +732,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (12U << 16);
+  return (13U << 16);
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -1099,6 +1112,62 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_fast_follow(
   }
 }
 
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_speed_percent(
+    ArticoreRuntime* runtime, float speed_percent) {
+  try {
+    if (!std::isfinite(speed_percent) || speed_percent < 1.0f ||
+        speed_percent > 100.0f) {
+      throw std::invalid_argument(
+          "speed_percent must be finite and within 1..100");
+    }
+    checked_yunyi(runtime);
+    if (runtime->product_mode != ARTICORE_MODE_PV) {
+      throw std::runtime_error(
+          "speed percentage setting is available only in product PV mode");
+    }
+    std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
+    auto limits = effective_product_pv_limits(
+        speed_percent, runtime->product_pv_max_velocity,
+        runtime->product_pv_max_acceleration);
+    checked(runtime).update_joint_pv_profile_limits(
+        limits.first, limits.second);
+    runtime->product_speed_percent = speed_percent;
+    g_last_error = "ok";
+    return ARTICORE_OPERATION_OK;
+  } catch (const std::invalid_argument& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
+  } catch (const std::exception& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_STATE, error.what());
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_speed_percent(
+    ArticoreRuntime* runtime, float* speed_percent) {
+  if (!speed_percent) {
+    g_last_error = "speed_percent output is null";
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  }
+  try {
+    checked_yunyi(runtime);
+    if (runtime->product_mode != ARTICORE_MODE_PV) {
+      throw std::runtime_error(
+          "speed percentage setting is available only in product PV mode");
+    }
+    std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
+    *speed_percent = runtime->product_speed_percent;
+    g_last_error = "ok";
+    return ARTICORE_OPERATION_OK;
+  } catch (const std::invalid_argument& error) {
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_STATE;
+  }
+}
+
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
     ArticoreRuntime* runtime, float max_speed_rad_s) {
   try {
@@ -1113,7 +1182,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
     }
     std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
     auto limits = effective_product_pv_limits(
-        runtime->product_pv_command_speed_percent, validated,
+        runtime->product_speed_percent, validated,
         runtime->product_pv_max_acceleration);
     checked(runtime).update_joint_pv_profile_limits(
         limits.first, limits.second);
@@ -1168,7 +1237,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_acceleration(
     }
     std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
     auto limits = effective_product_pv_limits(
-        runtime->product_pv_command_speed_percent,
+        runtime->product_speed_percent,
         runtime->product_pv_max_velocity, validated);
     checked(runtime).update_joint_pv_profile_limits(
         limits.first, limits.second);
@@ -1309,34 +1378,23 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_solve_ik(
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* end_pose, double duration_s, uint64_t* motion_id) {
+    const float* end_pose, uint64_t* motion_id) {
   return move_linear_trajectory_impl(
-      runtime, side, start_pose, end_pose, duration_s, 0, motion_id);
+      runtime, side, start_pose, end_pose, motion_id);
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_path_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* poses,
-    uint32_t pose_count, double segment_duration_s, uint64_t* motion_id) {
+    uint32_t pose_count, uint64_t* motion_id) {
   return move_linear_path_trajectory_impl(
-      runtime, side, poses, pose_count, segment_duration_s, motion_id);
-}
-
-ARTICORE_RUNTIME_API int32_t
-articore_runtime_move_linear_trajectory_with_point_count(
-    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* end_pose, double duration_s, uint32_t point_count,
-    uint64_t* motion_id) {
-  return move_linear_trajectory_impl(
-      runtime, side, start_pose, end_pose, duration_s, point_count, motion_id);
+      runtime, side, poses, pose_count, motion_id);
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* via_pose, const float* end_pose, double duration_s,
-    uint64_t* motion_id) {
+    const float* via_pose, const float* end_pose, uint64_t* motion_id) {
   return move_circular_trajectory_impl(
-      runtime, side, start_pose, via_pose, end_pose, duration_s,
-      motion_id);
+      runtime, side, start_pose, via_pose, end_pose, motion_id);
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_motion(

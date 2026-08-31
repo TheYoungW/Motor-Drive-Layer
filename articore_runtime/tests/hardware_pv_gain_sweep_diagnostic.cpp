@@ -63,7 +63,7 @@ constexpr Arm kPoint98{
     0.135614395f, 0.530822754f, -1.274700165f, -0.174400000f,
     -0.888647079f, 0.785000000f, -0.394636154f};
 
-// Internal trajectory speed 50 maps to a 1 rad/s reference. Keep the
+// The shared 100-percent Cartesian trajectory base is 1 rad/s. Keep the
 // independent Damiao POS_VEL catch-up ceiling at 3 rad/s.
 constexpr float kReferenceVelocity = 1.0f;
 constexpr float kVelocityLimit = 3.0f;

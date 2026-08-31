@@ -258,8 +258,13 @@ void SafetyRuntime::update_joint_pv_profile_limits(
       !arm_mailbox_.joint_position) {
     return;
   }
-  if (arm_mailbox_.pv.empty() || !arm_mailbox_.pv_per_joint_profile ||
-      maximum_velocities.size() != arm_mailbox_.pv.size()) {
+  // A complete Linear/Circular trajectory also owns a user-command mailbox,
+  // but it has snapshotted motion limits and must not be retimed here. Keep the
+  // new shared setting for later plans and update only active ordinary PV.
+  if (arm_mailbox_.pv.empty() || !arm_mailbox_.pv_per_joint_profile) {
+    return;
+  }
+  if (maximum_velocities.size() != arm_mailbox_.pv.size()) {
     throw std::runtime_error(
         "PV profile-limit update requires an active per-joint ordinary PV command");
   }

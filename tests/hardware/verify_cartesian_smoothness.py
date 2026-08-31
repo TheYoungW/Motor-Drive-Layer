@@ -257,7 +257,6 @@ def main() -> None:
         "--motion", choices=("set_pose", "linear", "circular"), required=True
     )
     parser.add_argument("--speed", type=float, default=50.0)
-    parser.add_argument("--duration", type=float, default=3.0)
     parser.add_argument(
         "--linear-distance-m",
         type=float,
@@ -284,7 +283,6 @@ def main() -> None:
         "motion": args.motion,
         "side": "right",
         "speed_percent": args.speed,
-        "duration_s": args.duration,
         "runtime_library": os.environ.get("ARTICORE_RUNTIME_LIB"),
     }
     connected = False
@@ -312,6 +310,7 @@ def main() -> None:
                 preposition_samples,
                 timeout_s=args.timeout,
             )
+        robot.set_speed_percent(args.speed)
         started = time.monotonic()
         if args.motion == "set_pose":
             result["target"] = RIGHT_CENTER
@@ -331,7 +330,7 @@ def main() -> None:
             result["linear_distance_m"] = args.linear_distance_m
             motion_id = robot.move_linear_trajectory(
                 side="right", start_pose=RIGHT_CENTER,
-                end_pose=linear_end, duration_s=args.duration,
+                end_pose=linear_end,
             )
             settled_s, result["native_status"] = wait_native_motion(
                 robot, motion_id, started, samples, timeout_s=args.timeout
@@ -343,7 +342,6 @@ def main() -> None:
             motion_id = robot.move_circular_trajectory(
                 side="right", start_pose=RIGHT_CIRCLE_START,
                 via_pose=RIGHT_CIRCLE_VIA, end_pose=RIGHT_CIRCLE_END,
-                duration_s=args.duration,
             )
             settled_s, result["native_status"] = wait_native_motion(
                 robot, motion_id, started, samples, timeout_s=args.timeout

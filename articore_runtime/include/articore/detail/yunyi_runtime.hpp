@@ -42,7 +42,7 @@ static_assert(kYunyiPvDriveVelocityLimit == 3.0f,
               "PV must retain the independent 3 rad/s Motor V ceiling");
 static_assert(kYunyiTrajectoryPvAccelerationLimit ==
                   kNativeRealtimePvTrajectoryAccelerationLimit,
-              "trajectory acceleration must remain independent from ordinary PV");
+              "trajectory acceleration base must remain Runtime-owned");
 static_assert(kYunyiMitFastFollowMaximumVelocity == 5.0f,
               "fast-follow MIT must use the fixed 5 rad/s step limit");
 static_assert(yunyi_effective_pv_reference_velocity(50.0f) == 1.0f &&

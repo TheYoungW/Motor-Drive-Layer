@@ -131,6 +131,20 @@ class Runtime final {
         "set_joint_pv");
   }
 
+  void set_speed_percent(float speed_percent) {
+    detail::check(
+        articore_runtime_set_speed_percent(checked(), speed_percent),
+        "set_speed_percent");
+  }
+
+  float speed_percent() const {
+    float result = 0.0f;
+    detail::check(
+        articore_runtime_get_speed_percent(checked(), &result),
+        "get_speed_percent");
+    return result;
+  }
+
   void set_max_speed(float max_speed_rad_s) {
     detail::check(
         articore_runtime_set_max_speed(checked(), max_speed_rad_s),
@@ -243,22 +257,20 @@ class Runtime final {
   }
 
   uint64_t move_linear_trajectory(uint32_t side,
-                       const std::array<float, 6>& start_pose,
-                       const std::array<float, 6>& end_pose,
-                       double duration_s) {
+                                  const std::array<float, 6>& start_pose,
+                                  const std::array<float, 6>& end_pose) {
     uint64_t motion_id = 0;
     detail::check(
         articore_runtime_move_linear_trajectory(
             checked(), side, start_pose.data(), end_pose.data(),
-            duration_s, &motion_id),
+            &motion_id),
         "move_linear_trajectory");
     return motion_id;
   }
 
   uint64_t move_linear_trajectory(
       uint32_t side,
-      const std::vector<std::array<float, 6>>& poses,
-      double segment_duration_s) {
+      const std::vector<std::array<float, 6>>& poses) {
     std::vector<float> flattened;
     flattened.reserve(poses.size() * 6U);
     for (const auto& pose : poses) {
@@ -268,8 +280,7 @@ class Runtime final {
     detail::check(
         articore_runtime_move_linear_path_trajectory(
             checked(), side, flattened.data(),
-            static_cast<uint32_t>(poses.size()), segment_duration_s,
-            &motion_id),
+            static_cast<uint32_t>(poses.size()), &motion_id),
         "move_linear_trajectory");
     return motion_id;
   }
@@ -278,13 +289,12 @@ class Runtime final {
       uint32_t side,
       const std::array<float, 6>& start_pose,
       const std::array<float, 6>& via_pose,
-      const std::array<float, 6>& end_pose,
-      double duration_s) {
+      const std::array<float, 6>& end_pose) {
     uint64_t motion_id = 0;
     detail::check(
         articore_runtime_move_circular_trajectory(
             checked(), side, start_pose.data(), via_pose.data(),
-            end_pose.data(), duration_s, &motion_id),
+            end_pose.data(), &motion_id),
         "move_circular_trajectory");
     return motion_id;
   }

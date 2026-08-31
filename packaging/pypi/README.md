@@ -2,7 +2,7 @@
 
 Binary-only Yunyi product Runtime for Linux.
 
-Version 0.24.0 ships Runtime ABI 12.0 (`0x000C0000`). The wheel contains the
+Version 0.25.0 ships Runtime ABI 13.0 (`0x000D0000`). The wheel contains the
 native `libarticore_runtime.so` and required data; it contains no Python module,
 ctypes declarations or Motor ABI library.
 
@@ -15,8 +15,10 @@ Runtime owns the two SocketCAN-FD+BRS channels, all installed Motors, product
 configuration, native workers, safety state, IK and trajectory execution.
 Python passes product arrays and reads coherent product state/health only.
 Ordinary PV also exposes optional persistent maximum speed and acceleration
-settings. They define the 100-percent joint-limit base; `speed_percent` then
-scales velocity linearly and acceleration quadratically.
+settings. They define the 100-percent joint-limit base. The shared
+`set_speed_percent` setting scales ordinary-PV limits and the Linear/Circular
+automatic time parameterization; trajectory base limits remain internal to
+Runtime, and Cartesian callers do not provide a duration.
 
 Supported platforms:
 

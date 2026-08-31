@@ -527,6 +527,20 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_clear_faults(
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(
     ArticoreRuntime* runtime);
 
+/* Shared product speed percentage. The default is 100. Values within 1..100
+ * immediately update an active ordinary-PV velocity/acceleration envelope and
+ * are snapshotted by each subsequently submitted Linear/Circular trajectory.
+ * Cartesian reference velocity is multiplied by s and acceleration by s^2,
+ * where s=speed_percent/100; automatic time parameterization then selects the
+ * safe duration. Existing queued or running Cartesian plans retain the
+ * percentage captured at submission.
+ * Legacy per-command PV/set_pose speed_percent arguments also update this
+ * shared value for subsequent commands. */
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_speed_percent(
+    ArticoreRuntime* runtime, float speed_percent);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_speed_percent(
+    ArticoreRuntime* runtime, float* speed_percent);
+
 /* Ordinary product joint commands use fixed left J1..J7, right J1..J7 order.
  * PV is public latest-target-wins endpoint control, not a complete trajectory
  * task. Runtime sends the final P directly and preserves the current Motor-V
@@ -579,9 +593,9 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_solve_ik(
  *
  * For speed_percent=s, Runtime applies max_speed*s and
  * max_acceleration*s^2. Values use 0.01 physical-unit resolution and values
- * above the most restrictive J1..J7 safety limit are rejected. These settings
- * affect ordinary PV and PV set_pose only. Internal Linear/Circular trajectory
- * planning and execution remain independent.
+ * above the most restrictive J1..J7 safety limit are rejected. These base
+ * settings affect ordinary PV and PV set_pose only. Linear/Circular retain
+ * their own internal base limits but share the Runtime speed percentage.
  */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
     ArticoreRuntime* runtime, float max_speed_rad_s);
@@ -614,41 +628,35 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_pose(
  * per-sample branch jump remains a hard failure. Geometry is sampled at
  * 2 mm / 0.1 rad or better.
  * One global quintic time law generates internal 100 Hz real-time-PV knots.
+ * Runtime automatically selects the shortest safe duration from the shared
+ * Runtime speed percentage and internal Cartesian speed/acceleration limits.
  * Runtime linearly resamples adjacent knots and transmits the resulting
  * reference on its 500 Hz command clock, without applying the ordinary-PV
  * endpoint step generator.
- * Runtime stretches an undersized duration to satisfy the discrete PV
- * speed/acceleration limits. Physical arrival may be later than the nominal
- * duration. Linear and Circular require PV mode. */
+ * Physical arrival may be later than the planned reference duration. Linear
+ * and Circular require PV mode. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* end_pose, double duration_s, uint64_t* motion_id);
+    const float* end_pose, uint64_t* motion_id);
 /* Atomic multi-segment Linear path. poses is pose_count contiguous
  * [x,y,z,roll,pitch,yaw] records. Runtime applies a default 10 mm Cartesian
  * fillet at every valid internal corner, reducing the radius automatically on
- * short adjacent segments. segment_duration_s retains the two-pose duration
- * meaning, so total nominal time is (pose_count - 1) * segment_duration_s. */
+ * short adjacent segments. Runtime automatically parameterizes the complete
+ * path using the shared speed percentage. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_path_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* poses,
-    uint32_t pose_count, double segment_duration_s, uint64_t* motion_id);
-/* ABI 11.1 compatibility entry. point_count is ignored; duration_s owns the
- * planning density. New callers should use move_linear_trajectory(). */
-ARTICORE_RUNTIME_API int32_t
-articore_runtime_move_linear_trajectory_with_point_count(
-    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* end_pose, double duration_s, uint32_t point_count,
-    uint64_t* motion_id);
+    uint32_t pose_count, uint64_t* motion_id);
 /* Standard directed circular path through start/via/end. Position is sampled
  * at 2 mm or better, orientation uses shortest-path SLERP through the via
  * orientation, seed-only sequential IK plus joint-step posture prediction
  * preserve the current local branch without random retries, and one global
- * quintic time law produces 100 Hz internal real-time-PV knots, which Runtime
- * linearly resamples on its 500 Hz command clock. Runtime stretches an
- * undersized duration to satisfy joint speed and acceleration. */
+ * quintic time law uses the shared Runtime speed percentage to select an
+ * automatic safe duration and produces
+ * 100 Hz internal real-time-PV knots, which Runtime linearly resamples on its
+ * 500 Hz command clock. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* via_pose, const float* end_pose, double duration_s,
-    uint64_t* motion_id);
+    const float* via_pose, const float* end_pose, uint64_t* motion_id);
 /* Unified status and cancellation for joint, Linear, and Circular motions.
  * Terminal states remain queryable by id in the bounded Runtime history.
  * Cancelling a queued id removes only that item and inserts a validated native
