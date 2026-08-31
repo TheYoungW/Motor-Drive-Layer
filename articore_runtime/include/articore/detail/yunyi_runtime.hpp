@@ -75,19 +75,38 @@ inline constexpr std::array<float, ARTICORE_PRODUCT_ARM_DOF>
         900.0f * kRadiansPerDegree,
     };
 
+// A scalar user override applies to every arm joint, so its accepted range is
+// bounded by the most restrictive J1..J7 product limit. A zero configured
+// value means that no user override is installed and the per-joint defaults
+// above remain authoritative.
+inline constexpr float kYunyiPvMotionLimitResolution = 0.01f;
+inline constexpr float kYunyiOrdinaryPvDefaultLimitSelection = 0.0f;
+inline constexpr float kYunyiOrdinaryPvMaximumConfigurableVelocity =
+    kYunyiOrdinaryPvJointMaximumVelocities[0];
+inline constexpr float kYunyiOrdinaryPvMaximumConfigurableAcceleration =
+    kYunyiOrdinaryPvJointMaximumAccelerations[0];
+
 inline constexpr float yunyi_ordinary_pv_velocity_limit(
-    uint32_t joint_index, float speed_percent) {
-  return kYunyiOrdinaryPvJointMaximumVelocities[
-             joint_index % ARTICORE_PRODUCT_ARM_DOF] *
-      speed_percent / 100.0f;
+    uint32_t joint_index, float speed_percent,
+    float configured_maximum_velocity =
+        kYunyiOrdinaryPvDefaultLimitSelection) {
+  const float default_limit = kYunyiOrdinaryPvJointMaximumVelocities[
+      joint_index % ARTICORE_PRODUCT_ARM_DOF];
+  const float base_limit = configured_maximum_velocity > 0.0f
+      ? configured_maximum_velocity : default_limit;
+  return base_limit * speed_percent / 100.0f;
 }
 
 inline constexpr float yunyi_ordinary_pv_acceleration_limit(
-    uint32_t joint_index, float speed_percent) {
+    uint32_t joint_index, float speed_percent,
+    float configured_maximum_acceleration =
+        kYunyiOrdinaryPvDefaultLimitSelection) {
   const float time_scale = speed_percent / 100.0f;
-  return kYunyiOrdinaryPvJointMaximumAccelerations[
-             joint_index % ARTICORE_PRODUCT_ARM_DOF] *
-      time_scale * time_scale;
+  const float default_limit = kYunyiOrdinaryPvJointMaximumAccelerations[
+      joint_index % ARTICORE_PRODUCT_ARM_DOF];
+  const float base_limit = configured_maximum_acceleration > 0.0f
+      ? configured_maximum_acceleration : default_limit;
+  return base_limit * time_scale * time_scale;
 }
 
 static_assert(kYunyiOrdinaryPvJointMaximumVelocities[0] > 3.14159f &&

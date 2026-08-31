@@ -18,14 +18,16 @@ using Clock = std::chrono::steady_clock;
 using Product = std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>;
 
 constexpr std::size_t kRightJoint1 = ARTICORE_PRODUCT_ARM_DOF;
-constexpr float kTravelRad = 0.8f;
+constexpr float kTravelRad = 0.30f;
+constexpr float kConfiguredMaximumSpeedRadS = 0.60f;
+constexpr float kConfiguredMaximumAccelerationRadS2 = 4.00f;
 constexpr float kPositionToleranceRad = 0.02f;
 constexpr float kVelocityToleranceRadS = 0.05f;
 constexpr float kAbortVelocityRadS = 3.0f;
 constexpr auto kStableWindow = std::chrono::milliseconds(250);
 constexpr auto kLegTimeout = std::chrono::seconds(8);
 constexpr const char* kTracePath =
-    "/tmp/articore_pv_speed_percent_trace.csv";
+    "/tmp/articore_pv_user_limits_trace.csv";
 
 void check(int32_t result, const char* operation) {
   if (result != ARTICORE_OPERATION_OK) {
@@ -198,7 +200,7 @@ int main(int argc, char** argv) {
     const float direction = positive_room >= kTravelRad + 0.10f
         ? 1.0f : (negative_room >= kTravelRad + 0.10f ? -1.0f : 0.0f);
     if (direction == 0.0f) {
-      throw std::runtime_error("right J1 lacks 0.8 rad of safe travel margin");
+      throw std::runtime_error("right J1 lacks 0.3 rad of safe travel margin");
     }
     target[kRightJoint1] += direction * kTravelRad;
     std::cout << "START right_j1=" << initial[kRightJoint1]
@@ -209,6 +211,28 @@ int main(int argc, char** argv) {
     enabled = true;
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
     require_healthy(runtime);
+
+    check(articore_runtime_set_max_speed(
+              runtime, kConfiguredMaximumSpeedRadS),
+          "set_max_speed");
+    check(articore_runtime_set_max_acceleration(
+              runtime, kConfiguredMaximumAccelerationRadS2),
+          "set_max_acceleration");
+    float configured_speed = 0.0f;
+    float configured_acceleration = 0.0f;
+    check(articore_runtime_get_max_speed(runtime, &configured_speed),
+          "get_max_speed");
+    check(articore_runtime_get_max_acceleration(
+              runtime, &configured_acceleration),
+          "get_max_acceleration");
+    if (std::abs(configured_speed - kConfiguredMaximumSpeedRadS) > 1e-6f ||
+        std::abs(configured_acceleration -
+                 kConfiguredMaximumAccelerationRadS2) > 1e-6f) {
+      throw std::runtime_error("ordinary PV user limits did not round-trip");
+    }
+    std::cout << "LIMITS max_speed_rad_s=" << configured_speed
+              << " max_acceleration_rad_s2=" << configured_acceleration
+              << '\n';
 
     const auto fifty_out =
         move_and_measure(runtime, target, 50.0f, "50_out", trace);
@@ -222,6 +246,42 @@ int main(int argc, char** argv) {
     const auto hundred_back =
         move_and_measure(runtime, initial, 100.0f, "100_back", trace);
     print_result("100_back", 100.0f, hundred_back);
+
+    const float peak_50 = std::max(
+        fifty_out.peak_right_j1_velocity,
+        fifty_back.peak_right_j1_velocity);
+    const float peak_100 = std::max(
+        hundred_out.peak_right_j1_velocity,
+        hundred_back.peak_right_j1_velocity);
+    const double duration_50 = 0.5 *
+        (fifty_out.duration_s + fifty_back.duration_s);
+    const double duration_100 = 0.5 *
+        (hundred_out.duration_s + hundred_back.duration_s);
+    const float peak_ratio = peak_100 / peak_50;
+    const double duration_ratio = duration_50 / duration_100;
+    if (peak_50 < 0.10f ||
+        peak_50 > kConfiguredMaximumSpeedRadS * 0.85f ||
+        peak_100 > kConfiguredMaximumSpeedRadS * 1.75f ||
+        peak_ratio < 1.60f || peak_ratio > 2.60f ||
+        duration_ratio < 1.25) {
+      throw std::runtime_error(
+          "measured motion does not reflect configured 50/100 percent limits");
+    }
+    std::cout << "VERIFY peak_ratio=" << peak_ratio
+              << " duration_ratio=" << duration_ratio << '\n';
+
+    check(articore_runtime_set_max_speed(runtime, 0.0f),
+          "clear_max_speed");
+    check(articore_runtime_set_max_acceleration(runtime, 0.0f),
+          "clear_max_acceleration");
+    check(articore_runtime_get_max_speed(runtime, &configured_speed),
+          "get_cleared_max_speed");
+    check(articore_runtime_get_max_acceleration(
+              runtime, &configured_acceleration),
+          "get_cleared_max_acceleration");
+    if (configured_speed != 0.0f || configured_acceleration != 0.0f) {
+      throw std::runtime_error("ordinary PV user limits did not clear");
+    }
 
     check(articore_runtime_disable(runtime), "disable");
     enabled = false;

@@ -28,8 +28,8 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.23.0`
-- Runtime ABI: `11.4` / `0x000B0004`
+- package version: `0.24.0`
+- Runtime ABI: `12.0` / `0x000C0000`
 
 Runtime health includes a product-order snapshot for every installed Motor,
 with role, CAN ID, feedback age, status, issue bits, and a scope that separates
@@ -51,13 +51,14 @@ does not generate a finite quintic/septic profile or a Motion-ID task. On each
 500 Hz control cycle it refreshes the final endpoint P and dynamically updates
 only the Motor V envelope. A replacement sends the new final P directly while
 preserving the current V ramp state; it does not generate intermediate P points.
-`speed=1..100` is its only public motion parameter. At 100%, J1..J7 velocity
-hard limits are `[180,180,180,225,225,225,225] deg/s` and acceleration hard
-limits are `[450,450,900,900,900,900,900] deg/s^2`; speed scaling multiplies
-velocity by `s` and acceleration by `s²`. Runtime derives each POS_VEL `V` from
-the current reference velocity and measured tracking error instead of sending
-a fixed user-selected value. The legacy acceleration setter/getter remain only
-as ABI symbols and SDKs should not expose them.
+`speed=1..100` time-scales its motion limits. Without a user override, the
+100% J1..J7 velocity limits are `[180,180,180,225,225,225,225] deg/s` and
+acceleration limits are `[450,450,900,900,900,900,900] deg/s^2`. Optional
+`set_max_speed()` and `set_max_acceleration()` values become the common
+14-joint 100% base; passing 0 clears that override and restores the per-joint
+defaults. Scaling multiplies velocity by `s` and acceleration by `s²`. Runtime
+derives each POS_VEL `V` from the effective limits, remaining distance and the
+current V ramp state instead of sending a fixed maximum continuously.
 MIT product mode exposes two position-only endpoint methods. Ordinary
 `set_joint_mit()` sends each newest complete 14-joint endpoint directly, with
 fixed J1..J7 `Kp=[15,15,12,12,8,7,6]` and
@@ -69,8 +70,8 @@ Runtime applies fixed J1..J7 `Kp=[190,190,100,100,70,60,50]`,
 (5 rad/s) position-reference step limit. The former MIT function with a public
 speed percentage remains an ABI-compatibility symbol only and new SDKs must not
 expose it.
-Joint/Linear/Circular own independent trajectory velocity, acceleration, jerk,
-timing and synchronization constraints. Users provide positions/path and time;
+Linear/Circular own independent trajectory velocity, acceleration, jerk,
+timing and synchronization constraints. Users provide path and time;
 trajectory acceleration and jerk remain internal Runtime policy.
 Pose callers use the pure `solve_ik(left_pose, right_pose)` query to obtain 14
 joint angles and pass them to ordinary PV or MIT. The compatibility
@@ -106,12 +107,12 @@ trajectory acceleration limits, automatically stretching the reference duration 
 10 ms sample when needed.
 The public `set_joint_pv()` command is the ordinary endpoint interface.
 Real-time PV is internal-only and can be selected only by a validated finite
-Joint/Linear/Circular trajectory; its 100 Hz plan knots are resampled on the
+Linear/Circular trajectory; its 100 Hz plan knots are resampled on the
 500 Hz Runtime command clock. No raw or streaming PV entry point is exported.
 Automatic approach stays inside that trajectory execution path.
 Linear and Circular require PV product mode; `set_pose()` supports either
-ordinary PV or direct ordinary MIT. MIT joint trajectories remain independent
-from both ordinary MIT endpoint methods.
+ordinary PV or direct ordinary MIT. Joint point-to-point trajectory planning is
+not part of the public Runtime API.
 
 See [the Runtime reference](articore_runtime/README.md) for the current API.
 

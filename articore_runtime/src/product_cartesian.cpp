@@ -28,7 +28,7 @@ constexpr double kLinearPvCommandPeriodSeconds =
     kNativeRealtimePvTrajectoryPeriodSeconds;
 constexpr float kCartesianRealtimePvSpeedPercent = 50.0f;
 constexpr uint32_t kCartesianMaximumExecutionSegments =
-    ARTICORE_MAX_TRAJECTORY_WAYPOINTS - 3U;
+    kNativeMaximumTrajectoryWaypoints - 3U;
 constexpr uint32_t kCircularMaximumGeometrySegments = 2048U;
 
 uint32_t cartesian_execution_segment_count(
@@ -517,7 +517,6 @@ void require_cartesian_reference(
     const NativeTrajectorySample& reference, const char* motion_name) {
   if (reference.active &&
       reference.operation != ARTICORE_OPERATION_SET_POSE &&
-      reference.operation != ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY &&
       reference.operation != ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY &&
       reference.operation != ARTICORE_OPERATION_MOVE_CIRCULAR_TRAJECTORY) {
     throw std::runtime_error(

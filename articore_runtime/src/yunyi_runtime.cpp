@@ -44,7 +44,7 @@ constexpr float kLogicalVelocityRange[2][7] = {
 };
 constexpr float kNativeVelocityRange[7] = {45, 45, 10, 10, 30, 30, 30};
 constexpr uint8_t kPvPositionKpRegister = 27;
-constexpr float kJoint4PvPositionKp = 100.0f;
+constexpr float kJoint34PvPositionKp = 100.0f;
 
 thread_local std::string g_motor_error = "ok";
 
@@ -243,21 +243,22 @@ int32_t motor_ensure_mode(void* motor, uint32_t mode, uint32_t timeout_ms) {
   return native_call([&] {
     auto* handle = static_cast<damiao::MotorHandle*>(motor);
     handle->ensure_mode(mode, std::chrono::milliseconds(timeout_ms));
-    if (mode == 2U && handle->motor_id() == 4U &&
+    if (mode == 2U &&
+        (handle->motor_id() == 3U || handle->motor_id() == 4U) &&
         handle->model() == "4340P") {
       const auto timeout = std::chrono::milliseconds(timeout_ms);
       const float current = handle->get_register_f32(
           kPvPositionKpRegister, timeout);
-      if (std::abs(current - kJoint4PvPositionKp) > 1.0e-4f) {
+      if (std::abs(current - kJoint34PvPositionKp) > 1.0e-4f) {
         handle->write_register_f32(
-            kPvPositionKpRegister, kJoint4PvPositionKp);
+            kPvPositionKpRegister, kJoint34PvPositionKp);
         handle->store_parameters();
       }
       const float configured = handle->get_register_f32(
           kPvPositionKpRegister, timeout);
-      if (std::abs(configured - kJoint4PvPositionKp) > 1.0e-4f) {
+      if (std::abs(configured - kJoint34PvPositionKp) > 1.0e-4f) {
         throw std::runtime_error(
-            "J4 PV position-loop Kp readback verification failed");
+            "J3/J4 PV position-loop Kp readback verification failed");
       }
     }
   });

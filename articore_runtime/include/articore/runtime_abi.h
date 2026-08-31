@@ -109,7 +109,6 @@ enum ArticoreRuntimeOperation {
   ARTICORE_OPERATION_DISCONNECT = 7,
   ARTICORE_OPERATION_COMMAND = 8,
   ARTICORE_OPERATION_RECOVER = 9,
-  ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY = 10,
   ARTICORE_OPERATION_CANCEL_MOTION = 11,
   ARTICORE_OPERATION_SET_POSE = 12,
   ARTICORE_OPERATION_CANCEL_ALL_MOTIONS = 13,
@@ -118,10 +117,6 @@ enum ArticoreRuntimeOperation {
   ARTICORE_OPERATION_START_BIMANUAL_FOLLOW = 16,
   ARTICORE_OPERATION_STOP_BIMANUAL_FOLLOW = 17,
   ARTICORE_OPERATION_SET_TCP_OFFSET = 18,
-};
-
-enum ArticoreTrajectoryInterpolation {
-  ARTICORE_TRAJECTORY_QUINTIC = 1,
 };
 
 enum ArticoreMotionState {
@@ -139,12 +134,9 @@ enum ArticoreMotionState {
 };
 
 enum ArticoreMotionType {
-  ARTICORE_MOTION_JOINT_TRAJECTORY = 1,
   ARTICORE_MOTION_CARTESIAN_LINEAR = 2,
   ARTICORE_MOTION_CARTESIAN_CIRCULAR = 3,
 };
-
-enum { ARTICORE_MAX_TRAJECTORY_WAYPOINTS = 30000 };
 
 enum ArticoreOperationError {
   ARTICORE_OPERATION_OK = 0,
@@ -250,34 +242,6 @@ enum {
   ARTICORE_GRIPPER_STRENGTH_DEFAULT = 5,
   ARTICORE_GRIPPER_STRENGTH_MAX = 10,
 };
-
-typedef struct ArticoreTrajectoryWaypoint {
-  uint32_t struct_size;
-  double time_s;
-  float left_positions[ARTICORE_PRODUCT_ARM_DOF];
-  float right_positions[ARTICORE_PRODUCT_ARM_DOF];
-  /* Reserved for ABI layout compatibility; callers must zero these fields.
-   * Runtime derives all trajectory velocity, acceleration and jerk from joint
-   * positions and timestamps. */
-  float left_velocities[ARTICORE_PRODUCT_ARM_DOF];
-  float right_velocities[ARTICORE_PRODUCT_ARM_DOF];
-  float left_accelerations[ARTICORE_PRODUCT_ARM_DOF];
-  float right_accelerations[ARTICORE_PRODUCT_ARM_DOF];
-  uint32_t velocity_valid_mask;
-  uint32_t acceleration_valid_mask;
-} ArticoreTrajectoryWaypoint;
-
-typedef struct ArticoreTrajectoryConfig {
-  uint32_t struct_size;
-  int32_t interpolation;
-  int32_t control_mode;
-  float mit_kp[ARTICORE_PRODUCT_DUAL_ARM_DOF];
-  float mit_kd[ARTICORE_PRODUCT_DUAL_ARM_DOF];
-  float mit_feedforward_torque[ARTICORE_PRODUCT_DUAL_ARM_DOF];
-  /* Reserved for ABI layout compatibility; callers must zero this array.
-   * Runtime owns trajectory PV drive limits. */
-  float pv_velocity_limits[ARTICORE_PRODUCT_DUAL_ARM_DOF];
-} ArticoreTrajectoryConfig;
 
 typedef struct ArticoreMotionStatus {
   uint32_t struct_size;
@@ -568,12 +532,14 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(
  * task. Runtime sends the final P directly and preserves the current Motor-V
  * speed envelope when a target is replaced. Its 500 Hz worker refreshes the
  * ordinary POS_VEL command and shapes V; it does not generate intermediate P.
- * speed_percent is the only public PV motion parameter and accepts 1..100.
- * At 100 percent, J1..J7 velocity hard limits are
+ * speed_percent accepts 1..100. Unless the optional maximum-speed or
+ * maximum-acceleration override below is configured, at 100 percent the
+ * J1..J7 velocity limits are
  * [180,180,180,225,225,225,225] deg/s and acceleration hard limits are
  * [450,450,900,900,900,900,900] deg/s^2. Runtime time-scales velocity by s
- * and acceleration by s^2, and derives the POS_VEL V field every cycle from
- * the reference velocity and measured tracking error.
+ * and acceleration by s^2. A configured user value replaces the corresponding
+ * per-joint 100-percent base. Runtime derives the POS_VEL V field every cycle
+ * from the effective limits and measured tracking error.
  */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
@@ -606,12 +572,21 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
 ARTICORE_RUNTIME_API int32_t articore_runtime_solve_ik(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float* positions, uint32_t count);
-/* Deprecated ABI-compatibility symbols. Ordinary product PV acceleration is
- * fixed per joint and speed_percent is its only public motion parameter, so a
- * valid product Runtime returns ARTICORE_OPERATION_INVALID_STATE here. SDKs
- * should no longer expose these methods. Complete Joint/Linear/Circular
- * trajectories remain independent and are not affected by this deprecation.
+/* Optional persistent ordinary-PV joint limits in physical units. A positive
+ * value becomes the 100-percent base limit for every arm joint; 0 clears that
+ * user override and restores the fixed per-joint product defaults. The getter
+ * returns 0 when the corresponding override is not configured.
+ *
+ * For speed_percent=s, Runtime applies max_speed*s and
+ * max_acceleration*s^2. Values use 0.01 physical-unit resolution and values
+ * above the most restrictive J1..J7 safety limit are rejected. These settings
+ * affect ordinary PV and PV set_pose only. Internal Linear/Circular trajectory
+ * planning and execution remain independent.
  */
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
+    ArticoreRuntime* runtime, float max_speed_rad_s);
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(
+    ArticoreRuntime* runtime, float* max_speed_rad_s);
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_acceleration(
     ArticoreRuntime* runtime, float max_acceleration_rad_s2);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_acceleration(
@@ -621,22 +596,6 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
     ArticoreRuntime* runtime, const float* positions,
     const float* velocities, const float* feedforward_torques,
     const float* kp, const float* kd, uint32_t count);
-
-/* Asynchronous dual-arm trajectory. Inputs are copied before return and the
- * task joins the same FIFO and motion-id namespace as Linear/Circular. In PV
- * mode Runtime converts the finite plan into internal 100 Hz real-time-PV
- * knots and linearly resamples them on its 500 Hz command clock. Product
- * callers provide joint positions and timestamps only;
- * waypoint derivative fields and PV limit fields are reserved and must be
- * zero. Runtime owns velocity, acceleration and jerk planning. There is no
- * public raw/streaming PV command. MIT mode samples the validated quintic
- * directly on the worker clock. */
-ARTICORE_RUNTIME_API int32_t articore_runtime_move_joint_trajectory(
-    ArticoreRuntime* runtime,
-    const ArticoreTrajectoryWaypoint* waypoints,
-    uint32_t waypoint_count,
-    const ArticoreTrajectoryConfig* config,
-    uint64_t* motion_id);
 
 /* ABI compatibility convenience. This entry solves IK once, then atomically
  * installs that joint endpoint through the Runtime's current ordinary PV or

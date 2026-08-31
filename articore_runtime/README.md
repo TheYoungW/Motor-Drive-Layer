@@ -1,8 +1,8 @@
 # Yunyi product Runtime
 
-`libarticore_runtime.so` is the only public native library. Runtime ABI 11.4 is
+`libarticore_runtime.so` is the only public native library. Runtime ABI 12.0 is
 an exact contract: the SDK must require `articore_runtime_abi_version() ==
-0x000B0004` and bind only the declarations in `articore/runtime_abi.h`.
+0x000C0000` and bind only the declarations in `articore/runtime_abi.h`.
 
 ## Ownership
 
@@ -23,15 +23,18 @@ objects, joint tables or product bindings.
 
 - Lifecycle: `connect`, `disconnect`, `enable`, `disable`, `estop`, `recover`.
 - Maintenance: `configure_mode`, `clear_faults`, `set_zero`.
-- Joint control: `set_joint_pv`, `set_joint_mit_direct`,
+- Joint control: `set_joint_pv`, optional ordinary-PV `set/get_max_speed` and
+  `set/get_max_acceleration`, `set_joint_mit_direct`,
   `set_joint_mit_fast_follow`, `submit_mit_frame`.
 - Ordinary PV: each command replaces the preceding complete joint endpoint.
   Runtime sends final P directly and shapes only the per-joint Motor V envelope
-  while refreshing POS_VEL at 500 Hz. `speed_percent=1..100` is the only public motion parameter. The
-  100% J1..J7 hard limits are 180/180/180/225/225/225/225 deg/s and
-  450/450/900/900/900/900/900 deg/s^2; velocity scales by `s`, acceleration by
-  `s^2`, and Motor `V` is derived per cycle from reference speed and tracking
-  error. `set/get_max_acceleration` are deprecated ABI-only symbols.
+  while refreshing POS_VEL at 500 Hz. `speed_percent=1..100` time-scales the
+  active limits. The default 100% J1..J7 limits are
+  180/180/180/225/225/225/225 deg/s and
+  450/450/900/900/900/900/900 deg/s^2. A positive `set_max_speed` or
+  `set_max_acceleration` value becomes the common 14-joint 100% base; zero
+  clears that override. Velocity scales by `s`, acceleration by `s^2`, and
+  Motor `V` is derived per cycle from remaining distance and the V ramp state.
 - Ordinary MIT direct: each complete 14-joint target replaces the previous
   endpoint and is sent without intermediate position-reference steps. Runtime
   owns J1..J7 `Kp=[15,15,12,12,8,7,6]` and
@@ -43,9 +46,8 @@ objects, joint tables or product bindings.
   100-percent (5 rad/s) position-reference step limit. The old MIT symbol with
   public `speed_percent` remains ABI-only compatibility and must not be exposed
   by a new SDK.
-- Native trajectories: joint trajectory plus Linear and Circular motion. PV
-  follows the supplied/generated finite point list through internal real-time
-  PV at speed 50; MIT joint trajectories remain direct quintic mode.
+- Native trajectories: Linear and Circular motion only. Both follow the
+  generated finite point list through internal real-time PV at speed 50.
 - Grippers: one paired `set_grippers` call using opening `0..1000`, strength
   `0..10`, and protected/direct mode.
 - State: one coherent cached `get_state`, `get_pose`, joint limits and health.
@@ -62,7 +64,8 @@ sends that final POS_VEL `P` directly. Its 500 Hz control clock refreshes the
 same endpoint and updates only Motor `V`. A newer call replaces the endpoint
 and preserves the current V envelope. This is an ordinary endpoint controller,
 not a finite quintic/septic plan, queue item or Motion ID. `speed=1..100`
-time-scales the fixed per-joint velocity and acceleration limits; Runtime
+time-scales the configured 100% user limits when present, otherwise the fixed
+per-joint velocity and acceleration defaults; Runtime
 derives Motor `V` every cycle without generating intermediate P. The pure
 `articore_runtime_solve_ik(left_pose, right_pose, positions, 14)` query uses one
 planned-reference snapshot (or fresh connected feedback before enable), the
@@ -111,11 +114,10 @@ stretching the duration to a complete 10 ms sample when necessary. Both paths
 execute through internal real-time PV at speed 50.
 Linear uses explicit `start_pose -> end_pose`; Circular uses explicit
 `start_pose -> via_pose -> end_pose`. Runtime validates and plans the complete
-task before installing it. Joint, Linear and Circular trajectories share one
-Motion ID namespace and FIFO, and use `get_motion_status(id)`,
-`cancel_motion(id)` and `cancel_all_motions()`. A joint trajectory returns its
-Motion ID directly from `move_joint_trajectory()`. Cancelling a queued item removes
-only that item; Runtime inserts and validates a native approach into its
+task before installing it. Linear and Circular trajectories share one Motion
+ID namespace and FIFO, and use `get_motion_status(id)`, `cancel_motion(id)` and
+`cancel_all_motions()`. Cancelling a queued item removes only that item;
+Runtime inserts and validates a native approach into its
 immediate successor so execution cannot jump across the removed endpoint.
 Cancelling the running item holds the last safe reference and cancels its
 dependent queue tail, whose planned starts are no longer valid.
@@ -132,19 +134,19 @@ Linear and Circular accept `duration_s` instead of a speed percentage. Both
 select `ceil(duration_s / 0.010)` execution segments. The reference list has
 one more point and nominally spans the requested duration. Physical completion
 may be later. Linear and Circular geometry enforce at least 2 mm / 0.1 rad
-sampling. Ordinary PV command speed values are `1..100` and time-scale its
-fixed per-joint online limits. The same policy applies to PV `set_pose()` after
-its one IK solve.
-Joint/Linear/Circular own separate trajectory velocity, acceleration, jerk,
+sampling. Ordinary PV command speed values are `1..100` and time-scale either
+the configured user base limits or the fixed per-joint defaults. The same
+policy applies to PV `set_pose()` after its one IK solve.
+Linear/Circular own separate trajectory velocity, acceleration, jerk,
 timing and synchronization constraints; ordinary PV does not change any
 trajectory. Those trajectory derivative limits are not exposed;
-callers provide positions/path and time. MIT joint trajectories remain
-independent from both ordinary MIT endpoint methods.
+callers provide path and time. Joint point-to-point trajectory planning is not
+part of the public Runtime API.
 
 The public `set_joint_pv()` command is ordinary latest-target-wins endpoint PV
 interface.
 `RealtimePv` is an internal trajectory execution type: only a finite validated
-Joint/Linear/Circular plan may install it, its planner-knot period must be
+Linear/Circular plan may install it, its planner-knot period must be
 exactly 10 ms, and Runtime linearly resamples those knots on the 500 Hz command
 clock. Per-cycle P changes smaller than one Damiao 16-bit position-feedback
 quantum (25/65535 rad, about 0.02186 degrees) accumulate against the last
@@ -156,8 +158,7 @@ PV symbol is exported through the C or C++ product API.
 
 Linear and Circular require PV product mode. Automatic approach is part of the
 same internal trajectory-PV point sequence. `set_pose()` supports the current
-ordinary PV or direct ordinary MIT mode, and MIT joint trajectories remain
-available.
+ordinary PV or direct ordinary MIT mode.
 
 ## State and diagnostics
 
@@ -174,7 +175,9 @@ right receive path, and both receive paths. Side `last_error` strings aggregate
 all affected Motor roles instead of retaining only the last failure.
 
 Every public structure must set `struct_size` to its exact `sizeof(...)`.
-ABI 11.4 does not branch on older layouts or capability bits.
+ABI 12.0 does not branch on older layouts or capability bits. It removes the
+former joint-trajectory waypoint/config types and
+`articore_runtime_move_joint_trajectory` symbol.
 
 ## Shutdown
 

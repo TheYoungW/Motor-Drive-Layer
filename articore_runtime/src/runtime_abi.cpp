@@ -30,6 +30,12 @@ struct ArticoreRuntime {
   std::unique_ptr<articore::YunyiRuntimeResources> yunyi;
   std::unique_ptr<articore::SafetyRuntime> runtime;
   ArticoreControlMode product_mode = ARTICORE_MODE_PV;
+  std::mutex product_pv_limits_mutex;
+  float product_pv_max_velocity =
+      articore::kYunyiOrdinaryPvDefaultLimitSelection;
+  float product_pv_max_acceleration =
+      articore::kYunyiOrdinaryPvDefaultLimitSelection;
+  float product_pv_command_speed_percent = 100.0f;
   std::mutex motion_mutex;
 };
 
@@ -102,6 +108,43 @@ void require_finite(const float* values, uint32_t count, const char* name) {
   }
 }
 
+float require_optional_pv_limit(
+    float value, float maximum, const char* name) {
+  if (!std::isfinite(value) || value < 0.0f || value > maximum) {
+    throw std::invalid_argument(
+        std::string(name) + " must be 0 to use product defaults or within " +
+        std::to_string(articore::kYunyiPvMotionLimitResolution) + ".." +
+        std::to_string(maximum));
+  }
+  if (value == 0.0f) return value;
+  const float quantized = std::round(
+      value / articore::kYunyiPvMotionLimitResolution) *
+      articore::kYunyiPvMotionLimitResolution;
+  if (std::abs(value - quantized) > 1.0e-5f) {
+    throw std::invalid_argument(
+        std::string(name) + " must use 0.01 physical-unit resolution");
+  }
+  return quantized;
+}
+
+std::pair<std::vector<float>, std::vector<float>>
+effective_product_pv_limits(
+    float speed_percent, float configured_maximum_velocity,
+    float configured_maximum_acceleration) {
+  std::vector<float> velocities;
+  std::vector<float> accelerations;
+  velocities.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
+  accelerations.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
+  for (uint32_t index = 0;
+       index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
+    velocities.push_back(articore::yunyi_ordinary_pv_velocity_limit(
+        index, speed_percent, configured_maximum_velocity));
+    accelerations.push_back(articore::yunyi_ordinary_pv_acceleration_limit(
+        index, speed_percent, configured_maximum_acceleration));
+  }
+  return {std::move(velocities), std::move(accelerations)};
+}
+
 void validate_product_position(
     const articore::YunyiRuntimeResources::Joint& joint, float position,
     uint32_t index) {
@@ -139,7 +182,8 @@ void install_product_joint_positions(
     float speed_percent,
     articore::SafetyRuntime::CommandTransaction* transaction = nullptr,
     uint64_t planning_token = 0,
-    bool direct_mit = false) {
+    bool direct_mit = false,
+    std::unique_lock<std::mutex>* product_limits_transaction = nullptr) {
   auto& product = checked_yunyi(runtime);
   require_product_count(count);
   require_finite(positions, count, "positions");
@@ -153,6 +197,7 @@ void install_product_joint_positions(
             : "ordinary MIT speed must be finite and within 0..100");
   }
   float selected_reference_velocity = 0.0f;
+  std::unique_lock<std::mutex> pv_limits_lock;
   if (runtime->product_mode == ARTICORE_MODE_MIT && !direct_mit) {
     selected_reference_velocity =
         product.mit_fast_follow_reference_velocity * speed_percent / 100.0f;
@@ -162,8 +207,22 @@ void install_product_joint_positions(
   std::vector<float> pv_velocity_limits;
   std::vector<float> pv_acceleration_limits;
   if (runtime->product_mode == ARTICORE_MODE_PV) {
-    pv_velocity_limits.reserve(count);
-    pv_acceleration_limits.reserve(count);
+    if (product_limits_transaction) {
+      if (!product_limits_transaction->owns_lock() ||
+          product_limits_transaction->mutex() !=
+              &runtime->product_pv_limits_mutex) {
+        throw std::logic_error(
+            "PV command requires the product motion-limit transaction");
+      }
+    } else {
+      pv_limits_lock =
+          std::unique_lock<std::mutex>(runtime->product_pv_limits_mutex);
+    }
+    auto limits = effective_product_pv_limits(
+        speed_percent, runtime->product_pv_max_velocity,
+        runtime->product_pv_max_acceleration);
+    pv_velocity_limits = std::move(limits.first);
+    pv_acceleration_limits = std::move(limits.second);
   }
   for (uint32_t i = 0; i < count; ++i) {
     const auto& joint = product.joints[i];
@@ -175,12 +234,6 @@ void install_product_joint_positions(
     const float motor_position = joint.direction * positions[i];
     mit[i] = {sizeof(ArticoreJointMitTarget), joint.motor, motor_position};
     pv[i] = {sizeof(ArticoreJointPvTarget), joint.motor, motor_position};
-    if (runtime->product_mode == ARTICORE_MODE_PV) {
-      pv_velocity_limits.push_back(
-          articore::yunyi_ordinary_pv_velocity_limit(i, speed_percent));
-      pv_acceleration_limits.push_back(
-          articore::yunyi_ordinary_pv_acceleration_limit(i, speed_percent));
-    }
   }
   auto& safety = checked(runtime);
   if (runtime->product_mode == ARTICORE_MODE_MIT) {
@@ -203,6 +256,9 @@ void install_product_joint_positions(
   } else {
     safety.set_joint_pv_profile(
         pv.data(), count, pv_velocity_limits, pv_acceleration_limits);
+  }
+  if (runtime->product_mode == ARTICORE_MODE_PV) {
+    runtime->product_pv_command_speed_percent = speed_percent;
   }
 }
 
@@ -329,11 +385,18 @@ int32_t set_pose_impl(
         articore::solve_dual_point_to_point_targets_from_reference(
             product, runtime->product_mode, reference,
             left_target_pose, right_target_pose, ik_deadline);
+    std::unique_lock<std::mutex> pv_limits_transaction;
+    if (runtime->product_mode == ARTICORE_MODE_PV) {
+      pv_limits_transaction =
+          std::unique_lock<std::mutex>(runtime->product_pv_limits_mutex);
+    }
     auto transaction = safety.begin_command_transaction();
     install_product_joint_positions(
         runtime, target.data(), static_cast<uint32_t>(target.size()),
         speed_percent, &transaction, planning.token(),
-        runtime->product_mode == ARTICORE_MODE_MIT);
+        runtime->product_mode == ARTICORE_MODE_MIT,
+        runtime->product_mode == ARTICORE_MODE_PV
+            ? &pv_limits_transaction : nullptr);
     safety.record_operation_result(
         ARTICORE_OPERATION_SET_POSE, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
@@ -656,7 +719,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (11U << 16) | 4U;
+  return (12U << 16);
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -1036,17 +1099,82 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_fast_follow(
   }
 }
 
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
+    ArticoreRuntime* runtime, float max_speed_rad_s) {
+  try {
+    const float validated = require_optional_pv_limit(
+        max_speed_rad_s,
+        articore::kYunyiOrdinaryPvMaximumConfigurableVelocity,
+        "ordinary PV maximum speed in rad/s");
+    checked_yunyi(runtime);
+    if (runtime->product_mode != ARTICORE_MODE_PV) {
+      throw std::runtime_error(
+          "maximum speed setting is available only in product PV mode");
+    }
+    std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
+    auto limits = effective_product_pv_limits(
+        runtime->product_pv_command_speed_percent, validated,
+        runtime->product_pv_max_acceleration);
+    checked(runtime).update_joint_pv_profile_limits(
+        limits.first, limits.second);
+    runtime->product_pv_max_velocity = validated;
+    g_last_error = "ok";
+    return ARTICORE_OPERATION_OK;
+  } catch (const std::invalid_argument& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
+  } catch (const std::exception& error) {
+    return record_product_command_error(
+        runtime, ARTICORE_OPERATION_INVALID_STATE, error.what());
+  }
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_speed(
+    ArticoreRuntime* runtime, float* max_speed_rad_s) {
+  if (!max_speed_rad_s) {
+    g_last_error = "max_speed_rad_s output is null";
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  }
+  try {
+    checked_yunyi(runtime);
+    if (runtime->product_mode != ARTICORE_MODE_PV) {
+      throw std::runtime_error(
+          "maximum speed setting is available only in product PV mode");
+    }
+    std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
+    *max_speed_rad_s = runtime->product_pv_max_velocity;
+    g_last_error = "ok";
+    return ARTICORE_OPERATION_OK;
+  } catch (const std::invalid_argument& error) {
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_ARGUMENT;
+  } catch (const std::exception& error) {
+    g_last_error = error.what();
+    return ARTICORE_OPERATION_INVALID_STATE;
+  }
+}
+
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_acceleration(
     ArticoreRuntime* runtime, float max_acceleration_rad_s2) {
-  (void)max_acceleration_rad_s2;
   try {
+    const float validated = require_optional_pv_limit(
+        max_acceleration_rad_s2,
+        articore::kYunyiOrdinaryPvMaximumConfigurableAcceleration,
+        "ordinary PV maximum acceleration in rad/s^2");
     checked_yunyi(runtime);
     if (runtime->product_mode != ARTICORE_MODE_PV) {
       throw std::runtime_error(
           "maximum acceleration setting is available only in product PV mode");
     }
-    throw std::runtime_error(
-        "ordinary PV acceleration is fixed per joint; use speed_percent 1..100");
+    std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
+    auto limits = effective_product_pv_limits(
+        runtime->product_pv_command_speed_percent,
+        runtime->product_pv_max_velocity, validated);
+    checked(runtime).update_joint_pv_profile_limits(
+        limits.first, limits.second);
+    runtime->product_pv_max_acceleration = validated;
+    g_last_error = "ok";
+    return ARTICORE_OPERATION_OK;
   } catch (const std::invalid_argument& error) {
     return record_product_command_error(
         runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
@@ -1068,8 +1196,10 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_acceleration(
       throw std::runtime_error(
           "maximum acceleration setting is available only in product PV mode");
     }
-    throw std::runtime_error(
-        "ordinary PV acceleration is fixed per joint; use speed_percent 1..100");
+    std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
+    *max_acceleration_rad_s2 = runtime->product_pv_max_acceleration;
+    g_last_error = "ok";
+    return ARTICORE_OPERATION_OK;
   } catch (const std::invalid_argument& error) {
     g_last_error = error.what();
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
@@ -1134,176 +1264,6 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
   } catch (const std::exception& error) {
     return record_product_command_error(
         runtime, ARTICORE_OPERATION_INVALID_STATE, error.what());
-  }
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_move_joint_trajectory(
-    ArticoreRuntime* runtime,
-    const ArticoreTrajectoryWaypoint* waypoints,
-    uint32_t waypoint_count,
-    const ArticoreTrajectoryConfig* config,
-    uint64_t* motion_id) {
-  try {
-    if (!runtime) throw std::invalid_argument("runtime is null");
-    if (!motion_id) throw std::invalid_argument("motion_id output is null");
-    std::lock_guard<std::mutex> motion_lock(runtime->motion_mutex);
-    auto& product = checked_yunyi(runtime);
-    auto& safety = checked(runtime);
-    CommandPlanningScope planning(safety);
-    {
-      auto transaction = safety.begin_command_transaction();
-      planning.begin(transaction, true);
-    }
-    if (!waypoints) {
-      throw std::invalid_argument("trajectory waypoints are null");
-    }
-    if (!config || config->struct_size != sizeof(*config)) {
-      throw std::invalid_argument(
-          "trajectory config is null or struct_size does not match");
-    }
-    if (config->interpolation != ARTICORE_TRAJECTORY_QUINTIC) {
-      throw std::invalid_argument("only quintic trajectory interpolation is supported");
-    }
-    if (config->control_mode != runtime->product_mode) {
-      throw std::runtime_error(
-          "trajectory mode does not match the product Runtime mode");
-    }
-    if (waypoint_count < 2 ||
-        waypoint_count > ARTICORE_MAX_TRAJECTORY_WAYPOINTS) {
-      throw std::invalid_argument("trajectory requires 2..10000 waypoints");
-    }
-
-    articore::NativeTrajectoryRequest request;
-    request.mode = static_cast<ArticoreControlMode>(config->control_mode);
-    if (request.mode == ARTICORE_MODE_PV) {
-      request.execution = articore::NativeTrajectoryExecution::RealtimePv;
-      request.pv_reference_velocity =
-          articore::yunyi_effective_pv_reference_velocity(50.0f);
-      request.pv_reference_acceleration =
-          articore::kYunyiTrajectoryPvAccelerationLimit;
-      request.pv_drive_velocity_limit =
-          std::numeric_limits<float>::infinity();
-      request.pv_reference_period_s =
-          articore::kNativeRealtimePvTrajectoryPeriodSeconds;
-    }
-    request.joints.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
-    for (uint32_t index = 0;
-         index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
-      const auto& product_joint = product.joints[index];
-      articore::NativeTrajectoryJoint joint;
-      joint.role = articore::yunyi_joint_role(index);
-      joint.motor = product_joint.motor;
-      joint.direction = product_joint.direction;
-      joint.velocity_command_scale = product_joint.velocity_command_scale;
-      joint.velocity_feedback_scale = product_joint.velocity_feedback_scale;
-      joint.torque_command_scale = product_joint.torque_command_scale;
-      joint.lower_position = product_joint.lower;
-      joint.upper_position = product_joint.upper;
-      joint.velocity_limit = product_joint.velocity_limit;
-      joint.acceleration_limit = product_joint.acceleration_limit;
-      joint.torque_limit = product_joint.torque_limit;
-      if (request.mode == ARTICORE_MODE_MIT) {
-        joint.mit_kp = config->mit_kp[index];
-        joint.mit_kd = config->mit_kd[index];
-        joint.mit_feedforward_torque =
-            config->mit_feedforward_torque[index];
-      } else {
-        if (config->pv_velocity_limits[index] != 0.0f) {
-          throw std::invalid_argument(
-              "PV trajectory velocity limits are internal; users provide time only");
-        }
-        joint.pv_velocity_limit = articore::kYunyiPvDriveVelocityLimit;
-        request.pv_drive_velocity_limit = std::min(
-            request.pv_drive_velocity_limit, joint.pv_velocity_limit);
-        request.pv_reference_acceleration = std::min(
-            request.pv_reference_acceleration,
-            joint.acceleration_limit);
-      }
-      request.joints.push_back(joint);
-    }
-
-    request.waypoints.reserve(waypoint_count);
-    for (uint32_t waypoint_index = 0;
-         waypoint_index < waypoint_count; ++waypoint_index) {
-      const auto& input = waypoints[waypoint_index];
-      if (input.struct_size != sizeof(input)) {
-        throw std::invalid_argument(
-            "trajectory waypoint struct_size does not match at index " +
-            std::to_string(waypoint_index));
-      }
-      if (input.velocity_valid_mask != 0 ||
-          input.acceleration_valid_mask != 0) {
-        throw std::invalid_argument(
-            "trajectory velocity and acceleration are internal; users provide time only");
-      }
-      articore::NativeTrajectoryWaypoint output;
-      output.time_s = input.time_s;
-      output.velocity_valid_mask = 0;
-      output.acceleration_valid_mask = 0;
-      output.positions.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
-      output.velocities.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
-      output.accelerations.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
-      for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
-        output.positions.push_back(input.left_positions[joint]);
-        output.velocities.push_back(0.0f);
-        output.accelerations.push_back(0.0f);
-      }
-      for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
-        output.positions.push_back(input.right_positions[joint]);
-        output.velocities.push_back(0.0f);
-        output.accelerations.push_back(0.0f);
-      }
-      request.waypoints.push_back(std::move(output));
-    }
-
-    if (request.mode == ARTICORE_MODE_PV) {
-      request.waypoints =
-          articore::resample_realtime_pv_joint_trajectory(
-              request.waypoints, request.joints,
-              articore::kNativeRealtimePvTrajectoryPeriodSeconds);
-    }
-
-    auto transaction = safety.begin_command_transaction();
-    const auto reference = safety.planned_trajectory_tail_sample(
-        request.joints, transaction);
-    if (reference.positions.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF ||
-        reference.velocities.size() != ARTICORE_PRODUCT_DUAL_ARM_DOF) {
-      throw std::runtime_error(
-          "joint trajectory requires a complete planned FIFO reference");
-    }
-    const auto& first = request.waypoints.front();
-    for (uint32_t index = 0;
-         index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
-      if (std::abs(first.positions[index] - reference.positions[index]) >
-          0.05f) {
-        throw std::invalid_argument(
-            "joint trajectory start position does not match the FIFO tail at " +
-            articore::yunyi_joint_role(index));
-      }
-    }
-    const uint64_t new_id = safety.start_trajectory(
-        std::move(request), 0, &transaction, true, planning.token());
-    *motion_id = new_id;
-    safety.record_operation_result(
-        ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY, ARTICORE_OPERATION_OK);
-    g_last_error = "ok";
-    return ARTICORE_OPERATION_OK;
-  } catch (const std::invalid_argument& error) {
-    if (runtime && runtime->runtime) {
-      runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY,
-          ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
-    }
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  } catch (const std::exception& error) {
-    if (runtime && runtime->runtime) {
-      runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY,
-          ARTICORE_OPERATION_INVALID_STATE, error.what());
-    }
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_STATE;
   }
 }
 

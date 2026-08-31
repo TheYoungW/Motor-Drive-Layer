@@ -12,7 +12,7 @@
 
 namespace articore {
 
-// PV Joint/Linear/Circular trajectory points use an internal speed-50 policy,
+// Linear/Circular trajectory points use an internal speed-50 policy,
 // i.e. a 1 rad/s reference ceiling. Product inverse kinematics is a pure
 // computation; the compatibility set_pose entry resolves IK and then submits
 // the caller's endpoint through the current ordinary PV or MIT mode. The

@@ -736,10 +736,14 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     if (mode == ARTICORE_MODE_PV) {
       if (arm_mailbox_.pv_hold_confirmation_cycles.size() !=
               arm_mailbox_.pv.size() ||
-          arm_mailbox_.pv_stationary_hold.size() != arm_mailbox_.pv.size()) {
+          arm_mailbox_.pv_stationary_hold.size() != arm_mailbox_.pv.size() ||
+          arm_mailbox_.pv_hold_target_positions.size() !=
+              arm_mailbox_.pv.size()) {
         arm_mailbox_.pv_hold_confirmation_cycles.assign(
             arm_mailbox_.pv.size(), 0);
         arm_mailbox_.pv_stationary_hold.assign(arm_mailbox_.pv.size(), 0);
+        arm_mailbox_.pv_hold_target_positions =
+            arm_mailbox_.final_positions;
       }
       const float period_s = 1.0f / static_cast<float>(control_hz_);
       for (std::size_t i = 0; i < arm_mailbox_.pv.size(); ++i) {
@@ -780,16 +784,25 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
             backend_->get_feedback_stats(command.motor, &stats) == 0 &&
             stats.has_feedback && stats.age_ns <= feedback_max_age_ns() &&
             backend_->get_state(command.motor, &actual) == 0 &&
-            actual.has_value && actual.status_code == 1 && finite(actual.pos);
+            actual.has_value && actual.status_code == 1 && finite(actual.pos) &&
+            finite(actual.vel);
         if (fresh_feedback) {
           const float position_error = std::abs(actual.pos - final_position);
+          const float target_shift = std::abs(
+              final_position - arm_mailbox_.pv_hold_target_positions[i]);
           if (arm_mailbox_.pv_stationary_hold[i] != 0) {
-            if (position_error > kNativeOrdinaryPvHoldReleaseTolerance) {
+            if (position_error > kNativeOrdinaryPvHoldReleaseTolerance ||
+                target_shift > kNativeOrdinaryPvHoldTargetTolerance) {
               arm_mailbox_.pv_stationary_hold[i] = 0;
               arm_mailbox_.pv_hold_confirmation_cycles[i] = 0;
+              arm_mailbox_.pv_hold_target_positions[i] = final_position;
             }
           } else if (reference_reached && position_error <=
-                     kNativeOrdinaryPvHoldPositionTolerance) {
+                         kNativeOrdinaryPvHoldPositionTolerance &&
+                     std::abs(actual.vel) <=
+                         kNativeOrdinaryPvHoldVelocityTolerance &&
+                     target_shift <=
+                         kNativeOrdinaryPvHoldTargetTolerance) {
             auto& confirmations =
                 arm_mailbox_.pv_hold_confirmation_cycles[i];
             if (confirmations < kNativeOrdinaryPvHoldConfirmationCycles) {
@@ -800,7 +813,11 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
             }
           } else {
             arm_mailbox_.pv_hold_confirmation_cycles[i] = 0;
+            arm_mailbox_.pv_hold_target_positions[i] = final_position;
           }
+        } else if (arm_mailbox_.pv_stationary_hold[i] == 0) {
+          arm_mailbox_.pv_hold_confirmation_cycles[i] = 0;
+          arm_mailbox_.pv_hold_target_positions[i] = final_position;
         }
         if (arm_mailbox_.pv_stationary_hold[i] != 0) {
           command.velocity_limit = kNativePvFinalHoldVelocityLimit;
@@ -974,6 +991,7 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
         arm_mailbox_.final_positions[index] = desired;
         arm_mailbox_.pv_hold_confirmation_cycles[index] = 0;
         arm_mailbox_.pv_stationary_hold[index] = 0;
+        arm_mailbox_.pv_hold_target_positions[index] = desired;
         if (arm_mailbox_.pv_per_joint_profile) {
           command->velocity_limit = advance_ordinary_pv_drive_velocity(
               arm_mailbox_.pv_drive_velocity_commands[index],

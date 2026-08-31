@@ -26,9 +26,6 @@ int main() {
       ArticoreRuntime*, const float*, uint32_t);
   using ProductIk = int32_t (*)(
       ArticoreRuntime*, const float*, const float*, float*, uint32_t);
-  using MoveJointTrajectory = int32_t (*)(
-      ArticoreRuntime*, const ArticoreTrajectoryWaypoint*, uint32_t,
-      const ArticoreTrajectoryConfig*, uint64_t*);
   using MoveLinearTrajectory = int32_t (*)(
       ArticoreRuntime*, uint32_t, const float*, const float*, double,
       uint64_t*);
@@ -65,9 +62,6 @@ int main() {
   static_assert(same_signature<
       decltype(&articore_runtime_solve_ik), ProductIk>);
   static_assert(same_signature<
-      decltype(&articore_runtime_move_joint_trajectory),
-      MoveJointTrajectory>);
-  static_assert(same_signature<
       decltype(&articore_runtime_move_linear_trajectory), MoveLinearTrajectory>);
   static_assert(same_signature<
       decltype(&articore_runtime_move_linear_trajectory_with_point_count),
@@ -90,8 +84,6 @@ int main() {
   static_assert(same_signature<
       decltype(&articore_runtime_disable_motors), MotorPowerBatch>);
 
-  static_assert(sizeof(ArticoreTrajectoryWaypoint) == 192);
-  static_assert(sizeof(ArticoreTrajectoryConfig) == 236);
   static_assert(sizeof(ArticoreMotionStatus) == 568);
   static_assert(sizeof(ArticoreProductArmState) == 152);
   static_assert(sizeof(ArticoreProductState) == 392);
@@ -157,7 +149,26 @@ int main() {
           articore_runtime_last_error(),
           "joint angle/velocity limits output is null or too small") == 0;
 
+  float speed_rad_s = 0.0f;
   float acceleration_rad_s2 = 0.0f;
+  const bool maximum_speed_validation =
+      articore_runtime_get_max_speed(nullptr, nullptr) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(
+          articore_runtime_last_error(),
+          "max_speed_rad_s output is null") == 0 &&
+      articore_runtime_get_max_speed(nullptr, &speed_rad_s) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(articore_runtime_last_error(), "runtime is null") == 0 &&
+      articore_runtime_set_max_speed(nullptr, -0.1f) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      articore_runtime_set_max_speed(nullptr, 3.15f) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      articore_runtime_set_max_speed(nullptr, 1.005f) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      articore_runtime_set_max_speed(
+          nullptr, std::numeric_limits<float>::quiet_NaN()) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT;
   const bool maximum_acceleration_validation =
       articore_runtime_get_max_acceleration(nullptr, nullptr) ==
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
@@ -247,6 +258,7 @@ int main() {
   ArticoreRuntime* metadata_runtime = nullptr;
   ArticoreProductJointAngleVelLimits limits{};
   limits.struct_size = sizeof(limits);
+  float configured_speed = -1.0f;
   float configured_acceleration = 0.0f;
   bool product_limits_checked = true;
   if (if_nametoindex("can-left") != 0 && if_nametoindex("can-right") != 0) {
@@ -260,17 +272,28 @@ int main() {
         limits.joint_count == ARTICORE_PRODUCT_DUAL_ARM_DOF &&
         std::fabs(limits.lower_angles[0] + 2.745f) < 1e-6f &&
         std::fabs(limits.velocity_limits[0] - 5.0f) < 1e-6f &&
+        articore_runtime_get_max_speed(
+            metadata_runtime, &configured_speed) == ARTICORE_OPERATION_OK &&
+        configured_speed == 0.0f &&
         articore_runtime_get_max_acceleration(
             metadata_runtime, &configured_acceleration) ==
-            ARTICORE_OPERATION_INVALID_STATE &&
-        std::strstr(
-            articore_runtime_last_error(),
-            "ordinary PV acceleration is fixed per joint") != nullptr &&
+            ARTICORE_OPERATION_OK &&
+        configured_acceleration == 0.0f &&
+        articore_runtime_set_max_speed(metadata_runtime, 3.0f) ==
+            ARTICORE_OPERATION_OK &&
         articore_runtime_set_max_acceleration(metadata_runtime, 4.56f) ==
-            ARTICORE_OPERATION_INVALID_STATE &&
-        std::strstr(
-            articore_runtime_last_error(),
-            "use speed_percent 1..100") != nullptr;
+            ARTICORE_OPERATION_OK &&
+        articore_runtime_get_max_speed(
+            metadata_runtime, &configured_speed) == ARTICORE_OPERATION_OK &&
+        std::fabs(configured_speed - 3.0f) < 1e-6f &&
+        articore_runtime_get_max_acceleration(
+            metadata_runtime, &configured_acceleration) ==
+            ARTICORE_OPERATION_OK &&
+        std::fabs(configured_acceleration - 4.56f) < 1e-6f &&
+        articore_runtime_set_max_speed(metadata_runtime, 0.0f) ==
+            ARTICORE_OPERATION_OK &&
+        articore_runtime_set_max_acceleration(metadata_runtime, 0.0f) ==
+            ARTICORE_OPERATION_OK;
   }
   articore_runtime_free(metadata_runtime);
 
@@ -282,8 +305,9 @@ int main() {
       &articore_runtime_set_joint_mit_fast_follow &&
       &articore_runtime_set_max_acceleration &&
       &articore_runtime_get_max_acceleration &&
+      &articore_runtime_set_max_speed &&
+      &articore_runtime_get_max_speed &&
       &articore_runtime_submit_mit_frame &&
-      &articore_runtime_move_joint_trajectory &&
       &articore_runtime_get_motion_status &&
       &articore_runtime_cancel_motion &&
       &articore_runtime_cancel_all_motions &&
@@ -307,15 +331,16 @@ int main() {
       &articore_runtime_estop && &articore_runtime_recover &&
       &articore_robot_model_create && &articore_robot_model_fk;
 
-  if (articore_runtime_abi_version() != 0x000B0004U ||
+  if (articore_runtime_abi_version() != 0x000C0000U ||
       !symbols_present || !gripper_validation || !state_size_checked ||
       !state_runtime_checked || !health_size_checked ||
       !joint_limits_size_checked || !maximum_acceleration_validation ||
+      !maximum_speed_validation ||
       !product_ik_validation || !joint_command_validation ||
       !factory_validation || !product_limits_checked) {
-    std::cerr << "Articore Runtime ABI 11.4 contract is incomplete\n";
+    std::cerr << "Articore Runtime ABI 12.0 contract is incomplete\n";
     return 1;
   }
-  std::cout << "Articore Runtime ABI 11.4 smoke test passed\n";
+  std::cout << "Articore Runtime ABI 12.0 smoke test passed\n";
   return 0;
 }

@@ -244,6 +244,48 @@ void SafetyRuntime::update_joint_pv_motion_limits(
   wakeup_.notify_all();
 }
 
+void SafetyRuntime::update_joint_pv_profile_limits(
+    const std::vector<float>& maximum_velocities,
+    const std::vector<float>& maximum_accelerations) {
+  if (maximum_velocities.size() != maximum_accelerations.size() ||
+      maximum_velocities.empty()) {
+    throw std::invalid_argument(
+        "ordinary PV per-joint limits must have the same non-zero size");
+  }
+
+  std::lock_guard<std::mutex> command_lock(command_mutex_);
+  if (!arm_mailbox_.valid || !arm_mailbox_.user_command ||
+      !arm_mailbox_.joint_position) {
+    return;
+  }
+  if (arm_mailbox_.pv.empty() || !arm_mailbox_.pv_per_joint_profile ||
+      maximum_velocities.size() != arm_mailbox_.pv.size()) {
+    throw std::runtime_error(
+        "PV profile-limit update requires an active per-joint ordinary PV command");
+  }
+
+  for (std::size_t index = 0; index < arm_mailbox_.pv.size(); ++index) {
+    const float velocity = maximum_velocities[index];
+    const float acceleration = maximum_accelerations[index];
+    const auto& limits = joint_config(arm_mailbox_.pv[index].motor);
+    if (!finite(velocity) || velocity <= 0.0f ||
+        velocity > limits.velocity_limit || !finite(acceleration) ||
+        acceleration <= 0.0f) {
+      throw std::invalid_argument(
+          motor_roles_.at(arm_mailbox_.pv[index].motor) +
+          ": invalid ordinary PV per-joint motion limit");
+    }
+  }
+
+  arm_mailbox_.pv_reference_velocity_limits = maximum_velocities;
+  arm_mailbox_.pv_reference_acceleration_limits = maximum_accelerations;
+  arm_mailbox_.max_reference_velocity = *std::max_element(
+      maximum_velocities.begin(), maximum_velocities.end());
+  arm_mailbox_.max_reference_acceleration = *std::max_element(
+      maximum_accelerations.begin(), maximum_accelerations.end());
+  wakeup_.notify_all();
+}
+
 void SafetyRuntime::install_joint_position(
     ArticoreControlMode requested_mode,
     const std::vector<std::pair<void*, float>>& targets,
@@ -406,8 +448,9 @@ void SafetyRuntime::install_joint_position(
   if (requested_mode == ARTICORE_MODE_PV) {
     next.pv.reserve(targets.size());
     next.pv_reference_velocities.reserve(targets.size());
-    next.pv_hold_confirmation_cycles.assign(targets.size(), 0);
-    next.pv_stationary_hold.assign(targets.size(), 0);
+    next.pv_hold_confirmation_cycles.reserve(targets.size());
+    next.pv_stationary_hold.reserve(targets.size());
+    next.pv_hold_target_positions.reserve(targets.size());
     if (per_joint_profile) {
       next.pv_reference_velocity_limits =
           *pv_reference_velocity_limits;
@@ -440,6 +483,9 @@ void SafetyRuntime::install_joint_position(
     float current_position = state.pos;
     float current_reference_velocity = 0.0f;
     float current_drive_velocity = 0.0f;
+    uint16_t current_hold_confirmations = 0;
+    uint8_t current_stationary_hold = 0;
+    float current_hold_target = final_position;
     if (continuing) {
       if (requested_mode == ARTICORE_MODE_PV) {
         const auto previous = std::find_if(
@@ -470,6 +516,23 @@ void SafetyRuntime::install_joint_position(
           current_reference_velocity =
               arm_mailbox_.pv_reference_velocities[previous_index];
         }
+        if (arm_mailbox_.pv_hold_confirmation_cycles.size() ==
+                arm_mailbox_.pv.size() &&
+            arm_mailbox_.pv_stationary_hold.size() ==
+                arm_mailbox_.pv.size() &&
+            arm_mailbox_.pv_hold_target_positions.size() ==
+                arm_mailbox_.pv.size()) {
+          const float previous_hold_target =
+              arm_mailbox_.pv_hold_target_positions[previous_index];
+          if (std::abs(final_position - previous_hold_target) <=
+              kNativeOrdinaryPvHoldTargetTolerance) {
+            current_hold_confirmations =
+                arm_mailbox_.pv_hold_confirmation_cycles[previous_index];
+            current_stationary_hold =
+                arm_mailbox_.pv_stationary_hold[previous_index];
+            current_hold_target = previous_hold_target;
+          }
+        }
       } else {
         const auto previous = std::find_if(
             arm_mailbox_.mit.begin(), arm_mailbox_.mit.end(),
@@ -492,6 +555,10 @@ void SafetyRuntime::install_joint_position(
               ? current_drive_velocity
               : std::max(config_.safe_pv_velocity_limit, pv_velocity_limit)});
       next.pv_reference_velocities.push_back(current_reference_velocity);
+      next.pv_hold_confirmation_cycles.push_back(
+          current_hold_confirmations);
+      next.pv_stationary_hold.push_back(current_stationary_hold);
+      next.pv_hold_target_positions.push_back(current_hold_target);
       if (per_joint_profile) {
         next.pv_drive_velocity_commands.push_back(current_drive_velocity);
       }

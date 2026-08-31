@@ -74,7 +74,7 @@ jobs:
           runtime = files["motor_drive_layer_native/lib/libarticore_runtime.so"]
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x000B0004
+          assert runtime_lib.articore_runtime_abi_version() == 0x000C0000
           assert hasattr(runtime_lib, "articore_runtime_set_joint_pv")
           assert hasattr(runtime_lib, "articore_runtime_set_joint_mit")
           assert hasattr(runtime_lib, "articore_runtime_set_joint_mit_direct")
@@ -97,7 +97,7 @@ jobs:
           assert hasattr(runtime_lib, "articore_runtime_get_state")
           assert hasattr(runtime_lib, "articore_runtime_get_health")
           assert hasattr(runtime_lib, "articore_runtime_set_grippers")
-          assert hasattr(runtime_lib, "articore_runtime_move_joint_trajectory")
+          assert not hasattr(runtime_lib, "articore_runtime_move_joint_trajectory")
           assert not hasattr(runtime_lib, "articore_runtime_start_trajectory")
           assert hasattr(runtime_lib, "articore_runtime_get_motion_status")
           assert hasattr(runtime_lib, "articore_runtime_cancel_motion")

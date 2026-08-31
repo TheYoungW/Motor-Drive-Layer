@@ -131,6 +131,35 @@ class Runtime final {
         "set_joint_pv");
   }
 
+  void set_max_speed(float max_speed_rad_s) {
+    detail::check(
+        articore_runtime_set_max_speed(checked(), max_speed_rad_s),
+        "set_max_speed");
+  }
+
+  float max_speed() const {
+    float result = 0.0f;
+    detail::check(
+        articore_runtime_get_max_speed(checked(), &result),
+        "get_max_speed");
+    return result;
+  }
+
+  void set_max_acceleration(float max_acceleration_rad_s2) {
+    detail::check(
+        articore_runtime_set_max_acceleration(
+            checked(), max_acceleration_rad_s2),
+        "set_max_acceleration");
+  }
+
+  float max_acceleration() const {
+    float result = 0.0f;
+    detail::check(
+        articore_runtime_get_max_acceleration(checked(), &result),
+        "get_max_acceleration");
+    return result;
+  }
+
   // ABI/source compatibility for the former variable-speed stepped MIT API.
   // New callers should use one of the position-only overloads below.
   void set_joint_mit(const std::vector<float>& positions,
@@ -167,18 +196,6 @@ class Runtime final {
             feedforward_torques.data(), kp.data(), kd.data(),
             detail::size(positions)),
         "submit_mit_frame");
-  }
-
-  uint64_t move_joint_trajectory(
-      const std::vector<ArticoreTrajectoryWaypoint>& waypoints,
-      const ArticoreTrajectoryConfig& config) {
-    uint64_t motion_id = 0;
-    detail::check(
-        articore_runtime_move_joint_trajectory(
-            checked(), waypoints.data(),
-            static_cast<uint32_t>(waypoints.size()), &config, &motion_id),
-        "move_joint_trajectory");
-    return motion_id;
   }
 
   ArticoreMotionStatus motion_status(uint64_t motion_id) const {

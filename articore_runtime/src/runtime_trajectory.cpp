@@ -43,8 +43,6 @@ constexpr double kMaximumArrivalTimeoutSeconds = 10.0;
 
 int32_t motion_type(ArticoreRuntimeOperation operation) {
   switch (operation) {
-    case ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY:
-      return ARTICORE_MOTION_JOINT_TRAJECTORY;
     case ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY:
       return ARTICORE_MOTION_CARTESIAN_LINEAR;
     case ARTICORE_OPERATION_MOVE_CIRCULAR_TRAJECTORY:
@@ -329,133 +327,6 @@ double sample_acceleration(const std::array<double, 6>& coefficients,
 
 }  // namespace
 
-std::vector<NativeTrajectoryWaypoint> resample_realtime_pv_joint_trajectory(
-    const std::vector<NativeTrajectoryWaypoint>& waypoints,
-    const std::vector<NativeTrajectoryJoint>& joints,
-    double maximum_period_s) {
-  const std::size_t joint_count = joints.size();
-  if (waypoints.size() < 2 || joint_count == 0 ||
-      !std::isfinite(maximum_period_s) || maximum_period_s <= 0.0) {
-    throw std::invalid_argument(
-        "joint real-time PV resampling requires waypoints, joints, and a "
-        "positive period");
-  }
-  auto prepared = waypoints;
-  for (std::size_t waypoint_index = 0;
-       waypoint_index < prepared.size(); ++waypoint_index) {
-    auto& waypoint = prepared[waypoint_index];
-    if (!std::isfinite(waypoint.time_s) ||
-        (waypoint_index > 0 &&
-         waypoint.time_s <= prepared[waypoint_index - 1U].time_s) ||
-        waypoint.positions.size() != joint_count ||
-        waypoint.velocities.size() != joint_count ||
-        waypoint.accelerations.size() != joint_count) {
-      throw std::invalid_argument(
-          "joint real-time PV source waypoints are inconsistent");
-    }
-  }
-
-  for (std::size_t joint_index = 0; joint_index < joint_count; ++joint_index) {
-    const uint32_t bit = uint32_t{1} << joint_index;
-    for (std::size_t waypoint_index = 0;
-         waypoint_index < prepared.size(); ++waypoint_index) {
-      auto& waypoint = prepared[waypoint_index];
-      if ((waypoint.velocity_valid_mask & bit) == 0) {
-        waypoint.velocities[joint_index] =
-            waypoint_index == 0 || waypoint_index + 1 == prepared.size()
-            ? 0.0f
-            : static_cast<float>(
-                  (prepared[waypoint_index + 1U].positions[joint_index] -
-                   prepared[waypoint_index - 1U].positions[joint_index]) /
-                  (prepared[waypoint_index + 1U].time_s -
-                   prepared[waypoint_index - 1U].time_s));
-      }
-      if ((waypoint.acceleration_valid_mask & bit) == 0) {
-        if (waypoint_index == 0 ||
-            waypoint_index + 1 == prepared.size()) {
-          waypoint.accelerations[joint_index] = 0.0f;
-        } else {
-          const auto& previous = prepared[waypoint_index - 1U];
-          const auto& next = prepared[waypoint_index + 1U];
-          const double previous_slope =
-              (waypoint.positions[joint_index] -
-               previous.positions[joint_index]) /
-              (waypoint.time_s - previous.time_s);
-          const double next_slope =
-              (next.positions[joint_index] -
-               waypoint.positions[joint_index]) /
-              (next.time_s - waypoint.time_s);
-          waypoint.accelerations[joint_index] = static_cast<float>(
-              2.0 * (next_slope - previous_slope) /
-              (next.time_s - previous.time_s));
-        }
-      }
-    }
-  }
-
-  const uint32_t valid_mask = joint_count == 32
-      ? std::numeric_limits<uint32_t>::max()
-      : (uint32_t{1} << joint_count) - 1U;
-  const std::vector<int8_t> no_recovery(joint_count, 0);
-  std::vector<NativeTrajectoryWaypoint> result;
-  for (std::size_t segment_index = 0;
-       segment_index + 1 < prepared.size(); ++segment_index) {
-    const auto& start = prepared[segment_index];
-    const auto& end = prepared[segment_index + 1U];
-    const double duration_s = end.time_s - start.time_s;
-    const double requested_segments = std::ceil(duration_s / maximum_period_s);
-    if (!std::isfinite(requested_segments) || requested_segments < 1.0 ||
-        requested_segments > ARTICORE_MAX_TRAJECTORY_WAYPOINTS) {
-      throw std::invalid_argument(
-          "joint duration requires more than the native point capacity");
-    }
-    const auto segment_count = static_cast<uint32_t>(requested_segments);
-    if (result.size() + segment_count + 1U >
-        ARTICORE_MAX_TRAJECTORY_WAYPOINTS) {
-      throw std::invalid_argument(
-          "joint trajectory requires more than the native point capacity");
-    }
-    std::vector<std::array<double, 6>> coefficients;
-    coefficients.reserve(joint_count);
-    for (std::size_t joint_index = 0; joint_index < joint_count; ++joint_index) {
-      coefficients.push_back(quintic_coefficients(
-          start.positions[joint_index], start.velocities[joint_index],
-          start.accelerations[joint_index], end.positions[joint_index],
-          end.velocities[joint_index], end.accelerations[joint_index],
-          duration_s));
-    }
-    validate_segment_extrema(
-        duration_s, coefficients, joints, no_recovery,
-        static_cast<uint32_t>(segment_index), true);
-    for (uint32_t sample_index = 0; sample_index < segment_count;
-         ++sample_index) {
-      const double u = static_cast<double>(sample_index) /
-          static_cast<double>(segment_count);
-      NativeTrajectoryWaypoint sample;
-      sample.time_s = start.time_s + u * duration_s;
-      sample.positions.reserve(joint_count);
-      sample.velocities.reserve(joint_count);
-      sample.accelerations.reserve(joint_count);
-      for (const auto& joint_coefficients : coefficients) {
-        sample.positions.push_back(
-            static_cast<float>(sample_polynomial(joint_coefficients, u)));
-        sample.velocities.push_back(static_cast<float>(
-            sample_velocity(joint_coefficients, u, duration_s)));
-        sample.accelerations.push_back(static_cast<float>(
-            sample_acceleration(joint_coefficients, u, duration_s)));
-      }
-      sample.velocity_valid_mask = valid_mask;
-      sample.acceleration_valid_mask = valid_mask;
-      result.push_back(std::move(sample));
-    }
-  }
-  auto final = prepared.back();
-  final.velocity_valid_mask = valid_mask;
-  final.acceleration_valid_mask = valid_mask;
-  result.push_back(std::move(final));
-  return result;
-}
-
 uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
                                          uint64_t replace_motion_id,
                                          CommandTransaction* transaction,
@@ -504,7 +375,7 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
     throw std::invalid_argument("trajectory joint count is invalid");
   }
   if (waypoint_count < 2 ||
-      waypoint_count > ARTICORE_MAX_TRAJECTORY_WAYPOINTS) {
+      waypoint_count > kNativeMaximumTrajectoryWaypoints) {
     throw std::invalid_argument("trajectory requires 2..10000 waypoints");
   }
   if (request.approach_segment_count >= waypoint_count) {

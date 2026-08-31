@@ -3978,6 +3978,15 @@ void test_yunyi_ordinary_pv_uses_per_joint_time_scaled_hard_limits() {
               articore::yunyi_ordinary_pv_acceleration_limit(0, 50.0f) -
               1.9634954f) < 1.0e-6f,
           "fifty percent halves velocity and quarters acceleration");
+  require(std::abs(articore::yunyi_ordinary_pv_velocity_limit(
+                       0, 10.0f, 3.0f) - 0.3f) < 1.0e-6f &&
+              std::abs(articore::yunyi_ordinary_pv_acceleration_limit(
+                       0, 10.0f, 4.0f) - 0.04f) < 1.0e-6f &&
+              std::abs(articore::yunyi_ordinary_pv_velocity_limit(
+                       3, 100.0f, 3.0f) - 3.0f) < 1.0e-6f &&
+              std::abs(articore::yunyi_ordinary_pv_acceleration_limit(
+                       3, 100.0f, 4.0f) - 4.0f) < 1.0e-6f,
+          "configured PV limits become the 100-percent base for every joint");
   require(std::abs(articore::yunyi_effective_pv_reference_velocity(50.0f) -
                        1.0f) < 1.0e-6f &&
               std::abs(articore::kYunyiTrajectoryPvAccelerationLimit - 6.0f) <
@@ -4080,6 +4089,14 @@ void test_ordinary_pv_per_joint_profile_executes_at_native_rate() {
                     velocity_before_replacement <= 0.0041f,
             "target replacement sends the new final P and preserves the V ramp state");
   }
+  runtime.update_joint_pv_profile_limits({0.10f, 0.20f}, {10.0f, 10.0f});
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_pv.size() == 2 &&
+                driver.last_pv[0].velocity_limit <= 0.101f &&
+                driver.last_pv[1].velocity_limit <= 0.201f;
+          }, 250ms),
+          "an active ordinary PV command adopts updated per-joint limits");
   runtime.disable();
 }
 
@@ -4385,6 +4402,88 @@ void test_ordinary_pv_uses_quiet_feedback_confirmed_final_hold() {
           }, 100ms),
           "ordinary PV independently restores correction when a held joint "
           "leaves the arrival window");
+  runtime.disable();
+}
+
+void test_high_rate_ordinary_pv_preserves_hold_debounce_and_releases_on_target() {
+  FakeDriver driver;
+  g_driver = &driver;
+  driver.emulate_arm_feedback = true;
+  driver.emulated_pv_position_offset = 0.001f;
+  driver.emulated_pv_velocity = 0.10f;
+  auto motors = descriptors(driver);
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100),
+      g_left_controller, g_right_controller, motors);
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(
+      configured.data(), static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+
+  ArticoreJointPvTarget targets[] = {
+      {sizeof(ArticoreJointPvTarget), motors[0].motor, 0.10f},
+      {sizeof(ArticoreJointPvTarget), motors[1].motor, 1.10f},
+  };
+  const auto submit = [&] {
+    runtime.set_joint_pv_profile(targets, 2, {2.0f, 2.0f}, {6.0f, 6.0f});
+  };
+
+  for (int iteration = 0; iteration < 25; ++iteration) {
+    submit();
+    std::this_thread::sleep_for(4ms);
+  }
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.last_pv.size() == 2 &&
+                driver.last_pv[0].velocity_limit > 0.0f &&
+                driver.last_pv[1].velocity_limit > 0.0f,
+            "actual joint velocity prevents V=0 while a 100 Hz-class "
+            "publisher is still moving");
+    driver.emulated_pv_velocity = 0.0f;
+  }
+
+  std::size_t stationary_baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    stationary_baseline = driver.pv_history.size();
+  }
+  for (int iteration = 0; iteration < 35; ++iteration) {
+    submit();
+    std::this_thread::sleep_for(4ms);
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return std::any_of(
+                driver.pv_history.begin() +
+                    std::min(stationary_baseline, driver.pv_history.size()),
+                driver.pv_history.end(),
+                [](const std::vector<ArticorePosVelCommand>& frame) {
+                  return frame.size() == 2 &&
+                      frame[0].velocity_limit == 0.0f &&
+                      frame[1].velocity_limit == 0.0f;
+                });
+          }, 50ms),
+          "identical high-rate endpoint replacements preserve the 50 ms "
+          "arrival debounce and enter V=0 hold");
+
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.emulate_arm_feedback = false;
+  }
+  targets[0].target_position += 0.01f;
+  targets[1].target_position += 0.01f;
+  submit();
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            return driver.last_pv.size() == 2 &&
+                std::abs(driver.last_pv[0].target_position - 0.11f) < 1e-6f &&
+                std::abs(driver.last_pv[1].target_position - 1.11f) < 1e-6f &&
+                driver.last_pv[0].velocity_limit > 0.0f &&
+                driver.last_pv[1].velocity_limit > 0.0f;
+          }, 100ms),
+          "a new endpoint smaller than the feedback hold hysteresis releases "
+          "V=0 immediately from its stationary target anchor");
   runtime.disable();
 }
 
@@ -4940,7 +5039,7 @@ void test_native_quintic_pv_trajectory_sends_at_500_hz() {
           }, 1000ms), "native trajectory completes asynchronously");
   const auto status = runtime.motion_status();
   require(status.motion_id == id &&
-              status.motion_type == ARTICORE_MOTION_JOINT_TRAJECTORY &&
+              status.motion_type == 0 &&
               status.waypoint_count == 2 &&
               status.active_segment == 0 &&
               std::abs(status.progress - 1.0f) < 1e-6f &&
@@ -5336,7 +5435,7 @@ void test_realtime_pv_accumulates_sub_feedback_quantum_steps() {
   runtime.enable(ARTICORE_MODE_PV);
 
   auto request = trajectory_request(motors, ARTICORE_MODE_PV, 0.5);
-  request.operation = ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY;
+  request.operation = ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY;
   request.execution = articore::NativeTrajectoryExecution::RealtimePv;
   request.pv_reference_velocity = 1.0f;
   request.pv_reference_acceleration = 4.0f;
@@ -5395,33 +5494,6 @@ void test_realtime_pv_accumulates_sub_feedback_quantum_steps() {
             "minimum-step scheduling still sends the exact final endpoint");
   }
   runtime.disable();
-}
-
-void test_joint_pv_resampling_uses_quintic_time_law() {
-  FakeDriver driver;
-  g_driver = &driver;
-  const auto motors = descriptors(driver);
-  const auto source = trajectory_request(motors, ARTICORE_MODE_PV, 5.0);
-  const auto sampled = articore::resample_realtime_pv_joint_trajectory(
-      source.waypoints, source.joints,
-      articore::kNativeRealtimePvTrajectoryPeriodSeconds);
-  require(sampled.size() == 501 &&
-              std::abs(sampled.front().time_s) < 1e-12 &&
-              std::abs(sampled.back().time_s - 5.0) < 1e-12 &&
-              std::abs(sampled.front().positions[0]) < 1e-7f &&
-              std::abs(sampled.back().positions[0] - 0.2f) < 1e-7f,
-          "five-second joint PV motion expands to exact 100 Hz endpoint "
-          "knots");
-  const float first_step =
-      sampled[1].positions[0] - sampled[0].positions[0];
-  const float middle_step =
-      sampled[251].positions[0] - sampled[250].positions[0];
-  require(first_step > 0.0f && middle_step > first_step * 1000.0f &&
-              std::abs(sampled.front().velocities[0]) < 1e-7f &&
-              std::abs(sampled.back().velocities[0]) < 1e-7f &&
-              std::abs(sampled[250].velocities[0] - 0.075f) < 1e-4f,
-          "joint PV knots follow a rest-to-rest quintic time law instead of "
-          "a constant-speed line");
 }
 
 void test_realtime_pv_does_not_treat_quintic_derivatives_as_commands() {
@@ -6178,7 +6250,7 @@ void test_native_trajectory_arrival_timeout_is_reported_in_health() {
           "arrival timeout status contains the failing target feedback detail");
   const auto health = runtime.health();
   require(health.state == ARTICORE_RUNNING &&
-              health.last_operation == ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY &&
+              health.last_operation == ARTICORE_OPERATION_NONE &&
               health.last_operation_code == ARTICORE_OPERATION_FEEDBACK &&
               std::string(health.last_operation_error).find(
                   "arrival timed out") != std::string::npos &&
@@ -7845,6 +7917,7 @@ int main() {
     RUN_TEST(test_ordinary_pv_reference_limits_acceleration_and_brakes);
     RUN_TEST(test_ordinary_pv_position_latest_value_and_raw_pv_remains_direct);
     RUN_TEST(test_ordinary_pv_uses_quiet_feedback_confirmed_final_hold);
+    RUN_TEST(test_high_rate_ordinary_pv_preserves_hold_debounce_and_releases_on_target);
     RUN_TEST(test_ordinary_mit_position_reversal_and_speed_update_are_continuous);
     RUN_TEST(test_raw_mit_targets_remain_direct_after_ordinary_position_control);
     RUN_TEST(test_ordinary_mit_position_reinitializes_after_reenable);
@@ -7859,7 +7932,6 @@ int main() {
     RUN_TEST(test_realtime_pv_uses_internal_500_hz_transport_rate);
     RUN_TEST(test_realtime_pv_resamples_100_hz_knots_at_500_hz);
     RUN_TEST(test_realtime_pv_accumulates_sub_feedback_quantum_steps);
-    RUN_TEST(test_joint_pv_resampling_uses_quintic_time_law);
     RUN_TEST(test_realtime_pv_does_not_treat_quintic_derivatives_as_commands);
     RUN_TEST(test_mit_trajectory_executes_quintic_approach);
     RUN_TEST(test_cartesian_linear_and_circular_complete_on_estimated_time);

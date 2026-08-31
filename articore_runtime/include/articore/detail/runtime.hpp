@@ -65,6 +65,8 @@ struct ArticoreMotorMaintenanceApi {
 
 namespace articore {
 
+inline constexpr uint32_t kNativeMaximumTrajectoryWaypoints = 30000;
+
 class InvalidRuntimeState : public std::runtime_error {
  public:
   using std::runtime_error::runtime_error;
@@ -116,8 +118,17 @@ inline constexpr float kNativePvSettlingVelocityLimit = 0.05f;
 inline constexpr float kNativeOrdinaryPvDefaultAcceleration = 6.0f;
 inline constexpr float kNativeRealtimePvTrajectoryAccelerationLimit = 6.0f;
 inline constexpr float kNativeOrdinaryPvHoldPositionTolerance = 0.002f;
-inline constexpr float kNativeOrdinaryPvHoldReleaseTolerance = 0.020f;
-inline constexpr uint16_t kNativeOrdinaryPvHoldConfirmationCycles = 5;
+// SafetyRuntime sees native motor velocity here. The 8009's first non-zero
+// feedback code is about 0.011 rad/s, so the threshold must include one native
+// feedback quantum without admitting visible motion.
+inline constexpr float kNativeOrdinaryPvHoldVelocityTolerance = 0.02f;
+// Keep only a small quantization margin around the arrival window. The former
+// 0.020 rad release threshold could freeze a V=0 joint visibly away from P.
+inline constexpr float kNativeOrdinaryPvHoldReleaseTolerance = 0.0025f;
+// Fifty milliseconds is longer than a 100 Hz publisher period. Identical
+// endpoint replacements preserve this counter, while a moving publisher keeps
+// resetting it before V=0 can be armed.
+inline constexpr uint16_t kNativeOrdinaryPvHoldConfirmationCycles = 25;
 
 // Ordinary PV is a latest-endpoint-wins online step command. Runtime advances
 // P toward that endpoint with the commanded reference speed and acceleration
@@ -134,6 +145,8 @@ inline constexpr double kNativeRealtimePvTrajectoryPeriodSeconds =
 // deadband neither shortens duration nor loses the exact final endpoint.
 inline constexpr float kNativePvPositionFeedbackQuantum =
     25.0f / 65535.0f;
+inline constexpr float kNativeOrdinaryPvHoldTargetTolerance =
+    kNativePvPositionFeedbackQuantum;
 
 inline float native_realtime_pv_effective_position(
     float ideal_position, float previous_command_position,
@@ -340,7 +353,7 @@ enum class NativeTrajectoryExecution {
 
 struct NativeTrajectoryRequest {
   ArticoreControlMode mode = ARTICORE_MODE_MIT;
-  ArticoreRuntimeOperation operation = ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY;
+  ArticoreRuntimeOperation operation = ARTICORE_OPERATION_NONE;
   NativeTrajectoryExecution execution = NativeTrajectoryExecution::Quintic;
   float pv_reference_velocity = 0.0f;
   float pv_reference_acceleration = 0.0f;
@@ -380,11 +393,6 @@ struct NativeTrajectorySample {
   std::vector<float> velocities;
   std::vector<float> accelerations;
 };
-
-std::vector<NativeTrajectoryWaypoint> resample_realtime_pv_joint_trajectory(
-    const std::vector<NativeTrajectoryWaypoint>& waypoints,
-    const std::vector<NativeTrajectoryJoint>& joints,
-    double maximum_period_s);
 
 namespace detail {
 
@@ -535,6 +543,9 @@ class SafetyRuntime {
   void update_joint_pv_motion_limits(float max_reference_velocity,
                                      float max_reference_acceleration,
                                      float pv_velocity_limit);
+  void update_joint_pv_profile_limits(
+      const std::vector<float>& maximum_velocities,
+      const std::vector<float>& maximum_accelerations);
   void submit_gripper_mit(const ArticoreMitCommand* commands, uint32_t count);
   void set_gripper_openings(const ArticoreGripperTarget* targets,
                             uint32_t count);
@@ -697,9 +708,12 @@ class SafetyRuntime {
     // quiet final hold as native Cartesian paths.
     // Each joint transitions
     // to V=0 only after fresh feedback remains close to its final target for a
-    // bounded ordinary-control window; a larger error releases it for correction.
+    // bounded ordinary-control window; a larger error or a new high-frequency
+    // endpoint releases it for correction. The target anchor keeps cumulative
+    // sub-quantum publisher motion from being mistaken for a stationary target.
     std::vector<uint16_t> pv_hold_confirmation_cycles;
     std::vector<uint8_t> pv_stationary_hold;
+    std::vector<float> pv_hold_target_positions;
   };
 
   struct GravityArm {
@@ -753,7 +767,7 @@ class SafetyRuntime {
     Clock::time_point settling_started_at{};
     Clock::time_point settling_stable_started_at{};
     Clock::time_point hold_unstable_started_at{};
-    ArticoreRuntimeOperation operation = ARTICORE_OPERATION_MOVE_JOINT_TRAJECTORY;
+    ArticoreRuntimeOperation operation = ARTICORE_OPERATION_NONE;
     NativeTrajectoryExecution execution = NativeTrajectoryExecution::Quintic;
     float pv_reference_velocity = 0.0f;
     float pv_reference_acceleration = 0.0f;

@@ -158,15 +158,6 @@ if(BUILD_TESTING)
   target_link_libraries(articore_robot_model_abi_test PRIVATE articore_runtime)
   add_test(NAME articore_robot_model_abi_test COMMAND articore_robot_model_abi_test)
 
-  # Built explicitly for guarded real-hardware acceptance; never registered
-  # with CTest because it enables and moves both arms.
-  add_executable(
-    articore_runtime_hardware_trajectory_smoke EXCLUDE_FROM_ALL
-    tests/hardware_trajectory_smoke.cpp
-  )
-  target_link_libraries(
-    articore_runtime_hardware_trajectory_smoke PRIVATE articore_runtime
-  )
   add_executable(
     articore_runtime_hardware_cartesian_planning_smoke EXCLUDE_FROM_ALL
     tests/hardware_cartesian_planning_smoke.cpp

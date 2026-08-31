@@ -20,6 +20,16 @@ int main() {
       void (articore::Runtime::*)(const std::vector<float>&);
   static_assert(std::is_same_v<decltype(&articore::Runtime::set_joint_pv),
                                JointPvSetter>);
+  using PvLimitSetter = void (articore::Runtime::*)(float);
+  using PvLimitGetter = float (articore::Runtime::*)() const;
+  static_assert(std::is_same_v<decltype(&articore::Runtime::set_max_speed),
+                               PvLimitSetter>);
+  static_assert(std::is_same_v<decltype(&articore::Runtime::max_speed),
+                               PvLimitGetter>);
+  static_assert(std::is_same_v<
+      decltype(&articore::Runtime::set_max_acceleration), PvLimitSetter>);
+  static_assert(std::is_same_v<decltype(&articore::Runtime::max_acceleration),
+                               PvLimitGetter>);
   static_assert(std::is_same_v<
       decltype(static_cast<JointMitSetter>(
           &articore::Runtime::set_joint_mit)),
@@ -31,12 +41,6 @@ int main() {
   static_assert(std::is_same_v<
       decltype(&articore::Runtime::set_joint_mit_fast_follow),
       JointMitDirectSetter>);
-  using MoveJointTrajectory = uint64_t (articore::Runtime::*)(
-      const std::vector<ArticoreTrajectoryWaypoint>&,
-      const ArticoreTrajectoryConfig&);
-  static_assert(std::is_same_v<
-      decltype(&articore::Runtime::move_joint_trajectory),
-      MoveJointTrajectory>);
   using SetPose = void (articore::Runtime::*)(
       const std::array<float, 6>&, const std::array<float, 6>&, float);
   static_assert(std::is_same_v<decltype(&articore::Runtime::set_pose),
