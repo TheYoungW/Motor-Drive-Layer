@@ -48,8 +48,8 @@ inline constexpr double kYunyiCartesianIkOrientationWeight = 0.20;
 // it must not create a new joint-motion trend for chatter detection.
 inline constexpr double kYunyiCartesianIkDirectionDeadband = 0.001;
 inline constexpr double kYunyiCartesianIkChatterExcursion = 0.010;
-// A 100 Hz caller has a 10 ms period. Keep two milliseconds outside the
-// numerical solve for ABI validation, locking and atomic command install.
+// Keep the numerical solve bounded so validation, locking and atomic command
+// installation remain responsive.
 inline constexpr std::chrono::microseconds kYunyiProductIkBudget{8000};
 
 inline float product_cartesian_reference_velocity_limit(

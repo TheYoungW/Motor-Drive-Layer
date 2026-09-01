@@ -436,7 +436,8 @@ int32_t set_pose_impl(
 
 int32_t move_linear_trajectory_impl(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* end_pose, uint64_t* motion_id) {
+    const float* end_pose, uint64_t* motion_id, bool enqueue = true,
+    ArticoreRuntimeOperation operation = ARTICORE_OPERATION_MOVE_LINEAR) {
   try {
     if (!runtime) throw std::invalid_argument("runtime is null");
     if (!motion_id) throw std::invalid_argument("motion_id output is null");
@@ -449,31 +450,41 @@ int32_t move_linear_trajectory_impl(
     CommandPlanningScope planning(safety);
     {
       auto snapshot = safety.begin_command_transaction();
-      planning.begin(snapshot, true);
-      reference = safety.planned_trajectory_tail_sample(joints, snapshot);
+      planning.begin(snapshot, enqueue);
+      reference = enqueue
+          ? safety.planned_trajectory_tail_sample(joints, snapshot)
+          : safety.planned_arm_sample(joints, snapshot);
     }
     const auto speed = cartesian_speed_scale(runtime);
-    auto plan = articore::build_linear_trajectory_plan_from_reference(
-        product, runtime->product_mode, side, reference, start_pose, end_pose,
-        speed.reference_acceleration, speed.reference_velocity);
+    auto plan = start_pose
+        ? articore::build_linear_trajectory_plan_from_reference(
+              product, runtime->product_mode, side, reference,
+              start_pose, end_pose, speed.reference_acceleration,
+              speed.reference_velocity)
+        : articore::build_linear_trajectory_plan_from_reference(
+              product, runtime->product_mode, side, reference,
+              end_pose, speed.reference_acceleration,
+              speed.reference_velocity);
+    plan.trajectory.operation = operation;
 
     auto transaction = safety.begin_command_transaction();
-    const auto current =
-        safety.planned_trajectory_tail_sample(joints, transaction);
+    const auto current = enqueue
+        ? safety.planned_trajectory_tail_sample(joints, transaction)
+        : safety.planned_arm_sample(joints, transaction);
     articore::require_unchanged_planned_reference(
         reference, current, "linear");
 
     const uint64_t new_id = safety.start_trajectory(
-        plan.trajectory, 0, &transaction, true, planning.token());
+        plan.trajectory, 0, &transaction, enqueue, planning.token());
     *motion_id = new_id;
     safety.record_operation_result(
-        ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY, ARTICORE_OPERATION_OK);
+        operation, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
     return ARTICORE_OPERATION_OK;
   } catch (const std::invalid_argument& error) {
     if (runtime && runtime->runtime) {
       runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY,
+          operation,
           ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
     }
     g_last_error = error.what();
@@ -481,7 +492,7 @@ int32_t move_linear_trajectory_impl(
   } catch (const std::exception& error) {
     if (runtime && runtime->runtime) {
       runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY,
+          operation,
           ARTICORE_OPERATION_INVALID_STATE, error.what());
     }
     g_last_error = error.what();
@@ -491,7 +502,7 @@ int32_t move_linear_trajectory_impl(
 
 int32_t move_linear_path_trajectory_impl(
     ArticoreRuntime* runtime, uint32_t side, const float* poses,
-    uint32_t pose_count, uint64_t* motion_id) {
+    uint32_t pose_count, uint64_t* motion_id, bool enqueue = true) {
   try {
     if (!runtime) throw std::invalid_argument("runtime is null");
     if (!motion_id) throw std::invalid_argument("motion_id output is null");
@@ -504,8 +515,10 @@ int32_t move_linear_path_trajectory_impl(
     CommandPlanningScope planning(safety);
     {
       auto snapshot = safety.begin_command_transaction();
-      planning.begin(snapshot, true);
-      reference = safety.planned_trajectory_tail_sample(joints, snapshot);
+      planning.begin(snapshot, enqueue);
+      reference = enqueue
+          ? safety.planned_trajectory_tail_sample(joints, snapshot)
+          : safety.planned_arm_sample(joints, snapshot);
     }
     const auto speed = cartesian_speed_scale(runtime);
     auto plan = articore::build_linear_path_trajectory_plan_from_reference(
@@ -513,12 +526,13 @@ int32_t move_linear_path_trajectory_impl(
         speed.reference_acceleration, speed.reference_velocity);
 
     auto transaction = safety.begin_command_transaction();
-    const auto current =
-        safety.planned_trajectory_tail_sample(joints, transaction);
+    const auto current = enqueue
+        ? safety.planned_trajectory_tail_sample(joints, transaction)
+        : safety.planned_arm_sample(joints, transaction);
     articore::require_unchanged_planned_reference(
         reference, current, "linear path");
     const uint64_t new_id = safety.start_trajectory(
-        plan.trajectory, 0, &transaction, true, planning.token());
+        plan.trajectory, 0, &transaction, enqueue, planning.token());
     *motion_id = new_id;
     safety.record_operation_result(
         ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY, ARTICORE_OPERATION_OK);
@@ -545,7 +559,8 @@ int32_t move_linear_path_trajectory_impl(
 
 int32_t move_circular_trajectory_impl(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* via_pose, const float* end_pose, uint64_t* motion_id) {
+    const float* via_pose, const float* end_pose, uint64_t* motion_id,
+    bool enqueue = true) {
   try {
     if (!runtime) throw std::invalid_argument("runtime is null");
     if (!motion_id) throw std::invalid_argument("motion_id output is null");
@@ -558,8 +573,10 @@ int32_t move_circular_trajectory_impl(
     CommandPlanningScope planning(safety);
     {
       auto snapshot = safety.begin_command_transaction();
-      planning.begin(snapshot, true);
-      reference = safety.planned_trajectory_tail_sample(joints, snapshot);
+      planning.begin(snapshot, enqueue);
+      reference = enqueue
+          ? safety.planned_trajectory_tail_sample(joints, snapshot)
+          : safety.planned_arm_sample(joints, snapshot);
     }
     const auto speed = cartesian_speed_scale(runtime);
     auto plan = articore::build_circular_trajectory_plan_from_reference(
@@ -568,12 +585,13 @@ int32_t move_circular_trajectory_impl(
         speed.reference_acceleration, speed.reference_velocity);
 
     auto transaction = safety.begin_command_transaction();
-    const auto current =
-        safety.planned_trajectory_tail_sample(joints, transaction);
+    const auto current = enqueue
+        ? safety.planned_trajectory_tail_sample(joints, transaction)
+        : safety.planned_arm_sample(joints, transaction);
     articore::require_unchanged_planned_reference(
         reference, current, "circular");
     const uint64_t new_id = safety.start_trajectory(
-        plan.trajectory, 0, &transaction, true, planning.token());
+        plan.trajectory, 0, &transaction, enqueue, planning.token());
 
     *motion_id = new_id;
     safety.record_operation_result(
@@ -732,7 +750,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (13U << 16);
+  return (14U << 16);
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -1369,6 +1387,49 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_pose(
       runtime, left_target_pose, right_target_pose, speed_percent);
 }
 
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(
+    ArticoreRuntime* runtime, uint32_t side, const float* target_pose) {
+  uint64_t ignored_motion_id = 0;
+  return move_linear_trajectory_impl(
+      runtime, side, nullptr, target_pose, &ignored_motion_id, false,
+      ARTICORE_OPERATION_MOVE_POSE);
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear(
+    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+    const float* end_pose) {
+  uint64_t ignored_motion_id = 0;
+  return move_linear_trajectory_impl(
+      runtime, side, start_pose, end_pose, &ignored_motion_id, false);
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_path(
+    ArticoreRuntime* runtime, uint32_t side, const float* poses,
+    uint32_t pose_count) {
+  uint64_t ignored_motion_id = 0;
+  return move_linear_path_trajectory_impl(
+      runtime, side, poses, pose_count, &ignored_motion_id, false);
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular(
+    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+    const float* via_pose, const float* end_pose) {
+  uint64_t ignored_motion_id = 0;
+  return move_circular_trajectory_impl(
+      runtime, side, start_pose, via_pose, end_pose, &ignored_motion_id,
+      false);
+}
+
+ARTICORE_RUNTIME_API int32_t articore_runtime_stop_motion(
+    ArticoreRuntime* runtime) {
+  const int32_t result = articore_runtime_cancel_all_motions(runtime);
+  if (result == ARTICORE_OPERATION_OK && runtime && runtime->runtime) {
+    runtime->runtime->record_operation_result(
+        ARTICORE_OPERATION_STOP_MOTION, ARTICORE_OPERATION_OK);
+  }
+  return result;
+}
+
 ARTICORE_RUNTIME_API int32_t articore_runtime_solve_ik(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float* positions, uint32_t count) {
@@ -1465,6 +1526,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_cancel_all_motions(
     output.left_gripper_rotor_temperature = unavailable;
     output.right_gripper_mos_temperature = unavailable;
     output.right_gripper_rotor_temperature = unavailable;
+    output.motion_arrived = safety.motion_arrived() ? 1 : 0;
     uint64_t maximum_age = 0;
     uint64_t sequence = std::numeric_limits<uint64_t>::max();
     bool complete_timing = true;

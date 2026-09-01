@@ -212,37 +212,6 @@ class Runtime final {
         "submit_mit_frame");
   }
 
-  ArticoreMotionStatus motion_status(uint64_t motion_id) const {
-    ArticoreMotionStatus result{};
-    result.struct_size = sizeof(result);
-    detail::check(
-        articore_runtime_get_motion_status(checked(), motion_id, &result),
-        "get_motion_status");
-    return result;
-  }
-
-  void cancel_motion(uint64_t motion_id) {
-    detail::check(
-        articore_runtime_cancel_motion(checked(), motion_id),
-        "cancel_motion");
-  }
-
-  void cancel_all_motions() {
-    detail::check(
-        articore_runtime_cancel_all_motions(checked()),
-        "cancel_all_motions");
-  }
-
-  void set_pose(const std::array<float, 6>& left_target_pose,
-                 const std::array<float, 6>& right_target_pose,
-                 float speed_percent = 50.0f) {
-    detail::check(
-        articore_runtime_set_pose(
-            checked(), left_target_pose.data(), right_target_pose.data(),
-            speed_percent),
-        "set_pose");
-  }
-
   std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> solve_ik(
       const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& left_target_pose,
       const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& right_target_pose)
@@ -256,47 +225,56 @@ class Runtime final {
     return positions;
   }
 
-  uint64_t move_linear_trajectory(uint32_t side,
-                                  const std::array<float, 6>& start_pose,
-                                  const std::array<float, 6>& end_pose) {
-    uint64_t motion_id = 0;
+  void move_pose(uint32_t side, const std::array<float, 6>& target_pose) {
     detail::check(
-        articore_runtime_move_linear_trajectory(
-            checked(), side, start_pose.data(), end_pose.data(),
-            &motion_id),
-        "move_linear_trajectory");
-    return motion_id;
+        articore_runtime_move_pose(checked(), side, target_pose.data()),
+        "move_pose");
   }
 
-  uint64_t move_linear_trajectory(
-      uint32_t side,
-      const std::vector<std::array<float, 6>>& poses) {
+  void move_linear(uint32_t side, const std::array<float, 6>& end_pose) {
+    detail::check(
+        articore_runtime_move_linear(
+            checked(), side, nullptr, end_pose.data()),
+        "move_linear");
+  }
+
+  void move_linear(uint32_t side,
+                   const std::array<float, 6>& start_pose,
+                   const std::array<float, 6>& end_pose) {
+    detail::check(
+        articore_runtime_move_linear(
+            checked(), side, start_pose.data(), end_pose.data()),
+        "move_linear");
+  }
+
+  void move_linear(uint32_t side,
+                   const std::vector<std::array<float, 6>>& poses) {
     std::vector<float> flattened;
     flattened.reserve(poses.size() * 6U);
     for (const auto& pose : poses) {
       flattened.insert(flattened.end(), pose.begin(), pose.end());
     }
-    uint64_t motion_id = 0;
     detail::check(
-        articore_runtime_move_linear_path_trajectory(
+        articore_runtime_move_linear_path(
             checked(), side, flattened.data(),
-            static_cast<uint32_t>(poses.size()), &motion_id),
-        "move_linear_trajectory");
-    return motion_id;
+            static_cast<uint32_t>(poses.size())),
+        "move_linear");
   }
 
-  uint64_t move_circular_trajectory(
+  void move_circular(
       uint32_t side,
       const std::array<float, 6>& start_pose,
       const std::array<float, 6>& via_pose,
       const std::array<float, 6>& end_pose) {
-    uint64_t motion_id = 0;
     detail::check(
-        articore_runtime_move_circular_trajectory(
+        articore_runtime_move_circular(
             checked(), side, start_pose.data(), via_pose.data(),
-            end_pose.data(), &motion_id),
-        "move_circular_trajectory");
-    return motion_id;
+            end_pose.data()),
+        "move_circular");
+  }
+
+  void stop_motion() {
+    detail::check(articore_runtime_stop_motion(checked()), "stop_motion");
   }
 
   void set_grippers(float left_opening, float right_opening,

@@ -27,8 +27,8 @@ can-left/right 接收线程
 
 ## 当前接口契约
 
-- 包版本：`0.26.0`
-- Runtime ABI：`13.0` / `0x000D0000`
+- 包版本：`0.27.0`
+- Runtime ABI：`14.0` / `0x000E0000`
 
 Runtime health 现在按产品顺序返回每个已安装电机的角色名、CAN ID、反馈年龄、
 状态码和问题位，并明确区分单电机反馈异常、多电机异常、左/右通道停收和双通道停收。
@@ -47,8 +47,8 @@ SDK 通过 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)`
 Runtime 不生成有限的七次/五次曲线，也不创建 Motion ID。Runtime 在每个 500 Hz
 控制周期重复刷新最终目标 P，并只动态更新电机 V 包络；不生成中间 P 点。目标覆盖时
 立即发送新的最终 P，同时延续当前 V 的加减速状态。
-共享的 `set_speed_percent(1～100)` 对普通 PV 的运动限制做时间缩放；旧的
-单次 PV 与 `set_pose` 百分比参数会更新同一个共享值。用户未设置上限时，100% 对应
+共享的 `set_speed_percent(1～100)` 对普通 PV 的运动限制做时间缩放；
+单次 PV 的百分比参数也会更新同一个共享值。用户未设置上限时，100% 对应
 J1～J7 速度 `[180,180,180,225,225,225,225]°/s`、加速度
 `[450,450,900,900,900,900,900]°/s²`。可选的 `set_max_speed()` 和
 `set_max_acceleration()` 会把用户值作为全部 14 个关节在 100% 时的共同基础上限；
@@ -66,18 +66,15 @@ J1～J7 `Kp=[190,190,100,100,70,60,50]`、
 Linear/Circular 保留独立的内部基础速度、加速度、时间和同步约束，但与普通
 PV 共用同一个 Runtime 速度百分比。用户只填写路径几何，不再填写时长；Runtime
 自动计算安全执行时间，轨迹基础上限仍是内部策略，不作为接口暴露。
-Pose 调用方通过纯计算接口 `solve_ik(left_pose, right_pose)` 获得 14 个关节角，
-再选择普通 PV 或 MIT 执行；`set_pose()` 只求解一次 IK，然后按 Runtime 当前选择的
-普通 PV 或普通 MIT 直接端点模式原子安装关节终点，不是轨迹规划器。
+Pose 调用方可通过纯计算接口 `solve_ik(left_pose, right_pose)` 获得 14 个关节角而不
+运动；公开的 `move_pose(side, target_pose)` 则规划一条五次时间律 Pose-to-Pose
+有限笛卡尔轨迹。
 
 `solve_ik(left_pose, right_pose)` 只求解、不运动：两侧共用同一份规划参考快照；
 若尚未使能，则使用已连接 Runtime 的新鲜完整反馈，
 以当前 TCP、产品限位和最近关节分支求解固定顺序的 14 个关节角。它不会使能 Motor、
-发送控制帧或改变运动队列。兼容的 `set_pose()` 只有在两侧都于 `1e-4` 精度和
-8 ms 软预算内成功后，才按当前普通 PV/MIT 模式原子安装求解出的关节目标；任一侧失败或超时都不改变
-当前目标。它不属于 Linear/Circular 路径规划，也不创建关节轨迹。
+发送控制帧或启动运动。
 
-Linear 和 Circular 共用一个 Motion ID、FIFO、状态查询和取消接口。
 Linear 从当前/指定起点的 FK Pose 出发，在笛卡尔空间对 XYZ 做直线插值、对姿态做
 四元数最短路真 SLERP。第一个路径 Pose 只使用当前规划关节角作为 IK seed，后续每个
 Pose 只使用上一个 IK 解；Linear/Circular 路径 IK 不使用备用、随机或外推 seed。
@@ -95,20 +92,19 @@ POS_VEL 的内部 V 同时根据当前规划关节速度动态调整，并受产
 start/via/end 三点确定有向圆弧，
 位置按 2 mm 或更细离散，姿态以最短路真 SLERP 经过 via 姿态；随后使用同一套全局五次
 时间律和自适应 `TrajectoryPv` 参考。真实到位可能因
-PV 限速、加速度限制和反馈稳定确认而更晚。连续的 Linear/Circular FIFO 在公共端点
-且跟踪误差不超过 0.04 rad
-时按计划时刻直接交接，不再为每段额外等待 200 ms 稳定窗口；超出门槛时仍等待
-真实跟踪恢复。Linear 和 Circular 都会根据共享百分比缩放后的内部 `1 rad/s` 速度基础
+PV 限速、加速度限制和反馈稳定确认而更晚。Linear 和 Circular 都会根据共享百分比缩放后的内部 `1 rad/s` 速度基础
 和 `6 rad/s²` 加速度基础自动完成时间参数化，
 不会向 PV 驱动提交过大的阶跃。
-同一个 `move_linear_trajectory()` 也可一次提交 2～64 个 Pose：两个 Pose 保持
+同一个 `move_linear()` 也可一次提交 2～64 个 Pose：两个 Pose 保持
 普通直线语义；三个及以上 Pose 精确保留每个内部角点，不再插入笛卡尔圆角。每个尖角
 使用独立的静止到静止五次时间律，使 TCP 精确到点并避免非零速度瞬时改变方向。
-整条折线只生成一个 Motion ID，时间由 Runtime 自动计算。
+整条折线的时间由 Runtime 自动计算。
 公开的 `set_joint_pv()` 是用户使用的普通 PV 终点接口；`TrajectoryPv` 只允许由
 Runtime 内部已经完成校验的有限 Linear/Circular 轨迹选择，不导出 Raw PV 或
-流式 PV 普通接口。自动接近属于同一个内部轨迹执行链。Linear、Circular 要求 PV
-产品模式；`set_pose()` 支持当前普通 PV 或普通 MIT 直接端点模式，且不加入 Motion FIFO。
+流式 PV 普通接口。自动接近属于同一个内部轨迹执行链。`move_pose()`、Linear 和
+Circular 要求 PV 产品模式。公开调用都是非阻塞发送接口，不返回 Motion ID；Runtime
+同一时间只接受一条有限笛卡尔运动。整机状态中的 `motion_arrived` 表示真实反馈已稳定
+到位，`stop_motion()` 停止当前运动，等待、故障与超时策略由应用负责。
 公开 Runtime 不再提供关节点到点轨迹规划。
 
 当前 API 见 [Runtime 说明](articore_runtime/README.md)。

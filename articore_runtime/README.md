@@ -1,8 +1,8 @@
 # Yunyi product Runtime
 
-`libarticore_runtime.so` is the only public native library. Runtime ABI 13.0 is
+`libarticore_runtime.so` is the only public native library. Runtime ABI 14.0 is
 an exact contract: the SDK must require `articore_runtime_abi_version() ==
-0x000D0000` and bind only the declarations in `articore/runtime_abi.h`.
+0x000E0000` and bind only the declarations in `articore/runtime_abi.h`.
 
 ## Ownership
 
@@ -23,7 +23,7 @@ objects, joint tables or product bindings.
 
 - Lifecycle: `connect`, `disconnect`, `enable`, `disable`, `estop`, `recover`.
 - Maintenance: `configure_mode`, `clear_faults`, `set_zero`.
-- Shared speed: `set/get_speed_percent` for ordinary PV, Linear and Circular.
+- Shared speed: `set/get_speed_percent` for ordinary PV and finite Cartesian motion.
 - Joint control: `set_joint_pv`, optional ordinary-PV `set/get_max_speed` and
   `set/get_max_acceleration`, `set_joint_mit_direct`,
   `set_joint_mit_fast_follow`, `submit_mit_frame`.
@@ -47,13 +47,15 @@ objects, joint tables or product bindings.
   100-percent (5 rad/s) position-reference step limit. The old MIT symbol with
   public `speed_percent` remains ABI-only compatibility and must not be exposed
   by a new SDK.
-- Native trajectories: Linear and Circular motion only. Both follow the
-  generated finite point list through internal trajectory PV using the shared
-  speed percentage.
+- Native trajectories: `move_pose`, Linear and Circular. They follow generated
+  finite point lists through internal trajectory PV using the shared speed
+  percentage.
 - Grippers: one paired `set_grippers` call using opening `0..1000`, strength
   `0..10`, and protected/direct mode.
-- State: one coherent cached `get_state`, `get_pose`, joint limits and health.
-- Product functions: gravity compensation, bimanual follow and TCP offset.
+- State: one coherent cached `get_state`, including `motion_arrived`, plus
+  `get_pose`, joint limits and health.
+- Product functions: `stop_motion`, gravity compensation, bimanual follow and
+  TCP offset.
 
 All fourteen-joint arrays use `left J1..J7, right J1..J7`. Public ABI values
 never contain native Motor pointers.
@@ -83,13 +85,9 @@ reference at the fixed 100-percent limit with the fast-follow gain profile.
 Both are persistent latest-target-wins commands refreshed on the 500 Hz Runtime
 clock and neither creates a Motion ID. Only the fast-follow method generates
 intermediate MIT position references.
-The `articore_runtime_set_pose` compatibility symbol solves IK once and installs
-the result through the currently selected ordinary PV or MIT mode. It has no
-motion ID, status or cancellation API and is not a trajectory planner. Endpoint IK retains
-the `1e-4` SE(3)
-tolerance, reuses each arm's Pinocchio model and limits global fallback to an
-8 ms soft steady-clock budget. Timeout or either-side failure leaves the active
-target unchanged. Linear and Circular are asynchronous FIFO trajectory tasks.
+`articore_runtime_move_pose` plans a finite quintic Cartesian pose-to-pose
+motion for one side. Like Linear and Circular, it is a nonblocking PV-mode
+command and follows the same single-active-motion contract.
 Linear interpolates XYZ on the Cartesian line and orientation with true
 shortest-path quaternion SLERP. The first path pose uses only the current
 planned joints as its IK seed; each later pose uses only the preceding IK
@@ -111,37 +109,31 @@ endpoint step generator. Circular builds
 the directed circle through start/via/end, samples it at 2 mm / 0.1 rad or
 better, and applies shortest-path SLERP through the via orientation. It uses
 the same global quintic time law and adaptive knot policy.
-Contiguous Cartesian FIFO items hand off at
-their planned shared endpoint without an extra 200 ms settling window when
-physical tracking error is at most 0.04 rad; otherwise Runtime waits for safe
-tracking recovery. Linear checks finite differences of its variable-duration
+Linear checks finite differences of its variable-duration
 joint references against the shared percentage of their internal 1 rad/s velocity
 and 6 rad/s^2 acceleration bases and automatically parameterizes time. Both
 paths execute through internal
 trajectory PV with the percentage captured when each path is submitted.
-Linear uses explicit `start_pose -> end_pose`; Circular uses explicit
+Linear accepts an optional explicit `start_pose -> end_pose`; when the start is
+omitted it begins from the current planned reference. Circular uses explicit
 `start_pose -> via_pose -> end_pose`. Runtime validates and plans the complete
-task before installing it. Linear and Circular trajectories share one Motion
-ID namespace and FIFO, and use `get_motion_status(id)`, `cancel_motion(id)` and
-`cancel_all_motions()`. Cancelling a queued item removes only that item;
-Runtime inserts and validates a native approach into its
-immediate successor so execution cannot jump across the removed endpoint.
-Cancelling the running item holds the last safe reference and cancels its
-dependent queue tail, whose planned starts are no longer valid.
-Completed, cancelled and faulted tasks remain queryable in bounded history.
+motion before installing it. The public calls return no Motion ID and Runtime
+accepts only one active finite Cartesian motion. A new call while one is active
+returns busy instead of entering a queue. Applications read
+`ArticoreProductState.motion_arrived`, monitor health, implement their own wait
+and timeout policy, and call `articore_runtime_stop_motion()` when needed.
 
 The same Linear API also accepts 2 to 64 poses as one atomic path. Two poses
 retain straight-Line behavior. With three or more poses, every declared
 internal pose is preserved and no Cartesian fillet is inserted. Each sharp
 segment boundary has its own rest-to-rest quintic time law, so the TCP reaches
 the corner without attempting an instantaneous non-zero velocity direction
-change. One Motion ID owns the complete path and Runtime automatically computes
-its total duration.
+change. Runtime automatically computes the complete path duration.
 
 Linear and Circular do not accept a duration. Callers provide only path
 geometry, while the shared `set_speed_percent(1..100)` value selects the speed
 for newly submitted paths. Each plan snapshots that value; changing it does
-not retime a running or already queued path. Physical completion may be later
+not retime a running path. Physical completion may be later
 than the generated reference duration. Linear and Circular geometry enforce
 at least 2 mm / 0.1 rad sampling. Ordinary PV command speed values update the
 same shared percentage and time-scale either configured user base limits or
@@ -163,9 +155,8 @@ itself remains float32. The internal POS_VEL V field follows planned joint
 speed while remaining bounded by the product drive ceiling. No raw or streaming
 PV symbol is exported through the C or C++ product API.
 
-Linear and Circular require PV product mode. Automatic approach is part of the
-same internal trajectory-PV point sequence. `set_pose()` supports the current
-ordinary PV or direct ordinary MIT mode.
+`move_pose`, Linear and Circular require PV product mode. Automatic approach is
+part of the same internal trajectory-PV point sequence.
 
 ## State and diagnostics
 
@@ -182,11 +173,10 @@ right receive path, and both receive paths. Side `last_error` strings aggregate
 all affected Motor roles instead of retaining only the last failure.
 
 Every public structure must set `struct_size` to its exact `sizeof(...)`.
-ABI 13.0 does not branch on older layouts or capability bits. It removes the
-Cartesian `duration_s` arguments and the former
-`articore_runtime_move_linear_trajectory_with_point_count` compatibility
-symbol, in addition to the already removed joint point-to-point trajectory
-API.
+ABI 14.0 adds `motion_arrived` to `ArticoreProductState` and the simplified
+nonblocking `move_pose`, `move_linear`, `move_linear_path`, `move_circular` and
+`stop_motion` entry points. New SDKs use these functions and do not expose the
+legacy Motion-ID/FIFO management surface.
 
 ## Shutdown
 

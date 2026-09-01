@@ -2169,6 +2169,13 @@ ArticoreMotionStatus SafetyRuntime::motion_status() const {
   return motion_status_locked(trajectory_control_);
 }
 
+bool SafetyRuntime::motion_arrived() const {
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  return trajectory_queue_.empty() &&
+      (trajectory_control_.state == ARTICORE_MOTION_IDLE ||
+       trajectory_control_.state == ARTICORE_MOTION_COMPLETED);
+}
+
 ArticoreMotionStatus SafetyRuntime::motion_status(
     uint64_t motion_id) const {
   std::lock_guard<std::mutex> state_lock(state_mutex_);

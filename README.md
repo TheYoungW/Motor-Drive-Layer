@@ -28,8 +28,8 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.26.0`
-- Runtime ABI: `13.0` / `0x000D0000`
+- package version: `0.27.0`
+- Runtime ABI: `14.0` / `0x000E0000`
 
 Runtime health includes a product-order snapshot for every installed Motor,
 with role, CAN ID, feedback age, status, issue bits, and a scope that separates
@@ -52,7 +52,7 @@ does not generate a finite quintic/septic profile or a Motion-ID task. On each
 only the Motor V envelope. A replacement sends the new final P directly while
 preserving the current V ramp state; it does not generate intermediate P points.
 The shared `set_speed_percent(1..100)` value time-scales its motion limits;
-legacy per-command PV and `set_pose` percentages update that same value.
+per-command ordinary PV percentages update that same value.
 Without a user override, the
 100% J1..J7 velocity limits are `[180,180,180,225,225,225,225] deg/s` and
 acceleration limits are `[450,450,900,900,900,900,900] deg/s^2`. Optional
@@ -77,10 +77,9 @@ timing and synchronization constraints, but use the same shared Runtime speed
 percentage as ordinary PV. Users provide only the path geometry; Runtime
 automatically selects a safe duration, and trajectory base limits remain
 internal policy.
-Pose callers use the pure `solve_ik(left_pose, right_pose)` query to obtain 14
-joint angles and pass them to ordinary PV or MIT. The compatibility
-`set_pose()` symbol solves IK once and atomically installs that endpoint through
-the Runtime's current ordinary PV or MIT mode; it is not a trajectory planner.
+Pose callers may use the pure `solve_ik(left_pose, right_pose)` query to obtain
+14 joint angles without moving. The public `move_pose(side, target_pose)`
+method instead plans a finite quintic Cartesian pose-to-pose motion.
 Linear constructs a true Cartesian line from the current/start FK pose: XYZ is
 linearly interpolated, orientation follows shortest-path quaternion SLERP, and
 the first pose is solved only from the current planned joints while each later
@@ -116,9 +115,12 @@ The public `set_joint_pv()` command is the ordinary endpoint interface.
 Linear/Circular trajectory; its adaptive time-stamped knots are resampled on the
 500 Hz Runtime command clock. No raw or streaming PV entry point is exported.
 Automatic approach stays inside that trajectory execution path.
-Linear and Circular require PV product mode; `set_pose()` supports either
-ordinary PV or direct ordinary MIT. Joint point-to-point trajectory planning is
-not part of the public Runtime API.
+`move_pose`, Linear and Circular require PV product mode. Their public calls are
+nonblocking and return no Motion ID. Runtime accepts only one active finite
+Cartesian motion; `motion_arrived` in the product state reports physical
+completion, and `stop_motion()` stops the active motion. Applications own wait,
+fault and timeout policy. Joint point-to-point trajectory planning is not part
+of the public Runtime API.
 
 See [the Runtime reference](articore_runtime/README.md) for the current API.
 

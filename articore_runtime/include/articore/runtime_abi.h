@@ -110,14 +110,20 @@ enum ArticoreRuntimeOperation {
   ARTICORE_OPERATION_COMMAND = 8,
   ARTICORE_OPERATION_RECOVER = 9,
   ARTICORE_OPERATION_CANCEL_MOTION = 11,
-  ARTICORE_OPERATION_SET_POSE = 12,
-  ARTICORE_OPERATION_CANCEL_ALL_MOTIONS = 13,
-  ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY = 14,
-  ARTICORE_OPERATION_MOVE_CIRCULAR_TRAJECTORY = 15,
+  ARTICORE_OPERATION_MOVE_POSE = 12,
+  ARTICORE_OPERATION_STOP_MOTION = 13,
+  ARTICORE_OPERATION_MOVE_LINEAR = 14,
+  ARTICORE_OPERATION_MOVE_CIRCULAR = 15,
   ARTICORE_OPERATION_START_BIMANUAL_FOLLOW = 16,
   ARTICORE_OPERATION_STOP_BIMANUAL_FOLLOW = 17,
   ARTICORE_OPERATION_SET_TCP_OFFSET = 18,
 };
+
+/* Source aliases for the legacy Motion-ID ABI. */
+#define ARTICORE_OPERATION_SET_POSE ARTICORE_OPERATION_MOVE_POSE
+#define ARTICORE_OPERATION_CANCEL_ALL_MOTIONS ARTICORE_OPERATION_STOP_MOTION
+#define ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY ARTICORE_OPERATION_MOVE_LINEAR
+#define ARTICORE_OPERATION_MOVE_CIRCULAR_TRAJECTORY ARTICORE_OPERATION_MOVE_CIRCULAR
 
 enum ArticoreMotionState {
   ARTICORE_MOTION_IDLE = 0,
@@ -291,6 +297,13 @@ typedef struct ArticoreProductState {
   float right_gripper_rotor_temperature;
   int32_t left_gripper_temperature_valid;
   int32_t right_gripper_temperature_valid;
+  // Global finite Cartesian-motion arrival bit. One means the most recently
+  // accepted move_pose/move_linear/move_circular command has physically
+  // completed and no finite Cartesian motion remains active. Zero means the
+  // command is running, settling, cancelled, faulted, or otherwise not known
+  // to have arrived. This is not a progress value and does not describe raw
+  // latest-target PV/MIT streaming commands.
+  int32_t motion_arrived;
   // CLOCK_MONOTONIC-compatible timestamp and slowest update sequence across
   // every installed motor represented by this single cached snapshot.
   uint64_t timestamp_ns;
@@ -594,7 +607,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_solve_ik(
  * For speed_percent=s, Runtime applies max_speed*s and
  * max_acceleration*s^2. Values use 0.01 physical-unit resolution and values
  * above the most restrictive J1..J7 safety limit are rejected. These base
- * settings affect ordinary PV and PV set_pose only. Linear/Circular retain
+ * settings affect ordinary PV only. Finite Cartesian motions retain
  * their own internal base limits but share the Runtime speed percentage.
  */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_speed(
@@ -618,7 +631,25 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_pose(
     ArticoreRuntime* runtime, const float* left_target_pose,
     const float* right_target_pose, float speed_percent);
-/* Asynchronous FIFO Cartesian trajectories. Linear interpolates XYZ on a
+/* Simple non-blocking Cartesian motion API. These calls return only whether
+ * the complete plan was accepted. Runtime owns execution and physical-arrival
+ * detection; callers read ArticoreProductState.motion_arrived and health.
+ * Only one finite Cartesian motion may be active through this surface. */
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(
+    ArticoreRuntime* runtime, uint32_t side, const float* target_pose);
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear(
+    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+    const float* end_pose);
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_path(
+    ArticoreRuntime* runtime, uint32_t side, const float* poses,
+    uint32_t pose_count);
+ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular(
+    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+    const float* via_pose, const float* end_pose);
+ARTICORE_RUNTIME_API int32_t articore_runtime_stop_motion(
+    ArticoreRuntime* runtime);
+/* Legacy Motion-ID/FIFO ABI retained for binary compatibility. New SDKs use
+ * the simple nonblocking move_* surface above. Linear interpolates XYZ on a
  * Cartesian line, uses shortest-path quaternion SLERP for orientation, and
  * solves the first path pose only from the current planned joints, then solves
  * every later pose only from the preceding joint solution. Path IK never uses
@@ -658,7 +689,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_path_trajectory(
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* via_pose, const float* end_pose, uint64_t* motion_id);
-/* Unified status and cancellation for joint, Linear, and Circular motions.
+/* Legacy Motion-ID status and cancellation ABI.
  * Terminal states remain queryable by id in the bounded Runtime history.
  * Cancelling a queued id removes only that item and inserts a validated native
  * approach into its immediate successor so the FIFO cannot jump. Cancelling

@@ -45,33 +45,34 @@ int main() {
   static_assert(std::is_same_v<
       decltype(&articore::Runtime::set_joint_mit_fast_follow),
       JointMitDirectSetter>);
-  using SetPose = void (articore::Runtime::*)(
-      const std::array<float, 6>&, const std::array<float, 6>&, float);
-  static_assert(std::is_same_v<decltype(&articore::Runtime::set_pose),
-                               SetPose>);
   using SolveIk = std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
       (articore::Runtime::*)(
           const std::array<float, ARTICORE_PRODUCT_POSE_DOF>&,
           const std::array<float, ARTICORE_PRODUCT_POSE_DOF>&) const;
   static_assert(std::is_same_v<decltype(&articore::Runtime::solve_ik), SolveIk>);
-  using MoveLinearTrajectory = uint64_t (articore::Runtime::*)(
+  using MovePose = void (articore::Runtime::*)(
+      uint32_t, const std::array<float, 6>&);
+  static_assert(std::is_same_v<decltype(&articore::Runtime::move_pose),
+                               MovePose>);
+  using MoveLinear = void (articore::Runtime::*)(
       uint32_t, const std::array<float, 6>&,
       const std::array<float, 6>&);
   static_assert(std::is_same_v<
-      decltype(static_cast<MoveLinearTrajectory>(
-          &articore::Runtime::move_linear_trajectory)),
-      MoveLinearTrajectory>);
-  using MoveLinearPathTrajectory = uint64_t (articore::Runtime::*)(
+      decltype(static_cast<MoveLinear>(&articore::Runtime::move_linear)),
+      MoveLinear>);
+  using MoveLinearPath = void (articore::Runtime::*)(
       uint32_t, const std::vector<std::array<float, 6>>&);
   static_assert(std::is_same_v<
-      decltype(static_cast<MoveLinearPathTrajectory>(
-          &articore::Runtime::move_linear_trajectory)),
-      MoveLinearPathTrajectory>);
-  using MoveCircularTrajectory = uint64_t (articore::Runtime::*)(
+      decltype(static_cast<MoveLinearPath>(&articore::Runtime::move_linear)),
+      MoveLinearPath>);
+  using MoveCircular = void (articore::Runtime::*)(
       uint32_t, const std::array<float, 6>&,
       const std::array<float, 6>&, const std::array<float, 6>&);
-  static_assert(std::is_same_v<decltype(&articore::Runtime::move_circular_trajectory),
-                               MoveCircularTrajectory>);
+  static_assert(std::is_same_v<decltype(&articore::Runtime::move_circular),
+                               MoveCircular>);
+  using StopMotion = void (articore::Runtime::*)();
+  static_assert(std::is_same_v<decltype(&articore::Runtime::stop_motion),
+                               StopMotion>);
 
   // This target is a cross-platform compile/link smoke test for the public
   // RAII wrapper. Runtime behavior and invalid construction are exercised by

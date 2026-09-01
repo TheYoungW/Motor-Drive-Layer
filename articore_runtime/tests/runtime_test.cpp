@@ -5006,6 +5006,8 @@ void test_trajectory_errors_use_product_roles_and_allow_inward_recovery() {
               runtime.motion_status().state == ARTICORE_MOTION_RUNNING,
           "an out-of-limit start may execute a monotonic return to legal range");
   runtime.cancel_all_motions();
+  require(!runtime.motion_arrived(),
+          "a cancelled finite motion is not reported as arrived");
   runtime.disable();
 }
 
@@ -5030,9 +5032,12 @@ void test_native_quintic_pv_trajectory_sends_at_500_hz() {
     std::lock_guard<std::mutex> lock(driver.mutex);
     baseline_frames = driver.pv_history.size();
   }
+  require(runtime.motion_arrived(),
+          "an idle Runtime reports no pending finite motion");
   const auto id = runtime.start_trajectory(
       trajectory_request(motors, ARTICORE_MODE_PV));
-  require(id != 0, "native trajectory receives a stable id");
+  require(id != 0 && !runtime.motion_arrived(),
+          "an accepted finite motion immediately clears the arrival bit");
   require(wait_for([&] {
             return runtime.motion_status().state ==
                 ARTICORE_MOTION_COMPLETED;
@@ -5043,7 +5048,8 @@ void test_native_quintic_pv_trajectory_sends_at_500_hz() {
               status.waypoint_count == 2 &&
               status.active_segment == 0 &&
               std::abs(status.progress - 1.0f) < 1e-6f &&
-              std::abs(status.elapsed_s - 0.4) < 1e-6,
+              std::abs(status.elapsed_s - 0.4) < 1e-6 &&
+              runtime.motion_arrived(),
           "trajectory status reports complete native execution");
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);

@@ -28,6 +28,14 @@ int main() {
   using ProductFloatGetter = int32_t (*)(ArticoreRuntime*, float*);
   using ProductIk = int32_t (*)(
       ArticoreRuntime*, const float*, const float*, float*, uint32_t);
+  using MovePose = int32_t (*)(
+      ArticoreRuntime*, uint32_t, const float*);
+  using MoveLinear = int32_t (*)(
+      ArticoreRuntime*, uint32_t, const float*, const float*);
+  using MoveLinearPath = int32_t (*)(
+      ArticoreRuntime*, uint32_t, const float*, uint32_t);
+  using MoveCircular = int32_t (*)(
+      ArticoreRuntime*, uint32_t, const float*, const float*, const float*);
   using MoveLinearTrajectory = int32_t (*)(
       ArticoreRuntime*, uint32_t, const float*, const float*, uint64_t*);
   using MoveLinearPathTrajectory = int32_t (*)(
@@ -64,6 +72,14 @@ int main() {
   static_assert(same_signature<
       decltype(&articore_runtime_solve_ik), ProductIk>);
   static_assert(same_signature<
+      decltype(&articore_runtime_move_pose), MovePose>);
+  static_assert(same_signature<
+      decltype(&articore_runtime_move_linear), MoveLinear>);
+  static_assert(same_signature<
+      decltype(&articore_runtime_move_linear_path), MoveLinearPath>);
+  static_assert(same_signature<
+      decltype(&articore_runtime_move_circular), MoveCircular>);
+  static_assert(same_signature<
       decltype(&articore_runtime_move_linear_trajectory), MoveLinearTrajectory>);
   static_assert(same_signature<
       decltype(&articore_runtime_move_linear_path_trajectory),
@@ -85,7 +101,7 @@ int main() {
 
   static_assert(sizeof(ArticoreMotionStatus) == 568);
   static_assert(sizeof(ArticoreProductArmState) == 152);
-  static_assert(sizeof(ArticoreProductState) == 392);
+  static_assert(sizeof(ArticoreProductState) == 400);
   static_assert(sizeof(ArticoreProductJointAngleVelLimits) == 176);
   static_assert(sizeof(ArticoreTcpOffset) == 32);
   static_assert(sizeof(ArticoreMotorFeedbackHealth) == 136);
@@ -359,16 +375,16 @@ int main() {
       &articore_runtime_estop && &articore_runtime_recover &&
       &articore_robot_model_create && &articore_robot_model_fk;
 
-  if (articore_runtime_abi_version() != 0x000D0000U ||
+  if (articore_runtime_abi_version() != 0x000E0000U ||
       !symbols_present || !gripper_validation || !state_size_checked ||
       !state_runtime_checked || !health_size_checked ||
       !joint_limits_size_checked || !maximum_acceleration_validation ||
       !maximum_speed_validation || !speed_percent_validation ||
       !product_ik_validation || !joint_command_validation ||
       !factory_validation || !product_limits_checked) {
-    std::cerr << "Articore Runtime ABI 13.0 contract is incomplete\n";
+    std::cerr << "Articore Runtime ABI 14.0 contract is incomplete\n";
     return 1;
   }
-  std::cout << "Articore Runtime ABI 13.0 smoke test passed\n";
+  std::cout << "Articore Runtime ABI 14.0 smoke test passed\n";
   return 0;
 }

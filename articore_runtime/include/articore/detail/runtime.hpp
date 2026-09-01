@@ -125,9 +125,9 @@ inline constexpr float kNativeOrdinaryPvHoldVelocityTolerance = 0.02f;
 // Keep only a small quantization margin around the arrival window. The former
 // 0.020 rad release threshold could freeze a V=0 joint visibly away from P.
 inline constexpr float kNativeOrdinaryPvHoldReleaseTolerance = 0.0025f;
-// Fifty milliseconds is longer than a 100 Hz publisher period. Identical
-// endpoint replacements preserve this counter, while a moving publisher keeps
-// resetting it before V=0 can be armed.
+// Require 50 ms of stable feedback before arming V=0. Identical endpoint
+// replacements preserve this counter, while a moving publisher keeps resetting
+// it before V=0 can be armed.
 inline constexpr uint16_t kNativeOrdinaryPvHoldConfirmationCycles = 25;
 
 // Ordinary PV is a latest-endpoint-wins online step command. Runtime advances
@@ -471,9 +471,9 @@ class SafetyRuntime {
   void submit_mit_ex(const ArticoreMitCommand* commands,
                      uint32_t count,
                      ArticoreCommandLifetime lifetime);
-  // Stable product trajectory calls set enqueue=true after planning against
-  // the common FIFO tail. Replacement remains a private primitive; Cartesian
-  // point-to-point uses the ordinary PV position path instead.
+  // Legacy Motion-ID calls may enqueue after planning against the FIFO tail.
+  // The simple public move_* surface plans against the current reference and
+  // rejects a second active finite motion.
   using CommandTransaction = std::unique_lock<std::mutex>;
   CommandTransaction begin_command_transaction();
   uint64_t begin_command_planning(
@@ -494,6 +494,7 @@ class SafetyRuntime {
       const CommandTransaction& transaction) const;
   ArticoreMotionStatus motion_status() const;
   ArticoreMotionStatus motion_status(uint64_t motion_id) const;
+  bool motion_arrived() const;
   void cancel_motion(uint64_t motion_id);
   void cancel_all_motions();
   void set_joint_mit(const ArticoreJointMitTarget* targets,

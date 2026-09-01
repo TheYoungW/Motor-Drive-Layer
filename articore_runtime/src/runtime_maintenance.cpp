@@ -24,12 +24,10 @@ const char* operation_name(ArticoreRuntimeOperation operation) {
     case ARTICORE_OPERATION_COMMAND: return "command";
     case ARTICORE_OPERATION_RECOVER: return "recover";
     case ARTICORE_OPERATION_CANCEL_MOTION: return "cancel motion";
-    case ARTICORE_OPERATION_CANCEL_ALL_MOTIONS: return "cancel all motions";
-    case ARTICORE_OPERATION_SET_POSE: return "set pose";
-    case ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY:
-      return "move linear trajectory";
-    case ARTICORE_OPERATION_MOVE_CIRCULAR_TRAJECTORY:
-      return "move circular trajectory";
+    case ARTICORE_OPERATION_STOP_MOTION: return "stop motion";
+    case ARTICORE_OPERATION_MOVE_POSE: return "move pose";
+    case ARTICORE_OPERATION_MOVE_LINEAR: return "move linear";
+    case ARTICORE_OPERATION_MOVE_CIRCULAR: return "move circular";
     case ARTICORE_OPERATION_START_BIMANUAL_FOLLOW:
       return "start bimanual follow";
     case ARTICORE_OPERATION_STOP_BIMANUAL_FOLLOW:
