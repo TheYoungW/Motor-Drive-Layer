@@ -48,7 +48,7 @@ objects, joint tables or product bindings.
   public `speed_percent` remains ABI-only compatibility and must not be exposed
   by a new SDK.
 - Native trajectories: Linear and Circular motion only. Both follow the
-  generated finite point list through internal real-time PV using the shared
+  generated finite point list through internal trajectory PV using the shared
   speed percentage.
 - Grippers: one paired `set_grippers` call using opening `0..1000`, strength
   `0..10`, and protected/direct mode.
@@ -94,30 +94,31 @@ Linear interpolates XYZ on the Cartesian line and orientation with true
 shortest-path quaternion SLERP. The first path pose uses only the current
 planned joints as its IK seed; each later pose uses only the preceding IK
 result. Linear and Circular path IK never retry from fallback or random seeds,
-and a null-space posture term keeps each solve near that preceding seed. The
-preceding joint step also predicts a half-step-ahead preferred posture, biasing
-the redundant solution toward continuous joint velocity instead of +/- chatter.
-This is an optimization objective, not a reversal rejection rule: motion may
-reverse whenever the Cartesian path requires it. Runtime rejects only a true
-per-sample branch jump above 0.35 rad. Geometry is sampled at 2 mm / 0.1 rad or
-better. Runtime applies one global quintic time law and automatically selects
-the shortest complete 10 ms reference duration that satisfies the internal
-joint-reference limits after applying the shared Runtime speed percentage. At
+and a position-priority null-space posture term keeps each solve near exactly
+that preceding seed; no extrapolated posture is introduced. One required joint
+reversal remains valid, while repeated small
+direction reversals are rejected as IK chatter before the trajectory can be
+installed. Runtime also rejects a true per-sample branch jump above 0.35 rad.
+Path IK keeps XYZ error within 0.5 mm and permits at most 0.035 rad orientation
+residual. Geometry is sampled at 2 mm / 0.1 rad or better. Runtime applies a
+global quintic time law and automatically selects adaptive 4..50 ms knots that
+satisfy the internal joint-reference velocity, acceleration, 0.02 rad adjacent
+step and linearization-error limits. At
 50%, velocity halves, acceleration becomes one quarter, and a comparable path
 takes about twice as long. Runtime linearly resamples adjacent knots and sends the resulting
 POS_VEL reference on its 500 Hz command clock, without applying the ordinary-PV
 endpoint step generator. Circular builds
 the directed circle through start/via/end, samples it at 2 mm / 0.1 rad or
 better, and applies shortest-path SLERP through the via orientation. It uses
-the same global quintic time law and 10 ms command period.
+the same global quintic time law and adaptive knot policy.
 Contiguous Cartesian FIFO items hand off at
 their planned shared endpoint without an extra 200 ms settling window when
 physical tracking error is at most 0.04 rad; otherwise Runtime waits for safe
-tracking recovery. Linear checks finite differences of its 10 ms joint
-references against the shared percentage of their internal 1 rad/s velocity
+tracking recovery. Linear checks finite differences of its variable-duration
+joint references against the shared percentage of their internal 1 rad/s velocity
 and 6 rad/s^2 acceleration bases and automatically parameterizes time. Both
 paths execute through internal
-real-time PV with the percentage captured when each path is submitted.
+trajectory PV with the percentage captured when each path is submitted.
 Linear uses explicit `start_pose -> end_pose`; Circular uses explicit
 `start_pose -> via_pose -> end_pose`. Runtime validates and plans the complete
 task before installing it. Linear and Circular trajectories share one Motion
@@ -130,11 +131,12 @@ dependent queue tail, whose planned starts are no longer valid.
 Completed, cancelled and faulted tasks remain queryable in bounded history.
 
 The same Linear API also accepts 2 to 64 poses as one atomic path. Two poses
-retain straight-Line behavior. With three or more poses, Runtime applies a
-10 mm Cartesian fillet to each valid internal corner and automatically reduces
-the radius on short adjacent segments so blends cannot overlap. One global
-quintic time law covers the complete path, one Motion ID owns it, and
-Runtime automatically computes the duration of the complete path.
+retain straight-Line behavior. With three or more poses, every declared
+internal pose is preserved and no Cartesian fillet is inserted. Each sharp
+segment boundary has its own rest-to-rest quintic time law, so the TCP reaches
+the corner without attempting an instantaneous non-zero velocity direction
+change. One Motion ID owns the complete path and Runtime automatically computes
+its total duration.
 
 Linear and Circular do not accept a duration. Callers provide only path
 geometry, while the shared `set_speed_percent(1..100)` value selects the speed
@@ -149,10 +151,11 @@ trajectory planning is not part of the public Runtime API.
 
 The public `set_joint_pv()` command is ordinary latest-target-wins endpoint PV
 interface.
-`RealtimePv` is an internal trajectory execution type: only a finite validated
-Linear/Circular plan may install it, its planner-knot period must be
-exactly 10 ms, and Runtime linearly resamples those knots on the 500 Hz command
-clock. Per-cycle P changes smaller than one Damiao 16-bit position-feedback
+`TrajectoryPv` is an internal trajectory execution type: only a finite validated
+Linear/Circular plan may install it. Cartesian planners select adaptive 4..50 ms
+time-stamped knots from geometry, velocity, acceleration, joint-step and
+linearization limits, and Runtime linearly resamples those knots on the 500 Hz
+command clock. Per-cycle P changes smaller than one Damiao 16-bit position-feedback
 quantum (25/65535 rad, about 0.02186 degrees) accumulate against the last
 effective command; Runtime repeats that P until the threshold is reached and
 always forces the exact final endpoint. POS_VEL P

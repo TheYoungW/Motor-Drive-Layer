@@ -28,7 +28,7 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.25.0`
+- package version: `0.26.0`
 - Runtime ABI: `13.0` / `0x000D0000`
 
 Runtime health includes a product-order snapshot for every installed Motor,
@@ -85,35 +85,35 @@ Linear constructs a true Cartesian line from the current/start FK pose: XYZ is
 linearly interpolated, orientation follows shortest-path quaternion SLERP, and
 the first pose is solved only from the current planned joints while each later
 pose is solved only from the preceding joint solution. Linear/Circular path IK
-does not use fallback or random seeds. A null-space posture term keeps each
-solution near its seed, while the preceding joint step predicts a half-step-
-ahead preferred posture for the next solve. This biases redundant joints toward
-continuous velocity instead of +/- chatter without rejecting a reversal that
-the Cartesian path actually requires. Only an unsolved target or a true branch
-jump above 0.35 rad fails. Geometry is
-sampled at 2 mm / 0.1 rad or better, then one global quintic time law generates
-fixed 10 ms internal real-time-PV knots. Runtime automatically chooses the
-shortest complete 10 ms duration that satisfies the scaled joint-reference
-limits. At 50%, a comparable path takes about twice as long as at 100%.
-Runtime linearly resamples adjacent knots and
-sends the resulting reference at 500 Hz, without applying the ordinary-PV
-endpoint step generator. Per-cycle P changes smaller than one Damiao 16-bit
-position-feedback quantum (25/65535 rad, about 0.02186 degrees) accumulate
-against the last effective P; Runtime repeats that P until the threshold is
-reached and always forces the exact endpoint.
+does not use fallback, random, or extrapolated posture seeds. A position-priority
+null-space term keeps each solution near exactly its preceding seed. XYZ error
+is limited to 0.5 mm and orientation residual to 0.035 rad. True branch jumps
+above 0.35 rad and repeated visible +/- joint-direction chatter are rejected;
+sub-1 mrad sign changes are treated as numerical or local-extremum noise.
+Geometry is sampled at 2 mm / 0.1 rad or better. A quintic time law generates
+adaptive 4..50 ms trajectory-PV knots, additionally bounded by scaled reference
+velocity, acceleration, 0.02 rad adjacent joint step and linearization error.
+At 50%, a comparable path takes about twice as long as at 100%. Runtime linearly
+resamples adjacent knots and sends the resulting reference at 500 Hz, without
+applying the ordinary-PV endpoint step generator. Per-cycle P changes smaller
+than one Damiao 16-bit position-feedback quantum (25/65535 rad, about 0.02186
+degrees) accumulate against the last effective P; Runtime repeats that P until
+the threshold is reached and always forces the exact endpoint.
 POS_VEL P itself remains float32. The internal POS_VEL V limit follows the
 current planned joint speed, bounded by the product ceiling, so slow
 trajectories do not repeatedly chase discrete P targets at 3 rad/s.
 Circular constructs the directed circle through start/via/end, samples the arc
 at 2 mm / 0.1 rad or better, applies shortest-path SLERP through the via
-orientation, and uses the same global quintic/10 ms real-time-PV chain.
-Physical arrival may be later due to PV limits and feedback stability. Linear
-and Circular check their 10 ms joint differences against the shared percentage
-of the internal 1 rad/s velocity and 6 rad/s^2 acceleration bases,
-using automatic time parameterization.
+orientation, and uses the same quintic adaptive trajectory-PV chain. Physical
+arrival may be later due to PV limits and feedback stability. Linear and
+Circular automatically time-parameterize against the shared percentage of the
+internal 1 rad/s velocity and 6 rad/s^2 acceleration bases.
+Multi-pose Linear preserves every declared internal corner and inserts no
+Cartesian fillet. Each sharp boundary uses its own rest-to-rest quintic time law
+so the TCP reaches the corner without an instantaneous non-zero velocity change.
 The public `set_joint_pv()` command is the ordinary endpoint interface.
-Real-time PV is internal-only and can be selected only by a validated finite
-Linear/Circular trajectory; its 100 Hz plan knots are resampled on the
+`TrajectoryPv` is internal-only and can be selected only by a validated finite
+Linear/Circular trajectory; its adaptive time-stamped knots are resampled on the
 500 Hz Runtime command clock. No raw or streaming PV entry point is exported.
 Automatic approach stays inside that trajectory execution path.
 Linear and Circular require PV product mode; `set_pose()` supports either

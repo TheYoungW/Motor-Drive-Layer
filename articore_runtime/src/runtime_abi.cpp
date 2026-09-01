@@ -453,7 +453,7 @@ int32_t move_linear_trajectory_impl(
       reference = safety.planned_trajectory_tail_sample(joints, snapshot);
     }
     const auto speed = cartesian_speed_scale(runtime);
-    auto plan = articore::build_linear_plan_from_reference(
+    auto plan = articore::build_linear_trajectory_plan_from_reference(
         product, runtime->product_mode, side, reference, start_pose, end_pose,
         speed.reference_acceleration, speed.reference_velocity);
 
@@ -508,7 +508,7 @@ int32_t move_linear_path_trajectory_impl(
       reference = safety.planned_trajectory_tail_sample(joints, snapshot);
     }
     const auto speed = cartesian_speed_scale(runtime);
-    auto plan = articore::build_linear_path_plan_from_reference(
+    auto plan = articore::build_linear_path_trajectory_plan_from_reference(
         product, runtime->product_mode, side, reference, poses, pose_count,
         speed.reference_acceleration, speed.reference_velocity);
 
@@ -562,7 +562,7 @@ int32_t move_circular_trajectory_impl(
       reference = safety.planned_trajectory_tail_sample(joints, snapshot);
     }
     const auto speed = cartesian_speed_scale(runtime);
-    auto plan = articore::build_circular_plan_from_reference(
+    auto plan = articore::build_circular_trajectory_plan_from_reference(
         product, runtime->product_mode, side, reference, start_pose,
         via_pose, end_pose,
         speed.reference_acceleration, speed.reference_velocity);

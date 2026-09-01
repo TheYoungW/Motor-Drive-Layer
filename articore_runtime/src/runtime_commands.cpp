@@ -671,9 +671,9 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
     degraded = state_ == ARTICORE_DEGRADED;
     gravity_active =
         gravity_control_.phase != ARTICORE_GRAVITY_INACTIVE;
-    // Every native Cartesian PV execution records physical tracking error so
+    // Every native Cartesian trajectory records physical tracking error so
     // a continuous FIFO successor can be handed off without an artificial
-    // settling pause. RealtimePv still opts out of adaptive time scaling in
+    // settling pause. TrajectoryPv still opts out of adaptive time scaling in
     // prepare_trajectory_cycle(); it only uses this feedback for the guarded
     // boundary handoff and final completion checks.
     adaptive_cartesian_tracking =

@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <future>
+#include <functional>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -14,35 +17,27 @@
 
 namespace articore {
 static_assert(
-    kYunyiCartesianPvDriveVelocityLimit == kYunyiPvDriveVelocityLimit,
+    kYunyiCartesianTrajectoryPvDriveVelocityLimit ==
+        kYunyiPvDriveVelocityLimit,
     "Cartesian trajectory PV must use the product drive velocity ceiling");
 
 namespace {
 
 // A sparse Cartesian IK path preserves geometry. It is then resampled through
-// one global quintic time law into a finite 100 Hz real-time PV knot list. The
-// Runtime executor linearly resamples adjacent knots on its 500 Hz clock.
-constexpr double kCircularPvCommandPeriodSeconds =
-    1.0 / static_cast<double>(kYunyiCircularReferenceHz);
-constexpr double kLinearPvCommandPeriodSeconds =
-    kNativeRealtimePvTrajectoryPeriodSeconds;
+// one global quintic time law into a finite adaptive trajectory-PV knot list. The
+// Runtime executor linearly resamples adjacent variable-duration knots on its
+// 500 Hz clock.
 constexpr uint32_t kCartesianMaximumExecutionSegments =
     kNativeMaximumTrajectoryWaypoints - 3U;
 constexpr uint32_t kCircularMaximumGeometrySegments = 2048U;
 
-uint32_t cartesian_execution_segment_count(
-    double reference_duration_s, uint32_t geometry_segments,
-    double command_period_s) {
-  const double requested = std::ceil(reference_duration_s / command_period_s);
-  if (!std::isfinite(requested) || requested < 1.0 ||
-      requested > kCartesianMaximumExecutionSegments) {
-    throw std::invalid_argument(
-        "Cartesian automatic timing requires more than the native point "
-        "capacity");
-  }
-  return std::max<uint32_t>(
-      geometry_segments, static_cast<uint32_t>(requested));
-}
+using CartesianJointPoint =
+    std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>;
+
+struct TimedCartesianJointPath {
+  std::vector<CartesianJointPoint> points;
+  std::vector<double> timestamps;
+};
 
 double quintic_progress(double amount) {
   amount = std::clamp(amount, 0.0, 1.0);
@@ -51,62 +46,78 @@ double quintic_progress(double amount) {
   return amount3 * (10.0 + amount * (-15.0 + 6.0 * amount));
 }
 
-std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>>
-resample_cartesian_path(
-    const std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>>& path,
-    double reference_duration_s, double command_period_s) {
+double inverse_quintic_progress(double progress) {
+  progress = std::clamp(progress, 0.0, 1.0);
+  double lower = 0.0;
+  double upper = 1.0;
+  for (uint32_t iteration = 0; iteration < 60U; ++iteration) {
+    const double middle = 0.5 * (lower + upper);
+    if (quintic_progress(middle) < progress) {
+      lower = middle;
+    } else {
+      upper = middle;
+    }
+  }
+  return 0.5 * (lower + upper);
+}
+
+CartesianJointPoint sample_cartesian_joint_path(
+    const std::vector<CartesianJointPoint>& path, double time_amount) {
   if (path.size() < 2) {
     throw std::invalid_argument("Cartesian path requires at least two points");
   }
-  const uint32_t segment_count = cartesian_execution_segment_count(
-      reference_duration_s, static_cast<uint32_t>(path.size() - 1U),
-      command_period_s);
-  std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>> result;
-  result.reserve(segment_count + 1U);
-  for (uint32_t sample = 0; sample <= segment_count; ++sample) {
-    const double time_amount = static_cast<double>(sample) /
-        static_cast<double>(segment_count);
-    const double path_position = quintic_progress(time_amount) *
-        static_cast<double>(path.size() - 1U);
-    const auto lower = std::min<std::size_t>(
-        static_cast<std::size_t>(std::floor(path_position)), path.size() - 2U);
-    const auto upper = lower + 1U;
-    const double local = sample == segment_count
-        ? 1.0 : path_position - static_cast<double>(lower);
-    std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> point{};
-    for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++joint) {
-      point[joint] = static_cast<float>(
-          static_cast<double>(path[lower][joint]) +
-          local * static_cast<double>(path[upper][joint] - path[lower][joint]));
-    }
-    result.push_back(point);
+  time_amount = std::clamp(time_amount, 0.0, 1.0);
+  const double path_position = quintic_progress(time_amount) *
+      static_cast<double>(path.size() - 1U);
+  const auto lower = std::min<std::size_t>(
+      static_cast<std::size_t>(std::floor(path_position)), path.size() - 2U);
+  const auto upper = lower + 1U;
+  const double local = time_amount >= 1.0
+      ? 1.0 : path_position - static_cast<double>(lower);
+  CartesianJointPoint point{};
+  for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++joint) {
+    point[joint] = static_cast<float>(
+        static_cast<double>(path[lower][joint]) +
+        local * static_cast<double>(path[upper][joint] - path[lower][joint]));
   }
-  result.front() = path.front();
-  result.back() = path.back();
-  return result;
+  if (time_amount <= 0.0) point = path.front();
+  if (time_amount >= 1.0) point = path.back();
+  return point;
 }
 
-double discrete_path_stretch_factor(
-    const std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>>& path,
-    double command_period_s, double maximum_velocity,
+double variable_path_stretch_factor(
+    const TimedCartesianJointPath& path, double maximum_velocity,
     double maximum_acceleration) {
   std::array<double, ARTICORE_PRODUCT_DUAL_ARM_DOF> previous_velocity{};
   double factor = 1.0;
-  for (std::size_t sample = 1; sample < path.size(); ++sample) {
+  for (std::size_t sample = 1; sample < path.points.size(); ++sample) {
+    const double interval =
+        path.timestamps[sample] - path.timestamps[sample - 1U];
+    if (!std::isfinite(interval) || interval <= 0.0) {
+      throw std::invalid_argument(
+          "Cartesian adaptive knot timestamps are not strictly increasing");
+    }
     for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++joint) {
       const double velocity =
-          static_cast<double>(path[sample][joint] - path[sample - 1U][joint]) /
-          command_period_s;
+          static_cast<double>(path.points[sample][joint] -
+                              path.points[sample - 1U][joint]) /
+          interval;
+      const double acceleration_interval = sample == 1U
+          ? interval
+          : 0.5 * (interval + path.timestamps[sample - 1U] -
+                                    path.timestamps[sample - 2U]);
       const double acceleration =
-          (velocity - previous_velocity[joint]) / command_period_s;
+          (velocity - previous_velocity[joint]) / acceleration_interval;
       factor = std::max(factor, std::abs(velocity) / maximum_velocity);
       factor = std::max(
           factor, std::sqrt(std::abs(acceleration) / maximum_acceleration));
       previous_velocity[joint] = velocity;
     }
   }
+  const double final_interval = path.timestamps.back() -
+      path.timestamps[path.timestamps.size() - 2U];
   for (const double velocity : previous_velocity) {
-    const double stopping_acceleration = velocity / command_period_s;
+    const double stopping_acceleration = velocity / final_interval;
     factor = std::max(
         factor,
         std::sqrt(std::abs(stopping_acceleration) / maximum_acceleration));
@@ -114,44 +125,189 @@ double discrete_path_stretch_factor(
   return factor;
 }
 
-std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>>
-resample_realtime_pv_path_with_limits(
-    const std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>>& path,
-    double command_period_s, double maximum_velocity,
+TimedCartesianJointPath time_parameterize_cartesian_trajectory(
+    const std::vector<CartesianJointPoint>& path, double maximum_velocity,
     double maximum_acceleration) {
   if (!std::isfinite(maximum_velocity) || maximum_velocity <= 0.0 ||
       !std::isfinite(maximum_acceleration) || maximum_acceleration <= 0.0) {
     throw std::invalid_argument(
-        "Cartesian PV velocity and acceleration must be finite and positive");
+        "Cartesian trajectory velocity and acceleration must be finite and "
+        "positive");
   }
-  if (!std::isfinite(command_period_s) || command_period_s <= 0.0) {
-    throw std::invalid_argument(
-        "Cartesian PV command period must be finite and positive");
+  if (path.size() < 2U) {
+    throw std::invalid_argument("Cartesian path requires at least two points");
   }
-  double candidate_duration_s =
-      static_cast<double>(path.size() - 1U) * command_period_s;
-  for (uint32_t attempt = 0; attempt < 12U; ++attempt) {
-    auto result = resample_cartesian_path(
-        path, candidate_duration_s, command_period_s);
-    const double factor = discrete_path_stretch_factor(
-        result, command_period_s, maximum_velocity,
-        maximum_acceleration);
-    if (factor <= 1.0001) return result;
-    const double current_duration_s =
-        static_cast<double>(result.size() - 1U) *
-        command_period_s;
-    candidate_duration_s = std::ceil(
-        current_duration_s * factor * 1.01 /
-        command_period_s) * command_period_s;
+  double maximum_joint_variation = 0.0;
+  for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++joint) {
+    double variation = 0.0;
+    for (std::size_t sample = 1; sample < path.size(); ++sample) {
+      variation += std::abs(static_cast<double>(
+          path[sample][joint] - path[sample - 1U][joint]));
+    }
+    maximum_joint_variation = std::max(maximum_joint_variation, variation);
+  }
+  double candidate_duration_s = std::max({
+      0.10,
+      1.875 * maximum_joint_variation / maximum_velocity,
+      std::sqrt(6.0 * maximum_joint_variation / maximum_acceleration)});
+
+  std::vector<double> mandatory_amounts;
+  mandatory_amounts.reserve(path.size());
+  mandatory_amounts.push_back(0.0);
+  for (std::size_t sample = 1; sample + 1U < path.size(); ++sample) {
+    mandatory_amounts.push_back(inverse_quintic_progress(
+        static_cast<double>(sample) /
+        static_cast<double>(path.size() - 1U)));
+  }
+  mandatory_amounts.push_back(1.0);
+
+  for (uint32_t attempt = 0; attempt < 20U; ++attempt) {
     if (!std::isfinite(candidate_duration_s) ||
         candidate_duration_s > 60.0) {
       throw std::invalid_argument(
-          "Cartesian real-time PV path cannot satisfy velocity and "
+          "Cartesian trajectory cannot satisfy velocity and "
           "acceleration limits within 60 seconds");
     }
+    TimedCartesianJointPath result;
+    result.points.reserve(path.size());
+    result.timestamps.reserve(path.size());
+    result.points.push_back(path.front());
+    result.timestamps.push_back(0.0);
+    double required_duration_scale = 1.0;
+
+    std::function<void(double, const CartesianJointPoint&, double,
+                       const CartesianJointPoint&, uint32_t)>
+        append_interval;
+    append_interval = [&](double start_amount,
+                          const CartesianJointPoint& start,
+                          double end_amount,
+                          const CartesianJointPoint& end,
+                          uint32_t depth) {
+      if (result.points.size() > kCartesianMaximumExecutionSegments) {
+        throw std::invalid_argument(
+            "Cartesian automatic timing requires more than the native point "
+            "capacity");
+      }
+      const double interval =
+          (end_amount - start_amount) * candidate_duration_s;
+      double maximum_step = 0.0;
+      for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++joint) {
+        maximum_step = std::max(
+            maximum_step,
+            std::abs(static_cast<double>(end[joint] - start[joint])));
+      }
+      const double middle_amount = 0.5 * (start_amount + end_amount);
+      const auto middle = sample_cartesian_joint_path(path, middle_amount);
+      double maximum_linearization_error = 0.0;
+      for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++joint) {
+        maximum_linearization_error = std::max(
+            maximum_linearization_error,
+            std::abs(static_cast<double>(middle[joint]) -
+                     0.5 * static_cast<double>(start[joint] + end[joint])));
+      }
+      const bool split =
+          interval > kYunyiCartesianMaximumKnotIntervalSeconds + 1e-12 ||
+          maximum_step > kYunyiCartesianMaximumKnotJointStep + 1e-12 ||
+          maximum_linearization_error >
+              kYunyiCartesianKnotLinearizationTolerance + 1e-12;
+      if (split) {
+        if (depth >= 32U) {
+          throw std::invalid_argument(
+              "Cartesian adaptive knot subdivision did not converge");
+        }
+        if (0.5 * interval + 1e-12 <
+            kYunyiCartesianMinimumKnotIntervalSeconds) {
+          required_duration_scale = std::max(
+              required_duration_scale,
+              2.0 * kYunyiCartesianMinimumKnotIntervalSeconds /
+                  std::max(interval, 1e-12) * 1.01);
+          result.points.push_back(end);
+          result.timestamps.push_back(end_amount * candidate_duration_s);
+          return;
+        }
+        append_interval(
+            start_amount, start, middle_amount, middle, depth + 1U);
+        append_interval(
+            middle_amount, middle, end_amount, end, depth + 1U);
+        return;
+      }
+      if (interval + 1e-12 < kYunyiCartesianMinimumKnotIntervalSeconds) {
+        required_duration_scale = std::max(
+            required_duration_scale,
+            kYunyiCartesianMinimumKnotIntervalSeconds /
+                std::max(interval, 1e-12) * 1.01);
+      }
+      result.points.push_back(end);
+      result.timestamps.push_back(end_amount * candidate_duration_s);
+    };
+
+    for (std::size_t segment = 0;
+         segment + 1U < mandatory_amounts.size(); ++segment) {
+      const double start_amount = mandatory_amounts[segment];
+      const double end_amount = mandatory_amounts[segment + 1U];
+      const auto start = segment == 0U
+          ? path.front() : sample_cartesian_joint_path(path, start_amount);
+      const auto end = segment + 2U == mandatory_amounts.size()
+          ? path.back() : sample_cartesian_joint_path(path, end_amount);
+      append_interval(start_amount, start, end_amount, end, 0U);
+    }
+    result.points.front() = path.front();
+    result.points.back() = path.back();
+    result.timestamps.front() = 0.0;
+    result.timestamps.back() = candidate_duration_s;
+
+    const double limit_factor = variable_path_stretch_factor(
+        result, maximum_velocity, maximum_acceleration);
+    if (limit_factor > 1.0001) {
+      required_duration_scale = std::max(
+          required_duration_scale, limit_factor * 1.01);
+    }
+    if (required_duration_scale <= 1.0001) return result;
+    candidate_duration_s *= required_duration_scale;
   }
   throw std::invalid_argument(
-      "Cartesian real-time PV path time parameterization did not converge");
+      "Cartesian adaptive trajectory timing did not converge");
+}
+
+TimedCartesianJointPath time_parameterize_piecewise_cartesian_trajectory(
+    const std::vector<CartesianJointPoint>& path,
+    const std::vector<std::size_t>& control_point_indices,
+    double maximum_velocity,
+    double maximum_acceleration) {
+  if (control_point_indices.size() < 2U ||
+      control_point_indices.front() != 0U ||
+      control_point_indices.back() + 1U != path.size()) {
+    throw std::invalid_argument(
+        "piecewise Cartesian path control-point indices are invalid");
+  }
+  TimedCartesianJointPath result;
+  double time_offset = 0.0;
+  for (std::size_t segment = 0;
+       segment + 1U < control_point_indices.size(); ++segment) {
+    const std::size_t first = control_point_indices[segment];
+    const std::size_t last = control_point_indices[segment + 1U];
+    if (last <= first) {
+      throw std::invalid_argument(
+          "piecewise Cartesian path contains an empty segment");
+    }
+    const std::vector<CartesianJointPoint> geometry(
+        path.begin() + static_cast<std::ptrdiff_t>(first),
+        path.begin() + static_cast<std::ptrdiff_t>(last + 1U));
+    auto timed = time_parameterize_cartesian_trajectory(
+        geometry, maximum_velocity, maximum_acceleration);
+    const std::size_t begin = segment == 0U ? 0U : 1U;
+    for (std::size_t sample = begin; sample < timed.points.size(); ++sample) {
+      result.points.push_back(timed.points[sample]);
+      result.timestamps.push_back(time_offset + timed.timestamps[sample]);
+    }
+    time_offset = result.timestamps.back();
+  }
+  if (result.points.size() > kNativeMaximumTrajectoryWaypoints) {
+    throw std::invalid_argument(
+        "piecewise Cartesian automatic timing requires more than the native "
+        "point capacity");
+  }
+  return result;
 }
 
 std::string product_joint_role(uint32_t index) {
@@ -193,22 +349,13 @@ std::array<double, ARTICORE_PRODUCT_ARM_DOF> solve_path_ik(
     YunyiRuntimeResources& product, uint32_t side,
     const ArticoreRobotPose& target,
     const std::array<double, ARTICORE_PRODUCT_ARM_DOF>& seed,
-    const CartesianIkContinuityState* continuity,
     const char* context) {
   auto options = product_path_ik_options();
-  auto preferred = predicted_cartesian_ik_posture(seed, continuity);
   const uint32_t offset = side * ARTICORE_PRODUCT_ARM_DOF;
-  for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
-    preferred[joint] = std::clamp(
-        preferred[joint],
-        static_cast<double>(product.joints[offset + joint].lower),
-        static_cast<double>(product.joints[offset + joint].upper));
-  }
   ArticoreIkResult ik{};
   ik.struct_size = sizeof(ik);
   planning_model.ik_from_seed(
-      &target, seed.data(), seed.size(), &options, &ik,
-      preferred.data(), preferred.size());
+      &target, seed.data(), seed.size(), &options, &ik);
   if (!ik.success || ik.dof != ARTICORE_PRODUCT_ARM_DOF) {
     throw std::invalid_argument(
         std::string(context) + " is unreachable; IK error_norm=" +
@@ -287,29 +434,15 @@ NativeTrajectoryJoint trajectory_joint(
   joint.mit_kp = source.kp;
   joint.mit_kd = source.kd;
   joint.mit_feedforward_torque = 0.0f;
-  // Cartesian points execute through internal real-time PV with a shared
+  // Cartesian points execute through internal trajectory PV with a shared
   // Runtime speed percentage captured when the plan is submitted. Damiao's
   // POS_VEL V field remains a separate 3 rad/s trajectory catch-up ceiling.
-  joint.pv_velocity_limit = product_pv_drive_velocity_limit(
-      source.velocity_limit);
+  joint.pv_velocity_limit =
+      product_cartesian_trajectory_pv_drive_velocity_limit(
+          source.velocity_limit);
   joint.pv_hold_velocity_limit = std::min(
       joint.pv_velocity_limit, kNativePvFinalHoldVelocityLimit);
   return joint;
-}
-
-std::vector<double> plan_timestamps(
-    const std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>>& path,
-    double command_period_s) {
-  std::vector<double> timestamps(path.size(), 0.0);
-  for (std::size_t waypoint = 1; waypoint < path.size(); ++waypoint) {
-    timestamps[waypoint] =
-        timestamps[waypoint - 1] + command_period_s;
-  }
-  const double duration = timestamps.back();
-  if (!std::isfinite(duration) || duration > 60.0) {
-    throw std::invalid_argument("Cartesian motion requires an unsafe duration");
-  }
-  return timestamps;
 }
 
 std::function<bool(const std::vector<float>&, std::string&)>
@@ -358,7 +491,7 @@ pose_convergence_check(
 }
 
 void prepend_cartesian_approach(
-    NativeCartesianPlan& plan,
+    NativeCartesianTrajectoryPlan& plan,
     YunyiRuntimeResources& product,
     uint32_t side,
     const NativeTrajectorySample& reference,
@@ -369,19 +502,15 @@ void prepend_cartesian_approach(
         "Cartesian approach requires a complete preplanned path");
   }
   const auto& approach_target = plan.trajectory.waypoints.front().positions;
-  double minimum_approach_duration = 0.10;
-  for (uint32_t index = 0; index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
-    const auto& joint = product.joints[index];
-    const double velocity = std::max(
-        0.01, static_cast<double>(std::min(
-                  joint.velocity_limit,
-                  plan.trajectory.pv_reference_velocity)));
-    const double step = std::abs(
-        static_cast<double>(approach_target[index]) -
-        static_cast<double>(reference.positions[index]));
-    minimum_approach_duration = std::max(
-        minimum_approach_duration, step / velocity);
-  }
+  std::vector<CartesianJointPoint> approach_geometry(2U);
+  std::copy(reference.positions.begin(), reference.positions.end(),
+            approach_geometry.front().begin());
+  std::copy(approach_target.begin(), approach_target.end(),
+            approach_geometry.back().begin());
+  const auto approach = time_parameterize_cartesian_trajectory(
+      approach_geometry, plan.trajectory.pv_reference_velocity,
+      plan.trajectory.pv_reference_acceleration);
+  const double minimum_approach_duration = approach.timestamps.back();
   const double path_duration = plan.trajectory.waypoints.back().time_s;
   const double minimum_total_duration =
       minimum_approach_duration + path_duration;
@@ -395,15 +524,8 @@ void prepend_cartesian_approach(
   for (auto& waypoint : plan.trajectory.waypoints) {
     waypoint.time_s += path_start_s;
   }
-  NativeTrajectoryWaypoint current;
-  current.time_s = 0.0;
-  current.positions = reference.positions;
-  current.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
-  current.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
   const uint32_t all_joints =
       (uint32_t{1} << ARTICORE_PRODUCT_DUAL_ARM_DOF) - 1U;
-  current.velocity_valid_mask = all_joints;
-  current.acceleration_valid_mask = all_joints;
   // The shifted original first waypoint is already the approach endpoint and
   // the Cartesian path start. Reuse it so the boundary has one timestamp.
   auto& approach_end = plan.trajectory.waypoints.front();
@@ -411,9 +533,27 @@ void prepend_cartesian_approach(
   approach_end.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
   approach_end.velocity_valid_mask = all_joints;
   approach_end.acceleration_valid_mask = all_joints;
+  std::vector<NativeTrajectoryWaypoint> leading;
+  leading.reserve(approach.points.size() - 1U);
+  for (std::size_t index = 0; index + 1U < approach.points.size(); ++index) {
+    NativeTrajectoryWaypoint waypoint;
+    waypoint.time_s = approach.timestamps[index];
+    waypoint.positions.assign(
+        approach.points[index].begin(), approach.points[index].end());
+    waypoint.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+    waypoint.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+    if (index == 0U) {
+      waypoint.velocity_valid_mask = all_joints;
+      waypoint.acceleration_valid_mask = all_joints;
+    }
+    leading.push_back(std::move(waypoint));
+  }
   plan.trajectory.waypoints.insert(
-      plan.trajectory.waypoints.begin(), std::move(current));
-  plan.trajectory.approach_segment_count = 1;
+      plan.trajectory.waypoints.begin(),
+      std::make_move_iterator(leading.begin()),
+      std::make_move_iterator(leading.end()));
+  plan.trajectory.approach_segment_count =
+      static_cast<uint32_t>(approach.points.size() - 1U);
   plan.trajectory.approach_deadline_s = path_start_s;
   plan.minimum_duration_s = minimum_total_duration;
   plan.trajectory.completion_deadline_s = minimum_total_duration;
@@ -422,40 +562,42 @@ void prepend_cartesian_approach(
       "Cartesian approach start");
 }
 
-NativeCartesianPlan assemble_cartesian_plan(
-    const std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>>& path,
+NativeCartesianTrajectoryPlan assemble_cartesian_trajectory_plan(
+    const TimedCartesianJointPath& path,
     const std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>& start_velocities,
     const std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>& start_accelerations,
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     ArticoreRuntimeOperation operation,
     uint32_t completion_side,
-    double command_period_s,
     float maximum_reference_acceleration,
     float maximum_reference_velocity) {
   cartesian::require_pv_mode(mode);
   if (!std::isfinite(maximum_reference_acceleration) ||
       maximum_reference_acceleration <= 0.0f) {
     throw std::invalid_argument(
-        "Cartesian PV acceleration must be finite and positive");
+        "Cartesian trajectory acceleration must be finite and positive");
   }
   if (!std::isfinite(maximum_reference_velocity) ||
       maximum_reference_velocity <= 0.0f) {
     throw std::invalid_argument(
-        "Cartesian PV velocity must be finite and positive");
+        "Cartesian trajectory velocity must be finite and positive");
   }
-  NativeCartesianPlan plan;
-  auto timestamps = plan_timestamps(path, command_period_s);
-  const double minimum_path_duration = timestamps.back();
+  NativeCartesianTrajectoryPlan plan;
+  if (path.points.size() < 2U ||
+      path.timestamps.size() != path.points.size()) {
+    throw std::invalid_argument(
+        "Cartesian adaptive path positions and timestamps disagree");
+  }
+  const double minimum_path_duration = path.timestamps.back();
   plan.minimum_duration_s = minimum_path_duration;
   auto& trajectory = plan.trajectory;
   trajectory.mode = mode;
   trajectory.operation = operation;
-  trajectory.execution = NativeTrajectoryExecution::RealtimePv;
+  trajectory.execution = NativeTrajectoryExecution::TrajectoryPv;
   trajectory.pv_reference_velocity = maximum_reference_velocity;
   trajectory.pv_reference_acceleration = maximum_reference_acceleration;
   trajectory.pv_drive_velocity_limit = kYunyiPvDriveVelocityLimit;
-  trajectory.pv_reference_period_s = command_period_s;
   trajectory.allow_out_of_limit_start_recovery = true;
   trajectory.completion_deadline_s = minimum_path_duration;
   trajectory.cartesian_tracking_joint_mask =
@@ -469,11 +611,12 @@ NativeCartesianPlan assemble_cartesian_plan(
 
   const uint32_t all_joints =
       (uint32_t{1} << ARTICORE_PRODUCT_DUAL_ARM_DOF) - 1U;
-  trajectory.waypoints.reserve(path.size());
-  for (std::size_t index = 0; index < path.size(); ++index) {
+  trajectory.waypoints.reserve(path.points.size());
+  for (std::size_t index = 0; index < path.points.size(); ++index) {
     NativeTrajectoryWaypoint waypoint;
-    waypoint.time_s = timestamps[index];
-    waypoint.positions.assign(path[index].begin(), path[index].end());
+    waypoint.time_s = path.timestamps[index];
+    waypoint.positions.assign(
+        path.points[index].begin(), path.points[index].end());
     waypoint.velocities.resize(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
     waypoint.accelerations.resize(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
     if (index == 0) {
@@ -483,7 +626,7 @@ NativeCartesianPlan assemble_cartesian_plan(
           start_accelerations.begin(), start_accelerations.end());
       waypoint.velocity_valid_mask = all_joints;
       waypoint.acceleration_valid_mask = all_joints;
-    } else if (index + 1 == path.size()) {
+    } else if (index + 1 == path.points.size()) {
       waypoint.velocity_valid_mask = all_joints;
       waypoint.acceleration_valid_mask = all_joints;
     }
@@ -493,7 +636,7 @@ NativeCartesianPlan assemble_cartesian_plan(
       completion_side * ARTICORE_PRODUCT_ARM_DOF;
   std::array<double, ARTICORE_PRODUCT_ARM_DOF> expected_q{};
   for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
-    expected_q[index] = path.back()[completion_offset + index];
+    expected_q[index] = path.points.back()[completion_offset + index];
   }
   ArticoreRobotPose expected_pose{};
   expected_pose.struct_size = sizeof(expected_pose);
@@ -537,19 +680,6 @@ std::array<double, ARTICORE_PRODUCT_ARM_DOF> reference_q(
   return q;
 }
 
-struct CartesianCornerBlend {
-  bool active = false;
-  ArticoreRobotPose entry{};
-  ArticoreRobotPose exit{};
-  cartesian::Vector3 center{};
-  cartesian::Vector3 radial_axis{};
-  cartesian::Vector3 tangent_axis{};
-  double radius = 0.0;
-  double angle = 0.0;
-  cartesian::Quaternion entry_orientation{};
-  cartesian::Quaternion exit_orientation{};
-};
-
 ArticoreRobotPose cartesian_pose(
     const cartesian::Vector3& position,
     const cartesian::Quaternion& orientation) {
@@ -557,85 +687,6 @@ ArticoreRobotPose cartesian_pose(
   result.struct_size = sizeof(result);
   std::copy(position.begin(), position.end(), result.position);
   cartesian::rotation_from_quaternion(orientation, result.rotation);
-  return result;
-}
-
-CartesianCornerBlend make_corner_blend(
-    const ArticoreRobotPose& previous,
-    const ArticoreRobotPose& corner,
-    const ArticoreRobotPose& next) {
-  constexpr double pi = 3.14159265358979323846;
-  CartesianCornerBlend result;
-  const auto incoming_delta = cartesian::subtract(
-      corner.position, previous.position);
-  const auto outgoing_delta = cartesian::subtract(
-      next.position, corner.position);
-  const double incoming_length = cartesian::norm(incoming_delta);
-  const double outgoing_length = cartesian::norm(outgoing_delta);
-  if (!std::isfinite(incoming_length) || !std::isfinite(outgoing_length) ||
-      incoming_length <= 1e-6 || outgoing_length <= 1e-6) {
-    return result;
-  }
-  const auto incoming = cartesian::scale(
-      incoming_delta, 1.0 / incoming_length);
-  const auto outgoing = cartesian::scale(
-      outgoing_delta, 1.0 / outgoing_length);
-  const double turn_angle = std::acos(std::clamp(
-      cartesian::dot(incoming, outgoing), -1.0, 1.0));
-  if (!std::isfinite(turn_angle) || turn_angle <= 1e-4 ||
-      turn_angle >= pi - 1e-4) {
-    return result;
-  }
-  const double tangent = std::tan(0.5 * turn_angle);
-  if (!std::isfinite(tangent) || tangent <= 1e-6) return result;
-
-  // Reserve at most one quarter of either adjacent segment for this corner.
-  // Consequently two neighboring blends can never overlap on their shared
-  // segment. Ten millimetres is the normal radius; short segments scale down.
-  const double maximum_trim = 0.25 * std::min(
-      incoming_length, outgoing_length);
-  const double radius = std::min(
-      kYunyiCartesianDefaultBlendRadius, maximum_trim / tangent);
-  const double trim = radius * tangent;
-  if (!std::isfinite(radius) || radius <= 1e-5 ||
-      !std::isfinite(trim) || trim <= 1e-6) {
-    return result;
-  }
-
-  const cartesian::Vector3 corner_position{
-      corner.position[0], corner.position[1], corner.position[2]};
-  const auto entry_position = cartesian::add(
-      corner_position, cartesian::scale(incoming, -trim));
-  const auto exit_position = cartesian::add(
-      corner_position, cartesian::scale(outgoing, trim));
-  auto normal = cartesian::cross(incoming, outgoing);
-  const double normal_length = cartesian::norm(normal);
-  if (!std::isfinite(normal_length) || normal_length <= 1e-8) return result;
-  normal = cartesian::scale(normal, 1.0 / normal_length);
-  const auto inward = cartesian::cross(normal, incoming);
-  result.center = cartesian::add(
-      entry_position, cartesian::scale(inward, radius));
-  result.radial_axis = cartesian::scale(
-      cartesian::subtract(entry_position.data(), result.center.data()),
-      1.0 / radius);
-  result.tangent_axis = cartesian::cross(normal, result.radial_axis);
-  result.radius = radius;
-  result.angle = turn_angle;
-
-  const auto previous_orientation =
-      cartesian::quaternion_from_rotation(previous.rotation);
-  const auto corner_orientation =
-      cartesian::quaternion_from_rotation(corner.rotation);
-  const auto next_orientation =
-      cartesian::quaternion_from_rotation(next.rotation);
-  result.entry_orientation = cartesian::slerp(
-      previous_orientation, corner_orientation,
-      1.0 - trim / incoming_length);
-  result.exit_orientation = cartesian::slerp(
-      corner_orientation, next_orientation, trim / outgoing_length);
-  result.entry = cartesian_pose(entry_position, result.entry_orientation);
-  result.exit = cartesian_pose(exit_position, result.exit_orientation);
-  result.active = true;
   return result;
 }
 
@@ -666,69 +717,34 @@ void append_linear_pose_samples(
   }
 }
 
-void append_corner_pose_samples(
-    std::vector<ArticoreRobotPose>& output,
-    const CartesianCornerBlend& blend) {
-  const double arc_length = blend.radius * blend.angle;
-  const double orientation = cartesian::angular_distance(
-      blend.entry_orientation, blend.exit_orientation);
-  const uint32_t segments = std::max<uint32_t>(
-      1U, static_cast<uint32_t>(std::ceil(std::max(
-          arc_length / kYunyiLinearTranslationSampleDistance,
-          orientation / kYunyiLinearOrientationSampleDistance))));
-  for (uint32_t sample = 1; sample <= segments; ++sample) {
-    const double amount = static_cast<double>(sample) /
-        static_cast<double>(segments);
-    const double angle = blend.angle * amount;
-    const auto position = cartesian::add(
-        blend.center,
-        cartesian::scale(
-            cartesian::add(
-                cartesian::scale(blend.radial_axis, std::cos(angle)),
-                cartesian::scale(blend.tangent_axis, std::sin(angle))),
-            blend.radius));
-    output.push_back(cartesian_pose(
-        position, cartesian::slerp(
-            blend.entry_orientation, blend.exit_orientation, amount)));
-  }
-  output.back() = blend.exit;
-}
+struct PiecewiseLinearPosePath {
+  std::vector<ArticoreRobotPose> poses;
+  std::vector<std::size_t> control_point_indices;
+};
 
-std::vector<ArticoreRobotPose> blended_linear_pose_samples(
+PiecewiseLinearPosePath piecewise_linear_pose_samples(
     const std::vector<ArticoreRobotPose>& poses) {
   if (poses.size() < 2) {
     throw std::invalid_argument("linear path requires at least two poses");
   }
-  std::vector<CartesianCornerBlend> blends(poses.size());
-  for (std::size_t index = 1; index + 1 < poses.size(); ++index) {
-    blends[index] = make_corner_blend(
-        poses[index - 1], poses[index], poses[index + 1]);
-  }
-  std::vector<ArticoreRobotPose> result;
-  result.push_back(poses.front());
-  auto current = poses.front();
+  PiecewiseLinearPosePath result;
+  result.poses.push_back(poses.front());
+  result.control_point_indices.push_back(0U);
   for (std::size_t edge = 0; edge + 1 < poses.size(); ++edge) {
-    const std::size_t corner = edge + 1;
-    const auto& destination = blends[corner].active
-        ? blends[corner].entry : poses[corner];
-    append_linear_pose_samples(result, current, destination);
-    if (blends[corner].active) {
-      append_corner_pose_samples(result, blends[corner]);
-      current = blends[corner].exit;
-    } else {
-      current = poses[corner];
-    }
+    append_linear_pose_samples(
+        result.poses, poses[edge], poses[edge + 1U]);
+    result.control_point_indices.push_back(result.poses.size() - 1U);
   }
-  if (result.size() > 1025U) {
+  if (result.poses.size() > 1025U) {
     throw std::invalid_argument(
-        "blended linear path is too long for one native transaction");
+        "piecewise linear path is too long for one native transaction");
   }
-  result.front() = poses.front();
-  result.back() = poses.back();
+  result.poses.front() = poses.front();
+  result.poses.back() = poses.back();
   return result;
 }
 
-NativeCartesianPlan build_linear_path_plan_common(
+NativeCartesianTrajectoryPlan build_linear_path_trajectory_plan_common(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -756,18 +772,17 @@ NativeCartesianPlan build_linear_path_plan_common(
   RobotModel planning_model("yunyi_v1_0", side, product.tcp_offsets[side]);
   auto seed = reference_q(reference, side);
   const uint32_t side_offset = side * ARTICORE_PRODUCT_ARM_DOF;
-  const auto pose_path = blended_linear_pose_samples(control_poses);
+  const auto pose_path = piecewise_linear_pose_samples(control_poses);
   std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>> joint_path;
-  joint_path.reserve(pose_path.size());
+  joint_path.reserve(pose_path.poses.size());
   joint_path.push_back(start_positions);
   CartesianIkContinuityState ik_continuity;
-  for (std::size_t sample = 1; sample < pose_path.size(); ++sample) {
-    const char* const context = sample + 1U == pose_path.size()
+  for (std::size_t sample = 1; sample < pose_path.poses.size(); ++sample) {
+    const char* const context = sample + 1U == pose_path.poses.size()
         ? "Cartesian linear path target"
-        : "Cartesian blended linear path sample";
+        : "Cartesian piecewise linear path sample";
     const auto solved = solve_path_ik(
-        planning_model, product, side, pose_path[sample], seed,
-        &ik_continuity, context);
+        planning_model, product, side, pose_path.poses[sample], seed, context);
     require_cartesian_ik_continuity(
         side, seed, solved, ik_continuity, context, sample);
     seed = solved;
@@ -777,17 +792,16 @@ NativeCartesianPlan build_linear_path_plan_common(
     }
     joint_path.push_back(waypoint);
   }
-  auto execution_path = resample_realtime_pv_path_with_limits(
-      joint_path, kLinearPvCommandPeriodSeconds, pv_reference_velocity,
-      pv_reference_acceleration);
-  return assemble_cartesian_plan(
+  auto execution_path = time_parameterize_piecewise_cartesian_trajectory(
+      joint_path, pose_path.control_point_indices,
+      pv_reference_velocity, pv_reference_acceleration);
+  return assemble_cartesian_trajectory_plan(
       execution_path, start_velocities, start_accelerations, product, mode,
       ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY, side,
-      kLinearPvCommandPeriodSeconds, pv_reference_acceleration,
-      pv_reference_velocity);
+      pv_reference_acceleration, pv_reference_velocity);
 }
 
-NativeCartesianPlan build_linear_plan_common(
+NativeCartesianTrajectoryPlan build_linear_trajectory_plan_common(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -862,8 +876,7 @@ NativeCartesianPlan build_linear_plan_common(
         ? "Cartesian linear target"
         : "Cartesian linear path sample";
     const auto solved = solve_path_ik(
-        planning_model, product, side, sample_pose, seed,
-        &ik_continuity, context);
+        planning_model, product, side, sample_pose, seed, context);
     require_cartesian_ik_continuity(
         side, seed, solved, ik_continuity, context, sample);
     seed = solved;
@@ -874,14 +887,12 @@ NativeCartesianPlan build_linear_plan_common(
     path.push_back(waypoint);
   }
 
-  auto execution_path = resample_realtime_pv_path_with_limits(
-      path, kLinearPvCommandPeriodSeconds, pv_reference_velocity,
-      pv_reference_acceleration);
-  return assemble_cartesian_plan(
+  auto execution_path = time_parameterize_cartesian_trajectory(
+      path, pv_reference_velocity, pv_reference_acceleration);
+  return assemble_cartesian_trajectory_plan(
       execution_path, start_velocities, start_accelerations, product, mode,
       ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY, side,
-      kLinearPvCommandPeriodSeconds, pv_reference_acceleration,
-      pv_reference_velocity);
+      pv_reference_acceleration, pv_reference_velocity);
 }
 
 }  // namespace
@@ -913,13 +924,37 @@ void require_cartesian_ik_continuity(
               << kYunyiCartesianMaximumIkJointStep << " rad";
       throw std::invalid_argument(message.str());
     }
-
-    state.previous_steps[joint] = step;
+    if (std::abs(step) >= kYunyiCartesianIkDirectionDeadband) {
+      const int8_t direction = step > 0.0 ? 1 : -1;
+      if (state.directions[joint] == 0) {
+        state.directions[joint] = direction;
+        state.excursion_since_reversal[joint] = std::abs(step);
+      } else if (direction == state.directions[joint]) {
+        state.excursion_since_reversal[joint] += std::abs(step);
+      } else {
+        if (state.has_reversed[joint] &&
+            state.excursion_since_reversal[joint] <=
+                kYunyiCartesianIkChatterExcursion) {
+          std::ostringstream message;
+          message << label
+                  << " contains repeated IK joint direction chatter at sample "
+                  << sample_index << ": "
+                  << product_joint_role(
+                         side * ARTICORE_PRODUCT_ARM_DOF + joint)
+                  << " reversed again after only "
+                  << state.excursion_since_reversal[joint]
+                  << " rad of travel";
+          throw std::invalid_argument(message.str());
+        }
+        state.has_reversed[joint] = true;
+        state.directions[joint] = direction;
+        state.excursion_since_reversal[joint] = std::abs(step);
+      }
+    }
   }
-  state.has_previous_step = true;
 }
 
-NativeCartesianPlan build_linear_plan_from_reference(
+NativeCartesianTrajectoryPlan build_linear_trajectory_plan_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -927,12 +962,12 @@ NativeCartesianPlan build_linear_plan_from_reference(
     const float* end_pose_values,
     float pv_reference_acceleration,
     float pv_reference_velocity) {
-  return build_linear_plan_common(
+  return build_linear_trajectory_plan_common(
       product, mode, side, reference, nullptr, end_pose_values,
       pv_reference_acceleration, pv_reference_velocity);
 }
 
-NativeCartesianPlan build_linear_plan_from_reference(
+NativeCartesianTrajectoryPlan build_linear_trajectory_plan_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -945,7 +980,7 @@ NativeCartesianPlan build_linear_plan_from_reference(
   try {
     validate_cartesian_start_pose(
         product.tcp_offsets[side], side, reference, declared_start, "linear");
-    return build_linear_plan_common(
+    return build_linear_trajectory_plan_common(
         product, mode, side, reference, &declared_start, end_pose_values,
         pv_reference_acceleration, pv_reference_velocity);
   } catch (const std::invalid_argument& error) {
@@ -956,14 +991,14 @@ NativeCartesianPlan build_linear_plan_from_reference(
     }
   }
 
-  const auto approach_target = solve_path_start_target_from_reference(
+  const auto approach_target = solve_cartesian_trajectory_approach_target(
       product, mode, side, reference, start_pose_values);
   auto path_reference = reference;
   path_reference.positions.assign(
       approach_target.begin(), approach_target.end());
   path_reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
   path_reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
-  auto plan = build_linear_plan_common(
+  auto plan = build_linear_trajectory_plan_common(
       product, mode, side, path_reference, &declared_start, end_pose_values,
       pv_reference_acceleration, pv_reference_velocity);
   prepend_cartesian_approach(
@@ -971,7 +1006,7 @@ NativeCartesianPlan build_linear_plan_from_reference(
   return plan;
 }
 
-NativeCartesianPlan build_linear_path_plan_from_reference(
+NativeCartesianTrajectoryPlan build_linear_path_trajectory_plan_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -1003,7 +1038,7 @@ NativeCartesianPlan build_linear_path_plan_from_reference(
     validate_cartesian_start_pose(
         product.tcp_offsets[side], side, reference, declared_start,
         "linear path");
-    return build_linear_path_plan_common(
+    return build_linear_path_trajectory_plan_common(
         product, mode, side, reference, poses,
         pv_reference_acceleration, pv_reference_velocity);
   } catch (const std::invalid_argument& error) {
@@ -1014,14 +1049,14 @@ NativeCartesianPlan build_linear_path_plan_from_reference(
     }
   }
 
-  const auto approach_target = solve_path_start_target_from_reference(
+  const auto approach_target = solve_cartesian_trajectory_approach_target(
       product, mode, side, reference, pose_values);
   auto path_reference = reference;
   path_reference.positions.assign(
       approach_target.begin(), approach_target.end());
   path_reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
   path_reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
-  auto plan = build_linear_path_plan_common(
+  auto plan = build_linear_path_trajectory_plan_common(
       product, mode, side, path_reference, poses,
       pv_reference_acceleration, pv_reference_velocity);
   prepend_cartesian_approach(
@@ -1030,7 +1065,7 @@ NativeCartesianPlan build_linear_path_plan_from_reference(
 }
 
 std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
-solve_path_start_target_from_reference(
+solve_cartesian_trajectory_approach_target(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -1038,13 +1073,13 @@ solve_path_start_target_from_reference(
     const float* target_pose_values) {
   if (mode != ARTICORE_MODE_PV && mode != ARTICORE_MODE_MIT) {
     throw std::invalid_argument(
-        "Cartesian point-to-point control mode is invalid");
+        "Cartesian trajectory approach mode is invalid");
   }
   if (side != ARTICORE_ROBOT_LEFT && side != ARTICORE_ROBOT_RIGHT) {
     throw std::invalid_argument(
         "Cartesian motion side must be LEFT(0) or RIGHT(1)");
   }
-  require_cartesian_reference(reference, "point-to-point");
+  require_cartesian_reference(reference, "trajectory approach");
 
   std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> start_positions{};
   std::copy(reference.positions.begin(), reference.positions.end(),
@@ -1057,11 +1092,12 @@ solve_path_start_target_from_reference(
   {
     std::lock_guard<std::mutex> lock(product.pose_mutexes[side]);
     if (!product.pose_models[side]) {
-      throw std::runtime_error("Cartesian point-to-point model is unavailable");
+      throw std::runtime_error(
+          "Cartesian trajectory approach model is unavailable");
     }
     target_q = solve_path_ik(
         *product.pose_models[side], product, side, target, start_q,
-        nullptr, "Cartesian path start");
+        "Cartesian path start");
   }
 
   auto result = start_positions;
@@ -1133,7 +1169,7 @@ std::vector<NativeTrajectoryJoint> product_cartesian_joints(
 
 namespace {
 
-NativeCartesianPlan build_circular_plan_common(
+NativeCartesianTrajectoryPlan build_circular_trajectory_plan_common(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -1228,8 +1264,7 @@ NativeCartesianPlan build_circular_plan_common(
     cartesian::rotation_from_quaternion(
         orientation, sample_pose.rotation);
     const auto solved = solve_path_ik(
-        planning_model, product, side, sample_pose, mutable_seed,
-        &ik_continuity, context);
+        planning_model, product, side, sample_pose, mutable_seed, context);
     require_cartesian_ik_continuity(
         side, mutable_seed, solved, ik_continuity, context, sample_index);
     mutable_seed = solved;
@@ -1266,19 +1301,17 @@ NativeCartesianPlan build_circular_plan_common(
         first_segments + sample, seed, path);
   }
 
-  auto execution_path = resample_realtime_pv_path_with_limits(
-      path, kCircularPvCommandPeriodSeconds, pv_reference_velocity,
-      pv_reference_acceleration);
-  return assemble_cartesian_plan(
+  auto execution_path = time_parameterize_cartesian_trajectory(
+      path, pv_reference_velocity, pv_reference_acceleration);
+  return assemble_cartesian_trajectory_plan(
       execution_path, start_velocities, start_accelerations, product, mode,
       ARTICORE_OPERATION_MOVE_CIRCULAR_TRAJECTORY, side,
-      kCircularPvCommandPeriodSeconds, pv_reference_acceleration,
-      pv_reference_velocity);
+      pv_reference_acceleration, pv_reference_velocity);
 }
 
 }  // namespace
 
-NativeCartesianPlan build_circular_plan_from_reference(
+NativeCartesianTrajectoryPlan build_circular_trajectory_plan_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -1287,13 +1320,13 @@ NativeCartesianPlan build_circular_plan_from_reference(
     const float* end_pose_values,
     float pv_reference_acceleration,
     float pv_reference_velocity) {
-  return build_circular_plan_common(
+  return build_circular_trajectory_plan_common(
       product, mode, side, reference, nullptr, via_pose_values,
       end_pose_values, pv_reference_acceleration,
       pv_reference_velocity);
 }
 
-NativeCartesianPlan build_circular_plan_from_reference(
+NativeCartesianTrajectoryPlan build_circular_trajectory_plan_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -1307,7 +1340,7 @@ NativeCartesianPlan build_circular_plan_from_reference(
   try {
     validate_cartesian_start_pose(
         product.tcp_offsets[side], side, reference, declared_start, "circular");
-    return build_circular_plan_common(
+    return build_circular_trajectory_plan_common(
         product, mode, side, reference, &declared_start, via_pose_values,
         end_pose_values, pv_reference_acceleration,
         pv_reference_velocity);
@@ -1319,14 +1352,14 @@ NativeCartesianPlan build_circular_plan_from_reference(
     }
   }
 
-  const auto approach_target = solve_path_start_target_from_reference(
+  const auto approach_target = solve_cartesian_trajectory_approach_target(
       product, mode, side, reference, start_pose_values);
   auto path_reference = reference;
   path_reference.positions.assign(
       approach_target.begin(), approach_target.end());
   path_reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
   path_reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
-  auto plan = build_circular_plan_common(
+  auto plan = build_circular_trajectory_plan_common(
       product, mode, side, path_reference, &declared_start, via_pose_values,
       end_pose_values, pv_reference_acceleration,
       pv_reference_velocity);

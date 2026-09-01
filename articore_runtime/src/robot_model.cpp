@@ -32,7 +32,10 @@ constexpr double kHalfPi = 1.57079632679489661923;
 // Path IK is redundant (7 joints for a 6D task). Keep its null-space motion
 // close to the preceding path solution instead of allowing numerically valid
 // but mechanically noisy posture drift.
-constexpr double kPathIkSeedPostureGain = 0.10;
+constexpr double kPathIkSeedPostureGain = 0.50;
+constexpr double kPathIkPositionTolerance = 0.0005;
+constexpr double kPathIkOrientationTolerance = 0.035;
+constexpr double kPathIkOrientationWeight = 0.20;
 
 // Fixed Yunyi gripper-center control frame relative to link7. This is the
 // midpoint of the two gripper slide origins in the product URDF. Products
@@ -423,11 +426,10 @@ void RobotModel::ik(const ArticoreRobotPose* target, const double* initial_q,
 void RobotModel::ik_from_seed(
     const ArticoreRobotPose* target, const double* initial_q,
     uint32_t initial_q_count, const ArticoreIkOptions* options,
-    ArticoreIkResult* result, const double* preferred_q,
-    uint32_t preferred_q_count) const {
+    ArticoreIkResult* result) const {
   ik_impl(
       target, initial_q, initial_q_count, options, result, false, nullptr,
-      nullptr, false, true, preferred_q, preferred_q_count);
+      nullptr, false, true);
 }
 
 void RobotModel::ik_nearest(
@@ -472,9 +474,7 @@ void RobotModel::ik_impl(
     const std::chrono::steady_clock::time_point* deadline,
     const detail::YunyiPtpFallbackSeeds* fallback_seeds,
     bool allow_random_retries,
-    bool regularize_to_seed,
-    const double* preferred_q,
-    uint32_t preferred_q_count) const {
+    bool regularize_to_seed) const {
   if (!target || target->struct_size != sizeof(*target))
     throw std::invalid_argument("IK target pose is null or too small");
   if (!result || result->struct_size != sizeof(*result))
@@ -507,13 +507,10 @@ void RobotModel::ik_impl(
   const pinocchio::SE3 desired =
       pinocchio::SE3(rotation, translation) * impl_->end_placement.inverse();
   Eigen::VectorXd seed = impl_->vector(initial_q, initial_q_count, "initial_q");
-  if ((preferred_q == nullptr) != (preferred_q_count == 0)) {
-    throw std::invalid_argument(
-        "preferred_q and preferred_q_count must be supplied together");
-  }
-  const Eigen::VectorXd preferred = preferred_q
-      ? impl_->vector(preferred_q, preferred_q_count, "preferred_q")
-      : seed;
+  // Sequential Cartesian IK has exactly one posture reference: the current
+  // seed, which is the preceding path solution. Do not extrapolate it or use a
+  // second preferred posture; either can steer a redundant joint into chatter.
+  const Eigen::VectorXd preferred = seed;
   struct Attempt { Eigen::VectorXd q; double error; uint32_t iterations; bool success; };
   bool deadline_expired = false;
   const auto check_deadline = [&] {
@@ -525,29 +522,49 @@ void RobotModel::ik_impl(
   pinocchio::Data data(impl_->model);
   auto solve = [&](Eigen::VectorXd q) {
     Attempt attempt{q, std::numeric_limits<double>::infinity(), 0, false};
+    const auto update_error = [&](const pinocchio::Motion& residual) {
+      const auto vector = residual.toVector();
+      const double position_error = vector.template head<3>().norm();
+      const double orientation_error = vector.template tail<3>().norm();
+      attempt.error = regularize_to_seed
+          ? std::hypot(
+                position_error,
+                kPathIkOrientationWeight * orientation_error)
+          : vector.norm();
+      return regularize_to_seed
+          ? position_error <= kPathIkPositionTolerance &&
+                orientation_error <= kPathIkOrientationTolerance
+          : attempt.error < tolerance;
+    };
     for (uint32_t iteration = 0; iteration < max_iterations; ++iteration) {
       if (check_deadline()) break;
       pinocchio::forwardKinematics(impl_->model, data, attempt.q);
       const pinocchio::Motion error = pinocchio::log6(data.oMi[impl_->end_joint].actInv(desired));
-      attempt.error = error.toVector().norm();
       attempt.iterations = iteration;
-      if (attempt.error < tolerance) { attempt.success = true; return attempt; }
+      if (update_error(error)) { attempt.success = true; return attempt; }
       pinocchio::computeJointJacobians(impl_->model, data, attempt.q);
       Eigen::Matrix<double, 6, Eigen::Dynamic> jacobian(6, kDof);
       jacobian.setZero();
       pinocchio::getJointJacobian(impl_->model, data, impl_->end_joint, pinocchio::LOCAL, jacobian);
-      Eigen::Matrix<double, 6, 6> normal = jacobian * jacobian.transpose();
+      auto task_jacobian = jacobian;
+      Eigen::Matrix<double, 6, 1> task_error = error.toVector();
+      if (regularize_to_seed) {
+        task_jacobian.template bottomRows<3>() *= kPathIkOrientationWeight;
+        task_error.template tail<3>() *= kPathIkOrientationWeight;
+      }
+      Eigen::Matrix<double, 6, 6> normal =
+          task_jacobian * task_jacobian.transpose();
       normal.diagonal().array() += damping * std::max(1.0, attempt.error * 10.0);
       const auto normal_solver = normal.ldlt();
       const Eigen::Matrix<double, 7, 6> damped_pseudoinverse =
-          jacobian.transpose() * normal_solver.solve(
+          task_jacobian.transpose() * normal_solver.solve(
               Eigen::Matrix<double, 6, 6>::Identity());
       Eigen::VectorXd delta =
-          step_size * damped_pseudoinverse * error.toVector();
+          step_size * damped_pseudoinverse * task_error;
       if (regularize_to_seed) {
         const Eigen::Matrix<double, 7, 7> nullspace =
             Eigen::Matrix<double, 7, 7>::Identity() -
-            damped_pseudoinverse * jacobian;
+            damped_pseudoinverse * task_jacobian;
         delta += kPathIkSeedPostureGain * nullspace *
             (preferred - attempt.q);
       }
@@ -558,7 +575,14 @@ void RobotModel::ik_impl(
         Eigen::VectorXd candidate = pinocchio::integrate(impl_->model, attempt.q, alpha * delta);
         candidate = candidate.cwiseMax(impl_->model.lowerPositionLimit).cwiseMin(impl_->model.upperPositionLimit);
         pinocchio::forwardKinematics(impl_->model, data, candidate);
-        const double candidate_error = pinocchio::log6(data.oMi[impl_->end_joint].actInv(desired)).toVector().norm();
+        const auto candidate_residual = pinocchio::log6(
+            data.oMi[impl_->end_joint].actInv(desired)).toVector();
+        const double candidate_error = regularize_to_seed
+            ? std::hypot(
+                  candidate_residual.template head<3>().norm(),
+                  kPathIkOrientationWeight *
+                      candidate_residual.template tail<3>().norm())
+            : candidate_residual.norm();
         if (candidate_error < attempt.error) {
           attempt.q = candidate;
           accepted = true;
@@ -570,10 +594,10 @@ void RobotModel::ik_impl(
     }
     if (!deadline_expired) {
       pinocchio::forwardKinematics(impl_->model, data, attempt.q);
-      attempt.error = pinocchio::log6(
-          data.oMi[impl_->end_joint].actInv(desired)).toVector().norm();
+      const auto residual = pinocchio::log6(
+          data.oMi[impl_->end_joint].actInv(desired));
       attempt.iterations = max_iterations;
-      attempt.success = attempt.error < tolerance;
+      attempt.success = update_error(residual);
     }
     return attempt;
   };

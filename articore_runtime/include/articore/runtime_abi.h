@@ -622,12 +622,13 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_pose(
  * Cartesian line, uses shortest-path quaternion SLERP for orientation, and
  * solves the first path pose only from the current planned joints, then solves
  * every later pose only from the preceding joint solution. Path IK never uses
- * fallback or random seeds. The preceding joint step predicts a preferred
- * posture for the next null-space solve, biasing the result away from +/- IK
- * chatter without rejecting a kinematically required reversal. Only a true
- * per-sample branch jump remains a hard failure. Geometry is sampled at
- * 2 mm / 0.1 rad or better.
- * One global quintic time law generates internal 100 Hz real-time-PV knots.
+ * fallback, random, or extrapolated posture seeds. The null-space objective
+ * stays near that same seed, while path IK prioritizes XYZ and permits a
+ * bounded orientation residual. One required reversal is valid;
+ * repeated small +/- joint-direction chatter and true branch jumps are rejected
+ * before execution. Geometry is sampled at 2 mm / 0.1 rad or better.
+ * A quintic time law generates adaptive 4..50 ms internal trajectory-PV knots,
+ * additionally bounded by joint step and linearization error.
  * Runtime automatically selects the shortest safe duration from the shared
  * Runtime speed percentage and internal Cartesian speed/acceleration limits.
  * Runtime linearly resamples adjacent knots and transmits the resulting
@@ -639,21 +640,21 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* end_pose, uint64_t* motion_id);
 /* Atomic multi-segment Linear path. poses is pose_count contiguous
- * [x,y,z,roll,pitch,yaw] records. Runtime applies a default 10 mm Cartesian
- * fillet at every valid internal corner, reducing the radius automatically on
- * short adjacent segments. Runtime automatically parameterizes the complete
- * path using the shared speed percentage. */
+ * [x,y,z,roll,pitch,yaw] records. Every declared internal pose is preserved;
+ * no Cartesian fillet is inserted. Each sharp segment boundary uses its own
+ * rest-to-rest quintic law so the path reaches the corner without a non-zero
+ * velocity direction discontinuity. Runtime automatically parameterizes the
+ * complete path using the shared speed percentage. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_path_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* poses,
     uint32_t pose_count, uint64_t* motion_id);
 /* Standard directed circular path through start/via/end. Position is sampled
  * at 2 mm or better, orientation uses shortest-path SLERP through the via
- * orientation, seed-only sequential IK plus joint-step posture prediction
- * preserve the current local branch without random retries, and one global
+ * orientation, seed-only sequential IK preserves the current local branch
+ * without random retries or posture extrapolation, and one global
  * quintic time law uses the shared Runtime speed percentage to select an
- * automatic safe duration and produces
- * 100 Hz internal real-time-PV knots, which Runtime linearly resamples on its
- * 500 Hz command clock. */
+ * automatic safe duration and produces adaptive 4..50 ms internal trajectory-PV
+ * knots, which Runtime linearly resamples on its 500 Hz command clock. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_circular_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* via_pose, const float* end_pose, uint64_t* motion_id);

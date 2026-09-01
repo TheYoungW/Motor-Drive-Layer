@@ -19,28 +19,35 @@ namespace articore {
 // the caller's endpoint through the current ordinary PV or MIT mode. The
 // Damiao POS_VEL V field remains a separate PV drive-level limit.
 inline constexpr float kYunyiCartesianMaximumVelocity = 1.0f;
-inline constexpr float kYunyiCartesianPvDriveVelocityLimit = 3.0f;
+inline constexpr float kYunyiCartesianTrajectoryPvDriveVelocityLimit = 3.0f;
 inline constexpr float kYunyiCartesianWristAccelerationLimit = 6.0f;
-inline constexpr double kYunyiCartesianDefaultBlendRadius = 0.010;
 // Linear preserves its Cartesian geometry with at most 2 mm translation or
 // 0.1 rad orientation between consecutive IK targets. The resulting joint
-// plan uses 100 Hz real-time-PV knots, linearly resampled at the Runtime's
+// plan uses adaptive trajectory-PV knots, linearly resampled at the Runtime's
 // 500 Hz command cadence.
 inline constexpr double kYunyiLinearTranslationSampleDistance = 0.002;
 inline constexpr double kYunyiLinearOrientationSampleDistance = 0.1;
-inline constexpr uint32_t kYunyiLinearReferenceHz = 100;
-// Circular uses the same geometric density and real-time PV command clock as
-// Linear. Its positional path is the unique directed arc through start/via/end;
-// orientation follows shortest-path SLERP through the via orientation.
+// Circular uses the same geometric density and adaptive trajectory-PV knot
+// policy as Linear. Its positional path is the unique directed arc through
+// start/via/end; orientation follows shortest-path SLERP through the via
+// orientation.
 inline constexpr double kYunyiCircularTranslationSampleDistance = 0.002;
 inline constexpr double kYunyiCircularOrientationSampleDistance = 0.1;
-inline constexpr uint32_t kYunyiCircularReferenceHz = 100;
+inline constexpr double kYunyiCartesianMinimumKnotIntervalSeconds = 0.004;
+inline constexpr double kYunyiCartesianMaximumKnotIntervalSeconds = 0.050;
+inline constexpr double kYunyiCartesianMaximumKnotJointStep = 0.020;
+inline constexpr double kYunyiCartesianKnotLinearizationTolerance = 0.001;
 // Cartesian geometry samples are close, so a large per-sample joint move still
-// indicates a branch jump. Smaller direction changes are not rejected: path IK
-// predicts its preferred redundant posture from the preceding joint step and
-// uses that only as a null-space continuity objective.
+// indicates a branch jump. One required reversal is allowed, but repeated small
+// reversals inside a short excursion are rejected as visible IK chatter.
 inline constexpr double kYunyiCartesianMaximumIkJointStep = 0.35;
-inline constexpr double kYunyiCartesianIkStepPredictionGain = 0.5;
+inline constexpr double kYunyiCartesianIkPositionTolerance = 0.0005;
+inline constexpr double kYunyiCartesianIkOrientationTolerance = 0.035;
+inline constexpr double kYunyiCartesianIkOrientationWeight = 0.20;
+// Below 1 mrad a direction sign is treated as numerical/local-extremum noise;
+// it must not create a new joint-motion trend for chatter detection.
+inline constexpr double kYunyiCartesianIkDirectionDeadband = 0.001;
+inline constexpr double kYunyiCartesianIkChatterExcursion = 0.010;
 // A 100 Hz caller has a 10 ms period. Keep two milliseconds outside the
 // numerical solve for ABI validation, locking and atomic command install.
 inline constexpr std::chrono::microseconds kYunyiProductIkBudget{8000};
@@ -51,10 +58,11 @@ inline float product_cartesian_reference_velocity_limit(
       joint_hard_velocity_limit, kYunyiCartesianMaximumVelocity) * speed_scale;
 }
 
-inline float product_pv_drive_velocity_limit(
+inline float product_cartesian_trajectory_pv_drive_velocity_limit(
     float joint_hard_velocity_limit) {
   return std::min(
-      joint_hard_velocity_limit, kYunyiCartesianPvDriveVelocityLimit);
+      joint_hard_velocity_limit,
+      kYunyiCartesianTrajectoryPvDriveVelocityLimit);
 }
 
 inline float product_cartesian_acceleration_limit(
@@ -69,29 +77,16 @@ inline float product_cartesian_acceleration_limit(
 
 struct YunyiRuntimeResources;
 
-struct NativeCartesianPlan {
+struct NativeCartesianTrajectoryPlan {
   NativeTrajectoryRequest trajectory;
   double minimum_duration_s = 0.0;
 };
 
 struct CartesianIkContinuityState {
-  std::array<double, ARTICORE_PRODUCT_ARM_DOF> previous_steps{};
-  bool has_previous_step = false;
+  std::array<int8_t, ARTICORE_PRODUCT_ARM_DOF> directions{};
+  std::array<double, ARTICORE_PRODUCT_ARM_DOF> excursion_since_reversal{};
+  std::array<bool, ARTICORE_PRODUCT_ARM_DOF> has_reversed{};
 };
-
-inline std::array<double, ARTICORE_PRODUCT_ARM_DOF>
-predicted_cartesian_ik_posture(
-    const std::array<double, ARTICORE_PRODUCT_ARM_DOF>& current,
-    const CartesianIkContinuityState* state) {
-  auto predicted = current;
-  if (state && state->has_previous_step) {
-    for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
-      predicted[joint] += kYunyiCartesianIkStepPredictionGain *
-          state->previous_steps[joint];
-    }
-  }
-  return predicted;
-}
 
 void require_cartesian_ik_continuity(
     uint32_t side,
@@ -149,7 +144,7 @@ std::vector<NativeTrajectoryJoint> product_cartesian_joints(
     const YunyiRuntimeResources& product);
 
 std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
-solve_path_start_target_from_reference(
+solve_cartesian_trajectory_approach_target(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -166,17 +161,17 @@ solve_dual_point_to_point_targets_from_reference(
     std::chrono::steady_clock::time_point deadline =
         std::chrono::steady_clock::time_point::max());
 
-NativeCartesianPlan build_linear_plan_from_reference(
+NativeCartesianTrajectoryPlan build_linear_trajectory_plan_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
     const NativeTrajectorySample& reference,
     const float* end_pose,
     float pv_reference_acceleration =
-        kNativeRealtimePvTrajectoryAccelerationLimit,
+        kNativeTrajectoryPvAccelerationLimit,
     float pv_reference_velocity = kYunyiCartesianMaximumVelocity);
 
-NativeCartesianPlan build_linear_path_plan_from_reference(
+NativeCartesianTrajectoryPlan build_linear_path_trajectory_plan_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -184,10 +179,10 @@ NativeCartesianPlan build_linear_path_plan_from_reference(
     const float* poses,
     uint32_t pose_count,
     float pv_reference_acceleration =
-        kNativeRealtimePvTrajectoryAccelerationLimit,
+        kNativeTrajectoryPvAccelerationLimit,
     float pv_reference_velocity = kYunyiCartesianMaximumVelocity);
 
-NativeCartesianPlan build_linear_plan_from_reference(
+NativeCartesianTrajectoryPlan build_linear_trajectory_plan_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -195,7 +190,7 @@ NativeCartesianPlan build_linear_plan_from_reference(
     const float* start_pose,
     const float* end_pose,
     float pv_reference_acceleration =
-        kNativeRealtimePvTrajectoryAccelerationLimit,
+        kNativeTrajectoryPvAccelerationLimit,
     float pv_reference_velocity = kYunyiCartesianMaximumVelocity);
 
 void validate_cartesian_start_pose(
@@ -219,7 +214,7 @@ void validate_cartesian_start_pose(
     const float* start_pose,
     const char* motion_name);
 
-NativeCartesianPlan build_circular_plan_from_reference(
+NativeCartesianTrajectoryPlan build_circular_trajectory_plan_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -227,10 +222,10 @@ NativeCartesianPlan build_circular_plan_from_reference(
     const float* via_pose,
     const float* end_pose,
     float pv_reference_acceleration =
-        kNativeRealtimePvTrajectoryAccelerationLimit,
+        kNativeTrajectoryPvAccelerationLimit,
     float pv_reference_velocity = kYunyiCartesianMaximumVelocity);
 
-NativeCartesianPlan build_circular_plan_from_reference(
+NativeCartesianTrajectoryPlan build_circular_trajectory_plan_from_reference(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
@@ -239,7 +234,7 @@ NativeCartesianPlan build_circular_plan_from_reference(
     const float* via_pose,
     const float* end_pose,
     float pv_reference_acceleration =
-        kNativeRealtimePvTrajectoryAccelerationLimit,
+        kNativeTrajectoryPvAccelerationLimit,
     float pv_reference_velocity = kYunyiCartesianMaximumVelocity);
 
 }  // namespace articore

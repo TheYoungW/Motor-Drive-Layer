@@ -68,9 +68,7 @@ class RobotModel final {
   void ik_from_seed(const ArticoreRobotPose* target, const double* initial_q,
                     uint32_t initial_q_count,
                     const ArticoreIkOptions* options,
-                    ArticoreIkResult* result,
-                    const double* preferred_q = nullptr,
-                    uint32_t preferred_q_count = 0) const;
+                    ArticoreIkResult* result) const;
   // set_pose endpoint IK searches the configured retry budget and selects the
   // successful solution nearest to the measured/planned seed.
   void ik_nearest(const ArticoreRobotPose* target, const double* initial_q,
@@ -96,9 +94,7 @@ class RobotModel final {
                const detail::YunyiPtpFallbackSeeds* fallback_seeds =
                    nullptr,
                bool allow_random_retries = true,
-               bool regularize_to_seed = false,
-               const double* preferred_q = nullptr,
-               uint32_t preferred_q_count = 0) const;
+               bool regularize_to_seed = false) const;
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
