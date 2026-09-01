@@ -120,7 +120,6 @@ enum ArticoreRuntimeOperation {
 };
 
 /* Source aliases for the legacy Motion-ID ABI. */
-#define ARTICORE_OPERATION_SET_POSE ARTICORE_OPERATION_MOVE_POSE
 #define ARTICORE_OPERATION_CANCEL_ALL_MOTIONS ARTICORE_OPERATION_STOP_MOTION
 #define ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY ARTICORE_OPERATION_MOVE_LINEAR
 #define ARTICORE_OPERATION_MOVE_CIRCULAR_TRAJECTORY ARTICORE_OPERATION_MOVE_CIRCULAR
@@ -547,8 +546,8 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_zero(
  * where s=speed_percent/100; automatic time parameterization then selects the
  * safe duration. Existing queued or running Cartesian plans retain the
  * percentage captured at submission.
- * Legacy per-command PV/set_pose speed_percent arguments also update this
- * shared value for subsequent commands. */
+ * Legacy per-command PV speed_percent arguments also update this shared value
+ * for subsequent commands. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_speed_percent(
     ArticoreRuntime* runtime, float speed_percent);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_speed_percent(
@@ -556,39 +555,37 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_speed_percent(
 
 /* Ordinary product joint commands use fixed left J1..J7, right J1..J7 order.
  * PV is public latest-target-wins endpoint control, not a complete trajectory
- * task. Runtime sends the final P directly and preserves the current Motor-V
- * speed envelope when a target is replaced. Its 500 Hz worker refreshes the
- * ordinary POS_VEL command and shapes V; it does not generate intermediate P.
+ * task. Runtime sends final P on the first 500 Hz frame and shapes only Motor
+ * V from the speed ceiling, acceleration limit, and physical feedback
+ * distance. Distance-based braking and a confirmed V=0 hold complete
+ * arrival without creating a finite point list.
  * speed_percent accepts 1..100. Unless the optional maximum-speed or
  * maximum-acceleration override below is configured, at 100 percent the
  * J1..J7 velocity limits are
  * [180,180,180,225,225,225,225] deg/s and acceleration hard limits are
  * [450,450,900,900,900,900,900] deg/s^2. Runtime time-scales velocity by s
  * and acceleration by s^2. A configured user value replaces the corresponding
- * per-joint 100-percent base. Runtime derives the POS_VEL V field every cycle
- * from the effective limits and measured tracking error.
+ * per-joint 100-percent base. Runtime selects POS_VEL V every cycle from the
+ * acceleration ramp and physical feedback-distance braking limit.
  */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
     float speed_percent);
-/* Ordinary MIT endpoint control. Each complete command immediately replaces
- * the prior target without an intermediate position-reference step. Runtime
- * owns the fixed product gains and refreshes the persistent command at 500 Hz.
- */
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_direct(
-    ArticoreRuntime* runtime, const float* positions, uint32_t count);
-/* High-frequency teleoperation endpoint control. Callers provide only the
- * newest complete joint angles. Runtime applies the fast-follow gains and the
- * fixed internal 100-percent (5 rad/s) position-reference step limit.
- */
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_fast_follow(
-    ArticoreRuntime* runtime, const float* positions, uint32_t count);
-/* Deprecated ABI-compatibility entry point for the former user-selectable MIT
- * step speed. New SDKs must expose direct and fast-follow MIT instead.
+/* Standard MIT control. Callers provide one complete atomic q/dq/kp/kd/tau_ff
+ * frame in fixed left J1..J7, right J1..J7 order. A newer frame replaces the
+ * previous frame. This is a watchdog-protected streaming command: it performs
+ * no interpolation and creates no finite motion task.
  */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
-    ArticoreRuntime* runtime, const float* positions, uint32_t count,
-    float speed_percent);
+    ArticoreRuntime* runtime, const float* positions,
+    const float* velocities, const float* kp, const float* kd,
+    const float* feedforward_torques, uint32_t count);
+/* Fast MIT endpoint control. Callers provide only the newest complete joint
+ * angles. Runtime owns dq=0, tau_ff=0, fixed fast gains and the internal
+ * 100-percent (5 rad/s) position-reference step limit.
+ */
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_fast(
+    ArticoreRuntime* runtime, const float* positions, uint32_t count);
 /* Pure product inverse kinematics. Both poses use
  * [x,y,z,roll,pitch,yaw] in metres/radians. positions receives exactly 14
  * logical joint angles in fixed left J1..J7, right J1..J7 order. Runtime uses
@@ -618,25 +615,17 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_max_acceleration(
     ArticoreRuntime* runtime, float max_acceleration_rad_s2);
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_acceleration(
     ArticoreRuntime* runtime, float* max_acceleration_rad_s2);
-/* Advanced streaming MIT frame with explicit q, dq, torque and gains. */
-ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
-    ArticoreRuntime* runtime, const float* positions,
-    const float* velocities, const float* feedforward_torques,
-    const float* kp, const float* kd, uint32_t count);
-
-/* ABI compatibility convenience. This entry solves IK once, then atomically
- * installs that joint endpoint through the Runtime's current ordinary PV or
- * direct ordinary MIT mode. It does not plan a Cartesian path and has no
- * motion ID. The speed percentage is ignored in MIT mode. */
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_pose(
-    ArticoreRuntime* runtime, const float* left_target_pose,
-    const float* right_target_pose, float speed_percent);
 /* Simple non-blocking Cartesian motion API. These calls return only whether
  * the complete plan was accepted. Runtime owns execution and physical-arrival
  * detection; callers read ArticoreProductState.motion_arrived and health.
  * Only one finite Cartesian motion may be active through this surface. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(
     ArticoreRuntime* runtime, uint32_t side, const float* target_pose);
+/* Unified finite Linear entry point. If start_pose is NULL, the Cartesian line
+ * begins at the current planned pose. Otherwise Runtime preplans the approach
+ * from the current planned pose to start_pose and the Cartesian line from
+ * start_pose to end_pose, then installs both as one finite trajectory task in
+ * one submission. The approach never uses the ordinary-PV endpoint API. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* end_pose);

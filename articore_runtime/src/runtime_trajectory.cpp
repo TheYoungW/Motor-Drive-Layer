@@ -366,7 +366,8 @@ uint64_t SafetyRuntime::start_trajectory(NativeTrajectoryRequest request,
   }
   if (waypoint_count < 2 ||
       waypoint_count > kNativeMaximumTrajectoryWaypoints) {
-    throw std::invalid_argument("trajectory requires 2..10000 waypoints");
+    throw std::invalid_argument(
+        "trajectory waypoint count is below 2 or exceeds native capacity");
   }
   if (request.approach_segment_count >= waypoint_count) {
     throw std::invalid_argument(
@@ -1088,7 +1089,15 @@ NativeTrajectorySample SafetyRuntime::planned_arm_sample(
             "current planned PV reference is incomplete at " +
             joint_role(joint));
       }
-      result.positions.push_back(joint.direction * found->target_position);
+      const auto index = static_cast<std::size_t>(
+          std::distance(arm_mailbox_.pv.begin(), found));
+      const float reference_position =
+          arm_mailbox_.joint_position &&
+                  arm_mailbox_.pv_reference_positions.size() ==
+                      arm_mailbox_.pv.size()
+              ? arm_mailbox_.pv_reference_positions[index]
+              : found->target_position;
+      result.positions.push_back(joint.direction * reference_position);
       result.velocities.push_back(0.0f);
       continue;
     }

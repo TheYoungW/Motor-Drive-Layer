@@ -29,7 +29,7 @@ def send_positions(
     if mode == "pv":
         robot.set_joint_pv(left=left, right=right, velocity=speed)
     else:
-        robot.set_joint_mit(left=left, right=right, velocity=speed)
+        robot.set_joint_mit_fast(q=(*left, *right))
 
 
 def wait_stable(

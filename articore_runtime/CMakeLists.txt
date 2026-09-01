@@ -282,4 +282,20 @@ if(BUILD_TESTING)
     articore_runtime_hardware_pv_jsonl_replay_diagnostic
     PRIVATE articore_runtime
   )
+  add_executable(
+    articore_runtime_hardware_pv_tail_diagnostic EXCLUDE_FROM_ALL
+    tests/hardware_pv_tail_diagnostic.cpp
+  )
+  target_link_libraries(
+    articore_runtime_hardware_pv_tail_diagnostic
+    PRIVATE articore_runtime
+  )
+  add_executable(
+    articore_runtime_hardware_pv_single_point_diagnostic EXCLUDE_FROM_ALL
+    tests/hardware_pv_single_point_diagnostic.cpp
+  )
+  target_link_libraries(
+    articore_runtime_hardware_pv_single_point_diagnostic
+    PRIVATE articore_runtime
+  )
 endif()

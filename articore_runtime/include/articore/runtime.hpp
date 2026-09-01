@@ -174,42 +174,30 @@ class Runtime final {
     return result;
   }
 
-  // ABI/source compatibility for the former variable-speed stepped MIT API.
-  // New callers should use one of the position-only overloads below.
   void set_joint_mit(const std::vector<float>& positions,
-                     float speed_percent) {
+                     const std::vector<float>& velocities,
+                     const std::vector<float>& kp,
+                     const std::vector<float>& kd,
+                     const std::vector<float>& feedforward_torques) {
+    if (velocities.size() != positions.size() ||
+        kp.size() != positions.size() || kd.size() != positions.size() ||
+        feedforward_torques.size() != positions.size()) {
+      throw std::invalid_argument(
+          "MIT frame arrays must have the same joint count");
+    }
     detail::check(
         articore_runtime_set_joint_mit(
-            checked(), positions.data(), detail::size(positions),
-            speed_percent),
-        "set_joint_mit");
-  }
-
-  void set_joint_mit(const std::vector<float>& positions) {
-    detail::check(
-        articore_runtime_set_joint_mit_direct(
-            checked(), positions.data(), detail::size(positions)),
-        "set_joint_mit");
-  }
-
-  void set_joint_mit_fast_follow(const std::vector<float>& positions) {
-    detail::check(
-        articore_runtime_set_joint_mit_fast_follow(
-            checked(), positions.data(), detail::size(positions)),
-        "set_joint_mit_fast_follow");
-  }
-
-  void submit_mit_frame(const std::vector<float>& positions,
-                        const std::vector<float>& velocities,
-                        const std::vector<float>& feedforward_torques,
-                        const std::vector<float>& kp,
-                        const std::vector<float>& kd) {
-    detail::check(
-        articore_runtime_submit_mit_frame(
             checked(), positions.data(), velocities.data(),
-            feedforward_torques.data(), kp.data(), kd.data(),
+            kp.data(), kd.data(), feedforward_torques.data(),
             detail::size(positions)),
-        "submit_mit_frame");
+        "set_joint_mit");
+  }
+
+  void set_joint_mit_fast(const std::vector<float>& positions) {
+    detail::check(
+        articore_runtime_set_joint_mit_fast(
+            checked(), positions.data(), detail::size(positions)),
+        "set_joint_mit_fast");
   }
 
   std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> solve_ik(

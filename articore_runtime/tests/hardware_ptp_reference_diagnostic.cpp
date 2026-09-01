@@ -91,8 +91,14 @@ void wait_until_enabled_and_stationary(ArticoreRuntime* runtime,
 void run_ptp(ArticoreRuntime* runtime, const Pose& target,
              float speed_percent, const char* label) {
   const Pose right_target = read_pose(runtime, ARTICORE_ROBOT_RIGHT);
-  check(articore_runtime_set_pose(runtime, target.data(),
-                                   right_target.data(), speed_percent),
+  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> joint_target{};
+  check(articore_runtime_solve_ik(
+            runtime, target.data(), right_target.data(), joint_target.data(),
+            static_cast<uint32_t>(joint_target.size())),
+        "solve_ik");
+  check(articore_runtime_set_joint_pv(
+            runtime, joint_target.data(),
+            static_cast<uint32_t>(joint_target.size()), speed_percent),
         label);
   std::cout << "stage=" << label
             << " speed_percent=" << speed_percent << std::endl;

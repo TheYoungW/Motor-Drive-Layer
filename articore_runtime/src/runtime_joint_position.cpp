@@ -452,7 +452,9 @@ void SafetyRuntime::install_joint_position(
   next.final_positions.reserve(targets.size());
   if (requested_mode == ARTICORE_MODE_PV) {
     next.pv.reserve(targets.size());
+    next.pv_reference_positions.reserve(targets.size());
     next.pv_reference_velocities.reserve(targets.size());
+    next.pv_drive_velocity_commands.reserve(targets.size());
     next.pv_hold_confirmation_cycles.reserve(targets.size());
     next.pv_stationary_hold.reserve(targets.size());
     next.pv_hold_target_positions.reserve(targets.size());
@@ -461,7 +463,6 @@ void SafetyRuntime::install_joint_position(
           *pv_reference_velocity_limits;
       next.pv_reference_acceleration_limits =
           *pv_reference_acceleration_limits;
-      next.pv_drive_velocity_commands.reserve(targets.size());
     }
   } else {
     next.mit.reserve(targets.size());
@@ -486,6 +487,7 @@ void SafetyRuntime::install_joint_position(
     }
 
     float current_position = state.pos;
+    float current_command_position = state.pos;
     float current_reference_velocity = 0.0f;
     float current_drive_velocity = 0.0f;
     uint16_t current_hold_confirmations = 0;
@@ -504,22 +506,22 @@ void SafetyRuntime::install_joint_position(
         }
         const auto previous_index = static_cast<std::size_t>(
             std::distance(arm_mailbox_.pv.begin(), previous));
-        if (per_joint_profile) {
-          if (arm_mailbox_.pv_per_joint_profile &&
-              arm_mailbox_.pv_drive_velocity_commands.size() ==
-                  arm_mailbox_.pv.size()) {
-            current_drive_velocity =
-                arm_mailbox_.pv_drive_velocity_commands[previous_index];
-          }
-        } else {
-          if (arm_mailbox_.pv_reference_velocities.size() !=
-              arm_mailbox_.pv.size()) {
-            throw std::runtime_error(
-                "ordinary PV reference velocity state is inconsistent");
-          }
-          current_position = previous->target_position;
-          current_reference_velocity =
-              arm_mailbox_.pv_reference_velocities[previous_index];
+        current_command_position = previous->target_position;
+        if (arm_mailbox_.pv_reference_positions.size() !=
+                arm_mailbox_.pv.size() ||
+            arm_mailbox_.pv_reference_velocities.size() !=
+            arm_mailbox_.pv.size()) {
+          throw std::runtime_error(
+              "ordinary PV reference velocity state is inconsistent");
+        }
+        current_position =
+            arm_mailbox_.pv_reference_positions[previous_index];
+        current_reference_velocity =
+            arm_mailbox_.pv_reference_velocities[previous_index];
+        if (arm_mailbox_.pv_drive_velocity_commands.size() ==
+                arm_mailbox_.pv.size()) {
+          current_drive_velocity =
+              arm_mailbox_.pv_drive_velocity_commands[previous_index];
         }
         if (arm_mailbox_.pv_hold_confirmation_cycles.size() ==
                 arm_mailbox_.pv.size() &&
@@ -555,18 +557,15 @@ void SafetyRuntime::install_joint_position(
     if (requested_mode == ARTICORE_MODE_PV) {
       next.pv.push_back(ArticorePosVelCommand{
           motor_handle,
-          per_joint_profile ? final_position : current_position,
-          per_joint_profile
-              ? current_drive_velocity
-              : std::max(config_.safe_pv_velocity_limit, pv_velocity_limit)});
+          current_command_position,
+          current_drive_velocity});
+      next.pv_reference_positions.push_back(current_position);
       next.pv_reference_velocities.push_back(current_reference_velocity);
       next.pv_hold_confirmation_cycles.push_back(
           current_hold_confirmations);
       next.pv_stationary_hold.push_back(current_stationary_hold);
       next.pv_hold_target_positions.push_back(current_hold_target);
-      if (per_joint_profile) {
-        next.pv_drive_velocity_commands.push_back(current_drive_velocity);
-      }
+      next.pv_drive_velocity_commands.push_back(current_drive_velocity);
     } else {
       const auto& config = joint_config(motor_handle);
       next.mit.push_back(ArticoreMitCommand{

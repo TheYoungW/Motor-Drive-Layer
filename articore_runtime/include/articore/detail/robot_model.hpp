@@ -15,7 +15,7 @@ namespace detail {
 using YunyiIkSeed = std::array<double, ARTICORE_PRODUCT_ARM_DOF>;
 using YunyiPtpFallbackSeeds = std::array<YunyiIkSeed, 8>;
 
-// The live/planned configuration remains the primary set_pose IK seed. These are the
+// The live/planned configuration remains the primary endpoint IK seed. These are the
 // eight deterministic fallbacks: product Home, zero, joint-range midpoint and
 // five low-discrepancy configurations inside the product limits.
 YunyiPtpFallbackSeeds yunyi_ptp_fallback_ik_seeds(
@@ -69,13 +69,13 @@ class RobotModel final {
                     uint32_t initial_q_count,
                     const ArticoreIkOptions* options,
                     ArticoreIkResult* result) const;
-  // set_pose endpoint IK searches the configured retry budget and selects the
+  // Endpoint IK searches the configured retry budget and selects the
   // successful solution nearest to the measured/planned seed.
   void ik_nearest(const ArticoreRobotPose* target, const double* initial_q,
                   uint32_t initial_q_count,
                   const ArticoreIkOptions* options,
                   ArticoreIkResult* result) const;
-  // set_pose uses the same nearest-solution policy but bounds
+  // Endpoint IK uses the same nearest-solution policy but bounds
   // the search by a steady-clock deadline. A converged solution found before
   // the deadline is returned; otherwise the call fails without installing a
   // partial joint target.

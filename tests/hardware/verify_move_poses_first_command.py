@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify dual-arm set_pose as the first PV command after enable."""
+"""Verify solve_ik plus dual-arm PV as the first command after enable."""
 
 from __future__ import annotations
 
@@ -55,13 +55,17 @@ def main() -> None:
         connected = True
         robot.enable()
         started = time.monotonic()
-        robot.set_pose(
+        left_q, right_q = robot.solve_ik(
             left_target_pose=LEFT_TARGET,
             right_target_pose=RIGHT_TARGET,
-            speed_percent=args.speed,
+        )
+        robot.set_joint_pv(
+            left=left_q,
+            right=right_q,
+            velocity=args.speed,
         )
         installed = time.monotonic()
-        print(f"set_pose_call_s={installed - started:.6f}", flush=True)
+        print(f"solve_ik_and_pv_call_s={installed - started:.6f}", flush=True)
 
         deadline = started + 10.0
         stable_samples = 0
@@ -98,7 +102,7 @@ def main() -> None:
         print(f"right_pose={robot.get_pose('right')}", flush=True)
         print(f"health={robot.get_health()}", flush=True)
         if stable_samples < 20:
-            raise RuntimeError("dual-arm set_pose did not settle within 10 seconds")
+            raise RuntimeError("dual-arm PV endpoint did not settle within 10 seconds")
     finally:
         if connected:
             robot.disconnect()

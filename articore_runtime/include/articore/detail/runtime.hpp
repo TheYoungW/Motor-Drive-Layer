@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -118,22 +119,23 @@ inline constexpr float kNativePvSettlingVelocityLimit = 0.05f;
 inline constexpr float kNativeOrdinaryPvDefaultAcceleration = 6.0f;
 inline constexpr float kNativeTrajectoryPvAccelerationLimit = 6.0f;
 inline constexpr float kNativeOrdinaryPvHoldPositionTolerance = 0.002f;
-// SafetyRuntime sees native motor velocity here. The 8009's first non-zero
-// feedback code is about 0.011 rad/s, so the threshold must include one native
-// feedback quantum without admitting visible motion.
+// Feedback is converted to logical joint velocity before this threshold is
+// applied. It admits one reported velocity quantum without visible motion.
 inline constexpr float kNativeOrdinaryPvHoldVelocityTolerance = 0.02f;
-// Keep only a small quantization margin around the arrival window. The former
-// 0.020 rad release threshold could freeze a V=0 joint visibly away from P.
-inline constexpr float kNativeOrdinaryPvHoldReleaseTolerance = 0.0025f;
+// A held joint must remain inside the same physical arrival window used to
+// arm V=0. Any later drift releases the hold so strict endpoint accuracy is
+// never traded for a visually quiet but offset joint.
+inline constexpr float kNativeOrdinaryPvHoldReleaseTolerance =
+    kNativeOrdinaryPvHoldPositionTolerance;
 // Require 50 ms of stable feedback before arming V=0. Identical endpoint
 // replacements preserve this counter, while a moving publisher keeps resetting
 // it before V=0 can be armed.
 inline constexpr uint16_t kNativeOrdinaryPvHoldConfirmationCycles = 25;
-
-// Ordinary PV is a latest-endpoint-wins online step command. Runtime advances
-// P toward that endpoint with the commanded reference speed and acceleration
-// on its 500 Hz control clock. This online generator is not a finite planned
-// trajectory. Runtime-owned trajectory-PV execution retains a finite,
+// Ordinary PV is a latest-endpoint-wins online step command. Runtime sends the
+// final P on the first 500 Hz command frame and shapes only the Motor V ceiling
+// from the configured speed, acceleration, and physical remaining distance.
+// It is not a finite planned trajectory. Runtime-owned trajectory-PV execution
+// retains a finite,
 // time-stamped knot list selected by its planner and linearly resamples its
 // variable-duration segments on the same 500 Hz send clock.
 // POS_VEL P is transported as float32, but every installed Yunyi Damiao model
@@ -251,8 +253,7 @@ struct NativePvReferenceStep {
   float velocity = 0.0f;
 };
 
-// Legacy native scalar-PV and MIT-style reference shaping. Product ordinary
-// PV sends final P directly and does not use this helper.
+// Native ordinary-PV and MIT-style online reference shaping.
 inline NativePvReferenceStep advance_acceleration_limited_pv_reference(
     float current_position, float current_velocity, float target_position,
     float maximum_velocity, float maximum_acceleration, float period_s) {
@@ -281,8 +282,8 @@ inline NativePvReferenceStep advance_acceleration_limited_pv_reference(
   return {next_position, next_velocity};
 }
 
-// Ordinary product PV sends the final P directly. This online speed envelope
-// is therefore applied only to the Damiao POS_VEL V field.
+// Feedback-distance Motor-V envelope. maximum_velocity is a hard ceiling;
+// sqrt(2*a*distance) provides the physical braking ceiling.
 inline float advance_ordinary_pv_drive_velocity(
     float current_velocity_limit, float remaining_distance,
     float maximum_velocity, float maximum_acceleration, float period_s) {
@@ -300,10 +301,10 @@ inline float advance_ordinary_pv_drive_velocity(
   const float maximum_change = maximum_acceleration * period_s;
   const float bounded_current = std::min(
       current_velocity_limit, maximum_velocity);
-  return std::clamp(
-      desired_velocity,
-      std::max(0.0f, bounded_current - maximum_change),
-      std::min(maximum_velocity, bounded_current + maximum_change));
+  if (desired_velocity >= bounded_current) {
+    return std::min(desired_velocity, bounded_current + maximum_change);
+  }
+  return std::max(desired_velocity, bounded_current - maximum_change);
 }
 
 inline std::string yunyi_joint_role(uint32_t index) {
@@ -512,8 +513,8 @@ class SafetyRuntime {
   void set_joint_pv(const ArticoreJointPvTarget* targets,
                     uint32_t count,
                     float max_reference_velocity);
-  // Ordinary PV advances P online toward the latest endpoint. The explicit
-  // velocity limit is the independent Damiao POS_VEL V field.
+  // Ordinary PV sends final P directly. The explicit velocity limit is the
+  // maximum Damiao POS_VEL V value shaped by the acceleration parameter.
   void set_joint_pv(const ArticoreJointPvTarget* targets,
                     uint32_t count,
                     float max_reference_velocity,
@@ -679,6 +680,7 @@ class SafetyRuntime {
     float mit_feedforward_torque = 0.0f;
     float mit_fast_follow_kp = 0.0f;
     float mit_fast_follow_kd = 0.0f;
+    float velocity_feedback_scale = 1.0f;
     bool layered_limits_configured = false;
   };
 
@@ -703,6 +705,7 @@ class SafetyRuntime {
     std::vector<ArticorePosVelCommand> pv;
     std::vector<ArticoreMitCommand> mit;
     std::vector<float> final_positions;
+    std::vector<float> pv_reference_positions;
     std::vector<float> pv_reference_velocities;
     std::vector<float> pv_reference_velocity_limits;
     std::vector<float> pv_reference_acceleration_limits;

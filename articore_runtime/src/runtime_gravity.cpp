@@ -330,6 +330,10 @@ void SafetyRuntime::stop_bimanual_follow() {
         }
         command->target_position = positions[side][joint];
         arm_mailbox_.final_positions[index] = positions[side][joint];
+        if (arm_mailbox_.pv_reference_positions.size() ==
+            arm_mailbox_.pv.size()) {
+          arm_mailbox_.pv_reference_positions[index] = positions[side][joint];
+        }
         arm_mailbox_.pv_reference_velocities[index] = 0.0f;
         arm_mailbox_.pv_hold_confirmation_cycles[index] = 0;
         arm_mailbox_.pv_stationary_hold[index] = 0;

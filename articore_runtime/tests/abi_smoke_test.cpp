@@ -24,6 +24,9 @@ int main() {
       ArticoreRuntime*, const float*, uint32_t, float);
   using ProductAngleCommand = int32_t (*)(
       ArticoreRuntime*, const float*, uint32_t);
+  using ProductMitCommand = int32_t (*)(
+      ArticoreRuntime*, const float*, const float*, const float*,
+      const float*, const float*, uint32_t);
   using ProductFloatSetter = int32_t (*)(ArticoreRuntime*, float);
   using ProductFloatGetter = int32_t (*)(ArticoreRuntime*, float*);
   using ProductIk = int32_t (*)(
@@ -59,12 +62,9 @@ int main() {
   static_assert(same_signature<
       decltype(&articore_runtime_set_joint_pv), ProductCommand>);
   static_assert(same_signature<
-      decltype(&articore_runtime_set_joint_mit), ProductCommand>);
+      decltype(&articore_runtime_set_joint_mit), ProductMitCommand>);
   static_assert(same_signature<
-      decltype(&articore_runtime_set_joint_mit_direct), ProductAngleCommand>);
-  static_assert(same_signature<
-      decltype(&articore_runtime_set_joint_mit_fast_follow),
-      ProductAngleCommand>);
+      decltype(&articore_runtime_set_joint_mit_fast), ProductAngleCommand>);
   static_assert(same_signature<
       decltype(&articore_runtime_set_speed_percent), ProductFloatSetter>);
   static_assert(same_signature<
@@ -245,6 +245,10 @@ int main() {
           nullptr, pose.data(), pose.data(), positions.data(),
           positions.size()) == ARTICORE_OPERATION_INVALID_ARGUMENT &&
       std::strcmp(articore_runtime_last_error(), "runtime is null") == 0;
+  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> velocities{};
+  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> kp{};
+  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> kd{};
+  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> torques{};
   const bool joint_command_validation =
       articore_runtime_set_joint_pv(
           nullptr, positions.data(), positions.size(), 50.0f) ==
@@ -256,23 +260,18 @@ int main() {
           nullptr, positions.data(), positions.size(), -0.1f) ==
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
       articore_runtime_set_joint_mit(
-          nullptr, positions.data(), positions.size(), 50.0f) ==
+          nullptr, positions.data(), velocities.data(), kp.data(), kd.data(),
+          torques.data(), positions.size()) ==
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
       std::strcmp(
           articore_runtime_last_error(),
-          "MIT joint command: runtime is null") == 0 &&
-      articore_runtime_set_joint_mit_direct(
+          "standard MIT joint command: runtime is null") == 0 &&
+      articore_runtime_set_joint_mit_fast(
           nullptr, positions.data(), positions.size()) ==
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
       std::strcmp(
           articore_runtime_last_error(),
-          "direct MIT joint command: runtime is null") == 0 &&
-      articore_runtime_set_joint_mit_fast_follow(
-          nullptr, positions.data(), positions.size()) ==
-          ARTICORE_OPERATION_INVALID_ARGUMENT &&
-      std::strcmp(
-          articore_runtime_last_error(),
-          "fast-follow MIT joint command: runtime is null") == 0;
+          "fast MIT joint command: runtime is null") == 0;
 
   ArticoreRuntime* invalid_runtime =
       reinterpret_cast<ArticoreRuntime*>(static_cast<uintptr_t>(1));
@@ -344,20 +343,18 @@ int main() {
       &articore_runtime_configure_mode &&
       &articore_runtime_clear_faults && &articore_runtime_set_zero &&
       &articore_runtime_disconnect &&
-      &articore_runtime_set_joint_mit_direct &&
-      &articore_runtime_set_joint_mit_fast_follow &&
+      &articore_runtime_set_joint_mit &&
+      &articore_runtime_set_joint_mit_fast &&
       &articore_runtime_set_speed_percent &&
       &articore_runtime_get_speed_percent &&
       &articore_runtime_set_max_acceleration &&
       &articore_runtime_get_max_acceleration &&
       &articore_runtime_set_max_speed &&
       &articore_runtime_get_max_speed &&
-      &articore_runtime_submit_mit_frame &&
       &articore_runtime_get_motion_status &&
       &articore_runtime_cancel_motion &&
       &articore_runtime_cancel_all_motions &&
       &articore_runtime_solve_ik &&
-      &articore_runtime_set_pose &&
       &articore_runtime_move_linear_path_trajectory &&
       &articore_runtime_has_grippers &&
       &articore_runtime_get_joint_angle_vel_limits &&
@@ -375,16 +372,16 @@ int main() {
       &articore_runtime_estop && &articore_runtime_recover &&
       &articore_robot_model_create && &articore_robot_model_fk;
 
-  if (articore_runtime_abi_version() != 0x000E0000U ||
+  if (articore_runtime_abi_version() != 0x000F0000U ||
       !symbols_present || !gripper_validation || !state_size_checked ||
       !state_runtime_checked || !health_size_checked ||
       !joint_limits_size_checked || !maximum_acceleration_validation ||
       !maximum_speed_validation || !speed_percent_validation ||
       !product_ik_validation || !joint_command_validation ||
       !factory_validation || !product_limits_checked) {
-    std::cerr << "Articore Runtime ABI 14.0 contract is incomplete\n";
+    std::cerr << "Articore Runtime ABI 15.0 contract is incomplete\n";
     return 1;
   }
-  std::cout << "Articore Runtime ABI 14.0 smoke test passed\n";
+  std::cout << "Articore Runtime ABI 15.0 smoke test passed\n";
   return 0;
 }

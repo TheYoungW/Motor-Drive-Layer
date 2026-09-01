@@ -31,7 +31,7 @@ constexpr float kUpper[2][7] = {
     {2.745f, .3489f, 2.5294f, 2.2678f, 2.0933f, .785f, 1.3956f},
 };
 // Per-joint hard safety limit for native trajectory validation. Public
-// ordinary PV owns separate per-joint limits and sends final P directly;
+// ordinary PV owns separate per-joint online-reference limits;
 // protocol encoding ranges are separate and must not be treated as product
 // limits.
 constexpr float kVelocityLimit[7] = {5, 5, 5, 5, 5, 5, 5};
@@ -44,7 +44,7 @@ constexpr float kLogicalVelocityRange[2][7] = {
 };
 constexpr float kNativeVelocityRange[7] = {45, 45, 10, 10, 30, 30, 30};
 constexpr uint8_t kPvPositionKpRegister = 27;
-constexpr float kJoint34PvPositionKp = 100.0f;
+constexpr float kJoint34PvPositionKp = 54.0f;
 
 thread_local std::string g_motor_error = "ok";
 
@@ -410,6 +410,8 @@ std::vector<ArticoreJointControlConfig> configure_joint_table(
       joint.mit_kd = kYunyiMitDirectKd[index];
       joint.mit_fast_follow_kp = kYunyiMitFastFollowKp[index];
       joint.mit_fast_follow_kd = kYunyiMitFastFollowKd[index];
+      joint.velocity_feedback_scale =
+          product_joint.velocity_feedback_scale;
       joints.push_back(joint);
     }
   }

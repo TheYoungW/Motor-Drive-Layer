@@ -132,6 +132,8 @@ typedef struct ArticoreJointControlConfig {
   float mit_feedforward_torque;
   float mit_fast_follow_kp;
   float mit_fast_follow_kd;
+  // Converts native Motor velocity feedback to logical product rad/s.
+  float velocity_feedback_scale = 1.0f;
 } ArticoreJointControlConfig;
 
 typedef struct ArticoreJointSafetyLimits {

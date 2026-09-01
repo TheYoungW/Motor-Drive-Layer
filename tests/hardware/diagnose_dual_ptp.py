@@ -68,10 +68,14 @@ def main() -> None:
         print("start right pose", robot.get_pose("right"), flush=True)
 
         submitted_at = time.monotonic()
-        robot.set_pose(
+        left_q, right_q = robot.solve_ik(
             left_target_pose=LEFT_TARGET,
             right_target_pose=RIGHT_TARGET,
-            speed_percent=50.0,
+        )
+        robot.set_joint_pv(
+            left=left_q,
+            right=right_q,
+            velocity=50.0,
         )
         installed_at = time.monotonic()
         print("dual IK and atomic install s", installed_at - submitted_at, flush=True)

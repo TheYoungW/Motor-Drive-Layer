@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure set_pose, Linear, and Circular smoothness on Yunyi hardware."""
+"""Measure Pose, Linear, and Circular smoothness on Yunyi hardware."""
 
 from __future__ import annotations
 
@@ -143,7 +143,7 @@ def wait_ptp(
     while time.monotonic() - started < timeout_s:
         health = robot.get_health()
         if health.safe_stopped or health.fault_reason:
-            raise RuntimeError(f"unsafe Runtime state during set_pose: {health}")
+            raise RuntimeError(f"unsafe Runtime state during Pose motion: {health}")
         item = sample(robot, started, "running")
         if item["sequence"] == last_sequence:
             time.sleep(0.0005)
@@ -162,7 +162,7 @@ def wait_ptp(
                 return float(item["elapsed_s"])
         else:
             stable_since = None
-    raise RuntimeError("set_pose did not settle within timeout")
+    raise RuntimeError("Pose motion did not settle within timeout")
 
 
 def wait_native_motion(
@@ -254,7 +254,7 @@ def summarize(samples: list[dict[str, object]], settled_s: float) -> dict[str, o
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--motion", choices=("set_pose", "linear", "circular"), required=True
+        "--motion", choices=("pose", "linear", "circular"), required=True
     )
     parser.add_argument("--speed", type=float, default=50.0)
     parser.add_argument(
@@ -297,11 +297,8 @@ def main() -> None:
                 RIGHT_CENTER if args.motion == "linear" else RIGHT_CIRCLE_START
             )
             preposition_started = time.monotonic()
-            robot.set_pose(
-                left_target_pose=robot.get_pose("left"),
-                right_target_pose=path_start,
-                speed_percent=50.0,
-            )
+            robot.set_speed_percent(50.0)
+            robot.move_pose(side="right", target_pose=path_start)
             preposition_samples: list[dict[str, object]] = []
             result["preposition_settled_s"] = wait_ptp(
                 robot,
@@ -312,13 +309,9 @@ def main() -> None:
             )
         robot.set_speed_percent(args.speed)
         started = time.monotonic()
-        if args.motion == "set_pose":
+        if args.motion == "pose":
             result["target"] = RIGHT_CENTER
-            robot.set_pose(
-                left_target_pose=robot.get_pose("left"),
-                right_target_pose=RIGHT_CENTER,
-                speed_percent=args.speed,
-            )
+            robot.move_pose(side="right", target_pose=RIGHT_CENTER)
             settled_s = wait_ptp(
                 robot, started, RIGHT_CENTER, samples, timeout_s=args.timeout
             )

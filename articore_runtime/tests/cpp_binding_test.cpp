@@ -14,9 +14,11 @@ int main() {
       JointLimitsGetter>);
   using JointPvSetter =
       void (articore::Runtime::*)(const std::vector<float>&, float);
-  using JointMitSetter =
-      void (articore::Runtime::*)(const std::vector<float>&, float);
-  using JointMitDirectSetter =
+  using JointMitSetter = void (articore::Runtime::*)(
+      const std::vector<float>&, const std::vector<float>&,
+      const std::vector<float>&, const std::vector<float>&,
+      const std::vector<float>&);
+  using JointMitFastSetter =
       void (articore::Runtime::*)(const std::vector<float>&);
   static_assert(std::is_same_v<decltype(&articore::Runtime::set_joint_pv),
                                JointPvSetter>);
@@ -35,16 +37,11 @@ int main() {
   static_assert(std::is_same_v<decltype(&articore::Runtime::max_acceleration),
                                PvLimitGetter>);
   static_assert(std::is_same_v<
-      decltype(static_cast<JointMitSetter>(
-          &articore::Runtime::set_joint_mit)),
+      decltype(&articore::Runtime::set_joint_mit),
       JointMitSetter>);
   static_assert(std::is_same_v<
-      decltype(static_cast<JointMitDirectSetter>(
-          &articore::Runtime::set_joint_mit)),
-      JointMitDirectSetter>);
-  static_assert(std::is_same_v<
-      decltype(&articore::Runtime::set_joint_mit_fast_follow),
-      JointMitDirectSetter>);
+      decltype(&articore::Runtime::set_joint_mit_fast),
+      JointMitFastSetter>);
   using SolveIk = std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
       (articore::Runtime::*)(
           const std::array<float, ARTICORE_PRODUCT_POSE_DOF>&,

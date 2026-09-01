@@ -364,76 +364,6 @@ int32_t solve_product_ik_impl(
   }
 }
 
-int32_t set_pose_impl(
-    ArticoreRuntime* runtime, const float* left_target_pose,
-    const float* right_target_pose, float speed_percent) {
-  try {
-    if (!runtime) throw std::invalid_argument("runtime is null");
-    const float minimum_speed =
-        runtime->product_mode == ARTICORE_MODE_PV ? 1.0f : 0.0f;
-    if (!std::isfinite(speed_percent) || speed_percent < minimum_speed ||
-        speed_percent > 100.0f) {
-      throw std::invalid_argument(
-          runtime->product_mode == ARTICORE_MODE_PV
-              ? "set_pose PV speed_percent must be finite and within 1..100"
-              : "set_pose MIT speed_percent must be finite and within 0..100");
-    }
-    std::lock_guard<std::mutex> motion_lock(runtime->motion_mutex);
-    const auto ik_deadline = std::chrono::steady_clock::now() +
-        articore::kYunyiProductIkBudget;
-    auto& safety = checked(runtime);
-    auto& product = checked_yunyi(runtime);
-    const auto joints = articore::product_cartesian_joints(product);
-    articore::NativeTrajectorySample reference;
-    CommandPlanningScope planning(safety);
-    {
-      auto transaction = safety.begin_command_transaction();
-      planning.begin(transaction);
-      reference = safety.planned_arm_sample(joints, transaction);
-    }
-    if (reference.active) {
-      throw std::runtime_error(
-          "set_pose cannot start while a linear or circular motion is active");
-    }
-    const auto target =
-        articore::solve_dual_point_to_point_targets_from_reference(
-            product, runtime->product_mode, reference,
-            left_target_pose, right_target_pose, ik_deadline);
-    std::unique_lock<std::mutex> pv_limits_transaction;
-    if (runtime->product_mode == ARTICORE_MODE_PV) {
-      pv_limits_transaction =
-          std::unique_lock<std::mutex>(runtime->product_pv_limits_mutex);
-    }
-    auto transaction = safety.begin_command_transaction();
-    install_product_joint_positions(
-        runtime, target.data(), static_cast<uint32_t>(target.size()),
-        speed_percent, &transaction, planning.token(),
-        runtime->product_mode == ARTICORE_MODE_MIT,
-        runtime->product_mode == ARTICORE_MODE_PV
-            ? &pv_limits_transaction : nullptr);
-    safety.record_operation_result(
-        ARTICORE_OPERATION_SET_POSE, ARTICORE_OPERATION_OK);
-    g_last_error = "ok";
-    return ARTICORE_OPERATION_OK;
-  } catch (const std::invalid_argument& error) {
-    if (runtime && runtime->runtime) {
-      runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_SET_POSE,
-          ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
-    }
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  } catch (const std::exception& error) {
-    if (runtime && runtime->runtime) {
-      runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_SET_POSE,
-          ARTICORE_OPERATION_INVALID_STATE, error.what());
-    }
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_STATE;
-  }
-}
-
 int32_t move_linear_trajectory_impl(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* end_pose, uint64_t* motion_id, bool enqueue = true,
@@ -750,7 +680,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (14U << 16);
+  return (15U << 16);
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -1055,16 +985,45 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_pv(
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
-    ArticoreRuntime* runtime, const float* positions, uint32_t count,
-    float speed_percent) {
+    ArticoreRuntime* runtime, const float* positions,
+    const float* velocities, const float* kp, const float* kd,
+    const float* feedforward_torques, uint32_t count) {
   try {
-    checked_yunyi(runtime);
+    auto& product = checked_yunyi(runtime);
+    require_product_count(count);
+    require_finite(positions, count, "positions");
+    require_finite(velocities, count, "velocities");
+    require_finite(kp, count, "kp");
+    require_finite(kd, count, "kd");
+    require_finite(
+        feedforward_torques, count, "feedforward_torques");
     if (runtime->product_mode != ARTICORE_MODE_MIT) {
       throw std::runtime_error(
-          "MIT joint command requires product MIT mode");
+          "standard MIT joint command requires product MIT mode");
     }
-    install_product_joint_positions(
-        runtime, positions, count, speed_percent);
+    std::array<ArticoreMitCommand, ARTICORE_PRODUCT_DUAL_ARM_DOF> commands{};
+    for (uint32_t i = 0; i < count; ++i) {
+      const auto& joint = product.joints[i];
+      validate_product_position(joint, positions[i], i);
+      if (std::fabs(velocities[i]) > joint.velocity_limit) {
+        throw std::invalid_argument("velocity exceeds product joint limit");
+      }
+      if (std::fabs(feedforward_torques[i]) > joint.torque_limit) {
+        throw std::invalid_argument("torque exceeds product joint limit");
+      }
+      if (kp[i] < 0.0f || kp[i] > 500.0f ||
+          kd[i] < 0.0f || kd[i] > 5.0f) {
+        throw std::invalid_argument("MIT gain exceeds protocol limits");
+      }
+      commands[i] = ArticoreMitCommand{
+          joint.motor,
+          joint.direction * positions[i],
+          joint.direction * velocities[i] * joint.velocity_command_scale,
+          kp[i], kd[i],
+          joint.direction * feedforward_torques[i] *
+              joint.torque_command_scale};
+    }
+    checked(runtime).submit_mit(commands.data(), count);
     checked(runtime).record_operation_result(
         ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
@@ -1072,46 +1031,21 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
   } catch (const std::invalid_argument& error) {
     return record_product_command_error(
         runtime, ARTICORE_OPERATION_INVALID_ARGUMENT,
-        std::string("MIT joint command: ") + error.what());
+        std::string("standard MIT joint command: ") + error.what());
   } catch (const std::exception& error) {
     return record_product_command_error(
         runtime, ARTICORE_OPERATION_INVALID_STATE,
-        std::string("MIT joint command: ") + error.what());
+        std::string("standard MIT joint command: ") + error.what());
   }
 }
 
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_direct(
+ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_fast(
     ArticoreRuntime* runtime, const float* positions, uint32_t count) {
   try {
     checked_yunyi(runtime);
     if (runtime->product_mode != ARTICORE_MODE_MIT) {
       throw std::runtime_error(
-          "direct MIT joint command requires product MIT mode");
-    }
-    install_product_joint_positions(
-        runtime, positions, count, 0.0f, nullptr, 0, true);
-    checked(runtime).record_operation_result(
-        ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
-    g_last_error = "ok";
-    return 0;
-  } catch (const std::invalid_argument& error) {
-    return record_product_command_error(
-        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT,
-        std::string("direct MIT joint command: ") + error.what());
-  } catch (const std::exception& error) {
-    return record_product_command_error(
-        runtime, ARTICORE_OPERATION_INVALID_STATE,
-        std::string("direct MIT joint command: ") + error.what());
-  }
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_fast_follow(
-    ArticoreRuntime* runtime, const float* positions, uint32_t count) {
-  try {
-    checked_yunyi(runtime);
-    if (runtime->product_mode != ARTICORE_MODE_MIT) {
-      throw std::runtime_error(
-          "fast-follow MIT joint command requires product MIT mode");
+          "fast MIT joint command requires product MIT mode");
     }
     install_product_joint_positions(
         runtime, positions, count, 100.0f);
@@ -1122,11 +1056,11 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_fast_follow(
   } catch (const std::invalid_argument& error) {
     return record_product_command_error(
         runtime, ARTICORE_OPERATION_INVALID_ARGUMENT,
-        std::string("fast-follow MIT joint command: ") + error.what());
+        std::string("fast MIT joint command: ") + error.what());
   } catch (const std::exception& error) {
     return record_product_command_error(
         runtime, ARTICORE_OPERATION_INVALID_STATE,
-        std::string("fast-follow MIT joint command: ") + error.what());
+        std::string("fast MIT joint command: ") + error.what());
   }
 }
 
@@ -1296,64 +1230,6 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_acceleration(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t articore_runtime_submit_mit_frame(
-    ArticoreRuntime* runtime, const float* positions,
-    const float* velocities, const float* feedforward_torques,
-    const float* kp, const float* kd, uint32_t count) {
-  try {
-    auto& product = checked_yunyi(runtime);
-    require_product_count(count);
-    require_finite(positions, count, "positions");
-    if (velocities) require_finite(velocities, count, "velocities");
-    if (feedforward_torques) {
-      require_finite(feedforward_torques, count, "feedforward_torques");
-    }
-    if (kp) require_finite(kp, count, "kp");
-    if (kd) require_finite(kd, count, "kd");
-    if (runtime->product_mode != ARTICORE_MODE_MIT) {
-      throw std::runtime_error("raw MIT frame requires product MIT mode");
-    }
-    std::array<ArticoreMitCommand, ARTICORE_PRODUCT_DUAL_ARM_DOF> commands{};
-    for (uint32_t i = 0; i < count; ++i) {
-      const auto& joint = product.joints[i];
-      validate_product_position(joint, positions[i], i);
-      const float velocity = velocities ? velocities[i] : 0.0f;
-      const float torque = feedforward_torques
-          ? feedforward_torques[i] : 0.0f;
-      const float stiffness = kp ? kp[i] : joint.kp;
-      const float damping = kd ? kd[i] : joint.kd;
-      if (std::fabs(velocity) > joint.velocity_limit) {
-        throw std::invalid_argument("velocity exceeds product joint limit");
-      }
-      if (std::fabs(torque) > joint.torque_limit) {
-        throw std::invalid_argument("torque exceeds product joint limit");
-      }
-      if (stiffness < 0.0f || stiffness > 500.0f ||
-          damping < 0.0f || damping > 5.0f) {
-        throw std::invalid_argument("MIT gain exceeds protocol limits");
-      }
-      commands[i] = ArticoreMitCommand{
-          joint.motor,
-          joint.direction * positions[i],
-          joint.direction * velocity * joint.velocity_command_scale,
-          stiffness, damping,
-          joint.direction * torque *
-              joint.torque_command_scale};
-    }
-    checked(runtime).submit_mit(commands.data(), count);
-    checked(runtime).record_operation_result(
-        ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
-    g_last_error = "ok";
-    return 0;
-  } catch (const std::invalid_argument& error) {
-    return record_product_command_error(
-        runtime, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
-  } catch (const std::exception& error) {
-    return record_product_command_error(
-        runtime, ARTICORE_OPERATION_INVALID_STATE, error.what());
-  }
-}
-
 ARTICORE_RUNTIME_API int32_t articore_runtime_get_motion_status(
     ArticoreRuntime* runtime, uint64_t motion_id,
     ArticoreMotionStatus* status) {
@@ -1378,13 +1254,6 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_motion_status(
     g_last_error = error.what();
     return ARTICORE_OPERATION_INVALID_STATE;
   }
-}
-
-ARTICORE_RUNTIME_API int32_t articore_runtime_set_pose(
-    ArticoreRuntime* runtime, const float* left_target_pose,
-    const float* right_target_pose, float speed_percent) {
-  return set_pose_impl(
-      runtime, left_target_pose, right_target_pose, speed_percent);
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(

@@ -28,8 +28,8 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.27.0`
-- Runtime ABI: `14.0` / `0x000E0000`
+- package version: `0.28.0`
+- Runtime ABI: `15.0` / `0x000F0000`
 
 Runtime health includes a product-order snapshot for every installed Motor,
 with role, CAN ID, feedback age, status, issue bits, and a scope that separates
@@ -48,9 +48,12 @@ lifetime.
 Ordinary joint PV is public latest-target-wins endpoint control. One
 `set_joint_pv()` call replaces the preceding complete 14-joint target; Runtime
 does not generate a finite quintic/septic profile or a Motion-ID task. On each
-500 Hz control cycle it refreshes the final endpoint P and dynamically updates
-only the Motor V envelope. A replacement sends the new final P directly while
-preserving the current V ramp state; it does not generate intermediate P points.
+500 Hz control cycle it sends the final P directly and shapes only Motor V.
+V rises and falls at the configured acceleration, is capped by the commanded
+maximum speed, and starts braking from physical feedback distance. This is
+online V shaping, not a finite point list or trajectory task. P receives no
+position feed-forward offset. The distance-based braking curve continues to
+zero at the endpoint; Runtime then arms a quiet V=0 hold after stable feedback.
 The shared `set_speed_percent(1..100)` value time-scales its motion limits;
 per-command ordinary PV percentages update that same value.
 Without a user override, the
@@ -59,27 +62,28 @@ acceleration limits are `[450,450,900,900,900,900,900] deg/s^2`. Optional
 `set_max_speed()` and `set_max_acceleration()` values become the common
 14-joint 100% base; passing 0 clears that override and restores the per-joint
 defaults. Scaling multiplies velocity by `s` and acceleration by `s²`. Runtime
-derives each POS_VEL `V` from the effective limits, remaining distance and the
-current V ramp state instead of sending a fixed maximum continuously.
-MIT product mode exposes two position-only endpoint methods. Ordinary
-`set_joint_mit()` sends each newest complete 14-joint endpoint directly, with
-fixed J1..J7 `Kp=[15,15,12,12,8,7,6]` and
-`Kd=[0.8,0.8,0.7,0.7,0.5,0.5,0.4]`; it does not generate intermediate
-position references. `set_joint_mit_fast_follow()` is the high-frequency
-teleoperation method: users provide only the newest joint angles, while
+selects each POS_VEL `V` from the acceleration ramp and feedback-distance
+braking limit instead of sending one fixed maximum continuously.
+MIT product mode exposes exactly two methods. Standard
+`set_joint_mit(q, dq, kp, kd, tau_ff)` accepts every field of a complete
+14-joint MIT frame from the user. Each new frame atomically replaces the old
+one; Runtime does no interpolation and the streaming watchdog still applies.
+`set_joint_mit_fast(q)` is the angle-only high-frequency teleoperation method:
+users provide only the newest joint angles, while
 Runtime applies fixed J1..J7 `Kp=[190,190,100,100,70,60,50]`,
 `Kd=[4.55,4.50,2.50,2.50,0.70,0.60,0.50]`, and an internal 100-percent
-(5 rad/s) position-reference step limit. The former MIT function with a public
-speed percentage remains an ABI-compatibility symbol only and new SDKs must not
-expose it.
+(5 rad/s) position-reference step limit with `dq=0` and `tau_ff=0`. Neither
+method accepts `speed_percent` or creates a finite trajectory/Motion ID.
 Linear/Circular retain independent internal base velocity, acceleration,
 timing and synchronization constraints, but use the same shared Runtime speed
 percentage as ordinary PV. Users provide only the path geometry; Runtime
 automatically selects a safe duration, and trajectory base limits remain
 internal policy.
 Pose callers may use the pure `solve_ik(left_pose, right_pose)` query to obtain
-14 joint angles without moving. The public `move_pose(side, target_pose)`
-method instead plans a finite quintic Cartesian pose-to-pose motion.
+14 joint angles without moving, then explicitly submit them through ordinary
+PV or standard MIT. ABI 15 removes the former mode-neutral `set_pose()`
+shortcut. The public `move_pose(side, target_pose)` method instead plans a
+finite quintic Cartesian pose-to-pose motion.
 Linear constructs a true Cartesian line from the current/start FK pose: XYZ is
 linearly interpolated, orientation follows shortest-path quaternion SLERP, and
 the first pose is solved only from the current planned joints while each later

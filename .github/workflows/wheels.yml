@@ -78,9 +78,9 @@ jobs:
           assert not any("libmotor_abi" in name or "/dm_device/" in name for name in entries)
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x000E0000
+          assert runtime_lib.articore_runtime_abi_version() == 0x000F0000
           assert hasattr(runtime_lib, "articore_runtime_create_yunyi")
-          assert hasattr(runtime_lib, "articore_runtime_set_pose")
+          assert not hasattr(runtime_lib, "articore_runtime_set_pose")
           assert hasattr(runtime_lib, "articore_runtime_solve_ik")
           assert hasattr(runtime_lib, "articore_runtime_move_pose")
           assert not hasattr(runtime_lib, "articore_runtime_move_poses")
@@ -106,9 +106,10 @@ jobs:
           assert hasattr(runtime_lib, "articore_runtime_get_joint_angle_vel_limits")
           assert hasattr(runtime_lib, "articore_runtime_set_joint_pv")
           assert hasattr(runtime_lib, "articore_runtime_set_joint_mit")
-          assert hasattr(runtime_lib, "articore_runtime_set_joint_mit_direct")
-          assert hasattr(runtime_lib, "articore_runtime_set_joint_mit_fast_follow")
-          assert hasattr(runtime_lib, "articore_runtime_submit_mit_frame")
+          assert hasattr(runtime_lib, "articore_runtime_set_joint_mit_fast")
+          assert not hasattr(runtime_lib, "articore_runtime_set_joint_mit_direct")
+          assert not hasattr(runtime_lib, "articore_runtime_set_joint_mit_fast_follow")
+          assert not hasattr(runtime_lib, "articore_runtime_submit_mit_frame")
           assert hasattr(runtime_lib, "articore_runtime_set_speed_percent")
           assert hasattr(runtime_lib, "articore_runtime_get_speed_percent")
           assert hasattr(runtime_lib, "articore_runtime_set_max_speed")

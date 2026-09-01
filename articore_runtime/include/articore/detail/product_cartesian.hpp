@@ -14,10 +14,9 @@ namespace articore {
 
 // Linear/Circular trajectory points use a 1 rad/s reference ceiling and
 // 6 rad/s^2 acceleration ceiling at the shared 100-percent speed setting.
-// Product inverse kinematics is a pure
-// computation; the compatibility set_pose entry resolves IK and then submits
-// the caller's endpoint through the current ordinary PV or MIT mode. The
-// Damiao POS_VEL V field remains a separate PV drive-level limit.
+// Product inverse kinematics is a pure computation. Callers explicitly submit
+// solved joint endpoints through the ordinary PV or MIT surface when desired.
+// The Damiao POS_VEL V field remains a separate PV drive-level limit.
 inline constexpr float kYunyiCartesianMaximumVelocity = 1.0f;
 inline constexpr float kYunyiCartesianTrajectoryPvDriveVelocityLimit = 3.0f;
 inline constexpr float kYunyiCartesianWristAccelerationLimit = 6.0f;
@@ -130,9 +129,9 @@ inline ArticoreIkOptions product_path_ik_options() {
   return options;
 }
 
-// A discrete set_pose endpoint has no continuous path branch to preserve, so
-// it retains the deterministic global search and selects the solution nearest
-// to the current/planned seed.
+// A discrete IK endpoint has no continuous path branch to preserve, so it
+// retains the deterministic global search and selects the solution nearest to
+// the current/planned seed.
 inline ArticoreIkOptions product_endpoint_ik_options() {
   auto options = product_path_ik_options();
   options.max_retries = 1000;

@@ -146,7 +146,6 @@ int main(int argc, char** argv) {
   try {
     check(articore_runtime_connect(runtime), "connect");
     connected = true;
-    const Pose original_left = read_pose(runtime, ARTICORE_ROBOT_LEFT);
     const Pose original_right = read_pose(runtime, ARTICORE_ROBOT_RIGHT);
     check(articore_runtime_enable(runtime), "enable");
     enabled = true;
@@ -212,8 +211,10 @@ int main(int argc, char** argv) {
               << " submitted=true" << std::endl;
     wait_motion(runtime, circular_id, std::chrono::seconds(15), "circular");
 
-    check(articore_runtime_set_pose(
-              runtime, original_left.data(), original_right.data(), 20.0f),
+    check(articore_runtime_set_speed_percent(runtime, 20.0f),
+          "return_speed");
+    check(articore_runtime_move_pose(
+              runtime, ARTICORE_ROBOT_RIGHT, original_right.data()),
           "return_original");
     wait_pose(runtime, ARTICORE_ROBOT_RIGHT, original_right,
               std::chrono::seconds(15));

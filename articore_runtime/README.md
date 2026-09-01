@@ -1,8 +1,8 @@
 # Yunyi product Runtime
 
-`libarticore_runtime.so` is the only public native library. Runtime ABI 14.0 is
+`libarticore_runtime.so` is the only public native library. Runtime ABI 15.0 is
 an exact contract: the SDK must require `articore_runtime_abi_version() ==
-0x000E0000` and bind only the declarations in `articore/runtime_abi.h`.
+0x000F0000` and bind only the declarations in `articore/runtime_abi.h`.
 
 ## Ownership
 
@@ -25,28 +25,30 @@ objects, joint tables or product bindings.
 - Maintenance: `configure_mode`, `clear_faults`, `set_zero`.
 - Shared speed: `set/get_speed_percent` for ordinary PV and finite Cartesian motion.
 - Joint control: `set_joint_pv`, optional ordinary-PV `set/get_max_speed` and
-  `set/get_max_acceleration`, `set_joint_mit_direct`,
-  `set_joint_mit_fast_follow`, `submit_mit_frame`.
+  `set/get_max_acceleration`, standard `set_joint_mit`, and angle-only
+  `set_joint_mit_fast`.
 - Ordinary PV: each command replaces the preceding complete joint endpoint.
-  Runtime sends final P directly and shapes only the per-joint Motor V envelope
-  while refreshing POS_VEL at 500 Hz. `speed_percent=1..100` time-scales the
-  active limits. The default 100% J1..J7 limits are
+  Runtime sends final P on the first 500 Hz frame and shapes only Motor V from
+  the speed ceiling, acceleration limit, and physical remaining distance.
+  The physical-distance braking curve falls to zero at the endpoint, then a
+  confirmed V=0 hold finishes arrival.
+  `speed_percent=1..100` time-scales the active limits.
+  The default 100% J1..J7 limits are
   180/180/180/225/225/225/225 deg/s and
   450/450/900/900/900/900/900 deg/s^2. A positive `set_max_speed` or
   `set_max_acceleration` value becomes the common 14-joint 100% base; zero
   clears that override. Velocity scales by `s`, acceleration by `s^2`, and
-  Motor `V` is derived per cycle from remaining distance and the V ramp state.
-- Ordinary MIT direct: each complete 14-joint target replaces the previous
-  endpoint and is sent without intermediate position-reference steps. Runtime
-  owns J1..J7 `Kp=[15,15,12,12,8,7,6]` and
-  `Kd=[0.8,0.8,0.7,0.7,0.5,0.5,0.4]`.
-- MIT fast follow: a high-frequency teleoperation endpoint interface accepting
-  joint angles only. Runtime owns J1..J7
+  Motor `V` is selected per cycle from the acceleration ramp and physical
+  feedback-distance braking limit.
+- Standard MIT: `set_joint_mit(q, dq, kp, kd, tau_ff)` accepts every field of
+  one complete 14-joint frame. A newer frame atomically replaces the old one;
+  Runtime performs no interpolation and retains the streaming watchdog.
+- Fast MIT: `set_joint_mit_fast(q)` is a high-frequency teleoperation endpoint
+  accepting joint angles only. Runtime owns `dq=0`, `tau_ff=0`, and J1..J7
   `Kp=[190,190,100,100,70,60,50]`,
   `Kd=[4.55,4.50,2.50,2.50,0.70,0.60,0.50]`, and the fixed internal
-  100-percent (5 rad/s) position-reference step limit. The old MIT symbol with
-  public `speed_percent` remains ABI-only compatibility and must not be exposed
-  by a new SDK.
+  100-percent (5 rad/s) position-reference step limit. Neither MIT method takes
+  `speed_percent` or creates a Motion ID.
 - Native trajectories: `move_pose`, Linear and Circular. They follow generated
   finite point lists through internal trajectory PV using the shared speed
   percentage.
@@ -77,14 +79,12 @@ planned-reference snapshot (or fresh connected feedback before enable), the
 active TCP and product limits to return fixed
 left-J1..J7/right-J1..J7 joint order. It never enables Motors, sends commands or
 changes the queue. Callers pass that result to `articore_runtime_set_joint_pv`.
-In MIT product mode, callers choose one of two position-only endpoint methods:
-`articore_runtime_set_joint_mit_direct` sends the new target directly with the
-ordinary low-gain profile, while
-`articore_runtime_set_joint_mit_fast_follow` advances the Runtime-owned
-reference at the fixed 100-percent limit with the fast-follow gain profile.
-Both are persistent latest-target-wins commands refreshed on the 500 Hz Runtime
-clock and neither creates a Motion ID. Only the fast-follow method generates
-intermediate MIT position references.
+In MIT product mode, callers choose one of exactly two methods. The standard
+`articore_runtime_set_joint_mit` call submits user-owned q, dq, kp, kd and
+feedforward torque as one atomic watchdog-protected streaming frame. The
+angle-only `articore_runtime_set_joint_mit_fast` call advances the Runtime-owned
+reference at the fixed 100-percent limit with the fast gain profile, zero
+velocity and zero feedforward torque. Neither creates a Motion ID.
 `articore_runtime_move_pose` plans a finite quintic Cartesian pose-to-pose
 motion for one side. Like Linear and Circular, it is a nonblocking PV-mode
 command and follows the same single-active-motion contract.
@@ -114,8 +114,12 @@ joint references against the shared percentage of their internal 1 rad/s velocit
 and 6 rad/s^2 acceleration bases and automatically parameterizes time. Both
 paths execute through internal
 trajectory PV with the percentage captured when each path is submitted.
-Linear accepts an optional explicit `start_pose -> end_pose`; when the start is
-omitted it begins from the current planned reference. Circular uses explicit
+`articore_runtime_move_linear(runtime, side, start_pose, end_pose)` is the
+unified finite Linear entry point. When `start_pose == NULL`, the Cartesian
+line begins at the current planned pose. With a non-null start, Runtime plans
+`current planned pose -> start_pose -> end_pose` and installs the approach plus
+the Cartesian line once as one finite trajectory task; it does not use the
+ordinary-PV endpoint API to pre-position. Circular uses explicit
 `start_pose -> via_pose -> end_pose`. Runtime validates and plans the complete
 motion before installing it. The public calls return no Motion ID and Runtime
 accepts only one active finite Cartesian motion. A new call while one is active
@@ -173,7 +177,12 @@ right receive path, and both receive paths. Side `last_error` strings aggregate
 all affected Motor roles instead of retaining only the last failure.
 
 Every public structure must set `struct_size` to its exact `sizeof(...)`.
-ABI 14.0 adds `motion_arrived` to `ArticoreProductState` and the simplified
+ABI 15.0 replaces the public MIT surface with standard full-frame
+`set_joint_mit(q, dq, kp, kd, tau_ff)` and angle-only
+`set_joint_mit_fast(q)`. It removes the mode-neutral `set_pose()` shortcut;
+callers use `solve_ik()` followed by an explicit joint command, or use
+`move_pose()` for a finite Cartesian motion. It retains `motion_arrived` in
+`ArticoreProductState` and the simplified
 nonblocking `move_pose`, `move_linear`, `move_linear_path`, `move_circular` and
 `stop_motion` entry points. New SDKs use these functions and do not expose the
 legacy Motion-ID/FIFO management surface.
