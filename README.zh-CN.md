@@ -27,8 +27,8 @@ can-left/right 接收线程
 
 ## 当前接口契约
 
-- 包版本：`0.30.0`
-- Runtime ABI：`15.0` / `0x000F0000`
+- 包版本：`0.31.0`
+- Runtime ABI：`16.0` / `0x00100000`
 
 Runtime health 现在按产品顺序返回每个已安装电机的角色名、CAN ID、反馈年龄、
 状态码和问题位，并明确区分单电机反馈异常、多电机异常、左/右通道停收和双通道停收。
@@ -71,7 +71,7 @@ Linear/Circular 保留独立的内部基础速度、加速度、时间和同步�
 PV 共用同一个 Runtime 速度百分比。用户只填写路径几何，不再填写时长；Runtime
 自动计算安全执行时间，轨迹基础上限仍是内部策略，不作为接口暴露。
 Pose 调用方可通过纯计算接口 `solve_ik(left_pose, right_pose)` 获得 14 个关节角而不
-运动，再显式提交给普通 PV 或标准 MIT。ABI 15 删除了原先模式中立的 `set_pose()`
+运动，再显式提交给普通 PV 或标准 MIT。Runtime ABI 16 不导出原先模式中立的 `set_pose()`
 快捷接口；公开的 `move_pose(side, target_pose)` 则规划一条五次时间律 Pose-to-Pose
 有限笛卡尔轨迹。
 

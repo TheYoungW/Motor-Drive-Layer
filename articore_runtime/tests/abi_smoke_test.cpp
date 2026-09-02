@@ -22,8 +22,6 @@ int main() {
   using RuntimeCall = int32_t (*)(ArticoreRuntime*);
   using ProductCommand = int32_t (*)(
       ArticoreRuntime*, const float*, uint32_t, float);
-  using ProductAngleCommand = int32_t (*)(
-      ArticoreRuntime*, const float*, uint32_t);
   using ProductAngleSpeedCommand = int32_t (*)(
       ArticoreRuntime*, const float*, uint32_t, float);
   using ProductMitCommand = int32_t (*)(
@@ -66,9 +64,7 @@ int main() {
   static_assert(same_signature<
       decltype(&articore_runtime_set_joint_mit), ProductMitCommand>);
   static_assert(same_signature<
-      decltype(&articore_runtime_set_joint_mit_fast), ProductAngleCommand>);
-  static_assert(same_signature<
-      decltype(&articore_runtime_set_joint_mit_fast_with_speed),
+      decltype(&articore_runtime_set_joint_mit_fast),
       ProductAngleSpeedCommand>);
   static_assert(same_signature<
       decltype(&articore_runtime_set_speed_percent), ProductFloatSetter>);
@@ -272,12 +268,6 @@ int main() {
           articore_runtime_last_error(),
           "standard MIT joint command: runtime is null") == 0 &&
       articore_runtime_set_joint_mit_fast(
-          nullptr, positions.data(), positions.size()) ==
-          ARTICORE_OPERATION_INVALID_ARGUMENT &&
-      std::strcmp(
-          articore_runtime_last_error(),
-          "fast MIT joint command: runtime is null") == 0 &&
-      articore_runtime_set_joint_mit_fast_with_speed(
           nullptr, positions.data(), positions.size(), 50.0f) ==
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
       std::strcmp(
@@ -356,7 +346,6 @@ int main() {
       &articore_runtime_disconnect &&
       &articore_runtime_set_joint_mit &&
       &articore_runtime_set_joint_mit_fast &&
-      &articore_runtime_set_joint_mit_fast_with_speed &&
       &articore_runtime_set_speed_percent &&
       &articore_runtime_get_speed_percent &&
       &articore_runtime_set_max_acceleration &&
@@ -384,16 +373,16 @@ int main() {
       &articore_runtime_estop && &articore_runtime_recover &&
       &articore_robot_model_create && &articore_robot_model_fk;
 
-  if (articore_runtime_abi_version() != 0x000F0000U ||
+  if (articore_runtime_abi_version() != 0x00100000U ||
       !symbols_present || !gripper_validation || !state_size_checked ||
       !state_runtime_checked || !health_size_checked ||
       !joint_limits_size_checked || !maximum_acceleration_validation ||
       !maximum_speed_validation || !speed_percent_validation ||
       !product_ik_validation || !joint_command_validation ||
       !factory_validation || !product_limits_checked) {
-    std::cerr << "Articore Runtime ABI 15.0 contract is incomplete\n";
+    std::cerr << "Articore Runtime ABI 16.0 contract is incomplete\n";
     return 1;
   }
-  std::cout << "Articore Runtime ABI 15.0 smoke test passed\n";
+  std::cout << "Articore Runtime ABI 16.0 smoke test passed\n";
   return 0;
 }

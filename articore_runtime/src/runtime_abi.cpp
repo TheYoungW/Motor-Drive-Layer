@@ -680,7 +680,7 @@ int32_t set_product_grippers_impl(
 extern "C" {
 
 ARTICORE_RUNTIME_API uint32_t articore_runtime_abi_version(void) {
-  return (15U << 16);
+  return (16U << 16);
 }
 
 ARTICORE_RUNTIME_API ArticoreRobotModel* articore_robot_model_create(
@@ -1040,13 +1040,6 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
 }
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_fast(
-    ArticoreRuntime* runtime, const float* positions, uint32_t count) {
-  return articore_runtime_set_joint_mit_fast_with_speed(
-      runtime, positions, count, 100.0f);
-}
-
-ARTICORE_RUNTIME_API int32_t
-articore_runtime_set_joint_mit_fast_with_speed(
     ArticoreRuntime* runtime, const float* positions, uint32_t count,
     float speed_percent) {
   try {

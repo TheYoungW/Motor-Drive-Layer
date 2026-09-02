@@ -2,7 +2,7 @@
 
 Binary-only Yunyi product Runtime for Linux.
 
-Version 0.30.0 ships Runtime ABI 15.0 (`0x000F0000`). The wheel contains the
+Version 0.31.0 ships Runtime ABI 16.0 (`0x00100000`). The wheel contains the
 native `libarticore_runtime.so` and required data; it contains no Python module,
 ctypes declarations or Motor ABI library.
 
@@ -22,7 +22,7 @@ Runtime, and Cartesian callers do not provide a duration.
 MIT exposes only standard full-frame `set_joint_mit(q, dq, kp, kd, tau_ff)`
 and angle-only `set_joint_mit_fast(q, speed_percent=100)`. Fast MIT accepts
 `0..100` as a percentage of its 5 rad/s reference-step base; standard MIT has
-no speed parameter. ABI 15
+no speed parameter. ABI 16
 does not export the former `set_pose()` shortcut; consumers use `solve_ik()`
 plus an explicit joint command or the finite Cartesian `move_pose()` API.
 

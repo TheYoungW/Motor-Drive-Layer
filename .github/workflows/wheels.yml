@@ -78,7 +78,7 @@ jobs:
           assert not any("libmotor_abi" in name or "/dm_device/" in name for name in entries)
           runtime_lib = ctypes.CDLL(str(runtime))
           runtime_lib.articore_runtime_abi_version.restype = ctypes.c_uint32
-          assert runtime_lib.articore_runtime_abi_version() == 0x000F0000
+          assert runtime_lib.articore_runtime_abi_version() == 0x00100000
           assert hasattr(runtime_lib, "articore_runtime_create_yunyi")
           assert not hasattr(runtime_lib, "articore_runtime_set_pose")
           assert hasattr(runtime_lib, "articore_runtime_solve_ik")
@@ -107,7 +107,7 @@ jobs:
           assert hasattr(runtime_lib, "articore_runtime_set_joint_pv")
           assert hasattr(runtime_lib, "articore_runtime_set_joint_mit")
           assert hasattr(runtime_lib, "articore_runtime_set_joint_mit_fast")
-          assert hasattr(runtime_lib, "articore_runtime_set_joint_mit_fast_with_speed")
+          assert not hasattr(runtime_lib, "articore_runtime_set_joint_mit_fast_with_speed")
           assert not hasattr(runtime_lib, "articore_runtime_set_joint_mit_direct")
           assert not hasattr(runtime_lib, "articore_runtime_set_joint_mit_fast_follow")
           assert not hasattr(runtime_lib, "articore_runtime_submit_mit_frame")

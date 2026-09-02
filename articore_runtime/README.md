@@ -1,8 +1,8 @@
 # Yunyi product Runtime
 
-`libarticore_runtime.so` is the only public native library. Runtime ABI 15.0 is
+`libarticore_runtime.so` is the only public native library. Runtime ABI 16.0 is
 an exact contract: the SDK must require `articore_runtime_abi_version() ==
-0x000F0000` and bind only the declarations in `articore/runtime_abi.h`.
+0x00100000` and bind only the declarations in `articore/runtime_abi.h`.
 
 ## Ownership
 
@@ -84,11 +84,10 @@ changes the queue. Callers pass that result to `articore_runtime_set_joint_pv`.
 In MIT product mode, callers choose one of exactly two methods. The standard
 `articore_runtime_set_joint_mit` call submits user-owned q, dq, kp, kd and
 feedforward torque as one atomic watchdog-protected streaming frame. The
-angle-only `articore_runtime_set_joint_mit_fast_with_speed` call advances the
-Runtime-owned reference at the supplied `0..100` percentage of the 5 rad/s
-base with the fast gain profile, zero velocity and zero feedforward torque. The
-compatibility `articore_runtime_set_joint_mit_fast` symbol selects 100 percent.
-Neither creates a Motion ID.
+angle-only `articore_runtime_set_joint_mit_fast` call advances the Runtime-owned
+reference at the supplied `0..100` percentage of the 5 rad/s base with the fast
+gain profile, zero velocity and zero feedforward torque. Neither creates a
+Motion ID.
 `articore_runtime_move_pose` plans a finite quintic Cartesian pose-to-pose
 motion for one side. Like Linear and Circular, it is a nonblocking PV-mode
 command and follows the same single-active-motion contract.
@@ -195,10 +194,10 @@ right receive path, and both receive paths. Side `last_error` strings aggregate
 all affected Motor roles instead of retaining only the last failure.
 
 Every public structure must set `struct_size` to its exact `sizeof(...)`.
-ABI 15.0 replaces the public MIT surface with standard full-frame
-`set_joint_mit(q, dq, kp, kd, tau_ff)` and angle-only
-`set_joint_mit_fast(q, speed_percent=100)`. It removes the mode-neutral
-`set_pose()` shortcut;
+ABI 16.0 exposes standard full-frame
+`set_joint_mit(q, dq, kp, kd, tau_ff)` and one angle-only
+`set_joint_mit_fast(q, speed_percent)` entry point. It does not export the
+mode-neutral `set_pose()` shortcut;
 callers use `solve_ik()` followed by an explicit joint command, or use
 `move_pose()` for a finite Cartesian motion. It retains `motion_arrived` in
 `ArticoreProductState` and the simplified

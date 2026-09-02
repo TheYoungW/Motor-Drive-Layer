@@ -28,8 +28,8 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.30.0`
-- Runtime ABI: `15.0` / `0x000F0000`
+- package version: `0.31.0`
+- Runtime ABI: `16.0` / `0x00100000`
 
 Runtime health includes a product-order snapshot for every installed Motor,
 with role, CAN ID, feedback age, status, issue bits, and a scope that separates
@@ -84,7 +84,7 @@ automatically selects a safe duration, and trajectory base limits remain
 internal policy.
 Pose callers may use the pure `solve_ik(left_pose, right_pose)` query to obtain
 14 joint angles without moving, then explicitly submit them through ordinary
-PV or standard MIT. ABI 15 removes the former mode-neutral `set_pose()`
+PV or standard MIT. Runtime ABI 16 does not export the former mode-neutral `set_pose()`
 shortcut. The public `move_pose(side, target_pose)` method instead plans a
 finite quintic Cartesian pose-to-pose motion.
 Linear constructs a true Cartesian line from the current/start FK pose: XYZ is
