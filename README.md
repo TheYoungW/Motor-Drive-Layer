@@ -28,7 +28,7 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.29.1`
+- package version: `0.30.0`
 - Runtime ABI: `15.0` / `0x000F0000`
 
 Runtime health includes a product-order snapshot for every installed Motor,
@@ -68,12 +68,15 @@ MIT product mode exposes exactly two methods. Standard
 `set_joint_mit(q, dq, kp, kd, tau_ff)` accepts every field of a complete
 14-joint MIT frame from the user. Each new frame atomically replaces the old
 one; Runtime does no interpolation and the streaming watchdog still applies.
-`set_joint_mit_fast(q)` is the angle-only high-frequency teleoperation method:
-users provide only the newest joint angles, while
+`set_joint_mit_fast(q, speed_percent=100)` is the angle-only high-frequency
+teleoperation method: users provide the newest joint angles and a `0..100`
+reference-speed percentage, while
 Runtime applies fixed J1..J7 `Kp=[190,190,100,100,70,60,50]`,
 `Kd=[4.55,4.50,2.50,2.50,0.70,0.60,0.50]`, and an internal 100-percent
-(5 rad/s) position-reference step limit with `dq=0` and `tau_ff=0`. Neither
-method accepts `speed_percent` or creates a finite trajectory/Motion ID.
+(5 rad/s) position-reference step base with `dq=0` and `tau_ff=0`. Therefore
+50 percent selects 2.5 rad/s and 0 percent retains the latest target without
+advancing the reference. Standard MIT does not accept a speed percentage, and
+neither MIT method creates a finite trajectory/Motion ID.
 Linear/Circular retain independent internal base velocity, acceleration,
 timing and synchronization constraints, but use the same shared Runtime speed
 percentage as ordinary PV. Users provide only the path geometry; Runtime

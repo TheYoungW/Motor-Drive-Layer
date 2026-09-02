@@ -581,11 +581,21 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
     const float* velocities, const float* kp, const float* kd,
     const float* feedforward_torques, uint32_t count);
 /* Fast MIT endpoint control. Callers provide only the newest complete joint
- * angles. Runtime owns dq=0, tau_ff=0, fixed fast gains and the internal
- * 100-percent (5 rad/s) position-reference step limit.
+ * angles. Runtime owns dq=0, tau_ff=0 and fixed fast gains. This compatibility
+ * entry point uses 100 percent, corresponding to the 5 rad/s reference-step
+ * base. New callers should use the explicit-speed entry point below.
  */
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_fast(
     ArticoreRuntime* runtime, const float* positions, uint32_t count);
+/* Speed-controlled Fast MIT endpoint control. speed_percent accepts 0..100;
+ * 100 selects the 5 rad/s reference-step base, 50 selects 2.5 rad/s and 0
+ * keeps the current reference while retaining the latest endpoint. This is a
+ * latest-target-wins online reference step, not a finite trajectory, and does
+ * not change the fixed fast Kp/Kd, dq=0 or tau_ff=0 policy. */
+ARTICORE_RUNTIME_API int32_t
+articore_runtime_set_joint_mit_fast_with_speed(
+    ArticoreRuntime* runtime, const float* positions, uint32_t count,
+    float speed_percent);
 /* Pure product inverse kinematics. Both poses use
  * [x,y,z,roll,pitch,yaw] in metres/radians. positions receives exactly 14
  * logical joint angles in fixed left J1..J7, right J1..J7 order. Runtime uses

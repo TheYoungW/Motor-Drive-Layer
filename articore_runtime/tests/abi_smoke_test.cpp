@@ -24,6 +24,8 @@ int main() {
       ArticoreRuntime*, const float*, uint32_t, float);
   using ProductAngleCommand = int32_t (*)(
       ArticoreRuntime*, const float*, uint32_t);
+  using ProductAngleSpeedCommand = int32_t (*)(
+      ArticoreRuntime*, const float*, uint32_t, float);
   using ProductMitCommand = int32_t (*)(
       ArticoreRuntime*, const float*, const float*, const float*,
       const float*, const float*, uint32_t);
@@ -65,6 +67,9 @@ int main() {
       decltype(&articore_runtime_set_joint_mit), ProductMitCommand>);
   static_assert(same_signature<
       decltype(&articore_runtime_set_joint_mit_fast), ProductAngleCommand>);
+  static_assert(same_signature<
+      decltype(&articore_runtime_set_joint_mit_fast_with_speed),
+      ProductAngleSpeedCommand>);
   static_assert(same_signature<
       decltype(&articore_runtime_set_speed_percent), ProductFloatSetter>);
   static_assert(same_signature<
@@ -271,6 +276,12 @@ int main() {
           ARTICORE_OPERATION_INVALID_ARGUMENT &&
       std::strcmp(
           articore_runtime_last_error(),
+          "fast MIT joint command: runtime is null") == 0 &&
+      articore_runtime_set_joint_mit_fast_with_speed(
+          nullptr, positions.data(), positions.size(), 50.0f) ==
+          ARTICORE_OPERATION_INVALID_ARGUMENT &&
+      std::strcmp(
+          articore_runtime_last_error(),
           "fast MIT joint command: runtime is null") == 0;
 
   ArticoreRuntime* invalid_runtime =
@@ -345,6 +356,7 @@ int main() {
       &articore_runtime_disconnect &&
       &articore_runtime_set_joint_mit &&
       &articore_runtime_set_joint_mit_fast &&
+      &articore_runtime_set_joint_mit_fast_with_speed &&
       &articore_runtime_set_speed_percent &&
       &articore_runtime_get_speed_percent &&
       &articore_runtime_set_max_acceleration &&

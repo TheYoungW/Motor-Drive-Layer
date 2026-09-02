@@ -23,6 +23,10 @@ inline constexpr float kYunyiOrdinaryPvMaximumVelocity = 2.0f;
 inline constexpr float kYunyiPvDriveVelocityLimit = 3.0f;
 inline constexpr float kYunyiTrajectoryPvAccelerationLimit = 6.0f;
 inline constexpr float kYunyiMitFastFollowMaximumVelocity = 5.0f;
+inline constexpr float yunyi_mit_fast_follow_reference_velocity(
+    float speed_percent) {
+  return kYunyiMitFastFollowMaximumVelocity * speed_percent / 100.0f;
+}
 inline constexpr std::array<float, ARTICORE_PRODUCT_ARM_DOF>
     kYunyiMitDirectKp = {15, 15, 12, 12, 8, 7, 6};
 inline constexpr std::array<float, ARTICORE_PRODUCT_ARM_DOF>
@@ -44,7 +48,11 @@ static_assert(kYunyiTrajectoryPvAccelerationLimit ==
                   kNativeTrajectoryPvAccelerationLimit,
               "trajectory acceleration base must remain Runtime-owned");
 static_assert(kYunyiMitFastFollowMaximumVelocity == 5.0f,
-              "fast-follow MIT must use the fixed 5 rad/s step limit");
+              "fast-follow MIT must retain the 100-percent 5 rad/s base");
+static_assert(yunyi_mit_fast_follow_reference_velocity(0.0f) == 0.0f &&
+                  yunyi_mit_fast_follow_reference_velocity(50.0f) == 2.5f &&
+                  yunyi_mit_fast_follow_reference_velocity(100.0f) == 5.0f,
+              "fast-follow MIT speed percentage must scale its reference");
 static_assert(yunyi_effective_pv_reference_velocity(50.0f) == 1.0f &&
                   yunyi_effective_pv_reference_velocity(100.0f) == 2.0f,
               "trajectory PV reference scaling must remain unchanged");
@@ -157,8 +165,6 @@ struct YunyiRuntimeResources {
   // native session configuration shared by pose reporting and every IK path.
   std::array<std::array<float, ARTICORE_PRODUCT_POSE_DOF>, 2> tcp_offsets{};
   bool with_grippers = true;
-  float mit_fast_follow_reference_velocity =
-      kYunyiMitFastFollowMaximumVelocity;
   float default_pv_reference_velocity =
       kYunyiOrdinaryPvMaximumVelocity;
 };

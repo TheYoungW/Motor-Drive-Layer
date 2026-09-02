@@ -43,12 +43,14 @@ objects, joint tables or product bindings.
 - Standard MIT: `set_joint_mit(q, dq, kp, kd, tau_ff)` accepts every field of
   one complete 14-joint frame. A newer frame atomically replaces the old one;
   Runtime performs no interpolation and retains the streaming watchdog.
-- Fast MIT: `set_joint_mit_fast(q)` is a high-frequency teleoperation endpoint
-  accepting joint angles only. Runtime owns `dq=0`, `tau_ff=0`, and J1..J7
+- Fast MIT: `set_joint_mit_fast(q, speed_percent=100)` is a high-frequency
+  teleoperation endpoint accepting joint angles and a `0..100`
+  reference-speed percentage. Runtime owns `dq=0`, `tau_ff=0`, and J1..J7
   `Kp=[190,190,100,100,70,60,50]`,
-  `Kd=[4.55,4.50,2.50,2.50,0.70,0.60,0.50]`, and the fixed internal
-  100-percent (5 rad/s) position-reference step limit. Neither MIT method takes
-  `speed_percent` or creates a Motion ID.
+  `Kd=[4.55,4.50,2.50,2.50,0.70,0.60,0.50]`, and the internal 100-percent
+  (5 rad/s) position-reference step base. 50 percent selects 2.5 rad/s and
+  0 percent keeps the current reference. Standard MIT has no speed parameter;
+  neither MIT method creates a Motion ID.
 - Native trajectories: `move_pose`, Linear and Circular. They follow generated
   finite point lists through internal trajectory PV using the shared speed
   percentage.
@@ -82,9 +84,11 @@ changes the queue. Callers pass that result to `articore_runtime_set_joint_pv`.
 In MIT product mode, callers choose one of exactly two methods. The standard
 `articore_runtime_set_joint_mit` call submits user-owned q, dq, kp, kd and
 feedforward torque as one atomic watchdog-protected streaming frame. The
-angle-only `articore_runtime_set_joint_mit_fast` call advances the Runtime-owned
-reference at the fixed 100-percent limit with the fast gain profile, zero
-velocity and zero feedforward torque. Neither creates a Motion ID.
+angle-only `articore_runtime_set_joint_mit_fast_with_speed` call advances the
+Runtime-owned reference at the supplied `0..100` percentage of the 5 rad/s
+base with the fast gain profile, zero velocity and zero feedforward torque. The
+compatibility `articore_runtime_set_joint_mit_fast` symbol selects 100 percent.
+Neither creates a Motion ID.
 `articore_runtime_move_pose` plans a finite quintic Cartesian pose-to-pose
 motion for one side. Like Linear and Circular, it is a nonblocking PV-mode
 command and follows the same single-active-motion contract.
@@ -193,7 +197,8 @@ all affected Motor roles instead of retaining only the last failure.
 Every public structure must set `struct_size` to its exact `sizeof(...)`.
 ABI 15.0 replaces the public MIT surface with standard full-frame
 `set_joint_mit(q, dq, kp, kd, tau_ff)` and angle-only
-`set_joint_mit_fast(q)`. It removes the mode-neutral `set_pose()` shortcut;
+`set_joint_mit_fast(q, speed_percent=100)`. It removes the mode-neutral
+`set_pose()` shortcut;
 callers use `solve_ik()` followed by an explicit joint command, or use
 `move_pose()` for a finite Cartesian motion. It retains `motion_arrived` in
 `ArticoreProductState` and the simplified

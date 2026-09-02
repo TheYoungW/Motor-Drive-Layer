@@ -193,10 +193,12 @@ class Runtime final {
         "set_joint_mit");
   }
 
-  void set_joint_mit_fast(const std::vector<float>& positions) {
+  void set_joint_mit_fast(
+      const std::vector<float>& positions, float speed_percent = 100.0f) {
     detail::check(
-        articore_runtime_set_joint_mit_fast(
-            checked(), positions.data(), detail::size(positions)),
+        articore_runtime_set_joint_mit_fast_with_speed(
+            checked(), positions.data(), detail::size(positions),
+            speed_percent),
         "set_joint_mit_fast");
   }
 

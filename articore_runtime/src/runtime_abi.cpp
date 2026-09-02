@@ -208,13 +208,13 @@ void install_product_joint_positions(
     throw std::invalid_argument(
         runtime->product_mode == ARTICORE_MODE_PV
             ? "ordinary PV speed must be finite and within 1..100"
-            : "ordinary MIT speed must be finite and within 0..100");
+            : "fast MIT speed must be finite and within 0..100");
   }
   float selected_reference_velocity = 0.0f;
   std::unique_lock<std::mutex> pv_limits_lock;
   if (runtime->product_mode == ARTICORE_MODE_MIT && !direct_mit) {
     selected_reference_velocity =
-        product.mit_fast_follow_reference_velocity * speed_percent / 100.0f;
+        articore::yunyi_mit_fast_follow_reference_velocity(speed_percent);
   }
   std::array<ArticoreJointMitTarget, ARTICORE_PRODUCT_DUAL_ARM_DOF> mit{};
   std::array<ArticoreJointPvTarget, ARTICORE_PRODUCT_DUAL_ARM_DOF> pv{};
@@ -1041,6 +1041,14 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit(
 
 ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_fast(
     ArticoreRuntime* runtime, const float* positions, uint32_t count) {
+  return articore_runtime_set_joint_mit_fast_with_speed(
+      runtime, positions, count, 100.0f);
+}
+
+ARTICORE_RUNTIME_API int32_t
+articore_runtime_set_joint_mit_fast_with_speed(
+    ArticoreRuntime* runtime, const float* positions, uint32_t count,
+    float speed_percent) {
   try {
     checked_yunyi(runtime);
     if (runtime->product_mode != ARTICORE_MODE_MIT) {
@@ -1048,7 +1056,7 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_set_joint_mit_fast(
           "fast MIT joint command requires product MIT mode");
     }
     install_product_joint_positions(
-        runtime, positions, count, 100.0f);
+        runtime, positions, count, speed_percent);
     checked(runtime).record_operation_result(
         ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
     g_last_error = "ok";

@@ -19,7 +19,7 @@ int main() {
       const std::vector<float>&, const std::vector<float>&,
       const std::vector<float>&);
   using JointMitFastSetter =
-      void (articore::Runtime::*)(const std::vector<float>&);
+      void (articore::Runtime::*)(const std::vector<float>&, float);
   static_assert(std::is_same_v<decltype(&articore::Runtime::set_joint_pv),
                                JointPvSetter>);
   using PvLimitSetter = void (articore::Runtime::*)(float);

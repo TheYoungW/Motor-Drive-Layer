@@ -3903,6 +3903,12 @@ void test_direct_mit_position_sends_endpoint_without_stepping() {
               std::array<float, ARTICORE_PRODUCT_ARM_DOF>{
                   4.55f, 4.5f, 2.5f, 2.5f, 0.7f, 0.6f, 0.5f},
           "fast-follow MIT product gains match the teleoperation contract");
+  require(
+      articore::yunyi_mit_fast_follow_reference_velocity(0.0f) == 0.0f &&
+          articore::yunyi_mit_fast_follow_reference_velocity(25.0f) == 1.25f &&
+          articore::yunyi_mit_fast_follow_reference_velocity(50.0f) == 2.5f &&
+          articore::yunyi_mit_fast_follow_reference_velocity(100.0f) == 5.0f,
+      "fast-follow MIT exposes a linear 0..100 reference-speed percentage");
 
   FakeDriver driver;
   g_driver = &driver;
