@@ -117,15 +117,29 @@ trajectory PV with the percentage captured when each path is submitted.
 `articore_runtime_move_linear(runtime, side, start_pose, end_pose)` is the
 unified finite Linear entry point. When `start_pose == NULL`, the Cartesian
 line begins at the current planned pose. With a non-null start, Runtime plans
-`current planned pose -> start_pose -> end_pose` and installs the approach plus
-the Cartesian line once as one finite trajectory task; it does not use the
-ordinary-PV endpoint API to pre-position. Circular uses explicit
-`start_pose -> via_pose -> end_pose`. Runtime validates and plans the complete
-motion before installing it. The public calls return no Motion ID and Runtime
-accepts only one active finite Cartesian motion. A new call while one is active
-returns busy instead of entering a queue. Applications read
+`current planned pose -> start_pose -> end_pose` as one atomic task. The
+approach uses the same deterministic multi-seed endpoint IK policy as ordinary
+Cartesian PTP. Reachable start branches are tried from nearest to farthest from
+the current planned joints, and a branch is accepted only when its complete
+following Linear path also plans continuously. Circular applies the same joint
+selection to explicit `start_pose -> via_pose -> end_pose`. Runtime validates
+the approach and complete path before installing either segment, so a later
+unreachable sample or branch jump produces no movement. At the approach
+boundary Runtime holds until physical Cartesian feedback confirms start_pose;
+`stop_motion()` cancels the same task in either stage. Final
+`motion_arrived=true` is published only after the real endpoint is stable. The
+SDK still makes one Runtime call and never composes `move_pose + wait + path`.
+If the current planned pose already matches the explicit start tolerance, the
+approach is omitted. The public calls return no Motion ID and Runtime accepts
+only one active finite Cartesian motion. A new call while one is active returns
+busy instead of entering a queue. Applications read
 `ArticoreProductState.motion_arrived`, monitor health, implement their own wait
 and timeout policy, and call `articore_runtime_stop_motion()` when needed.
+
+Explicit-start planning errors distinguish an unreachable start (no endpoint
+IK branch), a reachable start for which no branch can continuously finish the
+path, and the underlying later path failure such as an unreachable sample or
+an IK branch jump.
 
 The same Linear API also accepts 2 to 64 poses as one atomic path. Two poses
 retain straight-Line behavior. With three or more poses, every declared

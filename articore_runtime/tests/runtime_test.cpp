@@ -7237,6 +7237,28 @@ std::array<float, ARTICORE_PRODUCT_POSE_DOF> pose_rpy(
       static_cast<float>(std::atan2(pose.rotation[3], pose.rotation[0]))};
 }
 
+ArticoreRobotPose pose_from_rpy(
+    const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& values) {
+  const double roll = values[3];
+  const double pitch = values[4];
+  const double yaw = values[5];
+  const double sr = std::sin(roll);
+  const double cr = std::cos(roll);
+  const double sp = std::sin(pitch);
+  const double cp = std::cos(pitch);
+  const double sy = std::sin(yaw);
+  const double cy = std::cos(yaw);
+  ArticoreRobotPose pose{};
+  pose.struct_size = sizeof(pose);
+  std::copy(values.begin(), values.begin() + 3U, pose.position);
+  const double rotation[9] = {
+      cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr,
+      sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr,
+      -sp, cp * sr, cp * cr};
+  std::copy(std::begin(rotation), std::end(rotation), pose.rotation);
+  return pose;
+}
+
 void configure_cartesian_planning_product(
     articore::YunyiRuntimeResources& product) {
   for (uint32_t side = 0; side < 2; ++side) {
@@ -7642,6 +7664,169 @@ void test_cartesian_approach_keeps_timestamps_strictly_increasing() {
       p0_values.data(), circular_via_values.data(),
       circular_end_values.data());
   verify(circular, "Circular");
+}
+
+void test_far_explicit_cartesian_starts_use_ptp_branches_before_path() {
+  articore::YunyiRuntimeResources product;
+  configure_cartesian_planning_product(product);
+  const std::array<float, ARTICORE_PRODUCT_POSE_DOF> tcp{
+      -0.004f, 0.0f, -0.178f, 0.0f, 0.0f, 0.0f};
+  product.tcp_offsets[ARTICORE_ROBOT_LEFT] = tcp;
+  product.pose_models[ARTICORE_ROBOT_LEFT] =
+      std::make_unique<articore::RobotModel>(
+          "yunyi_v1_0", ARTICORE_ROBOT_LEFT, tcp);
+
+  const std::array<float, ARTICORE_PRODUCT_POSE_DOF> current_values{
+      0.338225f, 0.721177f, 0.546805f,
+      1.881357f, -0.249337f, -0.558129f};
+  const auto current = pose_from_rpy(current_values);
+  const std::array<double, ARTICORE_PRODUCT_ARM_DOF> home{
+      0.0, 0.0, 0.0, 1.5707963267948966, 0.0, 0.0, 0.0};
+  auto endpoint_options = articore::product_endpoint_ik_options();
+  ArticoreIkResult current_ik{};
+  current_ik.struct_size = sizeof(current_ik);
+  try {
+    product.pose_models[ARTICORE_ROBOT_LEFT]->ik_nearest(
+        &current, home.data(), home.size(), &endpoint_options, &current_ik);
+  } catch (const std::exception& error) {
+    throw std::runtime_error(
+        std::string("recorded current pose IK failed: ") + error.what());
+  }
+  require(current_ik.success,
+          "recorded far-start regression pose has a valid current joint state");
+
+  articore::NativeTrajectorySample reference;
+  reference.positions.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  for (uint32_t joint = 0; joint < ARTICORE_PRODUCT_ARM_DOF; ++joint) {
+    reference.positions[joint] = static_cast<float>(current_ik.q[joint]);
+  }
+
+  constexpr std::array<float, 4U * ARTICORE_PRODUCT_POSE_DOF> path{
+      0.403537f, 0.312721f, 0.381638f, 0.0f, -1.570796f, 0.0f,
+      0.403537f, 0.191477f, 0.451638f, 0.0f, -1.570796f, 0.0f,
+      0.403537f, 0.191477f, 0.311638f, 0.0f, -1.570796f, 0.0f,
+      0.403537f, 0.312721f, 0.381638f, 0.0f, -1.570796f, 0.0f};
+  std::array<float, ARTICORE_PRODUCT_POSE_DOF> start_values{};
+  std::copy(path.begin(), path.begin() + ARTICORE_PRODUCT_POSE_DOF,
+            start_values.begin());
+  const auto start = pose_from_rpy(start_values);
+  require(
+      std::hypot(
+          std::hypot(
+              current.position[0] - start.position[0],
+              current.position[1] - start.position[1]),
+          current.position[2] - start.position[2]) > 0.2,
+      "recorded Linear Path starts far from the current Cartesian pose");
+
+  const auto plan =
+      articore::build_linear_path_trajectory_plan_from_reference(
+          product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+          path.data(), 4U);
+  require(
+      plan.trajectory.approach_segment_count > 0U &&
+          plan.trajectory.approach_convergence_check &&
+          plan.trajectory.final_convergence_check &&
+          plan.trajectory.waypoints.size() >
+              plan.trajectory.approach_segment_count + 1U,
+      "far Linear Path preplans a PTP branch, a physical start barrier and "
+      "the complete following path as one Runtime task");
+
+  articore::YunyiRuntimeResources fallback_product;
+  configure_cartesian_planning_product(fallback_product);
+  articore::NativeTrajectorySample zero_reference;
+  zero_reference.positions.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  zero_reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  zero_reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  const std::array<double, ARTICORE_PRODUCT_ARM_DOF> fallback_start_q{
+      1.73197888, -0.17180270, -2.42435922, 1.44727633,
+      -0.39948210, 0.33895601, 1.38079965};
+  auto fallback_end_q = fallback_start_q;
+  fallback_end_q[3] += 0.02;
+  ArticoreRobotPose fallback_start{};
+  fallback_start.struct_size = sizeof(fallback_start);
+  ArticoreRobotPose fallback_end{};
+  fallback_end.struct_size = sizeof(fallback_end);
+  fallback_product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      fallback_start_q.data(), fallback_start_q.size(), &fallback_start);
+  fallback_product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      fallback_end_q.data(), fallback_end_q.size(), &fallback_end);
+  const std::array<double, ARTICORE_PRODUCT_ARM_DOF> zero_q{};
+  auto path_options = articore::product_path_ik_options();
+  ArticoreIkResult seed_only{};
+  seed_only.struct_size = sizeof(seed_only);
+  fallback_product.pose_models[ARTICORE_ROBOT_LEFT]->ik_from_seed(
+      &fallback_start, zero_q.data(), zero_q.size(), &path_options,
+      &seed_only);
+  require(!seed_only.success,
+          "regression start reproduces the former current-seed-only IK "
+          "failure");
+  const auto fallback_start_values = pose_rpy(fallback_start);
+  const auto fallback_end_values = pose_rpy(fallback_end);
+  const auto fallback_plan =
+      articore::build_linear_trajectory_plan_from_reference(
+          fallback_product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT,
+          zero_reference, fallback_start_values.data(),
+          fallback_end_values.data());
+  require(
+      fallback_plan.trajectory.approach_segment_count > 0U,
+      "single-segment Linear uses deterministic PTP fallback IK when its "
+      "former current-seed-only start solve fails");
+}
+
+void test_explicit_cartesian_start_failures_are_classified_before_motion() {
+  articore::YunyiRuntimeResources product;
+  configure_cartesian_planning_product(product);
+  articore::NativeTrajectorySample reference;
+  reference.positions.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+  reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+
+  const std::array<float, ARTICORE_PRODUCT_POSE_DOF> unreachable_start{
+      10.0f, 10.0f, 10.0f, 0.0f, 0.0f, 0.0f};
+  require_throws(
+      [&] {
+        (void)articore::build_linear_trajectory_plan_from_reference(
+            product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+            unreachable_start.data(), unreachable_start.data());
+      },
+      "start has no reachable IK branch",
+      "an unreachable explicit start is classified before any plan exists");
+
+  std::array<double, ARTICORE_PRODUCT_ARM_DOF> start_q{};
+  start_q[3] = 0.25;
+  ArticoreRobotPose reachable_start{};
+  reachable_start.struct_size = sizeof(reachable_start);
+  product.pose_models[ARTICORE_ROBOT_LEFT]->fk(
+      start_q.data(), start_q.size(), &reachable_start);
+  const auto reachable_values = pose_rpy(reachable_start);
+  std::array<float, 3U * ARTICORE_PRODUCT_POSE_DOF> broken_path{};
+  std::copy(reachable_values.begin(), reachable_values.end(),
+            broken_path.begin());
+  std::copy(reachable_values.begin(), reachable_values.end(),
+            broken_path.begin() + ARTICORE_PRODUCT_POSE_DOF);
+  std::copy(reachable_values.begin(), reachable_values.end(),
+            broken_path.begin() + 2U * ARTICORE_PRODUCT_POSE_DOF);
+  broken_path[ARTICORE_PRODUCT_POSE_DOF + 0U] = 10.0f;
+  broken_path[ARTICORE_PRODUCT_POSE_DOF + 1U] = 10.0f;
+  broken_path[ARTICORE_PRODUCT_POSE_DOF + 2U] = 10.0f;
+  try {
+    (void)articore::build_linear_path_trajectory_plan_from_reference(
+        product, ARTICORE_MODE_PV, ARTICORE_ROBOT_LEFT, reference,
+        broken_path.data(), 3U);
+    throw std::runtime_error(
+        "reachable start with unreachable middle unexpectedly planned");
+  } catch (const std::invalid_argument& error) {
+    const std::string message = error.what();
+    require(
+        message.find(
+            "start is reachable, but no start IK branch can continuously "
+            "complete the path") != std::string::npos &&
+            message.find("path sample is unreachable") != std::string::npos,
+        "a reachable start with an invalid middle point reports both the "
+        "branch-level and path-sample failure reasons");
+  }
 }
 
 void test_circular_arc_samples_support_continuous_native_ik() {
@@ -8088,6 +8273,8 @@ int main() {
     RUN_TEST(test_cartesian_auto_timing_and_pv_execution);
     RUN_TEST(test_linear_path_passes_through_internal_corners_without_blending);
     RUN_TEST(test_cartesian_approach_keeps_timestamps_strictly_increasing);
+    RUN_TEST(test_far_explicit_cartesian_starts_use_ptp_branches_before_path);
+    RUN_TEST(test_explicit_cartesian_start_failures_are_classified_before_motion);
     RUN_TEST(test_circular_arc_samples_support_continuous_native_ik);
     RUN_TEST(test_native_trajectory_checks_segment_extrema_and_partial_power);
     RUN_TEST(test_gravity_compensation_is_an_exclusive_hand_guiding_mode);

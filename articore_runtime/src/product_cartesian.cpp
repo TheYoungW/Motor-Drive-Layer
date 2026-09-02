@@ -981,19 +981,32 @@ NativeCartesianTrajectoryPlan build_linear_trajectory_plan_from_reference(
     }
   }
 
-  const auto approach_target = solve_cartesian_trajectory_approach_target(
-      product, mode, side, reference, start_pose_values);
-  auto path_reference = reference;
-  path_reference.positions.assign(
-      approach_target.begin(), approach_target.end());
-  path_reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
-  path_reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
-  auto plan = build_linear_trajectory_plan_common(
-      product, mode, side, path_reference, &declared_start, end_pose_values,
-      pv_reference_acceleration, pv_reference_velocity);
-  prepend_cartesian_approach(
-      plan, product, side, reference, declared_start);
-  return plan;
+  const auto approach_targets = solve_cartesian_trajectory_approach_targets(
+      product, mode, side, reference, start_pose_values, "Linear");
+  std::string path_failure;
+  for (const auto& approach_target : approach_targets) {
+    auto path_reference = reference;
+    path_reference.positions.assign(
+        approach_target.begin(), approach_target.end());
+    path_reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+    path_reference.accelerations.assign(
+        ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+    try {
+      auto plan = build_linear_trajectory_plan_common(
+          product, mode, side, path_reference, &declared_start,
+          end_pose_values, pv_reference_acceleration, pv_reference_velocity);
+      prepend_cartesian_approach(
+          plan, product, side, reference, declared_start);
+      return plan;
+    } catch (const std::invalid_argument& error) {
+      if (path_failure.empty()) path_failure = error.what();
+    }
+  }
+  throw std::invalid_argument(
+      "Cartesian Linear start is reachable, but no start IK branch can "
+      "continuously complete the path; attempted_branches=" +
+      std::to_string(approach_targets.size()) +
+      "; path_failure=" + path_failure);
 }
 
 NativeCartesianTrajectoryPlan build_linear_path_trajectory_plan_from_reference(
@@ -1039,28 +1052,42 @@ NativeCartesianTrajectoryPlan build_linear_path_trajectory_plan_from_reference(
     }
   }
 
-  const auto approach_target = solve_cartesian_trajectory_approach_target(
-      product, mode, side, reference, pose_values);
-  auto path_reference = reference;
-  path_reference.positions.assign(
-      approach_target.begin(), approach_target.end());
-  path_reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
-  path_reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
-  auto plan = build_linear_path_trajectory_plan_common(
-      product, mode, side, path_reference, poses,
-      pv_reference_acceleration, pv_reference_velocity);
-  prepend_cartesian_approach(
-      plan, product, side, reference, declared_start);
-  return plan;
+  const auto approach_targets = solve_cartesian_trajectory_approach_targets(
+      product, mode, side, reference, pose_values, "Linear Path");
+  std::string path_failure;
+  for (const auto& approach_target : approach_targets) {
+    auto path_reference = reference;
+    path_reference.positions.assign(
+        approach_target.begin(), approach_target.end());
+    path_reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+    path_reference.accelerations.assign(
+        ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+    try {
+      auto plan = build_linear_path_trajectory_plan_common(
+          product, mode, side, path_reference, poses,
+          pv_reference_acceleration, pv_reference_velocity);
+      prepend_cartesian_approach(
+          plan, product, side, reference, declared_start);
+      return plan;
+    } catch (const std::invalid_argument& error) {
+      if (path_failure.empty()) path_failure = error.what();
+    }
+  }
+  throw std::invalid_argument(
+      "Cartesian Linear Path start is reachable, but no start IK branch can "
+      "continuously complete the path; attempted_branches=" +
+      std::to_string(approach_targets.size()) +
+      "; path_failure=" + path_failure);
 }
 
-std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
-solve_cartesian_trajectory_approach_target(
+std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>>
+solve_cartesian_trajectory_approach_targets(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
     const NativeTrajectorySample& reference,
-    const float* target_pose_values) {
+    const float* target_pose_values,
+    const char* motion_name) {
   if (mode != ARTICORE_MODE_PV && mode != ARTICORE_MODE_MIT) {
     throw std::invalid_argument(
         "Cartesian trajectory approach mode is invalid");
@@ -1078,23 +1105,51 @@ solve_cartesian_trajectory_approach_target(
   const uint32_t side_offset = side * ARTICORE_PRODUCT_ARM_DOF;
   const auto target = robot_pose_from_rpy(target_pose_values);
   const auto start_q = reference_q(reference, side);
-  std::array<double, ARTICORE_PRODUCT_ARM_DOF> target_q{};
+  std::vector<detail::YunyiIkSeed> target_candidates;
+  ArticoreIkResult best{};
+  best.struct_size = sizeof(best);
   {
     std::lock_guard<std::mutex> lock(product.pose_mutexes[side]);
     if (!product.pose_models[side]) {
       throw std::runtime_error(
           "Cartesian trajectory approach model is unavailable");
     }
-    target_q = solve_path_ik(
-        *product.pose_models[side], product, side, target, start_q,
-        "Cartesian path start");
+    auto options = product_endpoint_ik_options();
+    target_candidates =
+        product.pose_models[side]->ik_endpoint_candidates_until(
+            &target, start_q.data(), start_q.size(), &options,
+            std::chrono::steady_clock::now() + kYunyiProductIkBudget,
+            &best);
   }
-
-  auto result = start_positions;
-  for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
-    result[side_offset + index] = static_cast<float>(target_q[index]);
+  const std::string label = motion_name ? motion_name : "Cartesian path";
+  if (target_candidates.empty()) {
+    throw std::invalid_argument(
+        "Cartesian " + label +
+        " start has no reachable IK branch; IK error_norm=" +
+        std::to_string(best.error_norm));
   }
-  return result;
+  std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>> results;
+  results.reserve(target_candidates.size());
+  for (const auto& target_q : target_candidates) {
+    auto result = start_positions;
+    bool within_limits = true;
+    for (uint32_t index = 0; index < ARTICORE_PRODUCT_ARM_DOF; ++index) {
+      const auto& joint = product.joints[side_offset + index];
+      if (!std::isfinite(target_q[index]) || target_q[index] < joint.lower ||
+          target_q[index] > joint.upper) {
+        within_limits = false;
+        break;
+      }
+      result[side_offset + index] = static_cast<float>(target_q[index]);
+    }
+    if (within_limits) results.push_back(result);
+  }
+  if (results.empty()) {
+    throw std::invalid_argument(
+        "Cartesian " + label +
+        " start has no reachable IK branch inside product limits");
+  }
+  return results;
 }
 
 std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
@@ -1342,20 +1397,33 @@ NativeCartesianTrajectoryPlan build_circular_trajectory_plan_from_reference(
     }
   }
 
-  const auto approach_target = solve_cartesian_trajectory_approach_target(
-      product, mode, side, reference, start_pose_values);
-  auto path_reference = reference;
-  path_reference.positions.assign(
-      approach_target.begin(), approach_target.end());
-  path_reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
-  path_reference.accelerations.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
-  auto plan = build_circular_trajectory_plan_common(
-      product, mode, side, path_reference, &declared_start, via_pose_values,
-      end_pose_values, pv_reference_acceleration,
-      pv_reference_velocity);
-  prepend_cartesian_approach(
-      plan, product, side, reference, declared_start);
-  return plan;
+  const auto approach_targets = solve_cartesian_trajectory_approach_targets(
+      product, mode, side, reference, start_pose_values, "Circular");
+  std::string path_failure;
+  for (const auto& approach_target : approach_targets) {
+    auto path_reference = reference;
+    path_reference.positions.assign(
+        approach_target.begin(), approach_target.end());
+    path_reference.velocities.assign(ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+    path_reference.accelerations.assign(
+        ARTICORE_PRODUCT_DUAL_ARM_DOF, 0.0f);
+    try {
+      auto plan = build_circular_trajectory_plan_common(
+          product, mode, side, path_reference, &declared_start,
+          via_pose_values, end_pose_values, pv_reference_acceleration,
+          pv_reference_velocity);
+      prepend_cartesian_approach(
+          plan, product, side, reference, declared_start);
+      return plan;
+    } catch (const std::invalid_argument& error) {
+      if (path_failure.empty()) path_failure = error.what();
+    }
+  }
+  throw std::invalid_argument(
+      "Cartesian Circular start is reachable, but no start IK branch can "
+      "continuously complete the path; attempted_branches=" +
+      std::to_string(approach_targets.size()) +
+      "; path_failure=" + path_failure);
 }
 
 }  // namespace articore

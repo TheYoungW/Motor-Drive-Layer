@@ -142,13 +142,14 @@ inline ArticoreIkOptions product_endpoint_ik_options() {
 std::vector<NativeTrajectoryJoint> product_cartesian_joints(
     const YunyiRuntimeResources& product);
 
-std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
-solve_cartesian_trajectory_approach_target(
+std::vector<std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>>
+solve_cartesian_trajectory_approach_targets(
     YunyiRuntimeResources& product,
     ArticoreControlMode mode,
     uint32_t side,
     const NativeTrajectorySample& reference,
-    const float* target_pose);
+    const float* target_pose,
+    const char* motion_name);
 
 std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
 solve_dual_point_to_point_targets_from_reference(

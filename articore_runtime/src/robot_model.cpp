@@ -467,6 +467,27 @@ void RobotModel::ik_nearest_until(
       &fallback_seeds);
 }
 
+std::vector<detail::YunyiIkSeed>
+RobotModel::ik_endpoint_candidates_until(
+    const ArticoreRobotPose* target, const double* initial_q,
+    uint32_t initial_q_count, const ArticoreIkOptions* options,
+    std::chrono::steady_clock::time_point deadline,
+    ArticoreIkResult* best_result) const {
+  detail::YunyiIkSeed lower{};
+  detail::YunyiIkSeed upper{};
+  for (uint32_t joint = 0; joint < kDof; ++joint) {
+    lower[joint] = impl_->model.lowerPositionLimit[joint];
+    upper[joint] = impl_->model.upperPositionLimit[joint];
+  }
+  const auto fallback_seeds = detail::yunyi_ptp_fallback_ik_seeds(
+      impl_->side, lower, upper);
+  std::vector<detail::YunyiIkSeed> candidates;
+  ik_impl(
+      target, initial_q, initial_q_count, options, best_result, true,
+      &deadline, &fallback_seeds, true, false, &candidates);
+  return candidates;
+}
+
 void RobotModel::ik_impl(
     const ArticoreRobotPose* target, const double* initial_q,
     uint32_t initial_q_count, const ArticoreIkOptions* options,
@@ -474,7 +495,8 @@ void RobotModel::ik_impl(
     const std::chrono::steady_clock::time_point* deadline,
     const detail::YunyiPtpFallbackSeeds* fallback_seeds,
     bool allow_random_retries,
-    bool regularize_to_seed) const {
+    bool regularize_to_seed,
+    std::vector<detail::YunyiIkSeed>* successful_candidates) const {
   if (!target || target->struct_size != sizeof(*target))
     throw std::invalid_argument("IK target pose is null or too small");
   if (!result || result->struct_size != sizeof(*result))
@@ -610,16 +632,34 @@ void RobotModel::ik_impl(
   auto seed_distance = [&](const Eigen::VectorXd& q) {
     return (q - seed).squaredNorm();
   };
+  const auto record_candidate = [&](const Attempt& attempt) {
+    if (!successful_candidates || !attempt.success) return;
+    detail::YunyiIkSeed candidate{};
+    std::copy(attempt.q.data(), attempt.q.data() + kDof, candidate.begin());
+    const bool duplicate = std::any_of(
+        successful_candidates->begin(), successful_candidates->end(),
+        [&](const auto& existing) {
+          double distance = 0.0;
+          for (uint32_t joint = 0; joint < kDof; ++joint) {
+            const double difference = existing[joint] - candidate[joint];
+            distance += difference * difference;
+          }
+          return distance <= 1e-10;
+        });
+    if (!duplicate) successful_candidates->push_back(candidate);
+  };
+  record_candidate(best);
   double best_seed_distance = best.success
       ? seed_distance(best.q)
       : std::numeric_limits<double>::infinity();
-  if (!best.success && fallback_seeds) {
+  if ((!best.success || successful_candidates) && fallback_seeds) {
     for (const auto& fallback : *fallback_seeds) {
       if (deadline_expired) break;
       const Eigen::Map<const Eigen::VectorXd> fallback_q(
           fallback.data(), fallback.size());
       if ((fallback_q - seed).squaredNorm() <= 1e-24) continue;
       Attempt candidate = solve(fallback_q);
+      record_candidate(candidate);
       if (candidate.success) {
         const double candidate_seed_distance = seed_distance(candidate.q);
         if (!best.success || candidate_seed_distance < best_seed_distance ||
@@ -647,6 +687,7 @@ void RobotModel::ik_impl(
       random_q[i] = distribution(rng);
     }
     Attempt candidate = solve(random_q);
+    record_candidate(candidate);
     if (candidate.success && prefer_nearest_success) {
       const double candidate_seed_distance = seed_distance(candidate.q);
       if (!best.success || candidate_seed_distance < best_seed_distance ||
@@ -667,7 +708,20 @@ void RobotModel::ik_impl(
   result->dof = kDof;
   result->error_norm = best.error;
   std::copy(best.q.data(), best.q.data() + kDof, result->q);
-  if (deadline_expired && !best.success) {
+  if (successful_candidates) {
+    std::sort(
+        successful_candidates->begin(), successful_candidates->end(),
+        [&](const auto& lhs, const auto& rhs) {
+          double lhs_distance = 0.0;
+          double rhs_distance = 0.0;
+          for (uint32_t joint = 0; joint < kDof; ++joint) {
+            lhs_distance += std::pow(lhs[joint] - seed[joint], 2);
+            rhs_distance += std::pow(rhs[joint] - seed[joint], 2);
+          }
+          return lhs_distance < rhs_distance;
+        });
+  }
+  if (deadline_expired && !best.success && !successful_candidates) {
     throw std::runtime_error(
         "IK time budget exceeded without a converged solution");
   }

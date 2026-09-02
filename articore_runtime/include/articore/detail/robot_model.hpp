@@ -5,6 +5,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "articore/runtime_abi.h"
 
@@ -84,6 +85,17 @@ class RobotModel final {
       uint32_t initial_q_count, const ArticoreIkOptions* options,
       std::chrono::steady_clock::time_point deadline,
       ArticoreIkResult* result) const;
+  // Explicit Cartesian path starts need more than the single nearest endpoint
+  // result: Runtime must test each deterministic PTP branch against the whole
+  // following path before it may move. Results are unique and ordered by
+  // squared joint distance to initial_q. If deterministic seeds find no
+  // solution, the ordinary endpoint random fallback remains available until
+  // the same deadline.
+  std::vector<detail::YunyiIkSeed> ik_endpoint_candidates_until(
+      const ArticoreRobotPose* target, const double* initial_q,
+      uint32_t initial_q_count, const ArticoreIkOptions* options,
+      std::chrono::steady_clock::time_point deadline,
+      ArticoreIkResult* best_result) const;
 
  private:
   void ik_impl(const ArticoreRobotPose* target, const double* initial_q,
@@ -94,7 +106,9 @@ class RobotModel final {
                const detail::YunyiPtpFallbackSeeds* fallback_seeds =
                    nullptr,
                bool allow_random_retries = true,
-               bool regularize_to_seed = false) const;
+               bool regularize_to_seed = false,
+               std::vector<detail::YunyiIkSeed>* successful_candidates =
+                   nullptr) const;
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

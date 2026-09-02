@@ -27,7 +27,7 @@ can-left/right 接收线程
 
 ## 当前接口契约
 
-- 包版本：`0.29.0`
+- 包版本：`0.29.1`
 - Runtime ABI：`15.0` / `0x000F0000`
 
 Runtime health 现在按产品顺序返回每个已安装电机的角色名、CAN ID、反馈年龄、
@@ -80,8 +80,10 @@ Pose 调用方可通过纯计算接口 `solve_ik(left_pose, right_pose)` 获得 
 发送控制帧或启动运动。
 
 Linear 从当前/指定起点的 FK Pose 出发，在笛卡尔空间对 XYZ 做直线插值、对姿态做
-四元数最短路真 SLERP。第一个路径 Pose 只使用当前规划关节角作为 IK seed，后续每个
-Pose 只使用上一个 IK 解；Linear/Circular 路径 IK 不使用备用、随机或外推 seed。
+四元数最短路真 SLERP。隐式起点仍是当前规划 Pose；显式 Linear、Linear Path 和
+Circular 起点则使用普通笛卡尔 PTP 的确定性多初值端点 IK，按离当前规划关节最近的
+顺序尝试起点分支，并且只有能够连续完成整条后续路径的分支才会被采用。选定起点分支
+后，后续每个 Pose 只使用上一个 IK 解，路径 IK 不使用备用、随机或外推 seed。
 位置优先的零空间姿态约束使每个解保持靠近紧邻的上一个解，XYZ 误差限制为 0.5 mm，
 姿态残差允许到 0.035 rad。单关节分支跳变超过 0.35 rad 或短距离内反复出现明显
 `+/-` 换向时拒绝整条路径；小于 1 mrad 的符号变化视为数值噪声或自然极值。
@@ -109,7 +111,9 @@ Linear 有限运动入口：`start_pose == NULL` 时从当前规划位姿直接�
 整条折线的时间由 Runtime 自动计算。
 公开的 `set_joint_pv()` 是用户使用的普通 PV 终点接口；`TrajectoryPv` 只允许由
 Runtime 内部已经完成校验的有限 Linear/Circular 轨迹选择，不导出 Raw PV 或
-流式 PV 普通接口。自动接近属于同一个内部轨迹执行链。`move_pose()`、Linear 和
+流式 PV 普通接口。自动接近与完整路径会在运动前全部规划，并作为同一个可取消任务
+执行；到达显式起点后先等待真实反馈稳定，最终终点真实稳定后才置
+`motion_arrived=true`。自动接近属于同一个内部轨迹执行链。`move_pose()`、Linear 和
 Circular 要求 PV 产品模式。公开调用都是非阻塞发送接口，不返回 Motion ID；Runtime
 同一时间只接受一条有限笛卡尔运动。整机状态中的 `motion_arrived` 表示真实反馈已稳定
 到位，`stop_motion()` 停止当前运动，等待、故障与超时策略由应用负责。

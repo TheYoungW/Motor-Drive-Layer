@@ -28,7 +28,7 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.29.0`
+- package version: `0.29.1`
 - Runtime ABI: `15.0` / `0x000F0000`
 
 Runtime health includes a product-order snapshot for every installed Motor,
@@ -85,10 +85,14 @@ PV or standard MIT. ABI 15 removes the former mode-neutral `set_pose()`
 shortcut. The public `move_pose(side, target_pose)` method instead plans a
 finite quintic Cartesian pose-to-pose motion.
 Linear constructs a true Cartesian line from the current/start FK pose: XYZ is
-linearly interpolated, orientation follows shortest-path quaternion SLERP, and
-the first pose is solved only from the current planned joints while each later
-pose is solved only from the preceding joint solution. Linear/Circular path IK
-does not use fallback, random, or extrapolated posture seeds. A position-priority
+linearly interpolated and orientation follows shortest-path quaternion SLERP.
+An implicit Linear start remains the current planned pose. For an explicit
+Linear/Linear Path/Circular start, Runtime uses ordinary Cartesian PTP
+multi-seed endpoint IK, orders the reachable start branches by joint distance,
+and accepts only a branch that can continuously finish the complete later path.
+After that selection, each later pose is solved only from the preceding joint
+solution and path IK does not use fallback, random, or extrapolated posture
+seeds. A position-priority
 null-space term keeps each solution near exactly its preceding seed. XYZ error
 is limited to 0.5 mm and orientation residual to 0.035 rad. True branch jumps
 above 0.35 rad and repeated visible +/- joint-direction chatter are rejected;
@@ -119,6 +123,10 @@ The public `set_joint_pv()` command is the ordinary endpoint interface.
 Linear/Circular trajectory; its adaptive time-stamped knots are resampled on the
 500 Hz Runtime command clock. No raw or streaming PV entry point is exported.
 Automatic approach stays inside that trajectory execution path.
+The approach and complete path are preplanned before either can move. They run
+as one cancelable motion task with a physical-feedback stability barrier at the
+explicit start, and `motion_arrived` becomes true only after the final endpoint
+is physically stable.
 `move_pose`, Linear and Circular require PV product mode. Their public calls are
 nonblocking and return no Motion ID. Runtime accepts only one active finite
 Cartesian motion; `motion_arrived` in the product state reports physical

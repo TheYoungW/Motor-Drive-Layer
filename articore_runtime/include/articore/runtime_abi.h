@@ -625,10 +625,14 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_acceleration(
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(
     ArticoreRuntime* runtime, uint32_t side, const float* target_pose);
 /* Unified finite Linear entry point. If start_pose is NULL, the Cartesian line
- * begins at the current planned pose. Otherwise Runtime preplans the approach
- * from the current planned pose to start_pose and the Cartesian line from
- * start_pose to end_pose, then installs both as one finite trajectory task in
- * one submission. The approach never uses the ordinary-PV endpoint API. */
+ * begins at the current planned pose. Otherwise Runtime applies the same
+ * deterministic multi-seed endpoint-IK policy as ordinary Cartesian PTP,
+ * orders the reachable start branches by distance from the current planned
+ * joints, and selects the first branch that can continuously complete the
+ * whole Linear path. Runtime preplans the PTP approach and line before it
+ * installs either segment, then executes them under one motion task with a
+ * physical-feedback convergence barrier at start_pose. No public move_pose
+ * call or SDK-side command sequence is involved. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear(
     ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
     const float* end_pose);
@@ -642,11 +646,14 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_stop_motion(
     ArticoreRuntime* runtime);
 /* Legacy Motion-ID/FIFO ABI retained for binary compatibility. New SDKs use
  * the simple nonblocking move_* surface above. Linear interpolates XYZ on a
- * Cartesian line, uses shortest-path quaternion SLERP for orientation, and
- * solves the first path pose only from the current planned joints, then solves
- * every later pose only from the preceding joint solution. Path IK never uses
- * fallback, random, or extrapolated posture seeds. The null-space objective
- * stays near that same seed, while path IK prioritizes XYZ and permits a
+ * Cartesian line and uses shortest-path quaternion SLERP for orientation.
+ * For an implicit start, the first path pose is the current planned pose. For
+ * an explicit start, Runtime first searches the ordinary PTP endpoint branches
+ * and jointly validates each candidate against the complete later path. After
+ * a start branch is selected, every later pose is solved only from the
+ * preceding joint solution. Later path IK never uses fallback, random, or
+ * extrapolated posture seeds. The null-space objective stays near that same
+ * seed, while path IK prioritizes XYZ and permits a
  * bounded orientation residual. One required reversal is valid;
  * repeated small +/- joint-direction chatter and true branch jumps are rejected
  * before execution. Geometry is sampled at 2 mm / 0.1 rad or better.
@@ -666,15 +673,20 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_trajectory(
  * [x,y,z,roll,pitch,yaw] records. Every declared internal pose is preserved;
  * no Cartesian fillet is inserted. Each sharp segment boundary uses its own
  * rest-to-rest quintic law so the path reaches the corner without a non-zero
- * velocity direction discontinuity. Runtime automatically parameterizes the
- * complete path using the shared speed percentage. */
+ * velocity direction discontinuity. poses[0] is an explicit start and uses
+ * the same atomic PTP-approach and full-path branch-selection semantics as
+ * move_linear. Runtime automatically parameterizes the complete path using
+ * the shared speed percentage. */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_linear_path_trajectory(
     ArticoreRuntime* runtime, uint32_t side, const float* poses,
     uint32_t pose_count, uint64_t* motion_id);
 /* Standard directed circular path through start/via/end. Position is sampled
  * at 2 mm or better, orientation uses shortest-path SLERP through the via
- * orientation, seed-only sequential IK preserves the current local branch
- * without random retries or posture extrapolation, and one global
+ * orientation, and start is an explicit PTP-approached pose. Runtime tests
+ * endpoint IK branches in nearest-current order and accepts only one that can
+ * continuously complete the whole arc. After selecting that start branch,
+ * seed-only sequential IK preserves it without random retries or posture
+ * extrapolation, and one global
  * quintic time law uses the shared Runtime speed percentage to select an
  * automatic safe duration and produces adaptive 4..50 ms internal trajectory-PV
  * knots, which Runtime linearly resamples on its 500 Hz command clock. */
