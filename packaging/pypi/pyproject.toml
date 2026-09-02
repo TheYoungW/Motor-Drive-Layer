@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "motor-drive-layer"
-version = "0.28.0"
+version = "0.29.0"
 description = "Native Yunyi product Runtime with an internal C++ Motor core"
 readme = "README.md"
 authors = [{ name = "Motor-Drive-Layer contributors" }]

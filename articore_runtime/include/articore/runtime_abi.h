@@ -619,6 +619,9 @@ ARTICORE_RUNTIME_API int32_t articore_runtime_get_max_acceleration(
  * the complete plan was accepted. Runtime owns execution and physical-arrival
  * detection; callers read ArticoreProductState.motion_arrived and health.
  * Only one finite Cartesian motion may be active through this surface. */
+/* Pose-to-Pose starts at the current planned pose captured by Runtime in the
+ * submission transaction. It has the same implicit-start behavior as passing
+ * NULL start_pose to articore_runtime_move_linear(). */
 ARTICORE_RUNTIME_API int32_t articore_runtime_move_pose(
     ArticoreRuntime* runtime, uint32_t side, const float* target_pose);
 /* Unified finite Linear entry point. If start_pose is NULL, the Cartesian line

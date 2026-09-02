@@ -28,7 +28,7 @@ no Python implementation in this repository.
 
 ## Current contract
 
-- package version: `0.28.0`
+- package version: `0.29.0`
 - Runtime ABI: `15.0` / `0x000F0000`
 
 Runtime health includes a product-order snapshot for every installed Motor,

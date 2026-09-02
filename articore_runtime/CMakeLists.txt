@@ -226,6 +226,32 @@ if(BUILD_TESTING)
     PRIVATE ../cpp_damiao/include
   )
   add_executable(
+    articore_runtime_hardware_pv_j4_tail_gain_diagnostic EXCLUDE_FROM_ALL
+    tests/hardware_pv_j4_tail_gain_diagnostic.cpp
+    src/yunyi_runtime.cpp
+  )
+  target_link_libraries(
+    articore_runtime_hardware_pv_j4_tail_gain_diagnostic
+    PRIVATE articore_runtime_core damiao::runtime
+  )
+  target_include_directories(
+    articore_runtime_hardware_pv_j4_tail_gain_diagnostic
+    PRIVATE ../cpp_damiao/include
+  )
+  add_executable(
+    articore_runtime_hardware_pv_j3_tail_gain_diagnostic EXCLUDE_FROM_ALL
+    tests/hardware_pv_j3_tail_gain_diagnostic.cpp
+    src/yunyi_runtime.cpp
+  )
+  target_link_libraries(
+    articore_runtime_hardware_pv_j3_tail_gain_diagnostic
+    PRIVATE articore_runtime_core damiao::runtime
+  )
+  target_include_directories(
+    articore_runtime_hardware_pv_j3_tail_gain_diagnostic
+    PRIVATE ../cpp_damiao/include
+  )
+  add_executable(
     articore_runtime_hardware_pv_2rad_gain_diagnostic EXCLUDE_FROM_ALL
     tests/hardware_pv_2rad_gain_diagnostic.cpp
     src/yunyi_runtime.cpp

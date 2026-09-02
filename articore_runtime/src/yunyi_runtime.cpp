@@ -44,7 +44,13 @@ constexpr float kLogicalVelocityRange[2][7] = {
 };
 constexpr float kNativeVelocityRange[7] = {45, 45, 10, 10, 30, 30, 30};
 constexpr uint8_t kPvPositionKpRegister = 27;
-constexpr float kJoint34PvPositionKp = 54.0f;
+// J3/J4 need more position-loop authority in the low-error region. Symmetric
+// speed-50 hardware sweeps over both arms reduced their 0.050 -> 0.002 rad
+// tails by about 70 and 55 percent respectively at 198 without overshoot,
+// including bidirectional repeats. Position-loop Ki remains zero because its
+// 0.005 -> 0.050 sweep did not produce a measurable J3 improvement.
+constexpr float kJoint3PvPositionKp = 198.0f;
+constexpr float kJoint4PvPositionKp = 198.0f;
 
 thread_local std::string g_motor_error = "ok";
 
@@ -247,18 +253,20 @@ int32_t motor_ensure_mode(void* motor, uint32_t mode, uint32_t timeout_ms) {
         (handle->motor_id() == 3U || handle->motor_id() == 4U) &&
         handle->model() == "4340P") {
       const auto timeout = std::chrono::milliseconds(timeout_ms);
+      const float expected_kp = handle->motor_id() == 3U
+          ? kJoint3PvPositionKp : kJoint4PvPositionKp;
       const float current = handle->get_register_f32(
           kPvPositionKpRegister, timeout);
-      if (std::abs(current - kJoint34PvPositionKp) > 1.0e-4f) {
-        handle->write_register_f32(
-            kPvPositionKpRegister, kJoint34PvPositionKp);
+      if (std::abs(current - expected_kp) > 1.0e-4f) {
+        handle->write_register_f32(kPvPositionKpRegister, expected_kp);
         handle->store_parameters();
       }
       const float configured = handle->get_register_f32(
           kPvPositionKpRegister, timeout);
-      if (std::abs(configured - kJoint34PvPositionKp) > 1.0e-4f) {
+      if (std::abs(configured - expected_kp) > 1.0e-4f) {
         throw std::runtime_error(
-            "J3/J4 PV position-loop Kp readback verification failed");
+            std::string(handle->motor_id() == 3U ? "J3" : "J4") +
+            " PV position-loop Kp readback verification failed");
       }
     }
   });
