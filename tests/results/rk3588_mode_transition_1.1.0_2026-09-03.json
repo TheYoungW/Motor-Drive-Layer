@@ -1,0 +1,39 @@
+{
+  "date": "2026-09-03",
+  "platform": "RK3588",
+  "package": "articore-runtime-service_1.1.0_arm64.deb",
+  "control_hz": 500,
+  "baseline": {
+    "probe_runs": 20,
+    "passed": 19,
+    "failed": 1,
+    "failure": "connect failed: left/l-joint5 control mode verify failed: expected 1, got 2"
+  },
+  "diagnosis": {
+    "scope": "disabled motor control-mode maintenance transaction",
+    "cause": "the 50 ms feedback timeout was reused as the mode-switch deadline and verification stopped after three writes even when ACKs arrived but register 10 still held the previous mode",
+    "transport_error": false,
+    "control_loop_jitter_related": false
+  },
+  "fix": {
+    "mode_transaction_timeout_ms": 300,
+    "verification": "repeat write, settle and read-back until the fixed deadline",
+    "register_write_ack_semantics": "receipt confirmation, not mode-transition completion"
+  },
+  "post_fix_reconnect_probe": {
+    "runs": 50,
+    "passed": 50,
+    "failed": 0,
+    "motor_enable_or_motion_used": false
+  },
+  "post_fix_motion": {
+    "mode": "PV",
+    "target": "physical right J4=90deg, all other arm joints=0deg",
+    "minimum_run_seconds": 5.0,
+    "runtime_state_during_test": "RUNNING",
+    "enabled_mask": "0x3fff",
+    "final_left_j4_rad": -0.000953674,
+    "final_right_j4_rad": 1.56958,
+    "passed": true
+  }
+}

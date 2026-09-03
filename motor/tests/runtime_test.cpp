@@ -66,7 +66,11 @@ class FakeBus final : public damiao::CanBus {
     }
     if (auto_register_io_ && frame.id == 0x7FF && frame.data[2] == 0x55) {
       std::array<uint8_t, 4> value{frame.data[4], frame.data[5], frame.data[6], frame.data[7]};
-      registers_[frame.data[3]] = value;
+      if (frame.data[3] == 10 && delayed_mode_writes_ > 0) {
+        --delayed_mode_writes_;
+      } else {
+        registers_[frame.data[3]] = value;
+      }
       if (drop_register_write_acks_ > 0) {
         --drop_register_write_acks_;
       } else {
@@ -150,6 +154,11 @@ class FakeBus final : public damiao::CanBus {
     drop_register_write_acks_ = count;
   }
 
+  void delay_next_mode_writes(int count) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    delayed_mode_writes_ = count;
+  }
+
   void set_register_u32(uint8_t rid, uint32_t value) {
     std::lock_guard<std::mutex> lock(mutex_);
     registers_[rid] = {static_cast<uint8_t>(value & 0xFF),
@@ -188,6 +197,7 @@ class FakeBus final : public damiao::CanBus {
   int send_failures_ = 0;
   int drop_register_reads_ = 0;
   int drop_register_write_acks_ = 0;
+  int delayed_mode_writes_ = 0;
   bool always_fail_receive_ = false;
 };
 
@@ -899,6 +909,20 @@ int main() {
   require_close(read_f32_le(final_pos_command->data, 4), 0.0f, 0.0001f,
                 "mode switch holds with zero velocity limit");
   mode_controller.close_bus();
+
+  auto delayed_mode_bus = std::make_shared<FakeBus>();
+  delayed_mode_bus->set_register_u32(10, 1);
+  delayed_mode_bus->set_register_f32(80, 1.25f);
+  delayed_mode_bus->set_auto_register_io(true);
+  delayed_mode_bus->delay_next_mode_writes(3);
+  damiao::Controller delayed_mode_controller(delayed_mode_bus);
+  auto delayed_mode_motor =
+      delayed_mode_controller.add_damiao_motor(0x01, 0x11, "4340P");
+  delayed_mode_motor->ensure_mode(2, std::chrono::milliseconds(300));
+  require(delayed_mode_motor->get_register_u32(
+              10, std::chrono::milliseconds(20)) == 2,
+          "mode switch keeps verifying after ACKs that still read the old mode");
+  delayed_mode_controller.close_bus();
 
   auto concurrent_bus = std::make_shared<FakeBus>();
   damiao::Controller concurrent_controller(concurrent_bus);

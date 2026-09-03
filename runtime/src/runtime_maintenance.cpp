@@ -12,6 +12,7 @@ namespace {
 
 constexpr float kStationaryVelocityRadPerSecond = 0.05f;
 constexpr float kZeroPositionToleranceRad = 0.02f;
+constexpr uint32_t kControlModeTransactionTimeoutMs = 300;
 
 const char* operation_name(ArticoreRuntimeOperation operation) {
   switch (operation) {
@@ -255,7 +256,8 @@ int32_t SafetyRuntime::configure_hardware_mode(
             motor.descriptor.is_gripper || mode == ARTICORE_MODE_MIT ? 1U : 2U;
         int32_t rc = backend_->ensure_mode(
             motor.descriptor.motor, native_mode,
-            config_.disable_feedback_timeout_ms);
+            std::max(config_.disable_feedback_timeout_ms,
+                     kControlModeTransactionTimeoutMs));
         if (rc == 0 && backend_->can_set_timeout() &&
             backend_->communication_timeout_ms() > 0) {
           rc = backend_->set_timeout_ms(

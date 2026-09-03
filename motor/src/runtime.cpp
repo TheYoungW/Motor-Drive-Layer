@@ -352,8 +352,7 @@ std::array<uint8_t, 4> MotorHandle::wait_for_register(uint8_t rid,
     }
     if (now >= next_request_at) {
       // Keep the caller's original deadline as the hard bound, but resend the
-      // idempotent read while waiting. Some RK3588 EHCI + DM-USB2FDCAN paths
-      // lose individual receive indications without reporting a CAN/USB error.
+      // idempotent read while waiting for a matching reply.
       send_raw(0x7FF, encode_register_read_command(motor_id_, rid));
       next_request_at = now + kRegisterReadRetryInterval;
     }
@@ -500,11 +499,10 @@ void MotorHandle::ensure_mode(uint32_t mode, std::chrono::milliseconds timeout) 
     }
   };
 
-  write_register_u32(10, mode);
-  sleep_reserving(std::chrono::milliseconds(20), mode_read_cap);
-  finish_switch();
-
-  for (int attempt = 0; attempt < 3; ++attempt) {
+  while (remaining().has_value()) {
+    write_register_u32(10, mode);
+    sleep_reserving(std::chrono::milliseconds(20), mode_read_cap);
+    finish_switch();
     const auto read_timeout = capped_remaining(mode_read_cap);
     if (!read_timeout.has_value()) break;
     try {
@@ -515,11 +513,6 @@ void MotorHandle::ensure_mode(uint32_t mode, std::chrono::milliseconds timeout) 
     } catch (const std::runtime_error& error) {
       if (!is_timeout(error)) throw;
       last_error = error.what();
-    }
-    if (attempt + 1 < 3) {
-      write_register_u32(10, mode);
-      sleep_reserving(std::chrono::milliseconds(20), mode_read_cap);
-      finish_switch();
     }
   }
 
