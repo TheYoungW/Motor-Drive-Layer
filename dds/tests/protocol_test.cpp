@@ -16,8 +16,8 @@ int main() {
   using namespace std::chrono_literals;
   using articore::dds::ProtocolError;
   require(articore::dds::kProtocolMajor == 1 &&
-              articore::dds::kProtocolMinor == 1,
-          "hardware topology query is DDS protocol 1.1");
+              articore::dds::kProtocolMinor == 2,
+          "gripper state publication is DDS protocol 1.2");
   const auto epoch = articore::dds::LeaseManager::Clock::time_point{};
   std::string lost_reason;
   articore::dds::LeaseManager leases(

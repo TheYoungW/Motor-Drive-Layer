@@ -1076,6 +1076,8 @@ int32_t native_runtime_solve_ik(
     output.left_gripper_rotor_temperature = unavailable;
     output.right_gripper_mos_temperature = unavailable;
     output.right_gripper_rotor_temperature = unavailable;
+    output.left_gripper_opening = unavailable;
+    output.right_gripper_opening = unavailable;
     output.motion_arrived = safety.motion_arrived() ? 1 : 0;
     uint64_t maximum_age = 0;
     uint64_t sequence = std::numeric_limits<uint64_t>::max();
@@ -1144,6 +1146,7 @@ int32_t native_runtime_solve_ik(
             fresh && std::isfinite(motor.t_mos) && std::isfinite(motor.t_rotor);
         if (side == 0) {
           output.left_gripper_available = 1;
+          output.left_gripper_feedback_valid = fresh ? 1 : 0;
           output.left_gripper_level = safety.gripper_force_level(side);
           output.left_gripper_enabled_valid = power_valid ? 1 : 0;
           output.left_gripper_enabled =
@@ -1155,6 +1158,7 @@ int32_t native_runtime_solve_ik(
           }
         } else {
           output.right_gripper_available = 1;
+          output.right_gripper_feedback_valid = fresh ? 1 : 0;
           output.right_gripper_level = safety.gripper_force_level(side);
           output.right_gripper_enabled_valid = power_valid ? 1 : 0;
           output.right_gripper_enabled =

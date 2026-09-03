@@ -1,4 +1,4 @@
-# motorbridge 1.1
+# motorbridge 1.2
 
 RK3588 上的云翼双臂底层服务。1.0 只交付一个 C++ 进程
 `articore-runtime-service`；远端 SDK 通过 Cyclone DDS/IP 调用，不再加载
@@ -30,8 +30,9 @@ Runtime 内部调用链为 `YunyiRuntime → YunyiRuntimeCore → SafetyRuntime 
 
 ## 网络协议
 
-协议版本为 `1.1`，`robot_id` 是 DDS key。1.1 新增左右独立的启动拓扑查询，
-仍兼容 1.0 的成对夹爪查询。固定 Topic：
+协议版本为 `1.2`，`robot_id` 是 DDS key。1.1 新增左右独立的启动拓扑查询，
+仍兼容 1.0 的成对夹爪查询；1.2 在连续 `RobotState` 中新增左右夹爪开合度、
+安装可用性和反馈新鲜度。数组顺序固定为 `[left, right]`。固定 Topic：
 
 - `articore.robot.discovery`
 - `articore.robot.control.request` / `articore.robot.control.reply`
@@ -40,9 +41,20 @@ Runtime 内部调用链为 `YunyiRuntime → YunyiRuntimeCore → SafetyRuntime 
 - `articore.robot.health`
 - `articore.robot.motion.event`
 
+`RobotState` 是 DDS `@final` 类型，因此 x86 SDK 必须使用 1.2 的
+`articore_protocol.idl` 重新生成类型后才能匹配状态 Topic。deb 同时把该 IDL
+安装到 `/usr/share/articore/idl/articore_protocol.idl`；客户端只应在对应的
+`gripper_available[i]` 和 `gripper_feedback_valid[i]` 都为 true 时使用
+`gripper_openings[i]`。
+
 整机只有一个 250 ms 控制租约。客户端按 20 Hz heartbeat；有效流式命令也
 续租。租约丢失会撤销流式目标、停止有限运动并 disable，重新获取租约不会
 自动 enable。首版仅面向可信封闭网络，租约不是身份认证。
+
+DDS I/O 线程直接处理 lease acquire、heartbeat 和 release；其他控制请求在
+校验后进入容量为 32 的单消费者队列。专用 worker 串行执行模式切换、维护、
+规划和查询，因此长控制操作不会阻塞 heartbeat，同时 Runtime 生命周期操作
+仍保持严格顺序。
 
 ## 本机构建
 

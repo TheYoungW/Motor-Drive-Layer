@@ -1,12 +1,17 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
 
 #include "articore/dds/service.hpp"
+#include "../src/state_sample.hpp"
 #include "articore_protocol.h"
 #include "dds/dds.h"
 
@@ -26,14 +31,25 @@ void check(dds_return_t result, const char* message) {
 
 articore_wire_ControlReply wait_reply(dds_entity_t reader,
                                       std::uint64_t request_id) {
+  static std::deque<articore_wire_ControlReply> pending;
+  const auto buffered = std::find_if(
+      pending.begin(), pending.end(), [&](const auto& reply) {
+        return reply.request_id == request_id;
+      });
+  if (buffered != pending.end()) {
+    const auto reply = *buffered;
+    pending.erase(buffered);
+    return reply;
+  }
   const auto deadline = std::chrono::steady_clock::now() + 3s;
   while (std::chrono::steady_clock::now() < deadline) {
     articore_wire_ControlReply reply{};
     void* samples[1]{&reply};
     dds_sample_info_t infos[1]{};
     const auto count = dds_take(reader, samples, infos, 1, 1);
-    if (count > 0 && infos[0].valid_data && reply.request_id == request_id) {
-      return reply;
+    if (count > 0 && infos[0].valid_data) {
+      if (reply.request_id == request_id) return reply;
+      pending.push_back(reply);
     }
     std::this_thread::sleep_for(5ms);
   }
@@ -52,12 +68,39 @@ void initialize(articore_wire_ControlRequest& request, const char* client,
 }  // namespace
 
 int main() {
+  articore::RuntimeState native_state{};
+  native_state.gripper_openings = {321.25f, 654.5f};
+  native_state.gripper_available = {true, true};
+  native_state.gripper_feedback_valid = {true, false};
+  articore_wire_RobotState wire_state{};
+  articore::dds::detail::copy_runtime_state_payload(native_state, wire_state);
+  require(wire_state.gripper_openings[0] == 321.25f &&
+              wire_state.gripper_openings[1] == 654.5f,
+          "Runtime gripper openings are copied into the DDS state sample");
+  require(wire_state.gripper_available[0] &&
+              wire_state.gripper_available[1],
+          "Runtime gripper topology is copied into the DDS state sample");
+  require(wire_state.gripper_feedback_valid[0] &&
+              !wire_state.gripper_feedback_valid[1],
+          "Runtime gripper feedback validity is copied into the DDS state sample");
+
   articore::dds::ServiceConfig config;
   config.robot_id = "loopback-robot";
   config.domain_id = 73;
   config.network_interfaces = {"lo"};
   config.runtime.left_can_interface = "missing-can-left";
   config.runtime.right_can_interface = "missing-can-right";
+  std::mutex control_hook_mutex;
+  std::condition_variable control_hook_cv;
+  bool control_hook_entered = false;
+  config.before_control_execute_for_testing = [&] {
+    {
+      std::lock_guard<std::mutex> lock(control_hook_mutex);
+      control_hook_entered = true;
+    }
+    control_hook_cv.notify_all();
+    std::this_thread::sleep_for(350ms);
+  };
   articore::dds::CycloneService service(config);
   std::atomic<bool> stop{false};
   articore::Status service_status;
@@ -155,6 +198,27 @@ int main() {
   after_stream.lease_id = acquired.lease_id;
   check(dds_write(request_writer, &after_stream),
         "write request after stream-refreshed lease");
+  {
+    std::unique_lock<std::mutex> lock(control_hook_mutex);
+    require(control_hook_cv.wait_for(lock, 1s, [&] {
+              return control_hook_entered;
+            }),
+            "control request enters the dedicated worker");
+  }
+  for (std::uint64_t index = 0; index < 8; ++index) {
+    articore_wire_ControlRequest concurrent_heartbeat{};
+    initialize(concurrent_heartbeat, "client-a", 102 + index, 200 + index);
+    concurrent_heartbeat.operation = articore_wire_HEARTBEAT;
+    concurrent_heartbeat.lease_id = acquired.lease_id;
+    const auto heartbeat_started = std::chrono::steady_clock::now();
+    check(dds_write(request_writer, &concurrent_heartbeat),
+          "write heartbeat while control worker is busy");
+    require(wait_reply(reply_reader, 200 + index).error == articore_wire_OK,
+            "heartbeat renews lease while control worker is busy");
+    require(std::chrono::steady_clock::now() - heartbeat_started < 50ms,
+            "heartbeat reply bypasses the long control operation");
+    if (index + 1 < 8) std::this_thread::sleep_for(40ms);
+  }
   require(wait_reply(reply_reader, 105).error == articore_wire_TRANSPORT_ERROR,
           "stream remains authorized after a higher heartbeat sequence and "
           "refreshes the whole-robot lease");

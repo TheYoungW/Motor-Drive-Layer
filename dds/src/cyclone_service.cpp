@@ -1,12 +1,17 @@
 #include "articore/dds/service.hpp"
+#include "state_sample.hpp"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -124,14 +129,10 @@ class CycloneService::Impl {
       : config_(std::move(selected)),
         lease_([this](const std::string& reason) {
           mailbox_.clear();
-          if (runtime_) (void)runtime_->on_control_lost(reason);
-          if (pending_motion_request_ != 0) {
-            publish_motion_event(pending_motion_client_, pending_motion_request_,
-                                 articore_wire_MOTION_CANCELLED,
-                                 ProtocolError::NoLease, reason);
-            pending_motion_request_ = 0;
-            pending_motion_client_.clear();
+          if (auto runtime = runtime_snapshot()) {
+            (void)runtime->on_control_lost(reason);
           }
+          cancel_pending_motion(ProtocolError::NoLease, reason);
         }) {
     const auto uri = cyclone_uri(config_);
     domain_ = Entity(dds_create_domain(config_.domain_id, uri.c_str()));
@@ -139,7 +140,10 @@ class CycloneService::Impl {
         config_.domain_id, nullptr, nullptr));
     create_entities();
     next_runtime_retry_ = Clock::now();
+    control_worker_ = std::thread([this] { control_worker_loop(); });
   }
+
+  ~Impl() { stop_control_worker(); }
 
   Status run(const std::atomic<bool>& external_stop) {
     auto next_state = Clock::now();
@@ -148,7 +152,6 @@ class CycloneService::Impl {
     while (!external_stop.load(std::memory_order_relaxed) &&
            !stop_.load(std::memory_order_relaxed)) {
       const auto now = Clock::now();
-      ensure_runtime(now);
       (void)lease_.expire_if_needed(now);
 
       dds_attach_t triggered[2]{};
@@ -191,13 +194,15 @@ class CycloneService::Impl {
 
     // Fixed SIGTERM order: stop input, revoke lease/cancel, safe disable,
     // close CAN, then let RAII destroy DDS after run returns.
+    stop_control_worker();
     lease_.revoke("runtime service is stopping");
     mailbox_.clear();
-    if (runtime_) {
-      (void)runtime_->stop_motion();
-      (void)runtime_->disable();
-      (void)runtime_->disconnect();
-      runtime_.reset();
+    if (auto runtime = runtime_snapshot()) {
+      (void)runtime->stop_motion();
+      (void)runtime->disable();
+      (void)runtime->disconnect();
+      std::lock_guard<std::mutex> lock(runtime_mutex_);
+      if (runtime_ == runtime) runtime_.reset();
     }
     return Status::success();
   }
@@ -205,6 +210,8 @@ class CycloneService::Impl {
   void request_stop() noexcept { stop_.store(true, std::memory_order_relaxed); }
 
  private:
+  static constexpr std::size_t kControlQueueCapacity = 32;
+
   static void advance(Clock::time_point& deadline,
                       Clock::duration period, Clock::time_point now) {
     do deadline += period; while (deadline <= now);
@@ -269,27 +276,96 @@ class CycloneService::Impl {
           "attach stream reader");
   }
 
+  std::shared_ptr<YunyiRuntime> runtime_snapshot() const {
+    std::lock_guard<std::mutex> lock(runtime_mutex_);
+    return runtime_;
+  }
+
+  std::string runtime_error_snapshot() const {
+    std::lock_guard<std::mutex> lock(runtime_mutex_);
+    return runtime_error_;
+  }
+
   void ensure_runtime(Clock::time_point now) {
-    if (runtime_ || runtime_suspended_ || now < next_runtime_retry_) return;
+    {
+      std::lock_guard<std::mutex> lock(runtime_mutex_);
+      if (runtime_ || runtime_suspended_ || now < next_runtime_retry_) return;
+    }
     auto candidate = YunyiRuntime::create(config_.runtime);
     if (!candidate) {
+      std::lock_guard<std::mutex> lock(runtime_mutex_);
       runtime_error_ = candidate.status().message();
       next_runtime_retry_ = now + retry_delay_;
       retry_delay_ = std::min(retry_delay_ * 2, config_.can_retry_max);
       return;
     }
-    runtime_ = std::move(candidate).value();
-    const auto connected = runtime_->connect();
+    auto candidate_runtime = std::move(candidate).value();
+    const auto connected = candidate_runtime->connect();
     if (!connected) {
+      std::lock_guard<std::mutex> lock(runtime_mutex_);
       runtime_error_ = connected.message();
-      runtime_.reset();
       next_runtime_retry_ = now + retry_delay_;
       retry_delay_ = std::min(retry_delay_ * 2, config_.can_retry_max);
       return;
     }
     // connect verifies feedback and physical disable; it never enables.
+    std::lock_guard<std::mutex> lock(runtime_mutex_);
+    runtime_ = std::shared_ptr<YunyiRuntime>(std::move(candidate_runtime));
     runtime_error_.clear();
     retry_delay_ = config_.can_retry_initial;
+  }
+
+  bool enqueue_control_request(const articore_wire_ControlRequest& request) {
+    std::lock_guard<std::mutex> lock(control_queue_mutex_);
+    if (control_worker_stop_ ||
+        control_queue_.size() >= kControlQueueCapacity) {
+      return false;
+    }
+    control_queue_.push_back(request);
+    control_queue_cv_.notify_one();
+    return true;
+  }
+
+  void stop_control_worker() noexcept {
+    {
+      std::lock_guard<std::mutex> lock(control_queue_mutex_);
+      control_worker_stop_ = true;
+      control_queue_.clear();
+    }
+    control_queue_cv_.notify_all();
+    if (control_worker_.joinable()) control_worker_.join();
+  }
+
+  void control_worker_loop() noexcept {
+    for (;;) {
+      std::optional<articore_wire_ControlRequest> request;
+      {
+        std::unique_lock<std::mutex> lock(control_queue_mutex_);
+        control_queue_cv_.wait_for(lock, std::chrono::milliseconds(10), [&] {
+          return control_worker_stop_ || !control_queue_.empty();
+        });
+        if (control_worker_stop_) return;
+        if (!control_queue_.empty()) {
+          request = control_queue_.front();
+          control_queue_.pop_front();
+        }
+      }
+      if (!request.has_value()) {
+        ensure_runtime(Clock::now());
+        continue;
+      }
+      control_busy_.store(true, std::memory_order_release);
+      try {
+        execute_queued_request(*request);
+      } catch (const std::exception& error) {
+        std::lock_guard<std::mutex> lock(runtime_mutex_);
+        runtime_error_ = error.what();
+      } catch (...) {
+        std::lock_guard<std::mutex> lock(runtime_mutex_);
+        runtime_error_ = "unknown control worker exception";
+      }
+      control_busy_.store(false, std::memory_order_release);
+    }
   }
 
   void take_control_requests() {
@@ -335,21 +411,29 @@ class CycloneService::Impl {
   }
 
   void pump_latest(Clock::time_point now) {
+    // Lifecycle and maintenance operations own Runtime command state. Do not
+    // let a stream submission wait behind them on the DDS I/O thread, because
+    // that thread is also the sub-millisecond heartbeat path.
+    if (control_busy_.load(std::memory_order_acquire)) return;
     auto command = mailbox_.take(now);
-    if (!command || !runtime_) return;
+    auto runtime = runtime_snapshot();
+    if (!command || !runtime) return;
     Status status;
     if (command->kind == StreamKind::Pv) {
-      status = runtime_->set_joint_pv(command->positions,
-                                      command->speed_percent);
+      status = runtime->set_joint_pv(command->positions,
+                                     command->speed_percent);
     } else if (command->kind == StreamKind::MitFast) {
-      status = runtime_->set_joint_mit_fast(command->positions,
-                                            command->speed_percent);
+      status = runtime->set_joint_mit_fast(command->positions,
+                                           command->speed_percent);
     } else {
       MitCommand mit{command->positions, command->velocities, command->kp,
                      command->kd, command->feedforward_torques};
-      status = runtime_->set_joint_mit(mit);
+      status = runtime->set_joint_mit(mit);
     }
-    if (!status) runtime_error_ = status.message();
+    if (!status) {
+      std::lock_guard<std::mutex> lock(runtime_mutex_);
+      runtime_error_ = status.message();
+    }
   }
 
   void initialize_reply(const articore_wire_ControlRequest& request,
@@ -372,20 +456,26 @@ class CycloneService::Impl {
   }
 
   void handle_request(const articore_wire_ControlRequest& request) {
-    articore_wire_ControlReply reply{};
-    initialize_reply(request, reply);
+    const auto reply_with = [&](ProtocolError reply_error,
+                                const std::string& message = std::string{}) {
+      articore_wire_ControlReply reply{};
+      initialize_reply(request, reply);
+      finish_reply(reply, reply_error, message);
+    };
     auto error = validate_identity(identity(request), config_.robot_id);
     if (error != ProtocolError::Ok) {
-      finish_reply(reply, error, "request identity or protocol version rejected");
+      reply_with(error, "request identity or protocol version rejected");
       return;
     }
     const auto operation = request.operation;
     if (operation == articore_wire_ACQUIRE_LEASE) {
       auto acquired = lease_.acquire(request.client_id);
       if (!acquired) {
-        finish_reply(reply, map_runtime_error(acquired.status().code()),
-                     acquired.status().message());
+        reply_with(map_runtime_error(acquired.status().code()),
+                   acquired.status().message());
       } else {
+        articore_wire_ControlReply reply{};
+        initialize_reply(request, reply);
         reply.lease_id = acquired.value().lease_id;
         finish_reply(reply, ProtocolError::Ok);
       }
@@ -394,12 +484,12 @@ class CycloneService::Impl {
     if (operation == articore_wire_HEARTBEAT) {
       error = lease_.heartbeat(request.client_id, request.lease_id,
                                request.sequence_id);
-      finish_reply(reply, error);
+      reply_with(error);
       return;
     }
     if (operation == articore_wire_RELEASE_LEASE) {
       error = lease_.release(request.client_id, request.lease_id);
-      finish_reply(reply, error);
+      reply_with(error);
       return;
     }
     const bool query_only = operation >= articore_wire_QUERY_STATE;
@@ -408,156 +498,206 @@ class CycloneService::Impl {
                                request.sequence_id,
                                SequenceChannel::Control, false);
       if (error != ProtocolError::Ok) {
-        finish_reply(reply, error);
+        reply_with(error);
         return;
       }
     }
-    if (operation == articore_wire_CONNECT && !runtime_) {
+    if (!enqueue_control_request(request)) {
+      reply_with(ProtocolError::Busy, "control request queue is full");
+    }
+  }
+
+  void execute_queued_request(const articore_wire_ControlRequest& request) {
+    articore_wire_ControlReply reply{};
+    initialize_reply(request, reply);
+    const auto operation = request.operation;
+    const bool query_only = operation >= articore_wire_QUERY_STATE;
+    if (!query_only) {
+      const auto lease = lease_.snapshot();
+      if (!lease || lease->client_id != request.client_id ||
+          lease->lease_id != request.lease_id ||
+          Clock::now() >= lease->expires_at) {
+        finish_reply(reply, ProtocolError::NoLease,
+                     "control lease expired while request was queued");
+        return;
+      }
+    }
+    if (config_.before_control_execute_for_testing) {
+      config_.before_control_execute_for_testing();
+    }
+    auto runtime = runtime_snapshot();
+    if (operation == articore_wire_CONNECT && !runtime) {
       // SafetyRuntime::disconnect() is deliberately terminal: its worker and
       // CAN resources cannot be restarted. A long-lived DDS service therefore
       // has to construct a fresh product Runtime for a later CONNECT instead
       // of retaining and calling connect() on the terminal object.
-      runtime_suspended_ = false;
-      next_runtime_retry_ = Clock::now();
-      ensure_runtime(next_runtime_retry_);
+      const auto now = Clock::now();
+      {
+        std::lock_guard<std::mutex> lock(runtime_mutex_);
+        runtime_suspended_ = false;
+        next_runtime_retry_ = now;
+      }
+      ensure_runtime(now);
+      runtime = runtime_snapshot();
     }
-    if (!runtime_) {
+    if (!runtime) {
+      const auto detail = runtime_error_snapshot();
       finish_reply(reply, ProtocolError::TransportError,
-                   runtime_error_.empty() ? "CAN is unavailable" : runtime_error_);
+                   detail.empty() ? "CAN is unavailable" : detail);
       return;
     }
-    const auto status = execute(request, reply);
+    const auto status = execute(request, reply, runtime);
+    ProtocolError completion_lease_error = ProtocolError::Ok;
     if (!query_only) {
-      // CONNECT, ENABLE and maintenance operations may synchronously occupy
-      // this service thread for longer than the 250 ms lease. They were
-      // authorized before execution, so renew from completion time before the
-      // main loop performs its next expiry check.
-      (void)lease_.refresh_after_control(request.client_id, request.lease_id);
+      // Heartbeats renew independently on the DDS I/O thread. Keep this
+      // completion refresh so an accepted operation that itself exceeds the
+      // lease period receives one complete post-operation lease window.
+      completion_lease_error = lease_.refresh_after_control(
+          request.client_id, request.lease_id);
     }
     const bool finite_motion =
         operation == articore_wire_MOVE_POSE ||
         operation == articore_wire_MOVE_LINEAR ||
         operation == articore_wire_MOVE_CIRCULAR;
     if (finite_motion) {
-      if (status) {
-        pending_motion_request_ = request.request_id;
-        pending_motion_client_ = request.client_id;
+      if (status && completion_lease_error == ProtocolError::Ok) {
         publish_motion_event(request.client_id, request.request_id,
                              articore_wire_MOTION_ACCEPTED,
                              ProtocolError::Ok, "motion accepted");
+        {
+          std::lock_guard<std::mutex> lock(motion_mutex_);
+          pending_motion_request_ = request.request_id;
+          pending_motion_client_ = request.client_id;
+        }
+        const auto current_lease = lease_.snapshot();
+        if (!current_lease || current_lease->client_id != request.client_id ||
+            current_lease->lease_id != request.lease_id ||
+            Clock::now() >= current_lease->expires_at) {
+          cancel_pending_motion(ProtocolError::NoLease,
+                                "control lease expired after motion accepted");
+        }
       } else {
         publish_motion_event(request.client_id, request.request_id,
                              articore_wire_MOTION_FAILED,
-                             protocol_status(status), status.message());
+                             completion_lease_error != ProtocolError::Ok
+                                 ? completion_lease_error
+                                 : protocol_status(status),
+                             completion_lease_error != ProtocolError::Ok
+                                 ? "control lease expired during execution"
+                                 : status.message());
       }
-    } else if (operation == articore_wire_STOP_MOTION && status &&
-               pending_motion_request_ != 0) {
-      publish_motion_event(pending_motion_client_, pending_motion_request_,
-                           articore_wire_MOTION_CANCELLED,
-                           ProtocolError::Ok, "motion cancelled");
-      pending_motion_request_ = 0;
-      pending_motion_client_.clear();
+    } else if (operation == articore_wire_STOP_MOTION && status) {
+      cancel_pending_motion(ProtocolError::Ok, "motion cancelled");
     }
     std::string reply_message = status.message();
     if (!status) {
       const char* diagnostic = diagnostic_operation(operation);
       if (diagnostic) {
-        const auto health = runtime_->health();
+        const auto health = runtime->health();
         if (health) {
           reply_message = describe_runtime_rejection(
               diagnostic, required_states(operation), status, health.value());
         }
       }
     }
-    finish_reply(reply, protocol_status(status), reply_message);
+    if (completion_lease_error != ProtocolError::Ok) {
+      reply_message = "control lease expired during execution";
+    }
+    finish_reply(reply,
+                 completion_lease_error != ProtocolError::Ok
+                     ? completion_lease_error
+                     : protocol_status(status),
+                 reply_message);
     if (operation == articore_wire_DISCONNECT && status) {
-      runtime_.reset();
+      std::lock_guard<std::mutex> lock(runtime_mutex_);
+      if (runtime_ == runtime) runtime_.reset();
       runtime_error_.clear();
       runtime_suspended_ = true;
     }
   }
 
   Status execute(const articore_wire_ControlRequest& request,
-                 articore_wire_ControlReply& reply) {
+                 articore_wire_ControlReply& reply,
+                 const std::shared_ptr<YunyiRuntime>& runtime) {
     const auto side = static_cast<RobotSide>(request.side);
     switch (request.operation) {
-      case articore_wire_CONNECT: return runtime_->connect();
-      case articore_wire_DISCONNECT: return runtime_->disconnect();
+      case articore_wire_CONNECT: return runtime->connect();
+      case articore_wire_DISCONNECT: return runtime->disconnect();
       case articore_wire_CONFIGURE_MODE:
-        return runtime_->configure_mode(static_cast<ControlMode>(request.mode));
-      case articore_wire_ENABLE: return runtime_->enable();
-      case articore_wire_DISABLE: return runtime_->disable();
-      case articore_wire_SET_ZERO: return runtime_->set_zero();
-      case articore_wire_CLEAR_FAULTS: return runtime_->clear_faults();
-      case articore_wire_ESTOP: return runtime_->estop();
-      case articore_wire_RECOVER: return runtime_->recover();
+        return runtime->configure_mode(static_cast<ControlMode>(request.mode));
+      case articore_wire_ENABLE: return runtime->enable();
+      case articore_wire_DISABLE: return runtime->disable();
+      case articore_wire_SET_ZERO: return runtime->set_zero();
+      case articore_wire_CLEAR_FAULTS: return runtime->clear_faults();
+      case articore_wire_ESTOP: return runtime->estop();
+      case articore_wire_RECOVER: return runtime->recover();
       case articore_wire_SET_SPEED_PERCENT:
-        return runtime_->set_speed_percent(request.scalar[0]);
+        return runtime->set_speed_percent(request.scalar[0]);
       case articore_wire_SET_MAX_SPEED:
-        return runtime_->set_max_speed(request.scalar[0]);
+        return runtime->set_max_speed(request.scalar[0]);
       case articore_wire_SET_MAX_ACCELERATION:
-        return runtime_->set_max_acceleration(request.scalar[0]);
+        return runtime->set_max_acceleration(request.scalar[0]);
       case articore_wire_SOLVE_IK: {
-        auto result = runtime_->solve_ik(copy_array(request.pose_a),
-                                         copy_array(request.pose_b));
+        auto result = runtime->solve_ik(copy_array(request.pose_a),
+                                        copy_array(request.pose_b));
         if (!result) return result.status();
         std::copy(result.value().begin(), result.value().end(), reply.values);
         return Status::success();
       }
       case articore_wire_MOVE_POSE:
-        return runtime_->move_pose(side, copy_array(request.pose_a));
+        return runtime->move_pose(side, copy_array(request.pose_a));
       case articore_wire_MOVE_LINEAR:
-        return runtime_->move_linear(side, copy_array(request.pose_b));
+        return runtime->move_linear(side, copy_array(request.pose_b));
       case articore_wire_MOVE_CIRCULAR:
-        return runtime_->move_circular(side, copy_array(request.pose_a),
-                                       copy_array(request.pose_b),
-                                       copy_array(request.pose_c));
-      case articore_wire_STOP_MOTION: return runtime_->stop_motion();
+        return runtime->move_circular(side, copy_array(request.pose_a),
+                                      copy_array(request.pose_b),
+                                      copy_array(request.pose_c));
+      case articore_wire_STOP_MOTION: return runtime->stop_motion();
       case articore_wire_SET_GRIPPERS:
-        return runtime_->set_grippers(
+        return runtime->set_grippers(
             request.scalar[0], request.scalar[1],
             static_cast<int>(request.scalar[2]),
             static_cast<GripperMode>(static_cast<int>(request.scalar[3])));
       case articore_wire_SET_TCP_OFFSET:
-        return runtime_->set_tcp_offset(side, copy_array(request.pose_a));
+        return runtime->set_tcp_offset(side, copy_array(request.pose_a));
       case articore_wire_RESET_TCP_OFFSET:
-        return runtime_->reset_tcp_offset(side);
+        return runtime->reset_tcp_offset(side);
       case articore_wire_START_GRAVITY_COMPENSATION:
-        return runtime_->start_gravity_compensation(std::chrono::milliseconds(
+        return runtime->start_gravity_compensation(std::chrono::milliseconds(
             static_cast<std::uint32_t>(request.scalar[0])));
       case articore_wire_STOP_GRAVITY_COMPENSATION:
-        return runtime_->stop_gravity_compensation();
+        return runtime->stop_gravity_compensation();
       case articore_wire_START_BIMANUAL_FOLLOW:
-        return runtime_->start_bimanual_follow(side);
+        return runtime->start_bimanual_follow(side);
       case articore_wire_STOP_BIMANUAL_FOLLOW:
-        return runtime_->stop_bimanual_follow();
+        return runtime->stop_bimanual_follow();
       case articore_wire_QUERY_STATE: {
-        auto state = runtime_->state();
+        auto state = runtime->state();
         if (!state) return state.status();
         std::copy(state.value().positions.begin(), state.value().positions.end(),
                   reply.values);
         return Status::success();
       }
       case articore_wire_QUERY_HEALTH: {
-        auto health = runtime_->health();
+        auto health = runtime->health();
         if (!health) return health.status();
         reply.values[0] = static_cast<float>(health.value().state);
         return Status::success();
       }
       case articore_wire_GET_POSE: {
-        auto value = runtime_->pose(side);
+        auto value = runtime->pose(side);
         if (!value) return value.status();
         std::copy(value.value().begin(), value.value().end(), reply.values);
         return Status::success();
       }
       case articore_wire_GET_TCP_OFFSET: {
-        auto value = runtime_->tcp_offset(side);
+        auto value = runtime->tcp_offset(side);
         if (!value) return value.status();
         std::copy(value.value().begin(), value.value().end(), reply.values);
         return Status::success();
       }
       case articore_wire_GET_JOINT_LIMITS: {
-        auto value = runtime_->joint_limits();
+        auto value = runtime->joint_limits();
         if (!value) return value.status();
         std::copy(value.value().lower_angles.begin(),
                   value.value().lower_angles.end(), reply.values);
@@ -569,25 +709,25 @@ class CycloneService::Impl {
         return Status::success();
       }
       case articore_wire_GET_SPEED_PERCENT: {
-        auto value = runtime_->speed_percent();
+        auto value = runtime->speed_percent();
         if (!value) return value.status();
         reply.values[0] = value.value();
         return Status::success();
       }
       case articore_wire_GET_MAX_SPEED: {
-        auto value = runtime_->max_speed();
+        auto value = runtime->max_speed();
         if (!value) return value.status();
         reply.values[0] = value.value();
         return Status::success();
       }
       case articore_wire_GET_MAX_ACCELERATION: {
-        auto value = runtime_->max_acceleration();
+        auto value = runtime->max_acceleration();
         if (!value) return value.status();
         reply.values[0] = value.value();
         return Status::success();
       }
       case articore_wire_HAS_GRIPPERS: {
-        auto value = runtime_->hardware_topology();
+        auto value = runtime->hardware_topology();
         if (!value) return value.status();
         reply.values[0] = value.value().has_any_gripper() ? 1.0f : 0.0f;
         reply.values[1] = value.value().has_gripper(RobotSide::Left)
@@ -597,7 +737,7 @@ class CycloneService::Impl {
         return Status::success();
       }
       case articore_wire_GET_HARDWARE_TOPOLOGY: {
-        auto value = runtime_->hardware_topology();
+        auto value = runtime->hardware_topology();
         if (!value) return value.status();
         reply.values[0] = static_cast<float>(value.value().revision);
         reply.values[1] = static_cast<float>(
@@ -609,7 +749,7 @@ class CycloneService::Impl {
         return Status::success();
       }
       case articore_wire_GET_GRAVITY_STATUS: {
-        auto value = runtime_->gravity_compensation_status();
+        auto value = runtime->gravity_compensation_status();
         if (!value) return value.status();
         reply.values[0] = static_cast<float>(value.value().phase);
         reply.values[1] = value.value().active ? 1.0f : 0.0f;
@@ -619,7 +759,7 @@ class CycloneService::Impl {
         return Status::success();
       }
       case articore_wire_GET_BIMANUAL_STATUS: {
-        auto value = runtime_->bimanual_follow_status();
+        auto value = runtime->bimanual_follow_status();
         if (!value) return value.status();
         reply.values[0] = static_cast<float>(value.value().phase);
         reply.values[1] = value.value().active ? 1.0f : 0.0f;
@@ -648,13 +788,14 @@ class CycloneService::Impl {
     sample.sequence_id = ++discovery_sequence_;
     copy_text(sample.service_version, ARTICORE_SERVICE_VERSION);
     sample.domain_id = config_.domain_id;
-    sample.ready = runtime_ != nullptr;
+    sample.ready = runtime_snapshot() != nullptr;
     check(dds_write(discovery_writer_.get(), &sample), "write discovery");
   }
 
   void publish_state() {
-    if (!runtime_) return;
-    auto state = runtime_->state();
+    auto runtime = runtime_snapshot();
+    if (!runtime) return;
+    auto state = runtime->state();
     if (!state) return;
     articore_wire_RobotState sample{};
     sample.protocol_major = kProtocolMajor;
@@ -663,28 +804,33 @@ class CycloneService::Impl {
     copy_text(sample.client_id, "articore-runtime-service");
     sample.sequence_id = ++state_sequence_;
     sample.source_timestamp_ns = state.value().timestamp.count();
-    std::copy(state.value().positions.begin(), state.value().positions.end(),
-              sample.positions);
-    std::copy(state.value().velocities.begin(), state.value().velocities.end(),
-              sample.velocities);
-    std::copy(state.value().torques.begin(), state.value().torques.end(),
-              sample.torques);
-    std::copy(state.value().mos_temperatures.begin(),
-              state.value().mos_temperatures.end(), sample.mos_temperatures);
-    std::copy(state.value().rotor_temperatures.begin(),
-              state.value().rotor_temperatures.end(), sample.rotor_temperatures);
-    sample.enabled_mask = state.value().enabled_mask;
-    sample.enabled_valid_mask = state.value().enabled_valid_mask;
-    sample.temperature_valid_mask = state.value().temperature_valid_mask;
-    sample.motion_arrived = state.value().motion_arrived;
+    detail::copy_runtime_state_payload(state.value(), sample);
     check(dds_write(state_writer_.get(), &sample), "write state");
-    if (sample.motion_arrived && pending_motion_request_ != 0) {
-      publish_motion_event(pending_motion_client_, pending_motion_request_,
-                           articore_wire_MOTION_COMPLETED,
-                           ProtocolError::Ok, "motion completed");
+    if (sample.motion_arrived) {
+      finish_pending_motion(articore_wire_MOTION_COMPLETED,
+                            ProtocolError::Ok, "motion completed");
+    }
+  }
+
+  void finish_pending_motion(articore_wire_MotionEventKind kind,
+                             ProtocolError error,
+                             const std::string& message) {
+    std::uint64_t request_id = 0;
+    std::string client_id;
+    {
+      std::lock_guard<std::mutex> lock(motion_mutex_);
+      if (pending_motion_request_ == 0) return;
+      request_id = pending_motion_request_;
+      client_id = pending_motion_client_;
       pending_motion_request_ = 0;
       pending_motion_client_.clear();
     }
+    publish_motion_event(client_id, request_id, kind, error, message);
+  }
+
+  void cancel_pending_motion(ProtocolError error,
+                             const std::string& message) {
+    finish_pending_motion(articore_wire_MOTION_CANCELLED, error, message);
   }
 
   void publish_motion_event(const std::string& client_id,
@@ -712,13 +858,15 @@ class CycloneService::Impl {
     copy_text(sample.robot_id, config_.robot_id);
     copy_text(sample.client_id, "articore-runtime-service");
     sample.sequence_id = ++health_sequence_;
-    if (!runtime_) {
+    auto runtime = runtime_snapshot();
+    if (!runtime) {
+      const auto detail = runtime_error_snapshot();
       sample.state = static_cast<std::uint32_t>(SafetyState::Disconnected);
       sample.safe_stopped = true;
       copy_text(sample.safety_reason,
-                runtime_error_.empty() ? "waiting for CAN" : runtime_error_);
+                detail.empty() ? "waiting for CAN" : detail);
     } else {
-      auto health = runtime_->health();
+      auto health = runtime->health();
       if (health) {
         last_health_signature_ = health_signature(health.value());
         sample.state = static_cast<std::uint32_t>(health.value().state);
@@ -752,8 +900,9 @@ class CycloneService::Impl {
   }
 
   void publish_health_on_change() {
-    if (!runtime_) return;
-    auto health = runtime_->health();
+    auto runtime = runtime_snapshot();
+    if (!runtime) return;
+    auto health = runtime->health();
     if (!health) return;
     if (health_signature(health.value()) != last_health_signature_) {
       publish_health();
@@ -762,13 +911,21 @@ class CycloneService::Impl {
 
   ServiceConfig config_;
   std::atomic<bool> stop_{false};
+  std::atomic<bool> control_busy_{false};
   LatestCommandMailbox mailbox_;
   LeaseManager lease_;
-  std::unique_ptr<YunyiRuntime> runtime_;
+  mutable std::mutex runtime_mutex_;
+  std::shared_ptr<YunyiRuntime> runtime_;
   bool runtime_suspended_ = false;
   std::string runtime_error_;
   Clock::time_point next_runtime_retry_{};
   std::chrono::milliseconds retry_delay_{250};
+
+  std::mutex control_queue_mutex_;
+  std::condition_variable control_queue_cv_;
+  std::deque<articore_wire_ControlRequest> control_queue_;
+  bool control_worker_stop_ = false;
+  std::thread control_worker_;
 
   Entity domain_;
   Entity participant_;
@@ -776,11 +933,12 @@ class CycloneService::Impl {
   Entity state_topic_, health_topic_, motion_topic_;
   Entity discovery_writer_, request_reader_, reply_writer_, stream_reader_;
   Entity state_writer_, health_writer_, motion_writer_, waitset_;
-  std::uint64_t reply_sequence_ = 0;
+  std::atomic<std::uint64_t> reply_sequence_{0};
   std::uint64_t discovery_sequence_ = 0;
   std::uint64_t state_sequence_ = 0;
   std::uint64_t health_sequence_ = 0;
-  std::uint64_t motion_sequence_ = 0;
+  std::atomic<std::uint64_t> motion_sequence_{0};
+  std::mutex motion_mutex_;
   std::uint64_t pending_motion_request_ = 0;
   std::string pending_motion_client_;
   std::string last_health_signature_;

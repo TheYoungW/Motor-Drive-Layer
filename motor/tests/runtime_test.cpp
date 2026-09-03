@@ -924,6 +924,29 @@ int main() {
           "mode switch keeps verifying after ACKs that still read the old mode");
   delayed_mode_controller.close_bus();
 
+  auto bounded_mode_bus = std::make_shared<FakeBus>();
+  bounded_mode_bus->set_register_u32(10, 1);
+  bounded_mode_bus->set_register_f32(80, 1.25f);
+  bounded_mode_bus->set_auto_register_io(true);
+  bounded_mode_bus->drop_next_register_write_acks(1000);
+  damiao::Controller bounded_mode_controller(bounded_mode_bus);
+  auto bounded_mode_motor =
+      bounded_mode_controller.add_damiao_motor(0x01, 0x11, "4340P");
+  const auto bounded_mode_started = std::chrono::steady_clock::now();
+  bool bounded_mode_timed_out = false;
+  try {
+    bounded_mode_motor->ensure_mode(2, std::chrono::milliseconds(40));
+  } catch (const std::runtime_error&) {
+    bounded_mode_timed_out = true;
+  }
+  const auto bounded_mode_elapsed =
+      std::chrono::steady_clock::now() - bounded_mode_started;
+  require(bounded_mode_timed_out,
+          "mode switch without a write ACK reports timeout");
+  require(bounded_mode_elapsed < std::chrono::milliseconds(120),
+          "register writes cannot overrun the mode transaction deadline");
+  bounded_mode_controller.close_bus();
+
   auto concurrent_bus = std::make_shared<FakeBus>();
   damiao::Controller concurrent_controller(concurrent_bus);
   auto concurrent_motor1 =

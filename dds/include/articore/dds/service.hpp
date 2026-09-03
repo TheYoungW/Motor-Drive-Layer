@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -18,6 +19,9 @@ struct ServiceConfig {
   YunyiRuntimeConfig runtime{};
   std::chrono::milliseconds can_retry_initial{250};
   std::chrono::milliseconds can_retry_max{5000};
+  // Deterministic integration-test seam. Production configuration leaves it
+  // empty; it is never populated by the service config file.
+  std::function<void()> before_control_execute_for_testing;
 };
 
 Result<ServiceConfig> load_service_config(const std::string& path);

@@ -303,14 +303,23 @@ void MotorHandle::write_register_u32(uint8_t rid, uint32_t value) {
 
 void MotorHandle::write_register_with_retry(
     uint8_t rid, std::array<uint8_t, 4> data) {
+  write_register_with_retry(
+      rid, data,
+      std::chrono::steady_clock::now() + kRegisterWriteTransactionTimeout);
+}
+
+void MotorHandle::write_register_with_retry(
+    uint8_t rid, std::array<uint8_t, 4> data,
+    std::chrono::steady_clock::time_point deadline) {
   uint64_t previous_update_count = 0;
   {
     std::lock_guard<std::mutex> lock(register_mutex_);
     previous_update_count = register_ack_update_counts_[rid];
   }
-  const auto deadline =
-      std::chrono::steady_clock::now() + kRegisterWriteTransactionTimeout;
   for (;;) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      throw std::runtime_error("register write ack timed out");
+    }
     send_raw(0x7FF, encode_register_write_command(motor_id_, rid, data));
     const auto now = std::chrono::steady_clock::now();
     if (now >= deadline) {
@@ -500,7 +509,13 @@ void MotorHandle::ensure_mode(uint32_t mode, std::chrono::milliseconds timeout) 
   };
 
   while (remaining().has_value()) {
-    write_register_u32(10, mode);
+    const std::array<uint8_t, 4> raw_mode{
+        static_cast<uint8_t>(mode & 0xFF),
+        static_cast<uint8_t>((mode >> 8) & 0xFF),
+        static_cast<uint8_t>((mode >> 16) & 0xFF),
+        static_cast<uint8_t>((mode >> 24) & 0xFF),
+    };
+    write_register_with_retry(10, raw_mode, deadline);
     sleep_reserving(std::chrono::milliseconds(20), mode_read_cap);
     finish_switch();
     const auto read_timeout = capped_remaining(mode_read_cap);

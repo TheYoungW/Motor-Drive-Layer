@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(motorbridge VERSION 1.1.0 LANGUAGES C CXX)
+project(motorbridge VERSION 1.2.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
   message(FATAL_ERROR "articore-runtime-service supports Linux SocketCAN-FD only")
@@ -37,6 +37,8 @@ if(ARTICORE_BUILD_DEPLOYMENT AND ARTICORE_ENABLE_DDS)
           DESTINATION usr/share/articore)
   install(FILES deploy/build-info.txt
           DESTINATION usr/share/articore)
+  install(FILES dds/idl/articore_protocol.idl
+          DESTINATION usr/share/articore/idl)
 endif()
 
 set(CPACK_PACKAGE_NAME "articore-runtime-service")

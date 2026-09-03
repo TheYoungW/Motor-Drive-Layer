@@ -242,43 +242,63 @@ int32_t SafetyRuntime::configure_hardware_mode(
     return ARTICORE_OPERATION_UNSUPPORTED;
   }
 
-  struct SideResult {
-    std::vector<std::string> failed;
-    std::vector<std::string> errors;
-  } results[2];
+  struct MotorResult {
+    bool attempted = false;
+    std::string failed;
+    std::string error;
+  };
+  std::vector<MotorResult> results(motors_.size());
   std::vector<std::thread> workers;
-  for (uint8_t side = 0; side < 2; ++side) {
-    if (!active_sides_[side]) continue;
-    workers.emplace_back([&, side] {
-      for (const auto& motor : motors_) {
-        if (motor.descriptor.side != side) continue;
-        const uint32_t native_mode =
-            motor.descriptor.is_gripper || mode == ARTICORE_MODE_MIT ? 1U : 2U;
-        int32_t rc = backend_->ensure_mode(
-            motor.descriptor.motor, native_mode,
-            std::max(config_.disable_feedback_timeout_ms,
-                     kControlModeTransactionTimeoutMs));
-        if (rc == 0 && backend_->can_set_timeout() &&
-            backend_->communication_timeout_ms() > 0) {
-          rc = backend_->set_timeout_ms(
-              motor.descriptor.motor, backend_->communication_timeout_ms());
-        }
-        if (rc == 0) continue;
-        results[side].failed.emplace_back(motor.descriptor.name);
-        const char* detail = backend_->last_error_message();
-        results[side].errors.emplace_back(
-            detail && detail[0] ? detail : "native motor command failed");
+  workers.reserve(motors_.size());
+  const uint32_t transaction_timeout_ms =
+      std::max(config_.disable_feedback_timeout_ms,
+               kControlModeTransactionTimeoutMs);
+  const auto mode_deadline =
+      Clock::now() + std::chrono::milliseconds(transaction_timeout_ms);
+  for (std::size_t index = 0; index < motors_.size(); ++index) {
+    const auto& motor = motors_[index];
+    if (!active_sides_[motor.descriptor.side]) continue;
+    results[index].attempted = true;
+    workers.emplace_back([&, index] {
+      const auto& target = motors_[index];
+      const uint32_t native_mode =
+          target.descriptor.is_gripper || mode == ARTICORE_MODE_MIT ? 1U : 2U;
+      const auto now = Clock::now();
+      int32_t rc = -1;
+      if (now < mode_deadline) {
+        // Every Motor receives only the time left in the one product-wide
+        // transaction window. Motor I/O runs concurrently; the per-channel
+        // pacing bus still serializes frames at the configured wire gap.
+        const auto remaining_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            mode_deadline - now);
+        const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            remaining_ns + std::chrono::microseconds(999));
+        rc = backend_->ensure_mode(
+            target.descriptor.motor, native_mode,
+            static_cast<uint32_t>(std::max(remaining_ms,
+                                           std::chrono::milliseconds(1))
+                                      .count()));
       }
+      if (rc == 0 && backend_->can_set_timeout() &&
+          backend_->communication_timeout_ms() > 0) {
+        rc = backend_->set_timeout_ms(
+            target.descriptor.motor, backend_->communication_timeout_ms());
+      }
+      if (rc == 0) return;
+      results[index].failed = target.descriptor.name;
+      const char* detail = backend_->last_error_message();
+      results[index].error = detail && detail[0]
+          ? detail
+          : (now >= mode_deadline ? "control mode batch deadline expired"
+                                  : "native motor command failed");
     });
   }
   for (auto& worker : workers) worker.join();
   for (const auto& result : results) {
-    failed_motors.insert(failed_motors.end(), result.failed.begin(),
-                         result.failed.end());
-    for (std::size_t index = 0; index < result.errors.size(); ++index) {
-      if (!error.empty()) error += "; ";
-      error += result.failed[index] + ": " + result.errors[index];
-    }
+    if (!result.attempted || result.failed.empty()) continue;
+    failed_motors.emplace_back(result.failed);
+    if (!error.empty()) error += "; ";
+    error += result.failed + ": " + result.error;
   }
   return failed_motors.empty() ? ARTICORE_OPERATION_OK
                                : ARTICORE_OPERATION_MOTOR_COMMAND;

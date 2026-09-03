@@ -265,6 +265,9 @@ typedef struct ArticoreProductState {
   ArticoreProductArmState right;
   int32_t left_gripper_available;
   int32_t right_gripper_available;
+  // Opening feedback is valid only when a real cached sample is fresh.
+  int32_t left_gripper_feedback_valid;
+  int32_t right_gripper_feedback_valid;
   float left_gripper_opening;
   float right_gripper_opening;
   int32_t left_gripper_level;

@@ -140,6 +140,7 @@ struct RuntimeState {
   bool has_grippers = false;
   std::array<float, 2> gripper_openings{};
   std::array<bool, 2> gripper_available{};
+  std::array<bool, 2> gripper_feedback_valid{};
   bool motion_arrived = false;
   std::chrono::nanoseconds timestamp{};
   std::uint64_t sequence = 0;

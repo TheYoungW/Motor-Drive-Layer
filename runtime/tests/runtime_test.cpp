@@ -70,6 +70,9 @@ struct FakeDriver {
   uint32_t clear_fault_calls = 0;
   uint32_t set_zero_calls = 0;
   uint32_t configure_mode_calls = 0;
+  uint32_t configure_mode_delay_ms = 0;
+  uint32_t active_mode_calls = 0;
+  uint32_t max_active_mode_calls = 0;
   std::map<void*, uint32_t> configured_modes;
   uint32_t configure_timeout_calls = 0;
   void* fail_maintenance_motor = nullptr;
@@ -310,7 +313,19 @@ int32_t set_motor_zero(void* handle) {
 }
 
 int32_t ensure_motor_mode(void* handle, uint32_t mode, uint32_t) {
+  uint32_t delay_ms = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_driver->mutex);
+    ++g_driver->active_mode_calls;
+    g_driver->max_active_mode_calls = std::max(
+        g_driver->max_active_mode_calls, g_driver->active_mode_calls);
+    delay_ms = g_driver->configure_mode_delay_ms;
+  }
+  if (delay_ms > 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+  }
   std::lock_guard<std::mutex> lock(g_driver->mutex);
+  --g_driver->active_mode_calls;
   if (handle == g_driver->fail_maintenance_motor) return -1;
   ++g_driver->configure_mode_calls;
   g_driver->configured_modes[handle] = mode;
@@ -895,6 +910,31 @@ void test_runtime_maintenance_keeps_ready_and_reports_partial_failure() {
               std::string(health.operation_failed_motors[0]) ==
                   motors[1].name,
           "failed recover falls back to confirmed disable and records motor identity");
+}
+
+void test_mode_configuration_uses_one_parallel_batch_deadline() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  driver.configure_mode_delay_ms = 150;
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, enable_all, enable_motor, false,
+      maintenance_api());
+  runtime.connect();
+
+  const auto started = std::chrono::steady_clock::now();
+  require(runtime.configure_mode(ARTICORE_MODE_PV) == ARTICORE_OPERATION_OK,
+          "parallel mode batch succeeds");
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.max_active_mode_calls == motors.size(),
+            "all Motor mode transactions run concurrently");
+  }
+  require(elapsed < 250ms,
+          "mode configuration latency is bounded by one Motor, not Motor count");
 }
 
 void test_connect_mode_configuration_accepts_moving_disabled_feedback() {
@@ -8208,6 +8248,7 @@ int main() {
     RUN_TEST(test_motor_power_batch_latches_fault_when_rollback_is_unconfirmed);
     RUN_TEST(test_partial_mit_filters_disabled_motors_before_torque_validation);
     RUN_TEST(test_runtime_maintenance_keeps_ready_and_reports_partial_failure);
+    RUN_TEST(test_mode_configuration_uses_one_parallel_batch_deadline);
     RUN_TEST(test_connect_mode_configuration_accepts_moving_disabled_feedback);
     RUN_TEST(test_connect_enabled_motor_fault_is_recoverable_from_ready);
     RUN_TEST(test_connect_motor_fault_is_clearable_without_configuring_product);

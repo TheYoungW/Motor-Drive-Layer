@@ -14,7 +14,7 @@
 namespace articore::dds {
 
 inline constexpr std::uint16_t kProtocolMajor = 1;
-inline constexpr std::uint16_t kProtocolMinor = 1;
+inline constexpr std::uint16_t kProtocolMinor = 2;
 inline constexpr auto kStreamLifespan = std::chrono::milliseconds(20);
 inline constexpr auto kLeasePeriod = std::chrono::milliseconds(250);
 inline constexpr auto kLeaseHeartbeatPeriod = std::chrono::milliseconds(50);

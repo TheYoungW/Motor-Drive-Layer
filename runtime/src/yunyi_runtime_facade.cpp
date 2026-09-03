@@ -397,6 +397,9 @@ Result<RuntimeState> YunyiRuntime::state() const {
                                source.right_gripper_opening};
     output.gripper_available = {source.left_gripper_available != 0,
                                 source.right_gripper_available != 0};
+    output.gripper_feedback_valid = {
+        source.left_gripper_feedback_valid != 0,
+        source.right_gripper_feedback_valid != 0};
     output.motion_arrived = source.motion_arrived != 0;
     output.timestamp = std::chrono::nanoseconds(source.timestamp_ns);
     output.sequence = source.sequence;
