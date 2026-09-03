@@ -3449,6 +3449,16 @@ void test_native_scheduler_is_fixed_at_500_hz() {
       single_motors);
   require(single.control_hz() == 500,
           "single-side runtime uses the fixed native cadence");
+
+  ::setenv("ARTICORE_RUNTIME_CONTROL_HZ", "200", 1);
+  {
+    articore::SafetyRuntime board_rate(
+        cfg, api(), reinterpret_cast<void*>(0x103), g_left_controller,
+        g_right_controller, motors);
+    require(board_rate.control_hz() == 200,
+            "board service can lower the native cadence for its USB path");
+  }
+  ::unsetenv("ARTICORE_RUNTIME_CONTROL_HZ");
 }
 
 void test_single_side_runtime_and_gripper() {

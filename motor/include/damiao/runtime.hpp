@@ -175,7 +175,7 @@ class MotorHandle {
   void send_raw(uint32_t arbitration_id, std::array<uint8_t, 8> data);
   void send_to_motor(std::array<uint8_t, 8> data);
   void send_mode_frame(uint32_t base_id, std::array<uint8_t, 8> data);
-  uint64_t write_register_raw(uint8_t rid, std::array<uint8_t, 4> data);
+  void write_register_with_retry(uint8_t rid, std::array<uint8_t, 4> data);
   bool wait_for_feedback_after(uint64_t previous_count,
                                std::chrono::steady_clock::time_point deadline);
   std::array<uint8_t, 4> wait_for_register(uint8_t rid, std::chrono::milliseconds timeout);

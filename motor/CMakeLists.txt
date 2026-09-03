@@ -33,4 +33,9 @@ if(BUILD_TESTING)
   add_executable(socketcan_fd_test tests/socketcan_fd_test.cpp)
   target_link_libraries(socketcan_fd_test PRIVATE articore::motor)
   add_test(NAME motor_socketcan_fd COMMAND socketcan_fd_test)
+
+  # Manual hardware diagnostic: it only requests feedback and never enables or
+  # moves a motor, so keep it buildable without registering it as an automated test.
+  add_executable(damiao_hardware_feedback_stress tests/hardware_feedback_stress.cpp)
+  target_link_libraries(damiao_hardware_feedback_stress PRIVATE articore::motor)
 endif()

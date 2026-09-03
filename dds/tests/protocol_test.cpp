@@ -49,14 +49,18 @@ int main() {
                            articore::dds::SequenceChannel::Control, false,
                            epoch + 25ms) == ProtocolError::StaleSequence,
           "control duplicate detection remains independent and monotonic");
-  require(!leases.expire_if_needed(epoch + 260ms),
-          "valid command extended the deadline");
-  require(leases.expire_if_needed(epoch + 275ms),
+  require(leases.refresh_after_control(
+              "client-a", first.value().lease_id, epoch + 400ms) ==
+              ProtocolError::Ok,
+          "an accepted long-running control operation refreshes on completion");
+  require(!leases.expire_if_needed(epoch + 640ms),
+          "post-control refresh grants a complete lease period");
+  require(leases.expire_if_needed(epoch + 651ms),
           "250 ms without heartbeat expires the lease");
   require(lost_reason == "control lease expired",
           "expiry invokes the Runtime safety callback");
 
-  auto second = leases.acquire("client-b", epoch + 276ms);
+  auto second = leases.acquire("client-b", epoch + 652ms);
   require(static_cast<bool>(second) &&
               second.value().lease_id != first.value().lease_id,
           "reconnect gets a new lease identity");

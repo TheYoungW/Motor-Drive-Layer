@@ -15,9 +15,10 @@
 namespace damiao {
 namespace {
 
-constexpr auto kRegisterWriteAckTimeout = std::chrono::milliseconds(50);
-constexpr auto kRegisterWriteRetryGap = std::chrono::milliseconds(20);
-constexpr auto kBulkFeedbackRetryDelay = std::chrono::milliseconds(5);
+constexpr auto kRegisterReadRetryInterval = std::chrono::milliseconds(2);
+constexpr auto kRegisterWriteRetryInterval = std::chrono::milliseconds(10);
+constexpr auto kRegisterWriteTransactionTimeout = std::chrono::milliseconds(200);
+constexpr auto kBulkFeedbackRetryDelay = std::chrono::milliseconds(2);
 constexpr auto kDefaultMultiMotorTxGap = std::chrono::microseconds(120);
 
 void configure_worker(std::thread& thread, const ThreadPolicy& policy) {
@@ -282,34 +283,11 @@ bool MotorHandle::wait_for_feedback_after(
       lock, deadline, [&] { return feedback_update_count_ > previous_count; });
 }
 
-uint64_t MotorHandle::write_register_raw(uint8_t rid,
-                                         std::array<uint8_t, 4> data) {
-  uint64_t previous_update_count = 0;
-  {
-    std::lock_guard<std::mutex> lock(register_mutex_);
-    previous_update_count = register_ack_update_counts_[rid];
-  }
-  send_raw(0x7FF, encode_register_write_command(motor_id_, rid, data));
-  return previous_update_count;
-}
-
 void MotorHandle::write_register_f32(uint8_t rid, float value) {
   validate_register(rid, RegisterDataType::Float, true);
   std::array<uint8_t, 4> data{};
   std::memcpy(data.data(), &value, sizeof(value));
-  std::runtime_error last_error("register write ack not received");
-  for (int attempt = 0; attempt < 3; ++attempt) {
-    const auto previous_update_count = write_register_raw(rid, data);
-    try {
-      wait_for_write_ack(
-          rid, data, previous_update_count, kRegisterWriteAckTimeout);
-      return;
-    } catch (const std::runtime_error& err) {
-      last_error = err;
-      if (attempt + 1 < 3) std::this_thread::sleep_for(kRegisterWriteRetryGap);
-    }
-  }
-  throw last_error;
+  write_register_with_retry(rid, data);
 }
 
 void MotorHandle::write_register_u32(uint8_t rid, uint32_t value) {
@@ -320,26 +298,46 @@ void MotorHandle::write_register_u32(uint8_t rid, uint32_t value) {
       static_cast<uint8_t>((value >> 16) & 0xFF),
       static_cast<uint8_t>((value >> 24) & 0xFF),
   };
-  std::runtime_error last_error("register write ack not received");
-  for (int attempt = 0; attempt < 3; ++attempt) {
-    const auto previous_update_count = write_register_raw(rid, data);
+  write_register_with_retry(rid, data);
+}
+
+void MotorHandle::write_register_with_retry(
+    uint8_t rid, std::array<uint8_t, 4> data) {
+  uint64_t previous_update_count = 0;
+  {
+    std::lock_guard<std::mutex> lock(register_mutex_);
+    previous_update_count = register_ack_update_counts_[rid];
+  }
+  const auto deadline =
+      std::chrono::steady_clock::now() + kRegisterWriteTransactionTimeout;
+  for (;;) {
+    send_raw(0x7FF, encode_register_write_command(motor_id_, rid, data));
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      throw std::runtime_error("register write ack timed out");
+    }
+    const auto wait = std::min(
+        kRegisterWriteRetryInterval,
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now));
     try {
-      wait_for_write_ack(
-          rid, data, previous_update_count, kRegisterWriteAckTimeout);
+      wait_for_write_ack(rid, data, previous_update_count, wait);
       return;
-    } catch (const std::runtime_error& err) {
-      last_error = err;
-      if (attempt + 1 < 3) std::this_thread::sleep_for(kRegisterWriteRetryGap);
+    } catch (const std::runtime_error& error) {
+      if (std::string(error.what()).find("mismatched") != std::string::npos) {
+        throw;
+      }
+      if (std::chrono::steady_clock::now() >= deadline) {
+        throw std::runtime_error("register write ack timed out");
+      }
     }
   }
-  throw last_error;
 }
 
 std::array<uint8_t, 4> MotorHandle::wait_for_register(uint8_t rid,
                                                        std::chrono::milliseconds timeout) {
   const auto request_at = std::chrono::steady_clock::now();
-  send_raw(0x7FF, encode_register_read_command(motor_id_, rid));
   const auto deadline = request_at + timeout;
+  auto next_request_at = request_at;
   for (;;) {
     {
       std::lock_guard<std::mutex> lock(register_mutex_);
@@ -348,8 +346,16 @@ std::array<uint8_t, 4> MotorHandle::wait_for_register(uint8_t rid,
         return found->second.first;
       }
     }
-    if (std::chrono::steady_clock::now() >= deadline) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
       throw std::runtime_error("register read timed out");
+    }
+    if (now >= next_request_at) {
+      // Keep the caller's original deadline as the hard bound, but resend the
+      // idempotent read while waiting. Some RK3588 EHCI + DM-USB2FDCAN paths
+      // lose individual receive indications without reporting a CAN/USB error.
+      send_raw(0x7FF, encode_register_read_command(motor_id_, rid));
+      next_request_at = now + kRegisterReadRetryInterval;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
@@ -986,31 +992,14 @@ FeedbackBatchReport Controller::request_feedback_all_report(
 
   const auto health_before = bus_->health();
   const auto deadline = std::chrono::steady_clock::now() + timeout;
-  try {
-    for (const auto& motor : motors) {
-      motor->request_feedback();
-    }
-  } catch (const std::exception& error) {
-    report.status = FeedbackBatchStatus::TransportError;
-    report.error = error.what();
-    capture_current_counts();
-    return report;
-  }
-
-  // Some USB-CAN firmware revisions occasionally drop the final request or
-  // response in a burst. Give the normal batch time to complete, then retry
-  // only the motors that are still missing while preserving the caller's one
-  // shared deadline.
-  const auto retry_at =
-      std::min(deadline, std::chrono::steady_clock::now() + kBulkFeedbackRetryDelay);
-  std::vector<std::size_t> missing;
-  for (std::size_t i = 0; i < motors.size(); ++i) {
-    if (!motors[i]->wait_for_feedback_after(previous_counts[i], retry_at)) {
-      missing.push_back(i);
-    }
-  }
-
-  if (!missing.empty() && retry_at < deadline) {
+  // DM-USB2FDCAN can lose an individual receive indication on some EHCI host
+  // controllers even though the corresponding transmit echo completed. Retry
+  // only still-missing motors in short rounds. The caller's deadline remains
+  // the hard upper bound, so this improves reliability without extending a
+  // safety operation beyond its configured timeout.
+  std::vector<std::size_t> missing(motors.size());
+  for (std::size_t i = 0; i < motors.size(); ++i) missing[i] = i;
+  while (!missing.empty() && std::chrono::steady_clock::now() < deadline) {
     try {
       for (const auto i : missing) {
         if (std::chrono::steady_clock::now() >= deadline) break;
@@ -1023,9 +1012,11 @@ FeedbackBatchReport Controller::request_feedback_all_report(
       return report;
     }
 
+    const auto round_deadline = std::min(
+        deadline, std::chrono::steady_clock::now() + kBulkFeedbackRetryDelay);
     std::vector<std::size_t> still_missing;
     for (const auto i : missing) {
-      if (!motors[i]->wait_for_feedback_after(previous_counts[i], deadline)) {
+      if (!motors[i]->wait_for_feedback_after(previous_counts[i], round_deadline)) {
         still_missing.push_back(i);
       }
     }

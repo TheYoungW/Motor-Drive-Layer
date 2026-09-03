@@ -418,6 +418,13 @@ class CycloneService::Impl {
       return;
     }
     const auto status = execute(request, reply);
+    if (!query_only) {
+      // CONNECT, ENABLE and maintenance operations may synchronously occupy
+      // this service thread for longer than the 250 ms lease. They were
+      // authorized before execution, so renew from completion time before the
+      // main loop performs its next expiry check.
+      (void)lease_.refresh_after_control(request.client_id, request.lease_id);
+    }
     const bool finite_motion =
         operation == articore_wire_MOVE_POSE ||
         operation == articore_wire_MOVE_LINEAR ||

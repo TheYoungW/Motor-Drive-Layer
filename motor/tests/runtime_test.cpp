@@ -46,20 +46,32 @@ class FakeBus final : public damiao::CanBus {
     sent.push_back(frame);
     sent_at.push_back(std::chrono::steady_clock::now());
     if (auto_ack_writes_ && frame.id == 0x7FF && frame.data[2] == 0x55) {
-      incoming.push_back(damiao::CanFrame{0x11, frame.data});
+      if (drop_register_write_acks_ > 0) {
+        --drop_register_write_acks_;
+      } else {
+        incoming.push_back(damiao::CanFrame{0x11, frame.data});
+      }
     }
     if (auto_register_io_ && frame.id == 0x7FF && frame.data[2] == 0x33) {
-      auto reply = frame.data;
-      const auto found = registers_.find(frame.data[3]);
-      if (found != registers_.end()) {
-        for (std::size_t i = 0; i < 4; ++i) reply[4 + i] = found->second[i];
+      if (drop_register_reads_ > 0) {
+        --drop_register_reads_;
+      } else {
+        auto reply = frame.data;
+        const auto found = registers_.find(frame.data[3]);
+        if (found != registers_.end()) {
+          for (std::size_t i = 0; i < 4; ++i) reply[4 + i] = found->second[i];
+        }
+        incoming.push_back(damiao::CanFrame{0x11, reply});
       }
-      incoming.push_back(damiao::CanFrame{0x11, reply});
     }
     if (auto_register_io_ && frame.id == 0x7FF && frame.data[2] == 0x55) {
       std::array<uint8_t, 4> value{frame.data[4], frame.data[5], frame.data[6], frame.data[7]};
       registers_[frame.data[3]] = value;
-      incoming.push_back(damiao::CanFrame{0x11, frame.data});
+      if (drop_register_write_acks_ > 0) {
+        --drop_register_write_acks_;
+      } else {
+        incoming.push_back(damiao::CanFrame{0x11, frame.data});
+      }
     }
   }
 
@@ -128,6 +140,16 @@ class FakeBus final : public damiao::CanBus {
     auto_register_io_ = enabled;
   }
 
+  void drop_next_register_reads(int count) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    drop_register_reads_ = count;
+  }
+
+  void drop_next_register_write_acks(int count) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    drop_register_write_acks_ = count;
+  }
+
   void set_register_u32(uint8_t rid, uint32_t value) {
     std::lock_guard<std::mutex> lock(mutex_);
     registers_[rid] = {static_cast<uint8_t>(value & 0xFF),
@@ -164,6 +186,8 @@ class FakeBus final : public damiao::CanBus {
   int shutdown_count_ = 0;
   int receive_failures_ = 0;
   int send_failures_ = 0;
+  int drop_register_reads_ = 0;
+  int drop_register_write_acks_ = 0;
   bool always_fail_receive_ = false;
 };
 
@@ -1000,11 +1024,28 @@ int main() {
   }
   const auto write_elapsed = std::chrono::steady_clock::now() - write_started;
   require(write_timed_out, "register write without ACK times out");
-  require(write_timeout_bus->sent_snapshot().size() == 3,
-          "register write uses exactly three ACK attempts");
+  require(write_timeout_bus->sent_snapshot().size() > 3,
+          "register write retransmits within its fixed ACK deadline");
   require(write_elapsed < std::chrono::seconds(1),
-          "register write uses the Rust ACK retry budget");
+          "register write keeps a bounded ACK retry budget");
   write_timeout_controller.close_bus();
+
+  auto register_retry_bus = std::make_shared<FakeBus>();
+  register_retry_bus->set_register_u32(35, 7);
+  register_retry_bus->set_auto_register_io(true);
+  register_retry_bus->drop_next_register_reads(4);
+  damiao::Controller register_retry_controller(register_retry_bus);
+  auto register_retry_motor =
+      register_retry_controller.add_damiao_motor(0x01, 0x11, "4340P");
+  require(register_retry_motor->get_register_u32(
+              35, std::chrono::milliseconds(20)) == 7,
+          "register reads recover from several dropped replies");
+  register_retry_bus->drop_next_register_write_acks(4);
+  register_retry_motor->write_register_u32(35, 9);
+  require(register_retry_motor->get_register_u32(
+              35, std::chrono::milliseconds(100)) == 9,
+          "register writes recover from several dropped ACKs");
+  register_retry_controller.close_bus();
 
   auto dispatch_barrier = std::make_shared<DispatchBarrier>();
   auto channel0_bus = std::make_shared<ParallelBatchBus>(dispatch_barrier);

@@ -59,6 +59,23 @@ ProtocolError LeaseManager::heartbeat(const std::string& client_id,
                    SequenceChannel::Control, true, now);
 }
 
+ProtocolError LeaseManager::refresh_after_control(
+    const std::string& client_id, std::uint64_t lease_id,
+    Clock::time_point now) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  // The service executes control operations synchronously. If an operation
+  // began while the lease was valid but itself took longer than the lease
+  // period, no competing request could have been processed in the meantime.
+  // Give the accepted owner a full post-operation period before the service
+  // resumes expiry checks.
+  if (!active_ || active_->client_id != client_id ||
+      active_->lease_id != lease_id) {
+    return ProtocolError::NoLease;
+  }
+  active_->expires_at = now + timeout_;
+  return ProtocolError::Ok;
+}
+
 ProtocolError LeaseManager::release(const std::string& client_id,
                                     std::uint64_t lease_id,
                                     const std::string& reason) {

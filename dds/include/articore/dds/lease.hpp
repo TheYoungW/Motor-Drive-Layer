@@ -43,6 +43,9 @@ class LeaseManager {
                           std::uint64_t lease_id,
                           std::uint64_t sequence,
                           Clock::time_point now = Clock::now());
+  ProtocolError refresh_after_control(const std::string& client_id,
+                                      std::uint64_t lease_id,
+                                      Clock::time_point now = Clock::now());
   ProtocolError release(const std::string& client_id,
                         std::uint64_t lease_id,
                         const std::string& reason = "lease released");
