@@ -1,0 +1,4 @@
+# gs_usb adapters fitted to this robot. Stable left/right naming is resolved
+# by articore-can-init from /etc/articore/can.conf after both netdevs settle.
+SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", ATTRS{serial}=="015213EF68D8345BBAA6D57818A4EC3A", TAG+="systemd", ENV{SYSTEMD_WANTS}+="articore-can-hotplug.service"
+SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", ATTRS{serial}=="AEEDE4FD23DEA4AFCA6B3EAA55ABC28A", TAG+="systemd", ENV{SYSTEMD_WANTS}+="articore-can-hotplug.service"

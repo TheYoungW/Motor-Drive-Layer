@@ -1,0 +1,75 @@
+#!/bin/sh
+set -e
+
+systemd_etc_dir=${ARTICORE_SYSTEMD_ETC_DIR:-/etc/systemd/system}
+migration_backup_dir=${ARTICORE_MIGRATION_BACKUP_DIR:-/etc/articore/migration-backups/1.0.3}
+
+migrate_known_override() {
+  source=$1
+  destination=$2
+  expected=$3
+  [ -f "$source" ] || return 0
+
+  normalized=$(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$source")
+  if [ "$normalized" != "$expected" ]; then
+    echo "articore-runtime-service: preserving customized systemd override $source" >&2
+    return 0
+  fi
+
+  mkdir -p "$migration_backup_dir"
+  if [ -e "$destination" ]; then
+    echo "articore-runtime-service: migration backup exists; preserving $source" >&2
+    return 0
+  fi
+  mv "$source" "$destination"
+  echo "articore-runtime-service: migrated legacy override to $destination" >&2
+}
+
+# The 1.0.0 field workaround pointed systemd at /usr/local. Move only the two
+# exact known overrides out of systemd's search path and retain recoverable
+# copies. Any locally customized unit is left untouched for operator review.
+migrate_known_override \
+  "$systemd_etc_dir/articore-can-hotplug.service" \
+  "$migration_backup_dir/articore-can-hotplug.service" \
+  '[Unit]
+Description=Reconfigure Articore CAN interfaces after USB hotplug
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/articore/articore-can-hotplug'
+migrate_known_override \
+  "$systemd_etc_dir/articore-can.service.d/override.conf" \
+  "$migration_backup_dir/articore-can.service.override.conf" \
+  '[Service]
+ExecStart=
+ExecStart=/usr/local/libexec/articore/articore-can-init'
+
+if ! getent group articore-runtime >/dev/null; then
+  addgroup --system articore-runtime
+fi
+if ! getent passwd articore-runtime >/dev/null; then
+  adduser --system --ingroup articore-runtime --no-create-home \
+    --home /nonexistent --shell /usr/sbin/nologin articore-runtime
+fi
+systemctl daemon-reload >/dev/null 2>&1 || true
+
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm control --reload-rules >/dev/null 2>&1 || true
+fi
+
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl enable articore-can.service articore-runtime.service \
+    >/dev/null 2>&1 || true
+
+  # Do not disturb an already-running robot during package upgrade. A fresh
+  # install (or a stopped Runtime) starts CAN first and Runtime only when CAN
+  # initialization succeeds. If adapters are absent, the udev hotplug unit
+  # will retry later without leaving dpkg in a failed state.
+  if ! systemctl is-active --quiet articore-runtime.service; then
+    if systemctl restart articore-can.service; then
+      systemctl start articore-runtime.service
+    else
+      echo "articore-runtime-service: CAN unavailable; Runtime remains stopped until USB-CAN hotplug" >&2
+    fi
+  fi
+fi
+exit 0

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Documentation template. The service builds the equivalent URI from
+     runtime-service.conf so interface names have one source of truth. -->
+<CycloneDDS>
+  <Domain Id="0">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="wlan0" priority="10"/>
+      </Interfaces>
+      <AllowMulticast>true</AllowMulticast>
+    </General>
+  </Domain>
+</CycloneDDS>

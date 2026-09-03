@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+if [ "$1" = remove ] || [ "$1" = deconfigure ]; then
+  systemctl stop articore-can-hotplug.service >/dev/null 2>&1 || true
+  systemctl stop articore-runtime.service >/dev/null 2>&1 || true
+  systemctl stop articore-can.service >/dev/null 2>&1 || true
+  systemctl disable articore-runtime.service articore-can.service \
+    >/dev/null 2>&1 || true
+fi
+exit 0

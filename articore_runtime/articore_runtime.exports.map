@@ -1,7 +1,0 @@
-{
-  global:
-    articore_robot_model_*;
-    articore_runtime_*;
-  local:
-    *;
-};

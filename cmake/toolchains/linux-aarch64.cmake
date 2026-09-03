@@ -7,6 +7,8 @@ set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++ CACHE FILEPATH "aarch64 C++ compile
 if(DEFINED ENV{MOTOR_AARCH64_SYSROOT} AND NOT "$ENV{MOTOR_AARCH64_SYSROOT}" STREQUAL "")
   set(CMAKE_SYSROOT "$ENV{MOTOR_AARCH64_SYSROOT}")
   set(CMAKE_FIND_ROOT_PATH "$ENV{MOTOR_AARCH64_SYSROOT}")
+  # idlc is deliberately a host program. All headers, packages and libraries
+  # remain rooted in the RK3588 sysroot.
   set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
   set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
   set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)

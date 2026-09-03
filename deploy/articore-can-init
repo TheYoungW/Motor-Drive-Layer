@@ -1,0 +1,88 @@
+#!/bin/sh
+set -eu
+
+config=${1:-/etc/articore/can.conf}
+[ -r "$config" ] && . "$config"
+
+LEFT_CAN_INTERFACE=${LEFT_CAN_INTERFACE:-can-left}
+RIGHT_CAN_INTERFACE=${RIGHT_CAN_INTERFACE:-can-right}
+LEFT_CAN_SERIAL=${LEFT_CAN_SERIAL:-}
+RIGHT_CAN_SERIAL=${RIGHT_CAN_SERIAL:-}
+CAN_BITRATE=${CAN_BITRATE:-1000000}
+CAN_DBITRATE=${CAN_DBITRATE:-5000000}
+CAN_SAMPLE_POINT=${CAN_SAMPLE_POINT:-0.80}
+CAN_DSAMPLE_POINT=${CAN_DSAMPLE_POINT:-0.875}
+CAN_RESTART_MS=${CAN_RESTART_MS:-100}
+SYS_CLASS_NET=${ARTICORE_SYS_CLASS_NET:-/sys/class/net}
+IP=${ARTICORE_IP:-ip}
+UDEVADM=${ARTICORE_UDEVADM:-udevadm}
+
+case "$LEFT_CAN_INTERFACE:$RIGHT_CAN_INTERFACE" in
+  *[!A-Za-z0-9_.:-]*)
+    echo "invalid CAN interface name" >&2
+    exit 1
+    ;;
+esac
+if [ -z "$LEFT_CAN_SERIAL" ] || [ -z "$RIGHT_CAN_SERIAL" ]; then
+  echo "LEFT_CAN_SERIAL and RIGHT_CAN_SERIAL must be configured" >&2
+  exit 1
+fi
+if [ "$LEFT_CAN_SERIAL" = "$RIGHT_CAN_SERIAL" ]; then
+  echo "left and right USB-CAN serials must be different" >&2
+  exit 1
+fi
+
+interface_serial() {
+  "$UDEVADM" info -q property "$SYS_CLASS_NET/$1" 2>/dev/null |
+    sed -n 's/^ID_SERIAL_SHORT=//p' |
+    head -n 1
+}
+
+ensure_name() {
+  target=$1
+  expected_serial=$2
+
+  if [ -e "$SYS_CLASS_NET/$target" ]; then
+    actual_serial=$(interface_serial "$target" || true)
+    if [ "$actual_serial" != "$expected_serial" ]; then
+      echo "$target belongs to unexpected USB-CAN serial $actual_serial" >&2
+      exit 1
+    fi
+    return
+  fi
+
+  source=
+  for path in "$SYS_CLASS_NET"/can[0-9]*; do
+    [ -e "$path" ] || continue
+    candidate=${path##*/}
+    candidate_serial=$(interface_serial "$candidate" || true)
+    if [ "$candidate_serial" = "$expected_serial" ]; then
+      source=$candidate
+      break
+    fi
+  done
+
+  if [ -z "$source" ]; then
+    echo "No CAN interface found for $target (USB serial $expected_serial)" >&2
+    exit 1
+  fi
+
+  "$IP" link set dev "$source" down 2>/dev/null || true
+  "$IP" link set dev "$source" name "$target"
+}
+
+configure_can() {
+  interface=$1
+  "$IP" link set dev "$interface" down 2>/dev/null || true
+  "$IP" link set dev "$interface" type can \
+    bitrate "$CAN_BITRATE" sample-point "$CAN_SAMPLE_POINT" \
+    dbitrate "$CAN_DBITRATE" dsample-point "$CAN_DSAMPLE_POINT" \
+    fd on restart-ms "$CAN_RESTART_MS"
+  "$IP" link set dev "$interface" txqueuelen 1024
+  "$IP" link set dev "$interface" up
+}
+
+ensure_name "$LEFT_CAN_INTERFACE" "$LEFT_CAN_SERIAL"
+ensure_name "$RIGHT_CAN_INTERFACE" "$RIGHT_CAN_SERIAL"
+configure_can "$LEFT_CAN_INTERFACE"
+configure_can "$RIGHT_CAN_INTERFACE"

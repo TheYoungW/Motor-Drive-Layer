@@ -1,0 +1,8 @@
+[Unit]
+Description=Reconfigure Articore CAN interfaces after USB hotplug
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/articore/articore-can-hotplug
+TimeoutStartSec=15

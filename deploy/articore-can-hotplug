@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+SYSTEMCTL=${ARTICORE_SYSTEMCTL:-systemctl}
+LOGGER=${ARTICORE_LOGGER:-logger}
+HOTPLUG_DELAY=${ARTICORE_HOTPLUG_DELAY:-1}
+
+# A gs_usb adapter may register more than one netdev. Let udev settle before
+# resolving both product serial numbers and assigning the stable names.
+sleep "$HOTPLUG_DELAY"
+
+# Snapshot this before restarting the required CAN unit. systemd may stop the
+# Runtime as a reverse dependency while CAN is restarted; checking afterwards
+# would then mistake that safety stop for an already-inactive Runtime.
+runtime_was_active=no
+if "$SYSTEMCTL" is-active --quiet articore-runtime.service; then
+  runtime_was_active=yes
+fi
+
+"$SYSTEMCTL" restart articore-can.service
+
+# Never restart an active Runtime automatically: it may be holding a latched
+# FAULT after CAN loss, and a process restart would erase that in-memory latch.
+# Even when the CAN restart caused systemd to stop Runtime through Requires=,
+# leave it stopped for operator review. Only a Runtime that was already stopped
+# before this hotplug event may be started automatically after CAN succeeds.
+if [ "$runtime_was_active" = yes ]; then
+  "$LOGGER" -t articore-can-hotplug \
+    "CAN restored; Runtime was active before hotplug and will not be auto-started. Inspect health, then restart explicitly if safe."
+else
+  "$SYSTEMCTL" start articore-runtime.service
+fi

@@ -1,0 +1,142 @@
+module articore_wire {
+  const uint16 PROTOCOL_MAJOR = 1;
+  const uint16 PROTOCOL_MINOR = 0;
+  const uint32 ARM_DOF = 7;
+  const uint32 ROBOT_DOF = 14;
+  const uint32 POSE_DOF = 6;
+
+  enum ProtocolError {
+    OK, INVALID_ARGUMENT, WRONG_STATE, BUSY, NO_LEASE, STALE_SEQUENCE,
+    TIMEOUT, TRANSPORT_ERROR, VERSION_MISMATCH, INTERNAL_ERROR
+  };
+
+  enum ControlOperation {
+    ACQUIRE_LEASE, HEARTBEAT, RELEASE_LEASE, CONNECT, DISCONNECT,
+    CONFIGURE_MODE, ENABLE, DISABLE, SET_ZERO, CLEAR_FAULTS, ESTOP,
+    RECOVER, SET_SPEED_PERCENT, SET_MAX_SPEED, SET_MAX_ACCELERATION,
+    SOLVE_IK, MOVE_POSE, MOVE_LINEAR, MOVE_CIRCULAR, STOP_MOTION,
+    SET_GRIPPERS, SET_TCP_OFFSET, RESET_TCP_OFFSET,
+    START_GRAVITY_COMPENSATION, STOP_GRAVITY_COMPENSATION,
+    START_BIMANUAL_FOLLOW, STOP_BIMANUAL_FOLLOW, QUERY_STATE, QUERY_HEALTH,
+    GET_POSE, GET_TCP_OFFSET, GET_JOINT_LIMITS, GET_SPEED_PERCENT,
+    GET_MAX_SPEED, GET_MAX_ACCELERATION, HAS_GRIPPERS,
+    GET_GRAVITY_STATUS, GET_BIMANUAL_STATUS
+  };
+
+  enum StreamKind { PV, MIT, MIT_FAST };
+  enum MotionEventKind { MOTION_ACCEPTED, MOTION_COMPLETED,
+                         MOTION_CANCELLED, MOTION_FAILED };
+
+  @final struct Discovery {
+    uint16 protocol_major;
+    uint16 protocol_minor;
+    @key string<64> robot_id;
+    string<64> client_id;
+    string<128> security_identity;
+    uint64 sequence_id;
+    string<64> service_version;
+    uint32 domain_id;
+    boolean ready;
+  };
+
+  @final struct ControlRequest {
+    uint16 protocol_major;
+    uint16 protocol_minor;
+    @key string<64> robot_id;
+    string<64> client_id;
+    string<128> security_identity;
+    uint64 sequence_id;
+    uint64 request_id;
+    uint64 lease_id;
+    ControlOperation operation;
+    uint32 side;
+    uint32 mode;
+    float scalar[8];
+    float positions[14];
+    float pose_a[6];
+    float pose_b[6];
+    float pose_c[6];
+  };
+
+  @final struct ControlReply {
+    uint16 protocol_major;
+    uint16 protocol_minor;
+    @key string<64> robot_id;
+    string<64> client_id;
+    string<128> security_identity;
+    uint64 sequence_id;
+    uint64 request_id;
+    uint64 lease_id;
+    ProtocolError error;
+    string<512> message;
+    float values[64];
+  };
+
+  @final struct StreamCommand {
+    uint16 protocol_major;
+    uint16 protocol_minor;
+    @key string<64> robot_id;
+    string<64> client_id;
+    string<128> security_identity;
+    uint64 sequence_id;
+    uint64 lease_id;
+    StreamKind kind;
+    float positions[14];
+    float velocities[14];
+    float kp[14];
+    float kd[14];
+    float feedforward_torques[14];
+    float speed_percent;
+  };
+
+  @final struct RobotState {
+    uint16 protocol_major;
+    uint16 protocol_minor;
+    @key string<64> robot_id;
+    string<64> client_id;
+    string<128> security_identity;
+    uint64 sequence_id;
+    uint64 source_timestamp_ns;
+    float positions[14];
+    float velocities[14];
+    float torques[14];
+    float mos_temperatures[14];
+    float rotor_temperatures[14];
+    uint32 enabled_mask;
+    uint32 enabled_valid_mask;
+    uint32 temperature_valid_mask;
+    boolean motion_arrived;
+  };
+
+  @final struct Health {
+    uint16 protocol_major;
+    uint16 protocol_minor;
+    @key string<64> robot_id;
+    string<64> client_id;
+    string<128> security_identity;
+    uint64 sequence_id;
+    uint32 state;
+    boolean safe_holding;
+    boolean disable_confirmed;
+    boolean degraded;
+    boolean safe_stopped;
+    boolean requires_resynchronization;
+    uint32 consecutive_send_failures;
+    uint32 consecutive_feedback_failures;
+    string<512> fault_reason;
+    string<512> safety_reason;
+  };
+
+  @final struct MotionEvent {
+    uint16 protocol_major;
+    uint16 protocol_minor;
+    @key string<64> robot_id;
+    string<64> client_id;
+    string<128> security_identity;
+    uint64 sequence_id;
+    uint64 request_id;
+    MotionEventKind kind;
+    ProtocolError error;
+    string<512> message;
+  };
+};

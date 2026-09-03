@@ -1,0 +1,13 @@
+[Unit]
+Description=Configure Articore dual SocketCAN-FD interfaces
+Before=articore-runtime.service
+After=systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/articore/articore-can-init
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

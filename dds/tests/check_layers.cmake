@@ -1,0 +1,16 @@
+file(GLOB_RECURSE MOTOR_FILES
+  "${ROOT}/motor/*.hpp" "${ROOT}/motor/*.cpp")
+file(GLOB_RECURSE RUNTIME_FILES
+  "${ROOT}/runtime/*.hpp" "${ROOT}/runtime/*.cpp")
+foreach(FILE_PATH IN LISTS MOTOR_FILES)
+  file(READ "${FILE_PATH}" CONTENT)
+  if(CONTENT MATCHES "articore/(runtime|dds)" OR CONTENT MATCHES "dds/")
+    message(FATAL_ERROR "motor layer has an upward dependency: ${FILE_PATH}")
+  endif()
+endforeach()
+foreach(FILE_PATH IN LISTS RUNTIME_FILES)
+  file(READ "${FILE_PATH}" CONTENT)
+  if(CONTENT MATCHES "articore/dds" OR CONTENT MATCHES "dds/")
+    message(FATAL_ERROR "runtime layer depends on dds: ${FILE_PATH}")
+  endif()
+endforeach()

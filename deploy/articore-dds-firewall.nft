@@ -1,0 +1,9 @@
+# Example for Domain 0. Adjust the UDP range by 250 * domain_id before loading.
+# This template intentionally accepts DDS only on the two configured robot NICs.
+table inet articore_dds {
+  chain input {
+    type filter hook input priority filter; policy accept;
+    udp dport 7400-7431 iifname != { "eth0", "eth1" } drop
+    iifname { "eth0", "eth1" } udp dport 7400-7431 accept
+  }
+}

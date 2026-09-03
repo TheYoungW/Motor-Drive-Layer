@@ -1,0 +1,6 @@
+motorbridge_version=1.0.3
+protocol_version=1.0
+cyclonedds_version=11.0.1
+pinocchio_build_version=3.8.0
+pinocchio_runtime_library=none_templates_compiled_into_service
+dds_security=disabled_for_initial_trusted_network_release

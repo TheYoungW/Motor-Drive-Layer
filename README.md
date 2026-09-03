@@ -1,160 +1,86 @@
-# Motor Drive Layer
+# motorbridge 1.0
 
-Native C++ control stack for the Yunyi dual-arm product.
+RK3588 上的云翼双臂底层服务。1.0 只交付一个 C++ 进程
+`articore-runtime-service`；远端 SDK 通过 Cyclone DDS/IP 调用，不再加载
+Python ctypes ABI、本地 wheel 或 `libarticore_runtime.so`。
 
-The `main` branch supports one production path: Linux SocketCAN-FD+BRS on
-`can-left` and `can-right`. The earlier multi-transport/Damiao-SDK architecture
-is retained separately on the `legacy-multi-can-damiao-sdk` branch.
-
-## Architecture
+## 架构
 
 ```text
-Articore SDK
-    -> Yunyi Runtime C ABI
-        -> 500 Hz product Runtime and safety state
-            -> native C++ Motor core
-                -> left/right Controller workers
-                    -> SocketCAN-FD+BRS frames
-
-can-left/right receive threads
-    -> Motor feedback cache
-        -> Runtime state/health snapshot
-            -> Articore SDK
+remote SDK
+   │ Cyclone DDS v1 / Ethernet or LAN
+   ▼
+dds/       protocol, QoS, WaitSet, lease, bounded mailbox
+   ▼
+runtime/   500 Hz clock, product model, safety, online control, trajectories
+   ▼
+motor/     Damiao protocol, Motor, Controller, SocketCAN-FD+BRS
+   ▼
+can-left + can-right
 ```
 
-The public wheel contains only `libarticore_runtime.so`. Runtime calls the Motor
-core directly in the same C++ process; there is no intermediate Motor C ABI and
-no Python implementation in this repository.
+依赖只能向下：`dds → runtime → motor`。Runtime 仍然唯一拥有控制周期、
+安全状态机、轨迹和模型；DDS 线程只验证消息和覆盖容量为一的 mailbox。
+普通 PV/MIT 保持 latest-target-wins，有限 Cartesian 运动仍使用原有 Runtime
+轨迹语义。
 
-## Current contract
+## 网络协议
 
-- package version: `0.31.0`
-- Runtime ABI: `16.0` / `0x00100000`
+协议版本为 `1.0`，`robot_id` 是 DDS key。固定 Topic：
 
-Runtime health includes a product-order snapshot for every installed Motor,
-with role, CAN ID, feedback age, status, issue bits, and a scope that separates
-isolated Motor feedback loss from left/right/both-channel receive stalls.
-- ABI matching: exact
-- product: `yunyi_v1_0`
-- transports: `can-left`, `can-right`
-- arm order: left J1..J7, right J1..J7
-- optional paired grippers selected at Runtime creation
+- `articore.robot.discovery`
+- `articore.robot.control.request` / `articore.robot.control.reply`
+- `articore.robot.stream.command`
+- `articore.robot.state`
+- `articore.robot.health`
+- `articore.robot.motion.event`
 
-The SDK creates the product with
-`articore_runtime_create_yunyi(mode, with_grippers, &runtime)`. Runtime owns the
-Motor mapping, controllers, limits, models, TCP offsets, workers and resource
-lifetime.
+整机只有一个 250 ms 控制租约。客户端按 20 Hz heartbeat；有效流式命令也
+续租。租约丢失会撤销流式目标、停止有限运动并 disable，重新获取租约不会
+自动 enable。首版仅面向可信封闭网络，租约不是身份认证。
 
-Ordinary joint PV is public latest-target-wins endpoint control. One
-`set_joint_pv()` call replaces the preceding complete 14-joint target; Runtime
-does not generate a finite quintic/septic profile or a Motion-ID task. On each
-500 Hz control cycle it sends the final P directly and shapes only Motor V.
-V rises and falls at the configured acceleration, is capped by the commanded
-maximum speed, and starts braking from physical feedback distance. This is
-online V shaping, not a finite point list or trajectory task. P receives no
-position feed-forward offset. The distance-based braking curve continues to
-zero at the endpoint; Runtime then arms a quiet V=0 hold after stable feedback.
-The shared `set_speed_percent(1..100)` value time-scales its motion limits;
-per-command ordinary PV percentages update that same value.
-Without a user override, the
-100% J1..J7 velocity limits are `[180,180,180,225,225,225,225] deg/s` and
-acceleration limits are `[450,450,900,900,900,900,900] deg/s^2`. Optional
-`set_max_speed()` and `set_max_acceleration()` values become the common
-14-joint 100% base; passing 0 clears that override and restores the per-joint
-defaults. Scaling multiplies velocity by `s` and acceleration by `s²`. Runtime
-selects each POS_VEL `V` from the acceleration ramp and feedback-distance
-braking limit instead of sending one fixed maximum continuously.
-MIT product mode exposes exactly two methods. Standard
-`set_joint_mit(q, dq, kp, kd, tau_ff)` accepts every field of a complete
-14-joint MIT frame from the user. Each new frame atomically replaces the old
-one; Runtime does no interpolation and the streaming watchdog still applies.
-`set_joint_mit_fast(q, speed_percent=100)` is the angle-only high-frequency
-teleoperation method: users provide the newest joint angles and a `0..100`
-reference-speed percentage, while
-Runtime applies fixed J1..J7 `Kp=[190,190,100,100,70,60,50]`,
-`Kd=[4.55,4.50,2.50,2.50,0.70,0.60,0.50]`, and an internal 100-percent
-(5 rad/s) position-reference step base with `dq=0` and `tau_ff=0`. Therefore
-50 percent selects 2.5 rad/s and 0 percent retains the latest target without
-advancing the reference. Standard MIT does not accept a speed percentage, and
-neither MIT method creates a finite trajectory/Motion ID.
-Linear/Circular retain independent internal base velocity, acceleration,
-timing and synchronization constraints, but use the same shared Runtime speed
-percentage as ordinary PV. Users provide only the path geometry; Runtime
-automatically selects a safe duration, and trajectory base limits remain
-internal policy.
-Pose callers may use the pure `solve_ik(left_pose, right_pose)` query to obtain
-14 joint angles without moving, then explicitly submit them through ordinary
-PV or standard MIT. Runtime ABI 16 does not export the former mode-neutral `set_pose()`
-shortcut. The public `move_pose(side, target_pose)` method instead plans a
-finite quintic Cartesian pose-to-pose motion.
-Linear constructs a true Cartesian line from the current/start FK pose: XYZ is
-linearly interpolated and orientation follows shortest-path quaternion SLERP.
-An implicit Linear start remains the current planned pose. For an explicit
-Linear/Linear Path/Circular start, Runtime uses ordinary Cartesian PTP
-multi-seed endpoint IK, orders the reachable start branches by joint distance,
-and accepts only a branch that can continuously finish the complete later path.
-After that selection, each later pose is solved only from the preceding joint
-solution and path IK does not use fallback, random, or extrapolated posture
-seeds. A position-priority
-null-space term keeps each solution near exactly its preceding seed. XYZ error
-is limited to 0.5 mm and orientation residual to 0.035 rad. True branch jumps
-above 0.35 rad and repeated visible +/- joint-direction chatter are rejected;
-sub-1 mrad sign changes are treated as numerical or local-extremum noise.
-Geometry is sampled at 2 mm / 0.1 rad or better. A quintic time law generates
-adaptive 4..50 ms trajectory-PV knots, additionally bounded by scaled reference
-velocity, acceleration, 0.02 rad adjacent joint step and linearization error.
-At 50%, a comparable path takes about twice as long as at 100%. Runtime linearly
-resamples adjacent knots and sends the resulting reference at 500 Hz, without
-applying the ordinary-PV endpoint step generator. Per-cycle P changes smaller
-than one Damiao 16-bit position-feedback quantum (25/65535 rad, about 0.02186
-degrees) accumulate against the last effective P; Runtime repeats that P until
-the threshold is reached and always forces the exact endpoint.
-POS_VEL P itself remains float32. The internal POS_VEL V limit follows the
-current planned joint speed, bounded by the product ceiling, so slow
-trajectories do not repeatedly chase discrete P targets at 3 rad/s.
-Circular constructs the directed circle through start/via/end, samples the arc
-at 2 mm / 0.1 rad or better, applies shortest-path SLERP through the via
-orientation, and uses the same quintic adaptive trajectory-PV chain. Physical
-arrival may be later due to PV limits and feedback stability. Linear and
-Circular automatically time-parameterize against the shared percentage of the
-internal 1 rad/s velocity and 6 rad/s^2 acceleration bases.
-Multi-pose Linear preserves every declared internal corner and inserts no
-Cartesian fillet. Each sharp boundary uses its own rest-to-rest quintic time law
-so the TCP reaches the corner without an instantaneous non-zero velocity change.
-The public `set_joint_pv()` command is the ordinary endpoint interface.
-`TrajectoryPv` is internal-only and can be selected only by a validated finite
-Linear/Circular trajectory; its adaptive time-stamped knots are resampled on the
-500 Hz Runtime command clock. No raw or streaming PV entry point is exported.
-Automatic approach stays inside that trajectory execution path.
-The approach and complete path are preplanned before either can move. They run
-as one cancelable motion task with a physical-feedback stability barrier at the
-explicit start, and `motion_arrived` becomes true only after the final endpoint
-is physically stable.
-`move_pose`, Linear and Circular require PV product mode. Their public calls are
-nonblocking and return no Motion ID. Runtime accepts only one active finite
-Cartesian motion; `motion_arrived` in the product state reports physical
-completion, and `stop_motion()` stops the active motion. Applications own wait,
-fault and timeout policy. Joint point-to-point trajectory planning is not part
-of the public Runtime API.
+## 本机构建
 
-See [the Runtime reference](articore_runtime/README.md) for the current API.
-
-## Build and test
+必须使用 Cyclone DDS `11.0.1`，不能使用 Ubuntu 22.04 的旧包：
 
 ```bash
-cmake -S . -B builds/dev -DCMAKE_BUILD_TYPE=Release
-cmake --build builds/dev -j
-ctest --test-dir builds/dev --output-on-failure
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/opt/cyclonedds-11.0.1
+cmake --build build -j
+ctest --test-dir build --output-on-failure
 ```
 
-Hardware diagnostics are built explicitly and are never registered in CTest.
-They may enable or move the robot and must only be run with a guarded workspace.
+只验证 Motor/Runtime、不构建网络服务时可使用
+`-DARTICORE_ENABLE_DDS=OFF`。
 
-## Packaging
+## RK3588 部署
+
+目标系统是 Ubuntu 22.04 ARM64。配置入口为
+`/etc/articore/runtime-service.conf` 和 `/etc/articore/can.conf`。
+Debian 包安装服务、私有 `libddsc.so.11`、CAN 初始化单元、Runtime 单元和
+udev 热插拔规则，不安装开发头文件。1.0.3 针对当前 RK3588 使用 `wlan0`
+作为 DDS 默认网卡，并按两个 USB-CAN 的真实序列号稳定命名
+`can-left`/`can-right`。
+
+交叉编译时，`idlc` 必须是宿主机 11.0.1 可执行文件，而 Cyclone DDS CMake
+包及 `libddsc` 必须来自 ARM64 sysroot：
 
 ```bash
-python -m build packaging/pypi --wheel
+MOTOR_AARCH64_SYSROOT=/path/to/rk3588-sysroot \
+ARTICORE_HOST_IDLC=/opt/cyclonedds-host-11.0.1/bin/idlc \
+ARTICORE_PINOCCHIO_HEADER_ROOT=/opt/pinocchio-3.8/include \
+scripts/build_aarch64_runtime.sh
 ```
 
-Publishing is a separate release action. Building and testing local changes do
-not require uploading to PyPI.
+Pinocchio 3.8 的算法是模板实现，交叉编译时直接编译进主程序，因此目标板
+不需要另装 `libpinocchio.so`。Cyclone DDS 11.0.1 则作为私有动态库随包安装。
+
+Runtime 处于 `FAULT` 时仍可持有 DDS 控制租约并执行显式维护请求。模式配置和
+普通清错的拒绝回复包含当前状态、要求状态、原始故障原因和失败电机；急停锁存
+仍不能由普通 `CLEAR_FAULTS` 清除。
+
+安装不会自动使能电机。真机运动、掉线和 watchdog 验收必须另行取得硬件
+操作授权。
+
+固定 RK3588 测试机的产物上传、校验、安装和服务启动步骤见
+[`docs/RK3588_DEPLOYMENT.md`](docs/RK3588_DEPLOYMENT.md)。
