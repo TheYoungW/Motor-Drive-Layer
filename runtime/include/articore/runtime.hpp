@@ -91,7 +91,7 @@ struct ThreadPolicy {
   int can_rx_cpu = -1;
   int control_priority = 80;
   int can_tx_priority = 75;
-  int can_rx_priority = 70;
+  int can_rx_priority = 75;
   bool lock_memory = true;
 };
 

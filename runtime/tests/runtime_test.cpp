@@ -912,12 +912,12 @@ void test_runtime_maintenance_keeps_ready_and_reports_partial_failure() {
           "failed recover falls back to confirmed disable and records motor identity");
 }
 
-void test_mode_configuration_uses_one_parallel_batch_deadline() {
+void test_mode_configuration_uses_bounded_side_workers() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
   for (auto& entry : driver.motors) entry.second.status = 0;
-  driver.configure_mode_delay_ms = 150;
+  driver.configure_mode_delay_ms = 100;
   articore::SafetyRuntime runtime(
       config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
       g_right_controller, motors, enable_all, enable_motor, false,
@@ -930,11 +930,11 @@ void test_mode_configuration_uses_one_parallel_batch_deadline() {
   const auto elapsed = std::chrono::steady_clock::now() - started;
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
-    require(driver.max_active_mode_calls == motors.size(),
-            "all Motor mode transactions run concurrently");
+    require(driver.max_active_mode_calls == 2,
+            "mode configuration uses at most one worker per active side");
   }
   require(elapsed < 250ms,
-          "mode configuration latency is bounded by one Motor, not Motor count");
+          "two CAN-side maintenance workers progress concurrently");
 }
 
 void test_connect_mode_configuration_accepts_moving_disabled_feedback() {
@@ -8248,7 +8248,7 @@ int main() {
     RUN_TEST(test_motor_power_batch_latches_fault_when_rollback_is_unconfirmed);
     RUN_TEST(test_partial_mit_filters_disabled_motors_before_torque_validation);
     RUN_TEST(test_runtime_maintenance_keeps_ready_and_reports_partial_failure);
-    RUN_TEST(test_mode_configuration_uses_one_parallel_batch_deadline);
+    RUN_TEST(test_mode_configuration_uses_bounded_side_workers);
     RUN_TEST(test_connect_mode_configuration_accepts_moving_disabled_feedback);
     RUN_TEST(test_connect_enabled_motor_fault_is_recoverable_from_ready);
     RUN_TEST(test_connect_motor_fault_is_clearable_without_configuring_product);

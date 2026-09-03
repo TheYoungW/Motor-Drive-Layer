@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
-#include <thread>
 
 namespace articore {
 
@@ -248,18 +247,26 @@ int32_t SafetyRuntime::configure_hardware_mode(
     std::string error;
   };
   std::vector<MotorResult> results(motors_.size());
-  std::vector<std::thread> workers;
-  workers.reserve(motors_.size());
+  std::array<std::vector<std::size_t>, 2> motors_by_side;
+  for (std::size_t index = 0; index < motors_.size(); ++index) {
+    const auto side = motors_[index].descriptor.side;
+    if (!active_sides_[side]) continue;
+    results[index].attempted = true;
+    motors_by_side[side].push_back(index);
+  }
+
+  // Maintenance concurrency is bounded to one worker per CAN channel.  This
+  // keeps the non-RT side of the service at a stable 1..2 workers while both
+  // channels still progress in parallel.  Each side's PacingBus already
+  // serializes its wire traffic, so one thread per Motor only added scheduler
+  // contention without increasing physical CAN concurrency.
   const uint32_t transaction_timeout_ms =
       std::max(config_.disable_feedback_timeout_ms,
                kControlModeTransactionTimeoutMs);
   const auto mode_deadline =
       Clock::now() + std::chrono::milliseconds(transaction_timeout_ms);
-  for (std::size_t index = 0; index < motors_.size(); ++index) {
-    const auto& motor = motors_[index];
-    if (!active_sides_[motor.descriptor.side]) continue;
-    results[index].attempted = true;
-    workers.emplace_back([&, index] {
+  detail::run_active_sides(active_sides_, [&](uint8_t side) {
+    for (const auto index : motors_by_side[side]) {
       const auto& target = motors_[index];
       const uint32_t native_mode =
           target.descriptor.is_gripper || mode == ARTICORE_MODE_MIT ? 1U : 2U;
@@ -267,12 +274,13 @@ int32_t SafetyRuntime::configure_hardware_mode(
       int32_t rc = -1;
       if (now < mode_deadline) {
         // Every Motor receives only the time left in the one product-wide
-        // transaction window. Motor I/O runs concurrently; the per-channel
-        // pacing bus still serializes frames at the configured wire gap.
-        const auto remaining_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            mode_deadline - now);
-        const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            remaining_ns + std::chrono::microseconds(999));
+        // transaction window. The two CAN channels progress independently.
+        const auto remaining_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                mode_deadline - now);
+        const auto remaining_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                remaining_ns + std::chrono::microseconds(999));
         rc = backend_->ensure_mode(
             target.descriptor.motor, native_mode,
             static_cast<uint32_t>(std::max(remaining_ms,
@@ -284,16 +292,15 @@ int32_t SafetyRuntime::configure_hardware_mode(
         rc = backend_->set_timeout_ms(
             target.descriptor.motor, backend_->communication_timeout_ms());
       }
-      if (rc == 0) return;
+      if (rc == 0) continue;
       results[index].failed = target.descriptor.name;
       const char* detail = backend_->last_error_message();
       results[index].error = detail && detail[0]
           ? detail
           : (now >= mode_deadline ? "control mode batch deadline expired"
                                   : "native motor command failed");
-    });
-  }
-  for (auto& worker : workers) worker.join();
+    }
+  });
   for (const auto& result : results) {
     if (!result.attempted || result.failed.empty()) continue;
     failed_motors.emplace_back(result.failed);
@@ -344,24 +351,19 @@ int32_t SafetyRuntime::run_motor_maintenance(
       std::vector<std::string> failed;
       std::vector<std::string> errors;
     } results[2];
-    std::vector<std::thread> workers;
-    for (uint8_t side = 0; side < 2; ++side) {
-      if (!active_sides_[side]) continue;
-      workers.emplace_back([&, side] {
-        for (const auto& motor : motors_) {
-          if (motor.descriptor.side != side) continue;
-          const int32_t rc = operation == ARTICORE_OPERATION_CLEAR_FAULTS
-              ? backend_->clear_error(motor.descriptor.motor)
-              : backend_->set_zero(motor.descriptor.motor);
-          if (rc == 0) continue;
-          results[side].failed.emplace_back(motor.descriptor.name);
-          const char* detail = backend_->last_error_message();
-          results[side].errors.emplace_back(
-              detail && detail[0] ? detail : "native motor command failed");
-        }
-      });
-    }
-    for (auto& worker : workers) worker.join();
+    detail::run_active_sides(active_sides_, [&](uint8_t side) {
+      for (const auto& motor : motors_) {
+        if (motor.descriptor.side != side) continue;
+        const int32_t rc = operation == ARTICORE_OPERATION_CLEAR_FAULTS
+            ? backend_->clear_error(motor.descriptor.motor)
+            : backend_->set_zero(motor.descriptor.motor);
+        if (rc == 0) continue;
+        results[side].failed.emplace_back(motor.descriptor.name);
+        const char* detail = backend_->last_error_message();
+        results[side].errors.emplace_back(
+            detail && detail[0] ? detail : "native motor command failed");
+      }
+    });
     for (const auto& result : results) {
       failed.insert(failed.end(), result.failed.begin(), result.failed.end());
       for (std::size_t index = 0; index < result.errors.size(); ++index) {

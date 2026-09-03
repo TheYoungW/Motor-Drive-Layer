@@ -106,6 +106,19 @@ systemctl status articore-runtime.service --no-pager
 journalctl -u articore-runtime.service -n 200 --no-pager
 ```
 
+检查线程亲和性和实时优先级：
+
+```bash
+pid=$(pidof articore-runtime-service)
+ps -L -p "$pid" -o pid,tid,psr,cls,rtprio,pri,comm
+```
+
+默认线程策略为：普通 DDS/Cyclone/维护线程继承 CPU 0..4 和
+`SCHED_OTHER`；两个 CAN RX worker 使用 CPU 5/FIFO 75，两个 CAN TX
+worker 使用 CPU 6/FIFO 75，Runtime 500 Hz 控制线程使用 CPU 7/FIFO 80。
+一次维护操作使用当前控制 worker 加至多一个按侧 helper，总执行线程数为
+1..2。板卡验收应同时检查 USB/CAN IRQ 与 `ksoftirqd` 的实际 CPU 分布。
+
 Runtime 启动后保持电机 disabled。电机 enable、维护操作和运动命令必须通过
 DDS 控制租约另行明确执行。
 

@@ -47,36 +47,31 @@ bool SafetyRuntime::request_feedback_parallel(
     uint32_t timeout_ms, std::vector<MissingMotor>& missing_motors,
     std::string& error, FeedbackTransactionResults* output_results) {
   FeedbackTransactionResults local_results{};
-  std::vector<std::thread> workers;
-  for (uint8_t side = 0; side < 2; ++side) {
-    if (!active_sides_[side]) continue;
+  detail::run_active_sides(active_sides_, [&](uint8_t side) {
     local_results[side].active = true;
-    workers.emplace_back([&, side] {
-      const auto motor_count = static_cast<uint32_t>(std::count_if(
-          motors_.begin(), motors_.end(), [&](const MotorRecord& motor) {
-            return motor.descriptor.side == side;
-          }));
-      auto& result = local_results[side];
-      result.missing.assign(std::max<uint32_t>(motor_count, 1),
-                            std::numeric_limits<uint32_t>::max());
-      result.report.struct_size = sizeof(result.report);
-      result.code = backend_->request_feedback(
-          controllers_[side], timeout_ms, &result.report,
-          result.missing.data(), static_cast<uint32_t>(result.missing.size()));
-      const auto reported = std::min<std::size_t>(
-          result.report.missing_count, result.missing.size());
-      result.missing.resize(reported);
-      result.missing.erase(
-          std::remove(result.missing.begin(), result.missing.end(),
-                      std::numeric_limits<uint32_t>::max()),
-          result.missing.end());
-      if (result.code != 0) {
-        const char* detail = backend_->last_error_message();
-        if (detail && detail[0]) result.error = detail;
-      }
-    });
-  }
-  for (auto& worker : workers) worker.join();
+    const auto motor_count = static_cast<uint32_t>(std::count_if(
+        motors_.begin(), motors_.end(), [&](const MotorRecord& motor) {
+          return motor.descriptor.side == side;
+        }));
+    auto& result = local_results[side];
+    result.missing.assign(std::max<uint32_t>(motor_count, 1),
+                          std::numeric_limits<uint32_t>::max());
+    result.report.struct_size = sizeof(result.report);
+    result.code = backend_->request_feedback(
+        controllers_[side], timeout_ms, &result.report,
+        result.missing.data(), static_cast<uint32_t>(result.missing.size()));
+    const auto reported = std::min<std::size_t>(
+        result.report.missing_count, result.missing.size());
+    result.missing.resize(reported);
+    result.missing.erase(
+        std::remove(result.missing.begin(), result.missing.end(),
+                    std::numeric_limits<uint32_t>::max()),
+        result.missing.end());
+    if (result.code != 0) {
+      const char* detail = backend_->last_error_message();
+      if (detail && detail[0]) result.error = detail;
+    }
+  });
 
   bool ok = true;
   missing_motors.clear();
@@ -392,23 +387,21 @@ bool SafetyRuntime::confirm_enabled_feedback(
     struct RetryResult {
       std::string error;
     } retry_results[2];
-    std::vector<std::thread> retry_workers;
-    for (uint8_t side = 0; side < 2; ++side) {
-      if (retry_by_side[side].empty()) continue;
-      retry_workers.emplace_back([&, side] {
-        for (const auto* motor : retry_by_side[side]) {
-          if (backend_->enable_motor(motor->descriptor.motor) == 0) continue;
-          const char* detail = backend_->last_error_message();
-          retry_results[side].error =
-              std::string(side == 0 ? "CH0/" : "CH1/") +
-              motor->descriptor.name + ": one-shot enable retry failed";
-          if (detail && detail[0]) retry_results[side].error += ": " +
-              std::string(detail);
-          break;
+    const std::array<bool, 2> retry_sides{
+        !retry_by_side[0].empty(), !retry_by_side[1].empty()};
+    detail::run_active_sides(retry_sides, [&](uint8_t side) {
+      for (const auto* motor : retry_by_side[side]) {
+        if (backend_->enable_motor(motor->descriptor.motor) == 0) continue;
+        const char* detail = backend_->last_error_message();
+        retry_results[side].error =
+            std::string(side == 0 ? "CH0/" : "CH1/") +
+            motor->descriptor.name + ": one-shot enable retry failed";
+        if (detail && detail[0]) {
+          retry_results[side].error += ": " + std::string(detail);
         }
-      });
-    }
-    for (auto& worker : retry_workers) worker.join();
+        break;
+      }
+    });
     for (const auto& result : retry_results) {
       if (result.error.empty()) continue;
       error = result.error;
@@ -1143,18 +1136,13 @@ void SafetyRuntime::enable(ArticoreControlMode mode) {
       int32_t code = 0;
       std::string error;
     } side_results[2];
-    std::vector<std::thread> enable_workers;
-    for (uint8_t side = 0; side < 2; ++side) {
-      if (!active_sides_[side]) continue;
-      enable_workers.emplace_back([&, side] {
-        side_results[side].code = backend_->enable_all(controllers_[side]);
-        if (side_results[side].code != 0) {
-          const char* detail = backend_->last_error_message();
-          if (detail && detail[0]) side_results[side].error = detail;
-        }
-      });
-    }
-    for (auto& worker : enable_workers) worker.join();
+    detail::run_active_sides(active_sides_, [&](uint8_t side) {
+      side_results[side].code = backend_->enable_all(controllers_[side]);
+      if (side_results[side].code != 0) {
+        const char* detail = backend_->last_error_message();
+        if (detail && detail[0]) side_results[side].error = detail;
+      }
+    });
     for (uint8_t side = 0; side < 2; ++side) {
       if (!active_sides_[side] || side_results[side].code == 0) continue;
       if (!enable_error.empty()) enable_error += "; ";
@@ -1251,23 +1239,19 @@ bool SafetyRuntime::disable_hardware(bool request_feedback,
         std::vector<void*> sent;
         std::vector<std::string> errors;
       } side_results[2];
-      std::vector<std::thread> workers;
-      for (uint8_t side = 0; side < 2; ++side) {
-        workers.emplace_back([&, side] {
-          for (auto* motor : targets) {
-            if (motor->descriptor.side != side) continue;
-            if (backend_->disable_motor(motor->descriptor.motor) == 0) {
-              side_results[side].sent.push_back(motor->descriptor.motor);
-              continue;
-            }
-            const auto detail = motor_error("motor disable failed");
-            side_results[side].errors.push_back(
-                std::string(side == 0 ? "CH0/" : "CH1/") +
-                motor->descriptor.name + ": " + detail);
+      detail::run_active_sides(active_sides_, [&](uint8_t side) {
+        for (auto* motor : targets) {
+          if (motor->descriptor.side != side) continue;
+          if (backend_->disable_motor(motor->descriptor.motor) == 0) {
+            side_results[side].sent.push_back(motor->descriptor.motor);
+            continue;
           }
-        });
-      }
-      for (auto& worker : workers) worker.join();
+          const auto detail = motor_error("motor disable failed");
+          side_results[side].errors.push_back(
+              std::string(side == 0 ? "CH0/" : "CH1/") +
+              motor->descriptor.name + ": " + detail);
+        }
+      });
       for (uint8_t side = 0; side < 2; ++side) {
         sent.insert(sent.end(), side_results[side].sent.begin(),
                     side_results[side].sent.end());
@@ -1783,22 +1767,15 @@ void SafetyRuntime::recover() {
     std::vector<std::string> failed;
     std::vector<std::string> errors;
   } clear_results[2];
-  std::vector<std::thread> clear_workers;
-  for (uint8_t side = 0; side < 2; ++side) {
-    if (!active_sides_[side]) continue;
-    clear_workers.emplace_back([&, side] {
-      for (const auto& motor : motors_) {
-        if (motor.descriptor.side != side) continue;
-        if (backend_->clear_error(motor.descriptor.motor) == 0) {
-          continue;
-        }
-        clear_results[side].failed.emplace_back(motor.descriptor.name);
-        clear_results[side].errors.emplace_back(
-            motor_error("native motor clear-fault command failed"));
-      }
-    });
-  }
-  for (auto& worker : clear_workers) worker.join();
+  detail::run_active_sides(active_sides_, [&](uint8_t side) {
+    for (const auto& motor : motors_) {
+      if (motor.descriptor.side != side) continue;
+      if (backend_->clear_error(motor.descriptor.motor) == 0) continue;
+      clear_results[side].failed.emplace_back(motor.descriptor.name);
+      clear_results[side].errors.emplace_back(
+          motor_error("native motor clear-fault command failed"));
+    }
+  });
   std::vector<std::string> failed_motors;
   error.clear();
   for (const auto& result : clear_results) {

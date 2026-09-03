@@ -90,7 +90,10 @@ grep -q 'RIGHT_CAN_SERIAL=015213EF68D8345BBAA6D57818A4EC3A' "$root/deploy/can.co
 grep -q 'ATTRS{idVendor}=="1d50"' "$root/deploy/99-articore-can-hotplug.rules"
 grep -q 'ATTRS{idProduct}=="606f"' "$root/deploy/99-articore-can-hotplug.rules"
 grep -q 'Requires=articore-can.service' "$root/deploy/articore-runtime.service"
+grep -q '^CPUAffinity=0 1 2 3 4$' "$root/deploy/articore-runtime.service"
+grep -q '^CPUSchedulingPolicy=other$' "$root/deploy/articore-runtime.service"
 grep -q 'Environment=ARTICORE_RUNTIME_CONTROL_HZ=500' "$root/deploy/articore-runtime.service"
+grep -q '^can_rx_priority=75$' "$root/deploy/runtime-service.conf"
 grep -q 'systemctl enable articore-can.service articore-runtime.service' "$root/deploy/debian/postinst"
 
 cat >"$temporary/bin/getent" <<'EOF'

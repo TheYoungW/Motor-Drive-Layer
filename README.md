@@ -28,6 +28,26 @@ Runtime 内部调用链为 `YunyiRuntime → YunyiRuntimeCore → SafetyRuntime 
 旧 `runtime_bridge_*`、opaque handle、独立 robot-model bridge 和 Motion-ID/FIFO
 入口已删除；内部核心头文件不安装，跨进程边界只有 DDS v1 IDL。
 
+### RK3588 线程隔离
+
+随包安装的 systemd 单元把 DDS I/O、Cyclone 内部线程、控制操作 worker 和
+诊断工作限制在 CPU 0..4，并保持 `SCHED_OTHER`。专用实时线程随后覆盖继承的
+CPU mask：Runtime 500 Hz 控制线程固定 CPU 7/FIFO 80，左右 CAN TX worker
+固定 CPU 6/FIFO 75，左右 CAN RX worker 固定 CPU 5/FIFO 75。模式配置、清错、
+使能、失能和反馈维护按 CAN 侧执行，调用线程加至多一个 helper，因此同时执行
+维护工作的线程数固定为 1..2，不再按电机数量扩张。
+
+```text
+CPU0 CPU1 CPU2 CPU3 CPU4 | CPU5       | CPU6       | CPU7
+-------------------------+------------+------------+----------------
+Linux / DDS / Worker     | CAN RX x2 | CAN TX x2 | Runtime Control
+Network / diagnostics    | FIFO 75    | FIFO 75    | FIFO 80 / 500 Hz
+        SCHED_OTHER      |              SCHED_FIFO
+```
+
+CPU affinity 只约束用户态线程；部署验收还必须检查 USB/CAN IRQ 与
+`ksoftirqd` 没有长期占用 CPU 7。
+
 ## 网络协议
 
 协议版本为 `1.2`，`robot_id` 是 DDS key。1.1 新增左右独立的启动拓扑查询，
