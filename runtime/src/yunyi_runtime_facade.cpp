@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-#include "articore/detail/runtime_bridge_client.hpp"
+#include "articore/detail/yunyi_runtime_core.hpp"
 
 namespace articore {
 namespace {
@@ -74,7 +74,7 @@ class YunyiRuntime::Impl {
  public:
   explicit Impl(YunyiRuntimeConfig selected)
       : config(std::move(selected)),
-        bridge(static_cast<ArticoreControlMode>(config.initial_control_mode),
+        core(static_cast<ArticoreControlMode>(config.initial_control_mode),
                config.with_grippers, config.left_can_interface,
                config.right_can_interface, config.threads.realtime,
                config.threads.lock_memory, config.threads.control_cpu,
@@ -85,7 +85,7 @@ class YunyiRuntime::Impl {
                static_cast<std::uint32_t>(config.motor_watchdog.count())) {}
 
   YunyiRuntimeConfig config;
-  Runtime bridge;
+  YunyiRuntimeCore core;
   mutable std::mutex terminal_mutex;
   bool terminally_disconnected = false;
   std::string control_lost_reason;
@@ -153,7 +153,7 @@ Status YunyiRuntime::connect() {
     if (impl_->terminally_disconnected) {
       throw std::logic_error("Runtime cannot reconnect after disconnect");
     }
-    impl_->bridge.connect();
+    impl_->core.connect();
   });
 }
 
@@ -161,50 +161,50 @@ Status YunyiRuntime::disconnect() {
   return invoke([&] {
     std::lock_guard<std::mutex> lock(impl_->terminal_mutex);
     if (impl_->terminally_disconnected) return;
-    impl_->bridge.disconnect();
+    impl_->core.disconnect();
     impl_->terminally_disconnected = true;
   });
 }
 
 Status YunyiRuntime::configure_mode(ControlMode mode) {
-  return invoke([&] { impl_->bridge.configure_mode(
+  return invoke([&] { impl_->core.configure_mode(
       static_cast<ArticoreControlMode>(mode)); });
 }
 
 Result<ControlMode> YunyiRuntime::control_mode() const {
   return query<ControlMode>([&] {
-    return static_cast<ControlMode>(impl_->bridge.control_mode());
+    return static_cast<ControlMode>(impl_->core.control_mode());
   });
 }
 
-Status YunyiRuntime::enable() { return invoke([&] { impl_->bridge.enable(); }); }
-Status YunyiRuntime::disable() { return invoke([&] { impl_->bridge.disable(); }); }
-Status YunyiRuntime::set_zero() { return invoke([&] { impl_->bridge.set_zero(); }); }
+Status YunyiRuntime::enable() { return invoke([&] { impl_->core.enable(); }); }
+Status YunyiRuntime::disable() { return invoke([&] { impl_->core.disable(); }); }
+Status YunyiRuntime::set_zero() { return invoke([&] { impl_->core.set_zero(); }); }
 Status YunyiRuntime::clear_faults() {
-  return invoke([&] { impl_->bridge.clear_faults(); });
+  return invoke([&] { impl_->core.clear_faults(); });
 }
-Status YunyiRuntime::estop() { return invoke([&] { impl_->bridge.estop(); }); }
-Status YunyiRuntime::recover() { return invoke([&] { impl_->bridge.recover(); }); }
+Status YunyiRuntime::estop() { return invoke([&] { impl_->core.estop(); }); }
+Status YunyiRuntime::recover() { return invoke([&] { impl_->core.recover(); }); }
 
 Status YunyiRuntime::on_control_lost(const std::string& reason) {
   impl_->control_lost_reason = reason;
   // Run both actions even if cancellation reports an error: physical disable
   // is the final lease-loss barrier and must never be skipped.
-  const auto stopped = invoke([&] { impl_->bridge.stop_motion(); });
-  const auto disabled = invoke([&] { impl_->bridge.disable(); });
+  const auto stopped = invoke([&] { impl_->core.stop_motion(); });
+  const auto disabled = invoke([&] { impl_->core.disable(); });
   if (!disabled) return disabled;
   return stopped;
 }
 
 Status YunyiRuntime::set_joint_pv(const JointArray& positions,
                                   float speed_percent) {
-  return invoke([&] { impl_->bridge.set_joint_pv(
+  return invoke([&] { impl_->core.set_joint_pv(
       vector_from(positions), speed_percent); });
 }
 
 Status YunyiRuntime::set_joint_mit(const MitCommand& command) {
   return invoke([&] {
-    impl_->bridge.set_joint_mit(
+    impl_->core.set_joint_mit(
         vector_from(command.positions), vector_from(command.velocities),
         vector_from(command.kp), vector_from(command.kd),
         vector_from(command.feedforward_torques));
@@ -213,69 +213,69 @@ Status YunyiRuntime::set_joint_mit(const MitCommand& command) {
 
 Status YunyiRuntime::set_joint_mit_fast(const JointArray& positions,
                                         float speed_percent) {
-  return invoke([&] { impl_->bridge.set_joint_mit_fast(
+  return invoke([&] { impl_->core.set_joint_mit_fast(
       vector_from(positions), speed_percent); });
 }
 
 Status YunyiRuntime::set_speed_percent(float value) {
-  return invoke([&] { impl_->bridge.set_speed_percent(value); });
+  return invoke([&] { impl_->core.set_speed_percent(value); });
 }
 Status YunyiRuntime::set_max_speed(float value) {
-  return invoke([&] { impl_->bridge.set_max_speed(value); });
+  return invoke([&] { impl_->core.set_max_speed(value); });
 }
 Status YunyiRuntime::set_max_acceleration(float value) {
-  return invoke([&] { impl_->bridge.set_max_acceleration(value); });
+  return invoke([&] { impl_->core.set_max_acceleration(value); });
 }
 Result<float> YunyiRuntime::speed_percent() const {
-  return query<float>([&] { return impl_->bridge.speed_percent(); });
+  return query<float>([&] { return impl_->core.speed_percent(); });
 }
 Result<float> YunyiRuntime::max_speed() const {
-  return query<float>([&] { return impl_->bridge.max_speed(); });
+  return query<float>([&] { return impl_->core.max_speed(); });
 }
 Result<float> YunyiRuntime::max_acceleration() const {
-  return query<float>([&] { return impl_->bridge.max_acceleration(); });
+  return query<float>([&] { return impl_->core.max_acceleration(); });
 }
 Result<bool> YunyiRuntime::has_grippers() const {
-  return query<bool>([&] { return impl_->bridge.has_grippers(); });
+  return query<bool>([&] { return impl_->core.has_grippers(); });
 }
 
 Result<JointArray> YunyiRuntime::solve_ik(const Pose& left,
                                           const Pose& right) const {
-  return query<JointArray>([&] { return impl_->bridge.solve_ik(left, right); });
+  return query<JointArray>([&] { return impl_->core.solve_ik(left, right); });
 }
 Status YunyiRuntime::move_pose(RobotSide side, const Pose& target) {
-  return invoke([&] { impl_->bridge.move_pose(
+  return invoke([&] { impl_->core.move_pose(
       static_cast<std::uint32_t>(side), target); });
 }
 Status YunyiRuntime::move_linear(RobotSide side, const Pose& target) {
-  return invoke([&] { impl_->bridge.move_linear(
+  return invoke([&] { impl_->core.move_linear(
       static_cast<std::uint32_t>(side), target); });
 }
 Status YunyiRuntime::move_circular(RobotSide side, const Pose& start,
                                    const Pose& via, const Pose& end) {
-  return invoke([&] { impl_->bridge.move_circular(
+  return invoke([&] { impl_->core.move_circular(
       static_cast<std::uint32_t>(side), start, via, end); });
 }
 Status YunyiRuntime::stop_motion() {
-  return invoke([&] { impl_->bridge.stop_motion(); });
+  return invoke([&] { impl_->core.stop_motion(); });
 }
 
 Status YunyiRuntime::set_grippers(float left, float right, int strength,
                                   GripperMode mode) {
-  return invoke([&] { impl_->bridge.set_grippers(
+  return invoke([&] { impl_->core.set_grippers(
       left, right, strength, static_cast<ArticoreGripperMode>(mode)); });
 }
 Status YunyiRuntime::set_tcp_offset(RobotSide side, const Pose& offset) {
-  return invoke([&] { impl_->bridge.set_tcp_offset(
+  return invoke([&] { impl_->core.set_tcp_offset(
       static_cast<std::uint32_t>(side), offset); });
 }
 Status YunyiRuntime::reset_tcp_offset(RobotSide side) {
-  return invoke([&] { impl_->bridge.reset_tcp_offset(
+  return invoke([&] { impl_->core.reset_tcp_offset(
       static_cast<std::uint32_t>(side)); });
 }
 Result<Pose> YunyiRuntime::pose(RobotSide side) const {
   return query<Pose>([&] {
-    const auto source = impl_->bridge.pose(static_cast<std::uint32_t>(side));
+    const auto source = impl_->core.pose(static_cast<std::uint32_t>(side));
     Pose output{};
     std::copy_n(source.values, output.size(), output.begin());
     return output;
@@ -283,7 +283,7 @@ Result<Pose> YunyiRuntime::pose(RobotSide side) const {
 }
 Result<Pose> YunyiRuntime::tcp_offset(RobotSide side) const {
   return query<Pose>([&] {
-    const auto source = impl_->bridge.tcp_offset(
+    const auto source = impl_->core.tcp_offset(
         static_cast<std::uint32_t>(side));
     Pose output{};
     std::copy_n(source.values, output.size(), output.begin());
@@ -292,7 +292,7 @@ Result<Pose> YunyiRuntime::tcp_offset(RobotSide side) const {
 }
 Result<JointLimits> YunyiRuntime::joint_limits() const {
   return query<JointLimits>([&] {
-    const auto source = impl_->bridge.joint_angle_vel_limits();
+    const auto source = impl_->core.joint_angle_vel_limits();
     JointLimits output;
     std::copy_n(source.lower_angles, kRobotDof, output.lower_angles.begin());
     std::copy_n(source.upper_angles, kRobotDof, output.upper_angles.begin());
@@ -303,23 +303,23 @@ Result<JointLimits> YunyiRuntime::joint_limits() const {
 }
 Status YunyiRuntime::start_gravity_compensation(
     std::chrono::milliseconds transition) {
-  return invoke([&] { impl_->bridge.start_gravity_compensation(
+  return invoke([&] { impl_->core.start_gravity_compensation(
       static_cast<std::uint32_t>(transition.count())); });
 }
 Status YunyiRuntime::stop_gravity_compensation() {
-  return invoke([&] { impl_->bridge.stop_gravity_compensation(); });
+  return invoke([&] { impl_->core.stop_gravity_compensation(); });
 }
 Status YunyiRuntime::start_bimanual_follow(RobotSide leader) {
-  return invoke([&] { impl_->bridge.start_bimanual_follow(
+  return invoke([&] { impl_->core.start_bimanual_follow(
       static_cast<std::uint32_t>(leader)); });
 }
 Status YunyiRuntime::stop_bimanual_follow() {
-  return invoke([&] { impl_->bridge.stop_bimanual_follow(); });
+  return invoke([&] { impl_->core.stop_bimanual_follow(); });
 }
 Result<GravityCompensationStatus>
 YunyiRuntime::gravity_compensation_status() const {
   return query<GravityCompensationStatus>([&] {
-    const auto source = impl_->bridge.gravity_compensation_status();
+    const auto source = impl_->core.gravity_compensation_status();
     GravityCompensationStatus output;
     output.phase = source.phase;
     output.active = source.active != 0;
@@ -332,7 +332,7 @@ YunyiRuntime::gravity_compensation_status() const {
 }
 Result<BimanualFollowStatus> YunyiRuntime::bimanual_follow_status() const {
   return query<BimanualFollowStatus>([&] {
-    const auto source = impl_->bridge.bimanual_follow_status();
+    const auto source = impl_->core.bimanual_follow_status();
     BimanualFollowStatus output;
     output.phase = source.phase;
     output.active = source.active != 0;
@@ -351,7 +351,7 @@ Result<BimanualFollowStatus> YunyiRuntime::bimanual_follow_status() const {
 
 Result<RuntimeState> YunyiRuntime::state() const {
   return query<RuntimeState>([&] {
-    const auto source = impl_->bridge.state();
+    const auto source = impl_->core.state();
     RuntimeState output;
     for (std::size_t i = 0; i < kArmDof; ++i) {
       output.positions[i] = source.left.positions[i];
@@ -386,7 +386,7 @@ Result<RuntimeState> YunyiRuntime::state() const {
 
 Result<RuntimeHealth> YunyiRuntime::health() const {
   return query<RuntimeHealth>([&] {
-    const auto source = impl_->bridge.health();
+    const auto source = impl_->core.health();
     RuntimeHealth output;
     output.state = static_cast<SafetyState>(source.state);
     output.safe_holding = source.safe_holding != 0;

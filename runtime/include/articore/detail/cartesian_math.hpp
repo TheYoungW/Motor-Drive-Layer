@@ -6,7 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
-#include "articore/detail/runtime_bridge.hpp"
+#include "articore/detail/native_types.hpp"
 
 namespace articore::cartesian {
 

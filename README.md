@@ -24,6 +24,10 @@ can-left + can-right
 普通 PV/MIT 保持 latest-target-wins，有限 Cartesian 运动仍使用原有 Runtime
 轨迹语义。
 
+Runtime 内部调用链为 `YunyiRuntime → YunyiRuntimeCore → SafetyRuntime → motor`。
+旧 `runtime_bridge_*`、opaque handle、独立 robot-model bridge 和 Motion-ID/FIFO
+入口已删除；内部核心头文件不安装，跨进程边界只有 DDS v1 IDL。
+
 ## 网络协议
 
 协议版本为 `1.0`，`robot_id` 是 DDS key。固定 Topic：

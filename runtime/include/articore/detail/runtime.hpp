@@ -21,12 +21,12 @@
 #include <utility>
 #include <vector>
 
-#include "articore/detail/runtime_bridge.hpp"
+#include "articore/detail/native_types.hpp"
 #include "articore/detail/robot_model.hpp"
 #include "articore/detail/runtime_types.hpp"
 
 // Private callback adapter retained only for deterministic native tests. The
-// installed product ABI no longer exposes caller-assembled Motor resources.
+// installed service never exposes caller-assembled Motor resources.
 using ArticoreControllerCallFn = int32_t (*)(void*);
 using ArticoreGroupSendPosVelFn = int32_t (*)(
     void*, const ArticorePosVelCommand*, uint32_t);
@@ -977,7 +977,7 @@ class SafetyRuntime {
   static float position_to_opening(const MotorRecord& motor, float position);
 
   ArticoreRuntimeConfig config_{};
-  // Product control scheduling is deliberately absent from the stable ABI.
+  // Product control scheduling remains private to the service process.
   // The optional constructor override exists only in this private header for
   // deterministic native tests.
   uint32_t control_hz_ = 500;

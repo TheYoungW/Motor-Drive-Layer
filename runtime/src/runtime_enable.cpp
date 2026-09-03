@@ -1102,7 +1102,7 @@ void SafetyRuntime::enable(ArticoreControlMode mode) {
   }
 
   // Direct C++ users may omit the native enable callback. Preserve the 1.3
-  // contract for them while the exported runtime ABI always supplies it.
+  // contract for them while the product service always supplies it.
   if (!backend_->can_enable_all()) {
     try {
       {

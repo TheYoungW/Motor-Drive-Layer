@@ -1,9 +1,9 @@
 #pragma once
 
-#include "articore/detail/runtime_bridge.hpp"
+#include "articore/detail/native_types.hpp"
 
 // Native Runtime implementation types. None of these structures cross the
-// Yunyi product C ABI or are assembled by an SDK.
+// C++ product facade or are assembled by an SDK.
 
 enum ArticoreConnectErrorCode {
   ARTICORE_CONNECT_OK = 0,

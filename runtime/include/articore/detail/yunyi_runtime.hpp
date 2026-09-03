@@ -6,7 +6,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "articore/detail/runtime_bridge.hpp"
 #include "articore/detail/robot_model.hpp"
 #include "articore/detail/runtime.hpp"
 #include "articore/detail/yunyi_product.hpp"
@@ -129,7 +128,7 @@ static_assert(kYunyiOrdinaryPvJointMaximumAccelerations[0] > 7.85398f &&
               "ordinary PV joint acceleration limits must be rad/s^2 conversions");
 
 // Complete native ownership for the only supported robot product. Nothing in
-// this structure crosses the public ABI or needs to be assembled by Python.
+// this structure crosses the process boundary or needs to be assembled by Python.
 struct YunyiRuntimeResources {
   struct Joint {
     damiao::MotorHandle* motor = nullptr;
@@ -170,8 +169,8 @@ struct YunyiRuntimeResources {
 };
 
 // Reads the Motor core cache directly. These helpers keep all conversion from
-// native C++ state to the public product ABI in the product layer; there is no
-// intermediate Motor C ABI or second shared library.
+// native C++ state to the product facade in the product layer; there is no
+// intermediate Motor shared library.
 bool read_yunyi_motor_state(
     damiao::MotorHandle* motor, ArticoreMotorState& state,
     ArticoreFeedbackStats& stats) noexcept;

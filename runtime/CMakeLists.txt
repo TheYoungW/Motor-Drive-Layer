@@ -46,7 +46,6 @@ add_library(articore_runtime STATIC
   src/runtime.cpp
   src/runtime_commands.cpp
   src/runtime_enable.cpp
-  src/runtime_facade_bridge.cpp
   src/runtime_gripper.cpp
   src/runtime_gravity.cpp
   src/runtime_joint_position.cpp
@@ -55,6 +54,7 @@ add_library(articore_runtime STATIC
   src/runtime_trajectory.cpp
   src/runtime_worker.cpp
   src/yunyi_runtime.cpp
+  src/yunyi_runtime_core.cpp
   src/yunyi_runtime_facade.cpp
 )
 add_library(articore::runtime ALIAS articore_runtime)

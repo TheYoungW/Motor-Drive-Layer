@@ -13,4 +13,14 @@ foreach(FILE_PATH IN LISTS RUNTIME_FILES)
   if(CONTENT MATCHES "articore/dds" OR CONTENT MATCHES "dds/")
     message(FATAL_ERROR "runtime layer depends on dds: ${FILE_PATH}")
   endif()
+  if(CONTENT MATCHES "runtime_bridge" OR
+     CONTENT MATCHES "robot_model_bridge")
+    message(FATAL_ERROR "legacy Runtime bridge returned: ${FILE_PATH}")
+  endif()
 endforeach()
+
+if(EXISTS "${ROOT}/runtime/include/articore/detail/runtime_bridge.hpp" OR
+   EXISTS "${ROOT}/runtime/include/articore/detail/runtime_bridge_client.hpp" OR
+   EXISTS "${ROOT}/runtime/src/runtime_facade_bridge.cpp")
+  message(FATAL_ERROR "legacy Runtime bridge files must not be restored")
+endif()

@@ -9,16 +9,18 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "articore/detail/runtime_bridge.hpp"
+#include "articore/detail/native_types.hpp"
+#include "articore/detail/yunyi_runtime_core.hpp"
 #include "articore/detail/product_cartesian.hpp"
 #include "articore/detail/robot_model.hpp"
 #include "articore/detail/runtime.hpp"
 #include "articore/detail/yunyi_runtime.hpp"
 
-struct ArticoreRuntime {
-  explicit ArticoreRuntime(
+struct YunyiRuntimeCoreState {
+  explicit YunyiRuntimeCoreState(
       std::unique_ptr<articore::SafetyRuntime> value,
       std::unique_ptr<articore::YunyiRuntimeResources> owned = {},
       ArticoreControlMode product_mode = ARTICORE_MODE_PV)
@@ -39,11 +41,6 @@ struct ArticoreRuntime {
   std::mutex motion_mutex;
 };
 
-struct ArticoreRobotModel {
-  explicit ArticoreRobotModel(std::unique_ptr<articore::RobotModel> value)
-      : model(std::move(value)) {}
-  std::unique_ptr<articore::RobotModel> model;
-};
 
 namespace {
 
@@ -64,7 +61,7 @@ int32_t call(Function&& function) {
   }
 }
 
-ArticoreRuntime* create_yunyi_runtime_checked(
+YunyiRuntimeCoreState* create_yunyi_runtime_checked(
     int32_t requested_mode, int32_t with_grippers,
     const articore::YunyiNativeConfig& native_config = {}) {
   if (requested_mode != ARTICORE_MODE_PV &&
@@ -77,16 +74,16 @@ ArticoreRuntime* create_yunyi_runtime_checked(
   auto bundle = articore::create_yunyi_runtime(
       static_cast<ArticoreControlMode>(requested_mode), with_grippers != 0,
       native_config);
-  return new ArticoreRuntime(
+  return new YunyiRuntimeCoreState(
       std::move(bundle.runtime), std::move(bundle.resources), bundle.mode);
 }
 
-articore::SafetyRuntime& checked(ArticoreRuntime* runtime) {
+articore::SafetyRuntime& checked(YunyiRuntimeCoreState* runtime) {
   if (!runtime || !runtime->runtime) throw std::invalid_argument("runtime is null");
   return *runtime->runtime;
 }
 
-articore::YunyiRuntimeResources& checked_yunyi(ArticoreRuntime* runtime) {
+articore::YunyiRuntimeResources& checked_yunyi(YunyiRuntimeCoreState* runtime) {
   checked(runtime);
   if (!runtime->yunyi) {
     throw std::runtime_error("operation requires the Yunyi dual-arm Runtime");
@@ -153,7 +150,7 @@ struct CartesianSpeedScale {
       articore::kYunyiTrajectoryPvAccelerationLimit;
 };
 
-CartesianSpeedScale cartesian_speed_scale(ArticoreRuntime* runtime) {
+CartesianSpeedScale cartesian_speed_scale(YunyiRuntimeCoreState* runtime) {
   std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
   const float scale = runtime->product_speed_percent / 100.0f;
   return {
@@ -194,7 +191,7 @@ class CommandPlanningScope {
 };
 
 void install_product_joint_positions(
-    ArticoreRuntime* runtime, const float* positions, uint32_t count,
+    YunyiRuntimeCoreState* runtime, const float* positions, uint32_t count,
     float speed_percent,
     articore::SafetyRuntime::CommandTransaction* transaction = nullptr,
     uint64_t planning_token = 0,
@@ -279,7 +276,7 @@ void install_product_joint_positions(
 }
 
 int32_t record_product_command_error(
-    ArticoreRuntime* runtime, int32_t code, const std::string& error) {
+    YunyiRuntimeCoreState* runtime, int32_t code, const std::string& error) {
   if (runtime && runtime->runtime) {
     runtime->runtime->record_operation_result(
         ARTICORE_OPERATION_COMMAND, code, error);
@@ -324,7 +321,7 @@ articore::NativeTrajectorySample product_ik_reference(
 }
 
 int32_t solve_product_ik_impl(
-    ArticoreRuntime* runtime, const float* left_target_pose,
+    YunyiRuntimeCoreState* runtime, const float* left_target_pose,
     const float* right_target_pose, float* positions, uint32_t count) {
   try {
     if (!left_target_pose || !right_target_pose) {
@@ -367,7 +364,7 @@ int32_t solve_product_ik_impl(
 }
 
 int32_t move_linear_trajectory_impl(
-    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+    YunyiRuntimeCoreState* runtime, uint32_t side, const float* start_pose,
     const float* end_pose, uint64_t* motion_id, bool enqueue = true,
     ArticoreRuntimeOperation operation = ARTICORE_OPERATION_MOVE_LINEAR) {
   try {
@@ -432,65 +429,8 @@ int32_t move_linear_trajectory_impl(
   }
 }
 
-int32_t move_linear_path_trajectory_impl(
-    ArticoreRuntime* runtime, uint32_t side, const float* poses,
-    uint32_t pose_count, uint64_t* motion_id, bool enqueue = true) {
-  try {
-    if (!runtime) throw std::invalid_argument("runtime is null");
-    if (!motion_id) throw std::invalid_argument("motion_id output is null");
-    std::lock_guard<std::mutex> motion_lock(runtime->motion_mutex);
-    auto& safety = checked(runtime);
-    auto& product = checked_yunyi(runtime);
-    const auto joints = articore::product_cartesian_joints(product);
-
-    articore::NativeTrajectorySample reference;
-    CommandPlanningScope planning(safety);
-    {
-      auto snapshot = safety.begin_command_transaction();
-      planning.begin(snapshot, enqueue);
-      reference = enqueue
-          ? safety.planned_trajectory_tail_sample(joints, snapshot)
-          : safety.planned_arm_sample(joints, snapshot);
-    }
-    const auto speed = cartesian_speed_scale(runtime);
-    auto plan = articore::build_linear_path_trajectory_plan_from_reference(
-        product, runtime->product_mode, side, reference, poses, pose_count,
-        speed.reference_acceleration, speed.reference_velocity);
-
-    auto transaction = safety.begin_command_transaction();
-    const auto current = enqueue
-        ? safety.planned_trajectory_tail_sample(joints, transaction)
-        : safety.planned_arm_sample(joints, transaction);
-    articore::require_unchanged_planned_reference(
-        reference, current, "linear path");
-    const uint64_t new_id = safety.start_trajectory(
-        plan.trajectory, 0, &transaction, enqueue, planning.token());
-    *motion_id = new_id;
-    safety.record_operation_result(
-        ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY, ARTICORE_OPERATION_OK);
-    g_last_error = "ok";
-    return ARTICORE_OPERATION_OK;
-  } catch (const std::invalid_argument& error) {
-    if (runtime && runtime->runtime) {
-      runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY,
-          ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
-    }
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  } catch (const std::exception& error) {
-    if (runtime && runtime->runtime) {
-      runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_MOVE_LINEAR_TRAJECTORY,
-          ARTICORE_OPERATION_INVALID_STATE, error.what());
-    }
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_STATE;
-  }
-}
-
 int32_t move_circular_trajectory_impl(
-    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+    YunyiRuntimeCoreState* runtime, uint32_t side, const float* start_pose,
     const float* via_pose, const float* end_pose, uint64_t* motion_id,
     bool enqueue = true) {
   try {
@@ -549,88 +489,8 @@ int32_t move_circular_trajectory_impl(
   }
 }
 
-articore::RobotModel& checked(ArticoreRobotModel* model) {
-  if (!model || !model->model) {
-    throw std::invalid_argument("robot model is null");
-  }
-  return *model->model;
-}
-
-template <std::size_t Size>
-void copy_abi_text(char (&target)[Size], const std::string& value) {
-  const auto count = std::min(value.size(), Size - 1);
-  std::memcpy(target, value.data(), count);
-  target[count] = '\0';
-}
-
-int32_t motor_power_batch(ArticoreRuntime* runtime,
-                          const char* const* roles,
-                          uint32_t count,
-                          bool enabled,
-                          ArticoreMotorPowerReport* report) {
-  const auto operation = enabled ? ARTICORE_OPERATION_ENABLE
-                                 : ARTICORE_OPERATION_DISABLE;
-  if (!report) {
-    g_last_error = "motor power report is null";
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  }
-  if (report->struct_size != sizeof(ArticoreMotorPowerReport)) {
-    g_last_error = "motor power report struct_size does not match";
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  }
-  ArticoreMotorPowerReport failure{};
-  failure.struct_size = sizeof(failure);
-  failure.requested_enabled = enabled ? 1 : 0;
-  failure.requested_count = count;
-  std::vector<std::string> names;
-  try {
-    if (count != 0 && !roles) {
-      throw std::invalid_argument("motor roles array is null");
-    }
-    names.reserve(count);
-    for (uint32_t i = 0; i < count; ++i) {
-      if (!roles[i]) {
-        throw std::invalid_argument(
-            "motor role at index " + std::to_string(i) + " is null");
-      }
-      names.emplace_back(roles[i]);
-    }
-    *report = checked(runtime).set_motor_power_batch(names, enabled);
-    std::vector<std::string> failed;
-    for (uint32_t i = 0; i < report->motor_count; ++i) {
-      if (!report->motors[i].confirmed) {
-        failed.emplace_back(report->motors[i].role);
-      }
-    }
-    const auto code = report->success ? ARTICORE_OPERATION_OK
-                                      : ARTICORE_OPERATION_VERIFICATION;
-    checked(runtime).record_operation_result(
-        operation, code, report->error, failed);
-    g_last_error = report->success ? "ok" : report->error;
-    return code;
-  } catch (const std::invalid_argument& error) {
-    copy_abi_text(failure.error, error.what());
-    *report = failure;
-    if (runtime && runtime->runtime) {
-      runtime->runtime->record_operation_result(
-          operation, ARTICORE_OPERATION_INVALID_ARGUMENT, error.what(), names);
-    }
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  } catch (const std::exception& error) {
-    copy_abi_text(failure.error, error.what());
-    *report = failure;
-    if (runtime && runtime->runtime) {
-      runtime->runtime->record_operation_result(
-          operation, ARTICORE_OPERATION_MOTOR_COMMAND, error.what(), names);
-    }
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_MOTOR_COMMAND;
-  }
-}
-
 int32_t set_product_grippers_impl(
-    ArticoreRuntime* runtime, float left_opening, float right_opening,
+    YunyiRuntimeCoreState* runtime, float left_opening, float right_opening,
     int32_t strength, int32_t minimum_strength, int32_t mode,
     const char* strength_error) {
   try {
@@ -679,109 +539,10 @@ int32_t set_product_grippers_impl(
 
 }  // namespace
 
-ARTICORE_RUNTIME_API ArticoreRobotModel* robot_model_bridge_create(
-    const char* product_id, uint32_t side) {
-  if (!product_id) {
-    g_last_error = "robot product_id is null";
-    return nullptr;
-  }
-  try {
-    auto value = std::make_unique<articore::RobotModel>(product_id, side);
-    g_last_error = "ok";
-    return new ArticoreRobotModel(std::move(value));
-  } catch (const std::exception& error) {
-    g_last_error = error.what();
-    return nullptr;
-  } catch (...) {
-    g_last_error = "unknown robot model creation error";
-    return nullptr;
-  }
-}
+namespace {
 
-ARTICORE_RUNTIME_API void robot_model_bridge_free(ArticoreRobotModel* model) {
-  delete model;
-}
-
-ARTICORE_RUNTIME_API int32_t robot_model_bridge_get_info(
-    ArticoreRobotModel* model, ArticoreRobotModelInfo* info) {
-  return call([&] { checked(model).get_info(info); });
-}
-
-ARTICORE_RUNTIME_API int32_t robot_model_bridge_fk(
-    ArticoreRobotModel* model, const double* q, uint32_t q_count,
-    ArticoreRobotPose* pose) {
-  return call([&] { checked(model).fk(q, q_count, pose); });
-}
-
-ARTICORE_RUNTIME_API int32_t robot_model_bridge_jacobian(
-    ArticoreRobotModel* model, const double* q, uint32_t q_count,
-    uint32_t reference, double* output, uint32_t output_count) {
-  return call([&] {
-    checked(model).jacobian(q, q_count, reference, output, output_count);
-  });
-}
-
-ARTICORE_RUNTIME_API int32_t robot_model_bridge_gravity(
-    ArticoreRobotModel* model, const double* q, uint32_t q_count,
-    double* output, uint32_t output_count) {
-  return call([&] { checked(model).gravity(q, q_count, output, output_count); });
-}
-
-ARTICORE_RUNTIME_API int32_t robot_model_bridge_mass_matrix(
-    ArticoreRobotModel* model, const double* q, uint32_t q_count,
-    double* output, uint32_t output_count) {
-  return call([&] { checked(model).mass_matrix(q, q_count, output, output_count); });
-}
-
-ARTICORE_RUNTIME_API int32_t robot_model_bridge_coriolis_matrix(
-    ArticoreRobotModel* model, const double* q, uint32_t q_count,
-    const double* dq, uint32_t dq_count, double* output,
-    uint32_t output_count) {
-  return call([&] {
-    checked(model).coriolis_matrix(q, q_count, dq, dq_count, output, output_count);
-  });
-}
-
-ARTICORE_RUNTIME_API int32_t robot_model_bridge_nonlinear_effects(
-    ArticoreRobotModel* model, const double* q, uint32_t q_count,
-    const double* dq, uint32_t dq_count, double* output,
-    uint32_t output_count) {
-  return call([&] {
-    checked(model).nonlinear_effects(q, q_count, dq, dq_count, output, output_count);
-  });
-}
-
-ARTICORE_RUNTIME_API int32_t robot_model_bridge_rnea(
-    ArticoreRobotModel* model, const double* q, uint32_t q_count,
-    const double* dq, uint32_t dq_count, const double* ddq,
-    uint32_t ddq_count, double* output, uint32_t output_count) {
-  return call([&] {
-    checked(model).rnea(q, q_count, dq, dq_count, ddq, ddq_count, output,
-                        output_count);
-  });
-}
-
-ARTICORE_RUNTIME_API int32_t robot_model_bridge_aba(
-    ArticoreRobotModel* model, const double* q, uint32_t q_count,
-    const double* dq, uint32_t dq_count, const double* torque,
-    uint32_t torque_count, double* output, uint32_t output_count) {
-  return call([&] {
-    checked(model).aba(q, q_count, dq, dq_count, torque, torque_count, output,
-                       output_count);
-  });
-}
-
-ARTICORE_RUNTIME_API int32_t robot_model_bridge_ik(
-    ArticoreRobotModel* model, const ArticoreRobotPose* target,
-    const double* initial_q, uint32_t initial_q_count,
-    const ArticoreIkOptions* options, ArticoreIkResult* result) {
-  return call([&] {
-    checked(model).ik(target, initial_q, initial_q_count, options, result);
-  });
-}
-
-ARTICORE_RUNTIME_API int32_t runtime_bridge_get_control_mode(
-    ArticoreRuntime* runtime, int32_t* mode) {
+int32_t native_runtime_get_control_mode(
+    YunyiRuntimeCoreState* runtime, int32_t* mode) {
   return call([&] {
     if (!mode) throw std::invalid_argument("control mode output is null");
     checked(runtime);
@@ -791,38 +552,14 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_get_control_mode(
   });
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_create_yunyi(
-    int32_t requested_mode, int32_t with_grippers,
-    ArticoreRuntime** runtime) {
-  if (!runtime) {
-    g_last_error = "runtime output is null";
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  }
-  *runtime = nullptr;
-  try {
-    *runtime = create_yunyi_runtime_checked(requested_mode, with_grippers);
-    g_last_error = "ok";
-    return ARTICORE_OPERATION_OK;
-  } catch (const std::invalid_argument& error) {
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  } catch (const std::exception& error) {
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_STATE;
-  } catch (...) {
-    g_last_error = "unknown Yunyi Runtime creation error";
-    return ARTICORE_OPERATION_INVALID_STATE;
-  }
-}
-
-int32_t runtime_bridge_create_yunyi_configured(
+int32_t native_runtime_create_yunyi_configured(
     int32_t requested_mode, int32_t with_grippers,
     const char* left_can_interface, const char* right_can_interface,
     int32_t realtime, int32_t lock_memory, int32_t control_cpu,
     int32_t can_tx_cpu, int32_t can_rx_cpu, int32_t control_priority,
     int32_t can_tx_priority, int32_t can_rx_priority,
     uint32_t feedback_max_age_ms, uint32_t motor_watchdog_ms,
-    ArticoreRuntime** runtime) {
+    YunyiRuntimeCoreState** runtime) {
   if (!runtime || !left_can_interface || !right_can_interface) {
     g_last_error = "configured Runtime arguments are null";
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
@@ -857,11 +594,7 @@ int32_t runtime_bridge_create_yunyi_configured(
   }
 }
 
-ARTICORE_RUNTIME_API void runtime_bridge_free(ArticoreRuntime* runtime) {
-  delete runtime;
-}
-
-ARTICORE_RUNTIME_API int32_t runtime_bridge_connect(ArticoreRuntime* runtime) {
+int32_t native_runtime_connect(YunyiRuntimeCoreState* runtime) {
   try {
     checked(runtime).connect();
     if (runtime->yunyi) {
@@ -895,8 +628,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_connect(ArticoreRuntime* runtime) {
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_disconnect(
-    ArticoreRuntime* runtime) {
+int32_t native_runtime_disconnect(
+    YunyiRuntimeCoreState* runtime) {
   if (!runtime) {
     g_last_error = "runtime is null";
     return -1;
@@ -948,8 +681,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_disconnect(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_configure_mode(
-    ArticoreRuntime* runtime, int32_t mode) {
+int32_t native_runtime_configure_mode(
+    YunyiRuntimeCoreState* runtime, int32_t mode) {
   try {
     const auto result = checked(runtime).configure_mode(
         static_cast<ArticoreControlMode>(mode));
@@ -965,8 +698,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_configure_mode(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_clear_faults(
-    ArticoreRuntime* runtime) {
+int32_t native_runtime_clear_faults(
+    YunyiRuntimeCoreState* runtime) {
   try {
     const auto result = checked(runtime).clear_faults();
     g_last_error = result == ARTICORE_OPERATION_OK
@@ -978,8 +711,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_clear_faults(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_set_zero(
-    ArticoreRuntime* runtime) {
+int32_t native_runtime_set_zero(
+    YunyiRuntimeCoreState* runtime) {
   try {
     const auto result = checked(runtime).set_zero();
     g_last_error = result == ARTICORE_OPERATION_OK
@@ -991,8 +724,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_set_zero(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_set_joint_pv(
-    ArticoreRuntime* runtime, const float* positions, uint32_t count,
+int32_t native_runtime_set_joint_pv(
+    YunyiRuntimeCoreState* runtime, const float* positions, uint32_t count,
     float speed_percent) {
   try {
     if (!std::isfinite(speed_percent) || speed_percent < 1.0f ||
@@ -1022,8 +755,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_set_joint_pv(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_set_joint_mit(
-    ArticoreRuntime* runtime, const float* positions,
+int32_t native_runtime_set_joint_mit(
+    YunyiRuntimeCoreState* runtime, const float* positions,
     const float* velocities, const float* kp, const float* kd,
     const float* feedforward_torques, uint32_t count) {
   try {
@@ -1077,8 +810,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_set_joint_mit(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_set_joint_mit_fast(
-    ArticoreRuntime* runtime, const float* positions, uint32_t count,
+int32_t native_runtime_set_joint_mit_fast(
+    YunyiRuntimeCoreState* runtime, const float* positions, uint32_t count,
     float speed_percent) {
   try {
     checked_yunyi(runtime);
@@ -1103,8 +836,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_set_joint_mit_fast(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_set_speed_percent(
-    ArticoreRuntime* runtime, float speed_percent) {
+int32_t native_runtime_set_speed_percent(
+    YunyiRuntimeCoreState* runtime, float speed_percent) {
   try {
     if (!std::isfinite(speed_percent) || speed_percent < 1.0f ||
         speed_percent > 100.0f) {
@@ -1134,8 +867,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_set_speed_percent(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_get_speed_percent(
-    ArticoreRuntime* runtime, float* speed_percent) {
+int32_t native_runtime_get_speed_percent(
+    YunyiRuntimeCoreState* runtime, float* speed_percent) {
   if (!speed_percent) {
     g_last_error = "speed_percent output is null";
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
@@ -1159,8 +892,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_get_speed_percent(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_set_max_speed(
-    ArticoreRuntime* runtime, float max_speed_rad_s) {
+int32_t native_runtime_set_max_speed(
+    YunyiRuntimeCoreState* runtime, float max_speed_rad_s) {
   try {
     const float validated = require_optional_pv_limit(
         max_speed_rad_s,
@@ -1189,8 +922,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_set_max_speed(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_get_max_speed(
-    ArticoreRuntime* runtime, float* max_speed_rad_s) {
+int32_t native_runtime_get_max_speed(
+    YunyiRuntimeCoreState* runtime, float* max_speed_rad_s) {
   if (!max_speed_rad_s) {
     g_last_error = "max_speed_rad_s output is null";
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
@@ -1214,8 +947,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_get_max_speed(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_set_max_acceleration(
-    ArticoreRuntime* runtime, float max_acceleration_rad_s2) {
+int32_t native_runtime_set_max_acceleration(
+    YunyiRuntimeCoreState* runtime, float max_acceleration_rad_s2) {
   try {
     const float validated = require_optional_pv_limit(
         max_acceleration_rad_s2,
@@ -1244,8 +977,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_set_max_acceleration(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_get_max_acceleration(
-    ArticoreRuntime* runtime, float* max_acceleration_rad_s2) {
+int32_t native_runtime_get_max_acceleration(
+    YunyiRuntimeCoreState* runtime, float* max_acceleration_rad_s2) {
   if (!max_acceleration_rad_s2) {
     g_last_error = "max_acceleration_rad_s2 output is null";
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
@@ -1269,58 +1002,24 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_get_max_acceleration(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_get_motion_status(
-    ArticoreRuntime* runtime, uint64_t motion_id,
-    ArticoreMotionStatus* status) {
-  if (!status || status->struct_size != sizeof(*status) || motion_id == 0) {
-    g_last_error = "motion status requires a non-zero id and exact output";
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  }
-  try {
-    const uint32_t caller_size = status->struct_size;
-    auto output = checked(runtime).motion_status(motion_id);
-    if (output.state == ARTICORE_MOTION_IDLE) {
-      throw std::invalid_argument(output.error);
-    }
-    output.struct_size = caller_size;
-    *status = output;
-    g_last_error = "ok";
-    return ARTICORE_OPERATION_OK;
-  } catch (const std::invalid_argument& error) {
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  } catch (const std::exception& error) {
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_STATE;
-  }
-}
-
-ARTICORE_RUNTIME_API int32_t runtime_bridge_move_pose(
-    ArticoreRuntime* runtime, uint32_t side, const float* target_pose) {
+int32_t native_runtime_move_pose(
+    YunyiRuntimeCoreState* runtime, uint32_t side, const float* target_pose) {
   uint64_t ignored_motion_id = 0;
   return move_linear_trajectory_impl(
       runtime, side, nullptr, target_pose, &ignored_motion_id, false,
       ARTICORE_OPERATION_MOVE_POSE);
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_move_linear(
-    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+int32_t native_runtime_move_linear(
+    YunyiRuntimeCoreState* runtime, uint32_t side, const float* start_pose,
     const float* end_pose) {
   uint64_t ignored_motion_id = 0;
   return move_linear_trajectory_impl(
       runtime, side, start_pose, end_pose, &ignored_motion_id, false);
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_move_linear_path(
-    ArticoreRuntime* runtime, uint32_t side, const float* poses,
-    uint32_t pose_count) {
-  uint64_t ignored_motion_id = 0;
-  return move_linear_path_trajectory_impl(
-      runtime, side, poses, pose_count, &ignored_motion_id, false);
-}
-
-ARTICORE_RUNTIME_API int32_t runtime_bridge_move_circular(
-    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
+int32_t native_runtime_move_circular(
+    YunyiRuntimeCoreState* runtime, uint32_t side, const float* start_pose,
     const float* via_pose, const float* end_pose) {
   uint64_t ignored_motion_id = 0;
   return move_circular_trajectory_impl(
@@ -1328,87 +1027,20 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_move_circular(
       false);
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_stop_motion(
-    ArticoreRuntime* runtime) {
-  const int32_t result = runtime_bridge_cancel_all_motions(runtime);
-  if (result == ARTICORE_OPERATION_OK && runtime && runtime->runtime) {
-    runtime->runtime->record_operation_result(
-        ARTICORE_OPERATION_STOP_MOTION, ARTICORE_OPERATION_OK);
-  }
-  return result;
-}
-
-ARTICORE_RUNTIME_API int32_t runtime_bridge_solve_ik(
-    ArticoreRuntime* runtime, const float* left_target_pose,
-    const float* right_target_pose, float* positions, uint32_t count) {
-  return solve_product_ik_impl(
-      runtime, left_target_pose, right_target_pose, positions, count);
-}
-
-ARTICORE_RUNTIME_API int32_t runtime_bridge_move_linear_trajectory(
-    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* end_pose, uint64_t* motion_id) {
-  return move_linear_trajectory_impl(
-      runtime, side, start_pose, end_pose, motion_id);
-}
-
-ARTICORE_RUNTIME_API int32_t runtime_bridge_move_linear_path_trajectory(
-    ArticoreRuntime* runtime, uint32_t side, const float* poses,
-    uint32_t pose_count, uint64_t* motion_id) {
-  return move_linear_path_trajectory_impl(
-      runtime, side, poses, pose_count, motion_id);
-}
-
-ARTICORE_RUNTIME_API int32_t runtime_bridge_move_circular_trajectory(
-    ArticoreRuntime* runtime, uint32_t side, const float* start_pose,
-    const float* via_pose, const float* end_pose, uint64_t* motion_id) {
-  return move_circular_trajectory_impl(
-      runtime, side, start_pose, via_pose, end_pose, motion_id);
-}
-
-ARTICORE_RUNTIME_API int32_t runtime_bridge_cancel_motion(
-    ArticoreRuntime* runtime, uint64_t motion_id) {
-  try {
-    if (!runtime) throw std::invalid_argument("runtime is null");
-    std::lock_guard<std::mutex> motion_lock(runtime->motion_mutex);
-    checked(runtime).cancel_motion(motion_id);
-    checked(runtime).record_operation_result(
-        ARTICORE_OPERATION_CANCEL_MOTION, ARTICORE_OPERATION_OK);
-    g_last_error = "ok";
-    return ARTICORE_OPERATION_OK;
-  } catch (const std::invalid_argument& error) {
-    if (runtime && runtime->runtime) {
-      runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_CANCEL_MOTION,
-          ARTICORE_OPERATION_INVALID_ARGUMENT, error.what());
-    }
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_ARGUMENT;
-  } catch (const std::exception& error) {
-    if (runtime && runtime->runtime) {
-      runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_CANCEL_MOTION,
-          ARTICORE_OPERATION_INVALID_STATE, error.what());
-    }
-    g_last_error = error.what();
-    return ARTICORE_OPERATION_INVALID_STATE;
-  }
-}
-
-ARTICORE_RUNTIME_API int32_t runtime_bridge_cancel_all_motions(
-    ArticoreRuntime* runtime) {
+int32_t native_runtime_stop_motion(
+    YunyiRuntimeCoreState* runtime) {
   try {
     if (!runtime) throw std::invalid_argument("runtime is null");
     std::lock_guard<std::mutex> motion_lock(runtime->motion_mutex);
     checked(runtime).cancel_all_motions();
     checked(runtime).record_operation_result(
-        ARTICORE_OPERATION_CANCEL_ALL_MOTIONS, ARTICORE_OPERATION_OK);
+        ARTICORE_OPERATION_STOP_MOTION, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
     return ARTICORE_OPERATION_OK;
   } catch (const std::exception& error) {
     if (runtime && runtime->runtime) {
       runtime->runtime->record_operation_result(
-          ARTICORE_OPERATION_CANCEL_ALL_MOTIONS,
+          ARTICORE_OPERATION_STOP_MOTION,
           ARTICORE_OPERATION_INVALID_STATE, error.what());
     }
     g_last_error = error.what();
@@ -1416,8 +1048,15 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_cancel_all_motions(
   }
 }
 
- ARTICORE_RUNTIME_API int32_t runtime_bridge_get_state(
-    ArticoreRuntime* runtime, ArticoreProductState* state) {
+int32_t native_runtime_solve_ik(
+    YunyiRuntimeCoreState* runtime, const float* left_target_pose,
+    const float* right_target_pose, float* positions, uint32_t count) {
+  return solve_product_ik_impl(
+      runtime, left_target_pose, right_target_pose, positions, count);
+}
+
+ int32_t native_runtime_get_state(
+    YunyiRuntimeCoreState* runtime, ArticoreProductState* state) {
   if (!state || state->struct_size != sizeof(*state)) {
     g_last_error = "product state output is null or too small";
     return -1;
@@ -1556,8 +1195,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_cancel_all_motions(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_get_joint_angle_vel_limits(
-    ArticoreRuntime* runtime, ArticoreProductJointAngleVelLimits* limits) {
+int32_t native_runtime_get_joint_angle_vel_limits(
+    YunyiRuntimeCoreState* runtime, ArticoreProductJointAngleVelLimits* limits) {
   if (!limits || limits->struct_size != sizeof(*limits)) {
     g_last_error = "joint angle/velocity limits output is null or too small";
     return -1;
@@ -1582,8 +1221,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_get_joint_angle_vel_limits(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_get_pose(
-    ArticoreRuntime* runtime, uint32_t side, ArticoreProductPose* pose) {
+int32_t native_runtime_get_pose(
+    YunyiRuntimeCoreState* runtime, uint32_t side, ArticoreProductPose* pose) {
   if (!pose || pose->struct_size != sizeof(*pose)) {
     g_last_error = "product pose output is null or too small";
     return -1;
@@ -1664,8 +1303,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_get_pose(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_set_tcp_offset(
-    ArticoreRuntime* runtime, const ArticoreTcpOffset* offset) {
+int32_t native_runtime_set_tcp_offset(
+    YunyiRuntimeCoreState* runtime, const ArticoreTcpOffset* offset) {
   try {
     if (!offset || offset->struct_size != sizeof(*offset)) {
       throw std::invalid_argument("TCP offset input is null or too small");
@@ -1726,8 +1365,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_set_tcp_offset(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_get_tcp_offset(
-    ArticoreRuntime* runtime, uint32_t side, ArticoreTcpOffset* offset) {
+int32_t native_runtime_get_tcp_offset(
+    YunyiRuntimeCoreState* runtime, uint32_t side, ArticoreTcpOffset* offset) {
   if (!offset || offset->struct_size != sizeof(*offset)) {
     g_last_error = "TCP offset output is null or too small";
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
@@ -1756,8 +1395,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_get_tcp_offset(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_reset_tcp_offset(
-    ArticoreRuntime* runtime, uint32_t side) {
+int32_t native_runtime_reset_tcp_offset(
+    YunyiRuntimeCoreState* runtime, uint32_t side) {
   try {
     auto& product = checked_yunyi(runtime);
     ArticoreTcpOffset offset{};
@@ -1766,15 +1405,15 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_reset_tcp_offset(
     const auto values = articore::default_yunyi_tcp_offset(
         product.with_grippers);
     std::copy(values.begin(), values.end(), offset.values);
-    return runtime_bridge_set_tcp_offset(runtime, &offset);
+    return native_runtime_set_tcp_offset(runtime, &offset);
   } catch (const std::exception& error) {
     g_last_error = error.what();
     return ARTICORE_OPERATION_INVALID_STATE;
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_set_grippers(
-    ArticoreRuntime* runtime, float left_opening, float right_opening,
+int32_t native_runtime_set_grippers(
+    YunyiRuntimeCoreState* runtime, float left_opening, float right_opening,
     int32_t strength, int32_t mode) {
   return set_product_grippers_impl(
       runtime, left_opening, right_opening, strength,
@@ -1782,15 +1421,15 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_set_grippers(
       "gripper strength must be in the range 0..10");
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_has_grippers(
-    ArticoreRuntime* runtime, int32_t* has_grippers) {
+int32_t native_runtime_has_grippers(
+    YunyiRuntimeCoreState* runtime, int32_t* has_grippers) {
   return call([&] {
     if (!has_grippers) throw std::invalid_argument("has_grippers is null");
     *has_grippers = checked_yunyi(runtime).with_grippers ? 1 : 0;
   });
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_enable(ArticoreRuntime* runtime) {
+int32_t native_runtime_enable(YunyiRuntimeCoreState* runtime) {
   try {
     checked_yunyi(runtime);
     auto& safety = checked(runtime);
@@ -1814,32 +1453,20 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_enable(ArticoreRuntime* runtime) {
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_enable_motors(
-    ArticoreRuntime* runtime, const char* const* roles, uint32_t count,
-    ArticoreMotorPowerReport* report) {
-  return motor_power_batch(runtime, roles, count, true, report);
-}
-
-ARTICORE_RUNTIME_API int32_t runtime_bridge_disable_motors(
-    ArticoreRuntime* runtime, const char* const* roles, uint32_t count,
-    ArticoreMotorPowerReport* report) {
-  return motor_power_batch(runtime, roles, count, false, report);
-}
-
-ARTICORE_RUNTIME_API int32_t runtime_bridge_start_gravity_compensation(
-    ArticoreRuntime* runtime,
+int32_t native_runtime_start_gravity_compensation(
+    YunyiRuntimeCoreState* runtime,
     const ArticoreGravityCompensationConfig* config) {
   return call([&] { checked(runtime).start_gravity_compensation(config); });
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_stop_gravity_compensation(
-    ArticoreRuntime* runtime) {
+int32_t native_runtime_stop_gravity_compensation(
+    YunyiRuntimeCoreState* runtime) {
   return call([&] { checked(runtime).stop_gravity_compensation(); });
 }
 
-ARTICORE_RUNTIME_API int32_t
-runtime_bridge_get_gravity_compensation_status(
-    ArticoreRuntime* runtime,
+int32_t
+native_runtime_get_gravity_compensation_status(
+    YunyiRuntimeCoreState* runtime,
     ArticoreGravityCompensationStatus* status) {
   return call([&] {
     if (!status || status->struct_size != sizeof(*status)) {
@@ -1852,8 +1479,8 @@ runtime_bridge_get_gravity_compensation_status(
   });
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_start_bimanual_follow(
-    ArticoreRuntime* runtime, uint32_t leader_side) {
+int32_t native_runtime_start_bimanual_follow(
+    YunyiRuntimeCoreState* runtime, uint32_t leader_side) {
   try {
     checked(runtime).start_bimanual_follow(leader_side);
     checked(runtime).record_operation_result(
@@ -1879,8 +1506,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_start_bimanual_follow(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_stop_bimanual_follow(
-    ArticoreRuntime* runtime) {
+int32_t native_runtime_stop_bimanual_follow(
+    YunyiRuntimeCoreState* runtime) {
   try {
     checked(runtime).stop_bimanual_follow();
     checked(runtime).record_operation_result(
@@ -1906,8 +1533,8 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_stop_bimanual_follow(
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_get_bimanual_follow_status(
-    ArticoreRuntime* runtime, ArticoreBimanualFollowStatus* status) {
+int32_t native_runtime_get_bimanual_follow_status(
+    YunyiRuntimeCoreState* runtime, ArticoreBimanualFollowStatus* status) {
   return call([&] {
     if (!status || status->struct_size != sizeof(*status)) {
       throw std::invalid_argument(
@@ -1919,7 +1546,7 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_get_bimanual_follow_status(
   });
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_disable(ArticoreRuntime* runtime) {
+int32_t native_runtime_disable(YunyiRuntimeCoreState* runtime) {
   try {
     checked(runtime).disable();
     checked(runtime).record_operation_result(ARTICORE_OPERATION_DISABLE,
@@ -1935,16 +1562,16 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_disable(ArticoreRuntime* runtime) {
   }
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_estop(ArticoreRuntime* runtime) {
+int32_t native_runtime_estop(YunyiRuntimeCoreState* runtime) {
   return call([&] { checked(runtime).estop(); });
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_recover(ArticoreRuntime* runtime) {
+int32_t native_runtime_recover(YunyiRuntimeCoreState* runtime) {
   return call([&] { checked(runtime).recover(); });
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_get_health(
-    ArticoreRuntime* runtime, ArticoreSafetyHealth* health) {
+int32_t native_runtime_get_health(
+    YunyiRuntimeCoreState* runtime, ArticoreSafetyHealth* health) {
   if (!health || health->struct_size != sizeof(*health)) {
     g_last_error = "health output is null or too small";
     return -1;
@@ -1956,18 +1583,350 @@ ARTICORE_RUNTIME_API int32_t runtime_bridge_get_health(
   });
 }
 
-ARTICORE_RUNTIME_API int32_t runtime_bridge_get_mit_torque_limit_stats(
-    ArticoreRuntime* runtime, ArticoreMitTorqueLimitStats* stats) {
-  return call([&] {
-    if (!stats) throw std::invalid_argument("MIT torque limit stats are null");
-    if (stats->struct_size != sizeof(ArticoreMitTorqueLimitStats)) {
-      throw std::invalid_argument(
-          "MIT torque limit stats struct_size does not match");
-    }
-    *stats = checked(runtime).mit_torque_limit_stats();
-  });
+const char* native_runtime_last_error() { return g_last_error.c_str(); }
+
+void check_result(int32_t result, const char* operation) {
+  if (result == ARTICORE_OPERATION_OK) return;
+  throw std::runtime_error(
+      std::string(operation) + " failed: " + native_runtime_last_error());
 }
 
-ARTICORE_RUNTIME_API const char* runtime_bridge_last_error(void) {
-  return g_last_error.c_str();
+}  // namespace
+
+namespace articore {
+
+YunyiRuntimeCore::YunyiRuntimeCore(
+    ArticoreControlMode mode, bool with_grippers,
+    const std::string& left_can_interface,
+    const std::string& right_can_interface, bool realtime,
+    bool lock_memory, int control_cpu, int can_tx_cpu, int can_rx_cpu,
+    int control_priority, int can_tx_priority, int can_rx_priority,
+    uint32_t feedback_max_age_ms, uint32_t motor_watchdog_ms) {
+  YunyiRuntimeCoreState* created = nullptr;
+  check_result(
+      native_runtime_create_yunyi_configured(
+          static_cast<int32_t>(mode), with_grippers ? 1 : 0,
+          left_can_interface.c_str(), right_can_interface.c_str(),
+          realtime ? 1 : 0, lock_memory ? 1 : 0, control_cpu, can_tx_cpu,
+          can_rx_cpu, control_priority, can_tx_priority, can_rx_priority,
+          feedback_max_age_ms, motor_watchdog_ms, &created),
+      "create configured Yunyi Runtime");
+  state_.reset(created);
 }
+
+YunyiRuntimeCore::~YunyiRuntimeCore() noexcept { release(); }
+
+YunyiRuntimeCore::YunyiRuntimeCore(YunyiRuntimeCore&& other) noexcept =
+    default;
+
+YunyiRuntimeCore& YunyiRuntimeCore::operator=(
+    YunyiRuntimeCore&& other) noexcept {
+  if (this == &other) return *this;
+  release();
+  state_ = std::move(other.state_);
+  return *this;
+}
+
+YunyiRuntimeCoreState* YunyiRuntimeCore::checked() const {
+  if (!state_) throw std::runtime_error("Yunyi Runtime core is disconnected");
+  return state_.get();
+}
+
+void YunyiRuntimeCore::release() noexcept {
+  if (!state_) return;
+  (void)native_runtime_disconnect(state_.get());
+  state_.reset();
+}
+
+void YunyiRuntimeCore::connect() {
+  check_result(native_runtime_connect(checked()), "connect");
+}
+
+void YunyiRuntimeCore::disconnect() {
+  if (!state_) return;
+  const auto result = native_runtime_disconnect(state_.get());
+  state_.reset();
+  check_result(result, "disconnect");
+}
+
+ArticoreControlMode YunyiRuntimeCore::control_mode() const {
+  int32_t mode = 0;
+  check_result(
+      native_runtime_get_control_mode(checked(), &mode), "get_control_mode");
+  return static_cast<ArticoreControlMode>(mode);
+}
+
+void YunyiRuntimeCore::configure_mode(ArticoreControlMode mode) {
+  check_result(
+      native_runtime_configure_mode(checked(), static_cast<int32_t>(mode)),
+      "configure_mode");
+}
+
+void YunyiRuntimeCore::enable() {
+  check_result(native_runtime_enable(checked()), "enable");
+}
+
+void YunyiRuntimeCore::disable() {
+  check_result(native_runtime_disable(checked()), "disable");
+}
+
+void YunyiRuntimeCore::set_zero() {
+  check_result(native_runtime_set_zero(checked()), "set_zero");
+}
+
+void YunyiRuntimeCore::clear_faults() {
+  check_result(native_runtime_clear_faults(checked()), "clear_faults");
+}
+
+void YunyiRuntimeCore::estop() {
+  check_result(native_runtime_estop(checked()), "estop");
+}
+
+void YunyiRuntimeCore::recover() {
+  check_result(native_runtime_recover(checked()), "recover");
+}
+
+bool YunyiRuntimeCore::has_grippers() const {
+  int32_t value = 0;
+  check_result(native_runtime_has_grippers(checked(), &value), "has_grippers");
+  return value != 0;
+}
+
+void YunyiRuntimeCore::set_joint_pv(
+    const std::vector<float>& positions, float speed_percent) {
+  check_result(
+      native_runtime_set_joint_pv(
+          checked(), positions.data(), static_cast<uint32_t>(positions.size()),
+          speed_percent),
+      "set_joint_pv");
+}
+
+void YunyiRuntimeCore::set_joint_mit(
+    const std::vector<float>& positions,
+    const std::vector<float>& velocities,
+    const std::vector<float>& kp,
+    const std::vector<float>& kd,
+    const std::vector<float>& feedforward_torques) {
+  if (velocities.size() != positions.size() || kp.size() != positions.size() ||
+      kd.size() != positions.size() ||
+      feedforward_torques.size() != positions.size()) {
+    throw std::invalid_argument("MIT frame arrays must have the same joint count");
+  }
+  check_result(
+      native_runtime_set_joint_mit(
+          checked(), positions.data(), velocities.data(), kp.data(), kd.data(),
+          feedforward_torques.data(),
+          static_cast<uint32_t>(positions.size())),
+      "set_joint_mit");
+}
+
+void YunyiRuntimeCore::set_joint_mit_fast(
+    const std::vector<float>& positions, float speed_percent) {
+  check_result(
+      native_runtime_set_joint_mit_fast(
+          checked(), positions.data(), static_cast<uint32_t>(positions.size()),
+          speed_percent),
+      "set_joint_mit_fast");
+}
+
+void YunyiRuntimeCore::set_speed_percent(float speed_percent) {
+  check_result(
+      native_runtime_set_speed_percent(checked(), speed_percent),
+      "set_speed_percent");
+}
+
+float YunyiRuntimeCore::speed_percent() const {
+  float value = 0.0f;
+  check_result(
+      native_runtime_get_speed_percent(checked(), &value),
+      "get_speed_percent");
+  return value;
+}
+
+void YunyiRuntimeCore::set_max_speed(float max_speed_rad_s) {
+  check_result(
+      native_runtime_set_max_speed(checked(), max_speed_rad_s),
+      "set_max_speed");
+}
+
+float YunyiRuntimeCore::max_speed() const {
+  float value = 0.0f;
+  check_result(
+      native_runtime_get_max_speed(checked(), &value), "get_max_speed");
+  return value;
+}
+
+void YunyiRuntimeCore::set_max_acceleration(float max_acceleration_rad_s2) {
+  check_result(
+      native_runtime_set_max_acceleration(checked(), max_acceleration_rad_s2),
+      "set_max_acceleration");
+}
+
+float YunyiRuntimeCore::max_acceleration() const {
+  float value = 0.0f;
+  check_result(
+      native_runtime_get_max_acceleration(checked(), &value),
+      "get_max_acceleration");
+  return value;
+}
+
+std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF>
+YunyiRuntimeCore::solve_ik(
+    const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& left_target_pose,
+    const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& right_target_pose)
+    const {
+  std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> positions{};
+  check_result(
+      native_runtime_solve_ik(
+          checked(), left_target_pose.data(), right_target_pose.data(),
+          positions.data(), static_cast<uint32_t>(positions.size())),
+      "solve_ik");
+  return positions;
+}
+
+void YunyiRuntimeCore::move_pose(
+    uint32_t side,
+    const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& target_pose) {
+  check_result(
+      native_runtime_move_pose(checked(), side, target_pose.data()),
+      "move_pose");
+}
+
+void YunyiRuntimeCore::move_linear(
+    uint32_t side,
+    const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& end_pose) {
+  check_result(
+      native_runtime_move_linear(checked(), side, nullptr, end_pose.data()),
+      "move_linear");
+}
+
+void YunyiRuntimeCore::move_circular(
+    uint32_t side,
+    const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& start_pose,
+    const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& via_pose,
+    const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& end_pose) {
+  check_result(
+      native_runtime_move_circular(
+          checked(), side, start_pose.data(), via_pose.data(),
+          end_pose.data()),
+      "move_circular");
+}
+
+void YunyiRuntimeCore::stop_motion() {
+  check_result(native_runtime_stop_motion(checked()), "stop_motion");
+}
+
+void YunyiRuntimeCore::set_grippers(
+    float left_opening, float right_opening, int32_t strength,
+    ArticoreGripperMode mode) {
+  check_result(
+      native_runtime_set_grippers(
+          checked(), left_opening, right_opening, strength,
+          static_cast<int32_t>(mode)),
+      "set_grippers");
+}
+
+ArticoreProductState YunyiRuntimeCore::state() const {
+  ArticoreProductState value{};
+  value.struct_size = sizeof(value);
+  check_result(native_runtime_get_state(checked(), &value), "get_state");
+  return value;
+}
+
+ArticoreProductJointAngleVelLimits
+YunyiRuntimeCore::joint_angle_vel_limits() const {
+  ArticoreProductJointAngleVelLimits value{};
+  value.struct_size = sizeof(value);
+  check_result(
+      native_runtime_get_joint_angle_vel_limits(checked(), &value),
+      "get_joint_angle_vel_limits");
+  return value;
+}
+
+ArticoreProductPose YunyiRuntimeCore::pose(uint32_t side) const {
+  ArticoreProductPose value{};
+  value.struct_size = sizeof(value);
+  check_result(native_runtime_get_pose(checked(), side, &value), "get_pose");
+  return value;
+}
+
+void YunyiRuntimeCore::set_tcp_offset(
+    uint32_t side,
+    const std::array<float, ARTICORE_PRODUCT_POSE_DOF>& values) {
+  ArticoreTcpOffset offset{};
+  offset.struct_size = sizeof(offset);
+  offset.side = side;
+  std::copy(values.begin(), values.end(), offset.values);
+  check_result(
+      native_runtime_set_tcp_offset(checked(), &offset), "set_tcp_offset");
+}
+
+ArticoreTcpOffset YunyiRuntimeCore::tcp_offset(uint32_t side) const {
+  ArticoreTcpOffset value{};
+  value.struct_size = sizeof(value);
+  check_result(
+      native_runtime_get_tcp_offset(checked(), side, &value),
+      "get_tcp_offset");
+  return value;
+}
+
+void YunyiRuntimeCore::reset_tcp_offset(uint32_t side) {
+  check_result(
+      native_runtime_reset_tcp_offset(checked(), side), "reset_tcp_offset");
+}
+
+ArticoreSafetyHealth YunyiRuntimeCore::health() const {
+  ArticoreSafetyHealth value{};
+  value.struct_size = sizeof(value);
+  check_result(native_runtime_get_health(checked(), &value), "get_health");
+  return value;
+}
+
+void YunyiRuntimeCore::start_gravity_compensation(uint32_t transition_ms) {
+  ArticoreGravityCompensationConfig config{};
+  config.struct_size = sizeof(config);
+  config.transition_ms = transition_ms;
+  check_result(
+      native_runtime_start_gravity_compensation(checked(), &config),
+      "start_gravity_compensation");
+}
+
+void YunyiRuntimeCore::stop_gravity_compensation() {
+  check_result(
+      native_runtime_stop_gravity_compensation(checked()),
+      "stop_gravity_compensation");
+}
+
+ArticoreGravityCompensationStatus
+YunyiRuntimeCore::gravity_compensation_status() const {
+  ArticoreGravityCompensationStatus value{};
+  value.struct_size = sizeof(value);
+  check_result(
+      native_runtime_get_gravity_compensation_status(checked(), &value),
+      "get_gravity_compensation_status");
+  return value;
+}
+
+void YunyiRuntimeCore::start_bimanual_follow(uint32_t leader_side) {
+  check_result(
+      native_runtime_start_bimanual_follow(checked(), leader_side),
+      "start_bimanual_follow");
+}
+
+void YunyiRuntimeCore::stop_bimanual_follow() {
+  check_result(
+      native_runtime_stop_bimanual_follow(checked()),
+      "stop_bimanual_follow");
+}
+
+ArticoreBimanualFollowStatus
+YunyiRuntimeCore::bimanual_follow_status() const {
+  ArticoreBimanualFollowStatus value{};
+  value.struct_size = sizeof(value);
+  check_result(
+      native_runtime_get_bimanual_follow_status(checked(), &value),
+      "get_bimanual_follow_status");
+  return value;
+}
+
+}  // namespace articore

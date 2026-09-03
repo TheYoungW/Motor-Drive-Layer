@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "articore/detail/runtime_bridge.hpp"
+#include "articore/detail/native_types.hpp"
 #include "articore/detail/runtime.hpp"
 
 namespace articore {
