@@ -1,0 +1,60 @@
+{
+  "date": "2026-09-03",
+  "platform": "RK3588",
+  "package": "articore-runtime-service_1.0.3_arm64.deb",
+  "control_hz_requested": 500.0,
+  "motion": {
+    "mode": "PV",
+    "target": "physical right J4=90deg, all other arm joints=0deg",
+    "minimum_run_seconds": 20.0,
+    "runtime_state_during_test": "RUNNING",
+    "enabled_mask": "0x3fff",
+    "final_left_j4_rad": -0.000953674,
+    "final_right_j4_rad": 1.56958,
+    "passed": true
+  },
+  "native_control_timing": {
+    "samples": 10001,
+    "duration_s": 20.001831598,
+    "effective_hz": 499.954214,
+    "period_us": {
+      "minimum": 1080.4,
+      "p50": 1999.9,
+      "p95": 2003.7,
+      "p99": 2015.9,
+      "p999": 2061.1,
+      "maximum": 4087.3
+    },
+    "periods_over_2_5_ms": 5,
+    "periods_over_3_ms": 3,
+    "periods_over_4_ms": 1,
+    "periods_over_10_ms": 0
+  },
+  "socketcan_observation": {
+    "capture_receive_buffer_bytes": 16777216,
+    "left_command_period_p99_us": 2147.9,
+    "right_command_period_p99_us": 2141.0,
+    "left_feedback_hz_range": [370.476, 402.370],
+    "left_maximum_feedback_gap_ms": 18.0011,
+    "right_feedback_hz_range": [497.482, 501.250],
+    "right_maximum_feedback_gap_ms": 12.006,
+    "can_errors": 0,
+    "kernel_rx_dropped": 0,
+    "kernel_tx_dropped": 0,
+    "bus_off": 0
+  },
+  "dds_observation": {
+    "client_poll_period_ms": 10,
+    "state_publish_period_ms": 2,
+    "reader_history": "KEEP_LAST 1",
+    "sequence_gaps_are_expected_client_sampling_loss": true
+  },
+  "root_cause_found": {
+    "component": "DDS Runtime lifecycle",
+    "symptom": "CONNECT after a successful DISCONNECT returned Runtime cannot reconnect after disconnect",
+    "cause": "the long-lived service retained a terminal SafetyRuntime instance",
+    "fix": "destroy the Runtime after DISCONNECT and construct a fresh instance on the next CONNECT",
+    "reconnect_probe_runs_after_fix": 2,
+    "reconnect_probe_passed": true
+  }
+}

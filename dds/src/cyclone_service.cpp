@@ -270,7 +270,7 @@ class CycloneService::Impl {
   }
 
   void ensure_runtime(Clock::time_point now) {
-    if (runtime_ || now < next_runtime_retry_) return;
+    if (runtime_ || runtime_suspended_ || now < next_runtime_retry_) return;
     auto candidate = YunyiRuntime::create(config_.runtime);
     if (!candidate) {
       runtime_error_ = candidate.status().message();
@@ -412,6 +412,15 @@ class CycloneService::Impl {
         return;
       }
     }
+    if (operation == articore_wire_CONNECT && !runtime_) {
+      // SafetyRuntime::disconnect() is deliberately terminal: its worker and
+      // CAN resources cannot be restarted. A long-lived DDS service therefore
+      // has to construct a fresh product Runtime for a later CONNECT instead
+      // of retaining and calling connect() on the terminal object.
+      runtime_suspended_ = false;
+      next_runtime_retry_ = Clock::now();
+      ensure_runtime(next_runtime_retry_);
+    }
     if (!runtime_) {
       finish_reply(reply, ProtocolError::TransportError,
                    runtime_error_.empty() ? "CAN is unavailable" : runtime_error_);
@@ -461,6 +470,11 @@ class CycloneService::Impl {
       }
     }
     finish_reply(reply, protocol_status(status), reply_message);
+    if (operation == articore_wire_DISCONNECT && status) {
+      runtime_.reset();
+      runtime_error_.clear();
+      runtime_suspended_ = true;
+    }
   }
 
   Status execute(const articore_wire_ControlRequest& request,
@@ -751,6 +765,7 @@ class CycloneService::Impl {
   LatestCommandMailbox mailbox_;
   LeaseManager lease_;
   std::unique_ptr<YunyiRuntime> runtime_;
+  bool runtime_suspended_ = false;
   std::string runtime_error_;
   Clock::time_point next_runtime_retry_{};
   std::chrono::milliseconds retry_delay_{250};

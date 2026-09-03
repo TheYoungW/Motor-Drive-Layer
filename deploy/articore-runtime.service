@@ -21,7 +21,7 @@ ProtectSystem=strict
 ProtectHome=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_CAN
 Environment=LD_LIBRARY_PATH=/usr/lib/articore
-Environment=ARTICORE_RUNTIME_CONTROL_HZ=200
+Environment=ARTICORE_RUNTIME_CONTROL_HZ=500
 
 [Install]
 WantedBy=multi-user.target

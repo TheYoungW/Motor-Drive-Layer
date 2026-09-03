@@ -992,10 +992,10 @@ FeedbackBatchReport Controller::request_feedback_all_report(
 
   const auto health_before = bus_->health();
   const auto deadline = std::chrono::steady_clock::now() + timeout;
-  // DM-USB2FDCAN can lose an individual receive indication on some EHCI host
-  // controllers even though the corresponding transmit echo completed. Retry
-  // only still-missing motors in short rounds. The caller's deadline remains
-  // the hard upper bound, so this improves reliability without extending a
+  // A feedback transaction can be incomplete even while the transport stays
+  // healthy (for example when an individual motor does not answer a request).
+  // Retry only still-missing motors in short rounds. The caller's deadline
+  // remains the hard upper bound, so reliability improves without extending a
   // safety operation beyond its configured timeout.
   std::vector<std::size_t> missing(motors.size());
   for (std::size_t i = 0; i < motors.size(); ++i) missing[i] = i;

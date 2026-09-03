@@ -291,9 +291,8 @@ SafetyRuntime::SafetyRuntime(
     throw std::invalid_argument(
         "Articore runtime requires a controller for every active side");
   }
-  // 500 Hz remains the native default. Some RK3588 EHCI + USB-CAN paths cannot
-  // sustain the resulting dual-arm USB transaction rate, so the packaged
-  // board service may select a lower bounded cadence through its environment.
+  // 500 Hz is the native product cadence. A bounded environment override is
+  // retained for controlled timing experiments and platform qualification.
   control_hz_ = 500;
   if (test_control_rate_override != 0) {
     control_hz_ = test_control_rate_override;
