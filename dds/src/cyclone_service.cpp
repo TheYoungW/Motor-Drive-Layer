@@ -573,9 +573,25 @@ class CycloneService::Impl {
         return Status::success();
       }
       case articore_wire_HAS_GRIPPERS: {
-        auto value = runtime_->has_grippers();
+        auto value = runtime_->hardware_topology();
         if (!value) return value.status();
-        reply.values[0] = value.value() ? 1.0f : 0.0f;
+        reply.values[0] = value.value().has_any_gripper() ? 1.0f : 0.0f;
+        reply.values[1] = value.value().has_gripper(RobotSide::Left)
+            ? 1.0f : 0.0f;
+        reply.values[2] = value.value().has_gripper(RobotSide::Right)
+            ? 1.0f : 0.0f;
+        return Status::success();
+      }
+      case articore_wire_GET_HARDWARE_TOPOLOGY: {
+        auto value = runtime_->hardware_topology();
+        if (!value) return value.status();
+        reply.values[0] = static_cast<float>(value.value().revision);
+        reply.values[1] = static_cast<float>(
+            value.value().end_effectors[static_cast<std::size_t>(
+                RobotSide::Left)]);
+        reply.values[2] = static_cast<float>(
+            value.value().end_effectors[static_cast<std::size_t>(
+                RobotSide::Right)]);
         return Status::success();
       }
       case articore_wire_GET_GRAVITY_STATUS: {

@@ -345,31 +345,49 @@ class YunyiMotorBackend final : public MotorBackend {
   uint32_t communication_timeout_ms_;
 };
 
-void add_motors(YunyiRuntimeResources& resources,
-                std::vector<ArticoreMotorDescriptor>& descriptors,
-                std::vector<ArticoreMotorIdentity>& identities) {
-  const uint16_t motors_per_side = resources.with_grippers ? 8 : 7;
+void discover_motors(YunyiRuntimeResources& resources,
+                     const YunyiNativeConfig& config,
+                     std::vector<ArticoreMotorDescriptor>& descriptors,
+                     std::vector<ArticoreMotorIdentity>& identities) {
   for (uint8_t side = 0; side < 2; ++side) {
-    for (uint16_t index = 0; index < motors_per_side; ++index) {
+    std::vector<damiao::MotorCandidate> candidates;
+    candidates.reserve(8);
+    for (uint16_t index = 0; index < 8; ++index) {
       const uint16_t id = index + 1;
-      auto motor = resources.controllers[side]->add_damiao_motor(
-          id, 0x10 + id, kModels[index]);
-      auto* motor_handle = motor.get();
-      resources.motor_owners.emplace(motor_handle, motor);
+      const bool is_gripper = index == ARTICORE_PRODUCT_ARM_DOF;
+      candidates.push_back(damiao::MotorCandidate{
+          std::string(side == 0 ? "left/l-" : "right/r-") +
+              (is_gripper ? "gripper"
+                          : "joint" + std::to_string(index + 1)),
+          id, static_cast<uint16_t>(0x10 + id), kModels[index],
+          is_gripper ? damiao::PresencePolicy::Optional
+                     : damiao::PresencePolicy::Required});
+    }
+
+    const auto discovered = resources.controllers[side]->discover_damiao_motors(
+        candidates,
+        std::chrono::milliseconds(config.motor_discovery_timeout_ms),
+        config.motor_discovery_retries);
+    for (uint16_t index = 0; index < discovered.size(); ++index) {
+      const auto& result = discovered[index];
+      if (result.state != damiao::PresenceState::Present || !result.motor) {
+        continue;
+      }
+      auto* motor_handle = result.motor.get();
+      resources.motor_owners.emplace(motor_handle, result.motor);
       if (index < ARTICORE_PRODUCT_ARM_DOF) {
         resources.arm_motors[side * ARTICORE_PRODUCT_ARM_DOF + index] =
             motor_handle;
       } else {
         resources.grippers[side] = motor_handle;
+        resources.gripper_present[side] = true;
       }
 
       ArticoreMotorDescriptor descriptor{};
       descriptor.motor = motor_handle;
       descriptor.side = side;
       descriptor.is_gripper = index == ARTICORE_PRODUCT_ARM_DOF;
-      const std::string name = std::string(side == 0 ? "left/l-" : "right/r-") +
-          (descriptor.is_gripper ? "gripper"
-                                 : "joint" + std::to_string(index + 1));
+      const std::string& name = result.candidate.role;
       std::strncpy(descriptor.name, name.c_str(), sizeof(descriptor.name) - 1);
       if (!descriptor.is_gripper) {
         descriptor.safe_kp = 5.0f;
@@ -380,7 +398,7 @@ void add_motors(YunyiRuntimeResources& resources,
       ArticoreMotorIdentity identity{};
       identity.struct_size = sizeof(identity);
       identity.motor = motor_handle;
-      identity.can_id = id;
+      identity.can_id = result.candidate.motor_id;
       identities.push_back(identity);
     }
   }
@@ -465,19 +483,13 @@ bool read_yunyi_motor_state(
 }
 
 YunyiRuntimeBundle create_yunyi_runtime(
-    ArticoreControlMode mode, bool with_grippers,
-    const YunyiNativeConfig& native_config) {
+    ArticoreControlMode mode, const YunyiNativeConfig& native_config) {
   if (mode != ARTICORE_MODE_PV && mode != ARTICORE_MODE_MIT) {
     throw std::invalid_argument("unsupported Yunyi control mode");
   }
 
   auto resources = std::make_unique<YunyiRuntimeResources>();
-  resources->with_grippers = with_grippers;
   for (uint32_t side = 0; side < 2; ++side) {
-    resources->tcp_offsets[side] = default_yunyi_tcp_offset(with_grippers);
-    resources->pose_models[side] =
-        std::make_unique<RobotModel>(
-            kProductId, side, resources->tcp_offsets[side]);
     if (native_config.can_interfaces[side].empty()) {
       throw std::invalid_argument("CAN interface name is empty");
     }
@@ -491,12 +503,18 @@ YunyiRuntimeBundle create_yunyi_runtime(
                              native_config.can_rx_priority});
   }
 
-  const uint32_t motor_count = with_grippers ? 16 : 14;
   std::vector<ArticoreMotorDescriptor> descriptors;
   std::vector<ArticoreMotorIdentity> identities;
-  descriptors.reserve(motor_count);
-  identities.reserve(motor_count);
-  add_motors(*resources, descriptors, identities);
+  descriptors.reserve(16);
+  identities.reserve(16);
+  discover_motors(*resources, native_config, descriptors, identities);
+
+  for (uint32_t side = 0; side < 2; ++side) {
+    resources->tcp_offsets[side] =
+        default_yunyi_tcp_offset(resources->gripper_present[side]);
+    resources->pose_models[side] = std::make_unique<RobotModel>(
+        kProductId, side, resources->tcp_offsets[side]);
+  }
 
   resources->group = std::make_unique<damiao::ControllerGroup>(
       std::vector<damiao::Controller*>{resources->controllers[0].get(),
@@ -517,21 +535,28 @@ YunyiRuntimeBundle create_yunyi_runtime(
       config, std::make_shared<YunyiMotorBackend>(
                   native_config.motor_watchdog_ms), resources.get(),
       resources->controllers[0].get(), resources->controllers[1].get(),
-      descriptors, with_grippers);
+      descriptors,
+      resources->gripper_present[0] || resources->gripper_present[1]);
   runtime->configure_motor_identities(identities.data(), identities.size());
 
   const auto joints = configure_joint_table(*resources);
   runtime->configure_joints(joints.data(), joints.size());
 
-  if (with_grippers) {
+  const uint32_t gripper_count =
+      static_cast<uint32_t>(resources->gripper_present[0]) +
+      static_cast<uint32_t>(resources->gripper_present[1]);
+  if (gripper_count != 0) {
     ArticoreGripperProductBinding grippers[2]{};
+    uint32_t binding_index = 0;
     for (uint32_t side = 0; side < 2; ++side) {
-      grippers[side].struct_size = sizeof(grippers[side]);
-      grippers[side].motor = resources->grippers[side];
-      std::strncpy(grippers[side].profile_id, kGripperProfile,
-                   sizeof(grippers[side].profile_id) - 1);
+      if (!resources->gripper_present[side]) continue;
+      auto& binding = grippers[binding_index++];
+      binding.struct_size = sizeof(binding);
+      binding.motor = resources->grippers[side];
+      std::strncpy(binding.profile_id, kGripperProfile,
+                   sizeof(binding.profile_id) - 1);
     }
-    runtime->configure_gripper_products(grippers, 2);
+    runtime->configure_gripper_products(grippers, gripper_count);
   } else {
     runtime->configure_gripper_products(nullptr, 0);
   }

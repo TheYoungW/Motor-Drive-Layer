@@ -99,10 +99,33 @@ struct YunyiRuntimeConfig {
   std::string left_can_interface = "can-left";
   std::string right_can_interface = "can-right";
   ControlMode initial_control_mode = ControlMode::Mit;
-  bool with_grippers = true;
   ThreadPolicy threads{};
   std::chrono::milliseconds feedback_max_age{250};
   std::chrono::milliseconds motor_watchdog{500};
+  std::chrono::milliseconds motor_discovery_timeout{25};
+  std::uint32_t motor_discovery_retries = 8;
+};
+
+enum class EndEffectorType : std::uint8_t {
+  None = 0,
+  DamiaoGripper = 1,
+};
+
+struct HardwareTopology {
+  std::array<EndEffectorType, 2> end_effectors{
+      EndEffectorType::None, EndEffectorType::None};
+  // The topology is immutable for one Runtime process. Revision is a stable
+  // fingerprint of the startup scan and changes when the left/right layout
+  // changes after a service restart.
+  std::uint32_t revision = 1;
+
+  bool has_gripper(RobotSide side) const noexcept {
+    return end_effectors[static_cast<std::size_t>(side)] ==
+        EndEffectorType::DamiaoGripper;
+  }
+  bool has_any_gripper() const noexcept {
+    return has_gripper(RobotSide::Left) || has_gripper(RobotSide::Right);
+  }
 };
 
 struct RuntimeState {
@@ -215,6 +238,7 @@ class YunyiRuntime final {
   Result<float> max_speed() const;
   Result<float> max_acceleration() const;
   Result<bool> has_grippers() const;
+  Result<HardwareTopology> hardware_topology() const;
 
   Result<JointArray> solve_ik(const Pose& left, const Pose& right) const;
   Status move_pose(RobotSide side, const Pose& target);

@@ -17,12 +17,13 @@ namespace articore {
 class YunyiRuntimeCore final {
  public:
   YunyiRuntimeCore(
-      ArticoreControlMode mode, bool with_grippers,
-      const std::string& left_can_interface,
+      ArticoreControlMode mode, const std::string& left_can_interface,
       const std::string& right_can_interface, bool realtime,
       bool lock_memory, int control_cpu, int can_tx_cpu, int can_rx_cpu,
       int control_priority, int can_tx_priority, int can_rx_priority,
-      uint32_t feedback_max_age_ms, uint32_t motor_watchdog_ms);
+      uint32_t feedback_max_age_ms, uint32_t motor_watchdog_ms,
+      uint32_t motor_discovery_timeout_ms,
+      uint32_t motor_discovery_retries);
   ~YunyiRuntimeCore() noexcept;
 
   YunyiRuntimeCore(const YunyiRuntimeCore&) = delete;
@@ -42,6 +43,7 @@ class YunyiRuntimeCore final {
   void recover();
 
   bool has_grippers() const;
+  std::array<bool, 2> gripper_presence() const;
   void set_joint_pv(const std::vector<float>& positions, float speed_percent);
   void set_joint_mit(
       const std::vector<float>& positions,

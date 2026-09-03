@@ -2,7 +2,7 @@
 set -e
 
 systemd_etc_dir=${ARTICORE_SYSTEMD_ETC_DIR:-/etc/systemd/system}
-migration_backup_dir=${ARTICORE_MIGRATION_BACKUP_DIR:-/etc/articore/migration-backups/1.0.3}
+migration_backup_dir=${ARTICORE_MIGRATION_BACKUP_DIR:-/etc/articore/migration-backups/1.1.0}
 
 migrate_known_override() {
   source=$1

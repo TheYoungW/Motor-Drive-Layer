@@ -1,4 +1,4 @@
-# motorbridge 1.0
+# motorbridge 1.1
 
 RK3588 上的云翼双臂底层服务。1.0 只交付一个 C++ 进程
 `articore-runtime-service`；远端 SDK 通过 Cyclone DDS/IP 调用，不再加载
@@ -30,7 +30,8 @@ Runtime 内部调用链为 `YunyiRuntime → YunyiRuntimeCore → SafetyRuntime 
 
 ## 网络协议
 
-协议版本为 `1.0`，`robot_id` 是 DDS key。固定 Topic：
+协议版本为 `1.1`，`robot_id` 是 DDS key。1.1 新增左右独立的启动拓扑查询，
+仍兼容 1.0 的成对夹爪查询。固定 Topic：
 
 - `articore.robot.discovery`
 - `articore.robot.control.request` / `articore.robot.control.reply`
@@ -82,6 +83,11 @@ Pinocchio 3.8 的算法是模板实现，交叉编译时直接编译进主程序
 Runtime 处于 `FAULT` 时仍可持有 DDS 控制租约并执行显式维护请求。模式配置和
 普通清错的拒绝回复包含当前状态、要求状态、原始故障原因和失败电机；急停锁存
 仍不能由普通 `CLEAR_FAULTS` 清除。
+
+Runtime 每次进程启动时在左右 CAN 通道分别扫描电机：ID 1..7 是必需关节，
+ID 8 是可选末端。左右夹爪可独立存在，扫描结果在该 Runtime 进程生命周期内
+冻结；运行期间的通信丢帧不会被解释为拆除了末端。更换末端必须先失能，再重启
+Runtime 触发重新扫描，重启后仍需用户显式 enable。
 
 安装不会自动使能电机。真机运动、掉线和 watchdog 验收必须另行取得硬件
 操作授权。

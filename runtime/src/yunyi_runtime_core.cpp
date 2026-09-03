@@ -62,18 +62,14 @@ int32_t call(Function&& function) {
 }
 
 YunyiRuntimeCoreState* create_yunyi_runtime_checked(
-    int32_t requested_mode, int32_t with_grippers,
+    int32_t requested_mode,
     const articore::YunyiNativeConfig& native_config = {}) {
   if (requested_mode != ARTICORE_MODE_PV &&
       requested_mode != ARTICORE_MODE_MIT) {
     throw std::invalid_argument("unsupported Yunyi control mode");
   }
-  if (with_grippers != 0 && with_grippers != 1) {
-    throw std::invalid_argument("with_grippers must be 0 or 1");
-  }
   auto bundle = articore::create_yunyi_runtime(
-      static_cast<ArticoreControlMode>(requested_mode), with_grippers != 0,
-      native_config);
+      static_cast<ArticoreControlMode>(requested_mode), native_config);
   return new YunyiRuntimeCoreState(
       std::move(bundle.runtime), std::move(bundle.resources), bundle.mode);
 }
@@ -506,7 +502,7 @@ int32_t set_product_grippers_impl(
       throw std::invalid_argument("gripper mode must be PROTECTED or DIRECT");
     }
     auto& product = checked_yunyi(runtime);
-    if (!product.with_grippers) {
+    if (!product.gripper_present[0] && !product.gripper_present[1]) {
       checked(runtime).record_operation_result(
           ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
       g_last_error = "ok";
@@ -516,14 +512,17 @@ int32_t set_product_grippers_impl(
         std::clamp(left_opening, 0.0f, 1000.0f),
         std::clamp(right_opening, 0.0f, 1000.0f)};
     ArticoreGripperCommand commands[2]{};
+    uint32_t command_count = 0;
     for (uint32_t side = 0; side < 2; ++side) {
-      commands[side].struct_size = sizeof(ArticoreGripperCommand);
-      commands[side].motor = product.grippers[side];
-      commands[side].opening = openings[side];
-      commands[side].speed = 1000.0f;
-      commands[side].force_level = strength;
+      if (!product.gripper_present[side]) continue;
+      auto& command = commands[command_count++];
+      command.struct_size = sizeof(ArticoreGripperCommand);
+      command.motor = product.grippers[side];
+      command.opening = openings[side];
+      command.speed = 1000.0f;
+      command.force_level = strength;
     }
-    checked(runtime).set_gripper_commands(commands, 2, mode);
+    checked(runtime).set_gripper_commands(commands, command_count, mode);
     checked(runtime).record_operation_result(
         ARTICORE_OPERATION_COMMAND, ARTICORE_OPERATION_OK);
     g_last_error = "ok";
@@ -553,12 +552,14 @@ int32_t native_runtime_get_control_mode(
 }
 
 int32_t native_runtime_create_yunyi_configured(
-    int32_t requested_mode, int32_t with_grippers,
+    int32_t requested_mode,
     const char* left_can_interface, const char* right_can_interface,
     int32_t realtime, int32_t lock_memory, int32_t control_cpu,
     int32_t can_tx_cpu, int32_t can_rx_cpu, int32_t control_priority,
     int32_t can_tx_priority, int32_t can_rx_priority,
     uint32_t feedback_max_age_ms, uint32_t motor_watchdog_ms,
+    uint32_t motor_discovery_timeout_ms,
+    uint32_t motor_discovery_retries,
     YunyiRuntimeCoreState** runtime) {
   if (!runtime || !left_can_interface || !right_can_interface) {
     g_last_error = "configured Runtime arguments are null";
@@ -578,8 +579,9 @@ int32_t native_runtime_create_yunyi_configured(
     native_config.can_rx_priority = can_rx_priority;
     native_config.feedback_max_age_ms = feedback_max_age_ms;
     native_config.motor_watchdog_ms = motor_watchdog_ms;
-    *runtime = create_yunyi_runtime_checked(
-        requested_mode, with_grippers, native_config);
+    native_config.motor_discovery_timeout_ms = motor_discovery_timeout_ms;
+    native_config.motor_discovery_retries = motor_discovery_retries;
+    *runtime = create_yunyi_runtime_checked(requested_mode, native_config);
     g_last_error = "ok";
     return ARTICORE_OPERATION_OK;
   } catch (const std::invalid_argument& error) {
@@ -1067,7 +1069,8 @@ int32_t native_runtime_solve_ik(
     const uint32_t caller_size = state->struct_size;
     ArticoreProductState output{};
     output.struct_size = caller_size;
-    output.has_grippers = product.with_grippers ? 1 : 0;
+    output.has_grippers =
+        product.gripper_present[0] || product.gripper_present[1] ? 1 : 0;
     const float unavailable = std::numeric_limits<float>::quiet_NaN();
     output.left_gripper_mos_temperature = unavailable;
     output.left_gripper_rotor_temperature = unavailable;
@@ -1125,9 +1128,10 @@ int32_t native_runtime_solve_ik(
       }
     }
 
-    if (product.with_grippers) {
+    if (product.gripper_present[0] || product.gripper_present[1]) {
       const auto health = safety.health();
       for (uint32_t side = 0; side < 2; ++side) {
+        if (!product.gripper_present[side]) continue;
         ArticoreMotorState motor{};
         ArticoreFeedbackStats stats{};
         const bool cached = articore::read_yunyi_motor_state(
@@ -1403,7 +1407,7 @@ int32_t native_runtime_reset_tcp_offset(
     offset.struct_size = sizeof(offset);
     offset.side = side;
     const auto values = articore::default_yunyi_tcp_offset(
-        product.with_grippers);
+        product.gripper_present[side]);
     std::copy(values.begin(), values.end(), offset.values);
     return native_runtime_set_tcp_offset(runtime, &offset);
   } catch (const std::exception& error) {
@@ -1425,7 +1429,21 @@ int32_t native_runtime_has_grippers(
     YunyiRuntimeCoreState* runtime, int32_t* has_grippers) {
   return call([&] {
     if (!has_grippers) throw std::invalid_argument("has_grippers is null");
-    *has_grippers = checked_yunyi(runtime).with_grippers ? 1 : 0;
+    const auto& product = checked_yunyi(runtime);
+    *has_grippers =
+        product.gripper_present[0] || product.gripper_present[1] ? 1 : 0;
+  });
+}
+
+int32_t native_runtime_get_gripper_presence(
+    YunyiRuntimeCoreState* runtime, int32_t* left, int32_t* right) {
+  return call([&] {
+    if (!left || !right) {
+      throw std::invalid_argument("gripper presence output is null");
+    }
+    const auto& product = checked_yunyi(runtime);
+    *left = product.gripper_present[0] ? 1 : 0;
+    *right = product.gripper_present[1] ? 1 : 0;
   });
 }
 
@@ -1596,20 +1614,22 @@ void check_result(int32_t result, const char* operation) {
 namespace articore {
 
 YunyiRuntimeCore::YunyiRuntimeCore(
-    ArticoreControlMode mode, bool with_grippers,
-    const std::string& left_can_interface,
+    ArticoreControlMode mode, const std::string& left_can_interface,
     const std::string& right_can_interface, bool realtime,
     bool lock_memory, int control_cpu, int can_tx_cpu, int can_rx_cpu,
     int control_priority, int can_tx_priority, int can_rx_priority,
-    uint32_t feedback_max_age_ms, uint32_t motor_watchdog_ms) {
+    uint32_t feedback_max_age_ms, uint32_t motor_watchdog_ms,
+    uint32_t motor_discovery_timeout_ms,
+    uint32_t motor_discovery_retries) {
   YunyiRuntimeCoreState* created = nullptr;
   check_result(
       native_runtime_create_yunyi_configured(
-          static_cast<int32_t>(mode), with_grippers ? 1 : 0,
-          left_can_interface.c_str(), right_can_interface.c_str(),
+          static_cast<int32_t>(mode), left_can_interface.c_str(),
+          right_can_interface.c_str(),
           realtime ? 1 : 0, lock_memory ? 1 : 0, control_cpu, can_tx_cpu,
           can_rx_cpu, control_priority, can_tx_priority, can_rx_priority,
-          feedback_max_age_ms, motor_watchdog_ms, &created),
+          feedback_max_age_ms, motor_watchdog_ms,
+          motor_discovery_timeout_ms, motor_discovery_retries, &created),
       "create configured Yunyi Runtime");
   state_.reset(created);
 }
@@ -1690,6 +1710,15 @@ bool YunyiRuntimeCore::has_grippers() const {
   int32_t value = 0;
   check_result(native_runtime_has_grippers(checked(), &value), "has_grippers");
   return value != 0;
+}
+
+std::array<bool, 2> YunyiRuntimeCore::gripper_presence() const {
+  int32_t left = 0;
+  int32_t right = 0;
+  check_result(
+      native_runtime_get_gripper_presence(checked(), &left, &right),
+      "get_gripper_presence");
+  return {left != 0, right != 0};
 }
 
 void YunyiRuntimeCore::set_joint_pv(

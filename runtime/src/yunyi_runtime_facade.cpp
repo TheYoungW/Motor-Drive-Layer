@@ -75,14 +75,17 @@ class YunyiRuntime::Impl {
   explicit Impl(YunyiRuntimeConfig selected)
       : config(std::move(selected)),
         core(static_cast<ArticoreControlMode>(config.initial_control_mode),
-               config.with_grippers, config.left_can_interface,
-               config.right_can_interface, config.threads.realtime,
+               config.left_can_interface, config.right_can_interface,
+               config.threads.realtime,
                config.threads.lock_memory, config.threads.control_cpu,
                config.threads.can_tx_cpu, config.threads.can_rx_cpu,
                config.threads.control_priority, config.threads.can_tx_priority,
                config.threads.can_rx_priority,
                static_cast<std::uint32_t>(config.feedback_max_age.count()),
-               static_cast<std::uint32_t>(config.motor_watchdog.count())) {}
+               static_cast<std::uint32_t>(config.motor_watchdog.count()),
+               static_cast<std::uint32_t>(
+                   config.motor_discovery_timeout.count()),
+               config.motor_discovery_retries) {}
 
   YunyiRuntimeConfig config;
   YunyiRuntimeCore core;
@@ -105,9 +108,12 @@ Result<std::unique_ptr<YunyiRuntime>> YunyiRuntime::create(
                            "left and right CAN interfaces must differ");
   }
   if (config.feedback_max_age <= std::chrono::milliseconds::zero() ||
-      config.motor_watchdog <= std::chrono::milliseconds::zero()) {
+      config.motor_watchdog <= std::chrono::milliseconds::zero() ||
+      config.motor_discovery_timeout <= std::chrono::milliseconds::zero() ||
+      config.motor_discovery_retries > 10) {
     return Status::failure(RuntimeErrorCode::InvalidArgument,
-                           "Runtime timeouts must be positive");
+                           "Runtime timeouts must be positive and discovery "
+                           "retries must be within 0..=10");
   }
   const int cpu_count = static_cast<int>(std::thread::hardware_concurrency());
   if (cpu_count > 0) {
@@ -237,6 +243,20 @@ Result<float> YunyiRuntime::max_acceleration() const {
 }
 Result<bool> YunyiRuntime::has_grippers() const {
   return query<bool>([&] { return impl_->core.has_grippers(); });
+}
+
+Result<HardwareTopology> YunyiRuntime::hardware_topology() const {
+  return query<HardwareTopology>([&] {
+    HardwareTopology topology;
+    const auto present = impl_->core.gripper_presence();
+    for (std::size_t side = 0; side < present.size(); ++side) {
+      topology.end_effectors[side] = present[side]
+          ? EndEffectorType::DamiaoGripper : EndEffectorType::None;
+    }
+    topology.revision = 1U + static_cast<std::uint32_t>(present[0]) +
+        2U * static_cast<std::uint32_t>(present[1]);
+    return topology;
+  });
 }
 
 Result<JointArray> YunyiRuntime::solve_ik(const Pose& left,

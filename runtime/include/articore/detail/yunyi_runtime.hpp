@@ -163,7 +163,7 @@ struct YunyiRuntimeResources {
   // Active flange(link7)-to-TCP transforms [x,y,z,roll,pitch,yaw]. They are
   // native session configuration shared by pose reporting and every IK path.
   std::array<std::array<float, ARTICORE_PRODUCT_POSE_DOF>, 2> tcp_offsets{};
-  bool with_grippers = true;
+  std::array<bool, 2> gripper_present{};
   float default_pv_reference_velocity =
       kYunyiOrdinaryPvMaximumVelocity;
 };
@@ -193,14 +193,15 @@ struct YunyiNativeConfig {
   int can_rx_priority = 0;
   uint32_t feedback_max_age_ms = 250;
   uint32_t motor_watchdog_ms = 500;
+  uint32_t motor_discovery_timeout_ms = 25;
+  uint32_t motor_discovery_retries = 8;
 };
 
 // Builds the fixed Yunyi dual-arm product: two SocketCAN-FD+BRS channels,
 // fourteen arm joints, optional paired grippers, all calibration, safety and
 // model bindings, and complete native ownership.
 YunyiRuntimeBundle create_yunyi_runtime(
-    ArticoreControlMode mode, bool with_grippers,
-    const YunyiNativeConfig& config = {});
+    ArticoreControlMode mode, const YunyiNativeConfig& config = {});
 
 std::array<float, ARTICORE_PRODUCT_POSE_DOF> default_yunyi_tcp_offset(
     bool with_grippers);

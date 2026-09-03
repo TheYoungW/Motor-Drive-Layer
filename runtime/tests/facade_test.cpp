@@ -22,5 +22,13 @@ int main() {
   require(static_cast<bool>(ok), "success Status is truthy");
   articore::Result<int> value(42);
   require(value && value.value() == 42, "Result carries typed values");
+  articore::HardwareTopology topology;
+  topology.end_effectors[0] = articore::EndEffectorType::DamiaoGripper;
+  require(topology.has_gripper(articore::RobotSide::Left),
+          "left end effector is represented independently");
+  require(!topology.has_gripper(articore::RobotSide::Right),
+          "right end effector may be absent independently");
+  require(topology.has_any_gripper(),
+          "legacy aggregate query reports any installed gripper");
   std::cout << "runtime facade tests passed\n";
 }

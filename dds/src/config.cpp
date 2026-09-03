@@ -66,7 +66,11 @@ Result<ServiceConfig> load_service_config(const std::string& path) {
       else if (key == "dds_interfaces") result.network_interfaces = split(value);
       else if (key == "left_can_interface") result.runtime.left_can_interface = value;
       else if (key == "right_can_interface") result.runtime.right_can_interface = value;
-      else if (key == "with_grippers") result.runtime.with_grippers = boolean(value);
+      else if (key == "with_grippers") {
+        // Compatibility with 1.0.0-1.0.3 conffiles. Physical topology is now
+        // discovered independently on each CAN channel at Runtime startup.
+        (void)boolean(value);
+      }
       else if (key == "initial_control_mode") {
         if (value == "pv") result.runtime.initial_control_mode = ControlMode::Pv;
         else if (value == "mit") result.runtime.initial_control_mode = ControlMode::Mit;
@@ -79,6 +83,19 @@ Result<ServiceConfig> load_service_config(const std::string& path) {
       else if (key == "control_priority") result.runtime.threads.control_priority = std::stoi(value);
       else if (key == "can_tx_priority") result.runtime.threads.can_tx_priority = std::stoi(value);
       else if (key == "can_rx_priority") result.runtime.threads.can_rx_priority = std::stoi(value);
+      else if (key == "motor_discovery_timeout_ms") {
+        result.runtime.motor_discovery_timeout =
+            std::chrono::milliseconds(std::stoul(value));
+      }
+      else if (key == "motor_discovery_retries") {
+        const auto retries = std::stoul(value);
+        if (retries > 10) {
+          throw std::invalid_argument(
+              "motor_discovery_retries must be within 0..=10");
+        }
+        result.runtime.motor_discovery_retries =
+            static_cast<std::uint32_t>(retries);
+      }
       else throw std::invalid_argument("unknown configuration key: " + key);
     }
     if (result.robot_id.empty() || result.robot_id.size() > 63) {
@@ -95,6 +112,11 @@ Result<ServiceConfig> load_service_config(const std::string& path) {
     if (!valid_interface(result.runtime.left_can_interface) ||
         !valid_interface(result.runtime.right_can_interface)) {
       throw std::invalid_argument("invalid CAN interface name");
+    }
+    if (result.runtime.motor_discovery_timeout <=
+        std::chrono::milliseconds::zero()) {
+      throw std::invalid_argument(
+          "motor_discovery_timeout_ms must be positive");
     }
     return result;
   } catch (const std::invalid_argument& error) {

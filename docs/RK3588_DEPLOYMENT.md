@@ -18,11 +18,11 @@ SSH 用户：neardi
 dist/arm64/articore-runtime-service_<version>_arm64.deb
 ```
 
-当前 1.0.3 产物：
+当前 1.1.0 产物：
 
 ```text
-dist/arm64/articore-runtime-service_1.0.3_arm64.deb
-SHA256: 805c5ff2550403da119a434a4a889e88b2d259540a7d59c49a0b64f351396517
+dist/arm64/articore-runtime-service_1.1.0_arm64.deb
+SHA256: 7c05600c5512b071f792ba8481eaa0d674972324f40580ce84518ee7de9bb466
 ```
 
 ## 上传
@@ -31,7 +31,7 @@ SHA256: 805c5ff2550403da119a434a4a889e88b2d259540a7d59c49a0b64f351396517
 
 ```bash
 scp \
-  dist/arm64/articore-runtime-service_1.0.3_arm64.deb \
+  dist/arm64/articore-runtime-service_1.1.0_arm64.deb \
   neardi@192.168.1.185:/home/neardi/runtime/
 ```
 
@@ -43,7 +43,7 @@ scp \
 先计算本地产物摘要：
 
 ```bash
-sha256sum dist/arm64/articore-runtime-service_1.0.3_arm64.deb
+sha256sum dist/arm64/articore-runtime-service_1.1.0_arm64.deb
 ```
 
 然后检查远端设备和产物：
@@ -52,10 +52,10 @@ sha256sum dist/arm64/articore-runtime-service_1.0.3_arm64.deb
 ssh neardi@192.168.1.185 '
   uname -m
   dpkg-deb -f \
-    /home/neardi/runtime/articore-runtime-service_1.0.3_arm64.deb \
+    /home/neardi/runtime/articore-runtime-service_1.1.0_arm64.deb \
     Package Version Architecture
   sha256sum \
-    /home/neardi/runtime/articore-runtime-service_1.0.3_arm64.deb
+    /home/neardi/runtime/articore-runtime-service_1.1.0_arm64.deb
 '
 ```
 
@@ -73,15 +73,15 @@ ssh neardi@192.168.1.185 '
 ```bash
 cd /home/neardi/runtime
 sudo apt-get -o Dpkg::Options::="--force-confnew" \
-  install ./articore-runtime-service_1.0.3_arm64.deb
+  install ./articore-runtime-service_1.1.0_arm64.deb
 ```
 
-`--force-confnew` 仅用于从已手工修改配置的 1.0.0/1.0.1 测试包升级：它选择 1.0.3
+`--force-confnew` 仅用于从已手工修改配置的旧测试包升级：它选择 1.1.0
 随包提供的新配置（`wlan0`、真实 USB-CAN 序列号和 0.875 数据相位采样点）。
 如设备配置与本机不同，应先备份配置，并改用普通 `sudo apt install` 人工处理
 conffile 差异。
 
-1.0.3 的安装脚本会重新加载 udev、enable CAN/Runtime，并在 Runtime 尚未
+1.1.0 的安装脚本会重新加载 udev、enable CAN/Runtime，并在 Runtime 尚未
 运行时先初始化 CAN，再启动 Runtime。若安装前 Runtime 已在运行，为避免升级
 过程打断机器人或清除锁存 FAULT，安装脚本不会自动重启它；应进入安全维护
 状态并取得操作授权后执行：
@@ -93,7 +93,7 @@ sudo systemctl restart articore-runtime.service
 
 安装脚本还会识别 1.0.0 在板上临时创建的两个、内容完全匹配的 `/usr/local`
 systemd override，将它们移出 systemd 搜索路径并备份到
-`/etc/articore/migration-backups/1.0.3/`。有任何额外定制的 override 都不会
+`/etc/articore/migration-backups/1.1.0/`。有任何额外定制的 override 都不会
 自动移动，而会保留并打印提示，供操作员人工检查。
 
 检查状态和日志：
@@ -110,18 +110,22 @@ Runtime 启动后保持电机 disabled。电机 enable、维护操作和运动�
 DDS 控制租约另行明确执行。
 
 SDK 1.0.2 的清错示例使用显式维护连接并维持 lease/heartbeat，无论 Runtime
-处于 `READY` 还是 `FAULT` 都不发送 `CONFIGURE_MODE`。Runtime 1.0.3 的
+处于 `READY` 还是 `FAULT` 都不发送 `CONFIGURE_MODE`。Runtime 1.1.0 的
 `CLEAR_FAULTS` 只清错、验证反馈和确认失能，不再夹带模式/通信看门狗寄存器
 配置；普通业务会话在清错成功后另行配置 PV/MIT。普通清错仍会拒绝急停锁存，
 拒绝回复会携带当前状态、故障原因和失败电机。
 
-## 1.0.3 板卡默认值与热插拔
+## 1.1.0 板卡默认值、末端扫描与热插拔
 
 - DDS 默认接口：`wlan0`。
 - USB-CAN VID/PID：`1d50:606f`。
 - 左侧序列号：`015213EF68D8345BBAA6D57818A4EC3A`。
 - 右侧序列号：`AEEDE4FD23DEA4AFCA6B3EAA55ABC28A`。
 - CAN-FD：1 Mbit/s arbitration、5 Mbit/s data、数据相位 sample point 0.875。
+- Runtime 启动时分别扫描 `can-left` 和 `can-right`：ID 1..7 必须存在，ID 8
+  作为可选夹爪独立识别；允许单侧夹爪。
+- 更换末端必须先确认电机失能，再由操作员重启 Runtime。运行期间不会因单次
+  丢帧自动改变拓扑，也不会在重启后自动使能。
 
 udev 热插拔会重新配置 CAN。脚本会在操作 CAN 前记录 Runtime 是否运行；若
 当时正在运行，即使 systemd 因 `Requires=` 联动停止了 Runtime，也绝不会自动
