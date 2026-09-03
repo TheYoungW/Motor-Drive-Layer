@@ -23,7 +23,8 @@ Result<LeaseSnapshot> LeaseManager::acquire(const std::string& client_id,
   if (!active_ || active_->client_id != client_id ||
       now >= active_->expires_at) {
     active_ = LeaseSnapshot{client_id, next_lease_id_++, now + timeout_};
-    last_sequences_.erase(client_id);
+    last_control_sequence_.reset();
+    last_stream_sequence_.reset();
   } else {
     active_->expires_at = now + timeout_;
   }
@@ -32,18 +33,20 @@ Result<LeaseSnapshot> LeaseManager::acquire(const std::string& client_id,
 
 ProtocolError LeaseManager::authorize(const std::string& client_id,
                                       std::uint64_t lease_id,
-                                      std::uint64_t sequence, bool refresh,
+                                      std::uint64_t sequence,
+                                      SequenceChannel channel, bool refresh,
                                       Clock::time_point now) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_ || now >= active_->expires_at ||
       active_->client_id != client_id || active_->lease_id != lease_id) {
     return ProtocolError::NoLease;
   }
-  const auto found = last_sequences_.find(client_id);
-  if (found != last_sequences_.end() && sequence <= found->second) {
+  auto& last_sequence = channel == SequenceChannel::Control
+      ? last_control_sequence_ : last_stream_sequence_;
+  if (last_sequence && sequence <= *last_sequence) {
     return ProtocolError::StaleSequence;
   }
-  last_sequences_[client_id] = sequence;
+  last_sequence = sequence;
   if (refresh) active_->expires_at = now + timeout_;
   return ProtocolError::Ok;
 }
@@ -52,7 +55,8 @@ ProtocolError LeaseManager::heartbeat(const std::string& client_id,
                                       std::uint64_t lease_id,
                                       std::uint64_t sequence,
                                       Clock::time_point now) {
-  return authorize(client_id, lease_id, sequence, true, now);
+  return authorize(client_id, lease_id, sequence,
+                   SequenceChannel::Control, true, now);
 }
 
 ProtocolError LeaseManager::release(const std::string& client_id,
@@ -66,6 +70,8 @@ ProtocolError LeaseManager::release(const std::string& client_id,
       return ProtocolError::NoLease;
     }
     active_.reset();
+    last_control_sequence_.reset();
+    last_stream_sequence_.reset();
     released = true;
   }
   if (released) notify_lost(reason);
@@ -78,6 +84,8 @@ bool LeaseManager::expire_if_needed(Clock::time_point now) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (active_ && now >= active_->expires_at) {
       active_.reset();
+      last_control_sequence_.reset();
+      last_stream_sequence_.reset();
       expired = true;
     }
   }
@@ -91,6 +99,8 @@ void LeaseManager::revoke(const std::string& reason) {
     std::lock_guard<std::mutex> lock(mutex_);
     had_lease = active_.has_value();
     active_.reset();
+    last_control_sequence_.reset();
+    last_stream_sequence_.reset();
   }
   if (had_lease) notify_lost(reason);
 }

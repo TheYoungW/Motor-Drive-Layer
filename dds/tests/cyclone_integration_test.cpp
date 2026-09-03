@@ -73,6 +73,10 @@ int main() {
       participant, &articore_wire_ControlReply_desc,
       "articore.robot.control.reply", nullptr, nullptr);
   check(reply_topic, "create reply topic");
+  const auto stream_topic = dds_create_topic(
+      participant, &articore_wire_StreamCommand_desc,
+      "articore.robot.stream.command", nullptr, nullptr);
+  check(stream_topic, "create stream topic");
   auto* qos = dds_create_qos();
   dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_MSECS(20));
   dds_qset_history(qos, DDS_HISTORY_KEEP_LAST, 32);
@@ -83,6 +87,15 @@ int main() {
       participant, reply_topic, qos, nullptr);
   check(reply_reader, "create reply reader");
   dds_delete_qos(qos);
+  auto* stream_qos = dds_create_qos();
+  dds_qset_reliability(
+      stream_qos, DDS_RELIABILITY_BEST_EFFORT, DDS_MSECS(0));
+  dds_qset_history(stream_qos, DDS_HISTORY_KEEP_LAST, 1);
+  dds_qset_lifespan(stream_qos, DDS_MSECS(20));
+  const auto stream_writer = dds_create_writer(
+      participant, stream_topic, stream_qos, nullptr);
+  check(stream_writer, "create stream writer");
+  dds_delete_qos(stream_qos);
   std::this_thread::sleep_for(250ms);
 
   articore_wire_ControlRequest first{};
@@ -111,12 +124,40 @@ int main() {
           "second DDS client cannot take the whole-robot lease");
 
   articore_wire_ControlRequest heartbeat{};
-  initialize(heartbeat, "client-a", 3, 104);
+  initialize(heartbeat, "client-a", 100, 104);
   heartbeat.operation = articore_wire_HEARTBEAT;
   heartbeat.lease_id = acquired.lease_id;
   check(dds_write(request_writer, &heartbeat), "write heartbeat");
   require(wait_reply(reply_reader, 104).error == articore_wire_OK,
           "20 Hz heartbeat protocol renews the lease");
+
+  // Control and stream use distinct DataWriters, so DDS does not promise
+  // cross-topic delivery order. A high control sequence must never make a
+  // valid independently ordered stream sequence stale. Waiting beyond the
+  // heartbeat deadline proves that the accepted stream refreshed the lease.
+  std::this_thread::sleep_for(180ms);
+  articore_wire_StreamCommand stream{};
+  stream.protocol_major = 1;
+  stream.protocol_minor = 0;
+  std::snprintf(stream.robot_id, sizeof(stream.robot_id), "%s",
+                "loopback-robot");
+  std::snprintf(stream.client_id, sizeof(stream.client_id), "%s", "client-a");
+  stream.sequence_id = 1;
+  stream.lease_id = acquired.lease_id;
+  stream.kind = articore_wire_PV;
+  stream.speed_percent = 20.0f;
+  check(dds_write(stream_writer, &stream), "write independently sequenced PV");
+  std::this_thread::sleep_for(150ms);
+
+  articore_wire_ControlRequest after_stream{};
+  initialize(after_stream, "client-a", 101, 105);
+  after_stream.operation = articore_wire_CONFIGURE_MODE;
+  after_stream.lease_id = acquired.lease_id;
+  check(dds_write(request_writer, &after_stream),
+        "write request after stream-refreshed lease");
+  require(wait_reply(reply_reader, 105).error == articore_wire_TRANSPORT_ERROR,
+          "stream remains authorized after a higher heartbeat sequence and "
+          "refreshes the whole-robot lease");
 
   stop.store(true);
   service_thread.join();

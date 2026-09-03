@@ -326,7 +326,8 @@ class CycloneService::Impl {
       if (error == ProtocolError::Ok) {
         error = lease_.authorize(command.identity.client_id,
                                  command.lease_id,
-                                 command.identity.sequence, true,
+                                 command.identity.sequence,
+                                 SequenceChannel::Stream, true,
                                  command.received_at);
       }
       if (error == ProtocolError::Ok) mailbox_.store(std::move(command));
@@ -404,7 +405,8 @@ class CycloneService::Impl {
     const bool query_only = operation >= articore_wire_QUERY_STATE;
     if (!query_only) {
       error = lease_.authorize(request.client_id, request.lease_id,
-                               request.sequence_id, false);
+                               request.sequence_id,
+                               SequenceChannel::Control, false);
       if (error != ProtocolError::Ok) {
         finish_reply(reply, error);
         return;

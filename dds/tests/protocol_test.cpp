@@ -26,23 +26,37 @@ int main() {
   require(!competing &&
               competing.status().code() == articore::RuntimeErrorCode::Busy,
           "second client cannot acquire a live whole-robot lease");
-  require(leases.authorize("client-a", first.value().lease_id, 1, true,
+  require(leases.authorize("client-a", first.value().lease_id, 1,
+                           articore::dds::SequenceChannel::Stream, true,
                            epoch + 20ms) == ProtocolError::Ok,
           "valid stream command refreshes lease");
-  require(leases.authorize("client-a", first.value().lease_id, 1, true,
+  require(leases.authorize("client-a", first.value().lease_id, 1,
+                           articore::dds::SequenceChannel::Stream, true,
                            epoch + 21ms) == ProtocolError::StaleSequence,
           "duplicate sequence is rejected");
-  require(leases.authorize("client-a", first.value().lease_id + 1, 2, true,
+  require(leases.authorize("client-a", first.value().lease_id + 1, 2,
+                           articore::dds::SequenceChannel::Stream, true,
                            epoch + 22ms) == ProtocolError::NoLease,
           "wrong lease id is rejected");
+  require(leases.heartbeat("client-a", first.value().lease_id, 100,
+                           epoch + 23ms) == ProtocolError::Ok,
+          "control heartbeat advances only the control sequence domain");
+  require(leases.authorize("client-a", first.value().lease_id, 2,
+                           articore::dds::SequenceChannel::Stream, true,
+                           epoch + 24ms) == ProtocolError::Ok,
+          "a newer heartbeat cannot make an independently ordered stream stale");
+  require(leases.authorize("client-a", first.value().lease_id, 2,
+                           articore::dds::SequenceChannel::Control, false,
+                           epoch + 25ms) == ProtocolError::StaleSequence,
+          "control duplicate detection remains independent and monotonic");
   require(!leases.expire_if_needed(epoch + 260ms),
           "valid command extended the deadline");
-  require(leases.expire_if_needed(epoch + 271ms),
+  require(leases.expire_if_needed(epoch + 275ms),
           "250 ms without heartbeat expires the lease");
   require(lost_reason == "control lease expired",
           "expiry invokes the Runtime safety callback");
 
-  auto second = leases.acquire("client-b", epoch + 272ms);
+  auto second = leases.acquire("client-b", epoch + 276ms);
   require(static_cast<bool>(second) &&
               second.value().lease_id != first.value().lease_id,
           "reconnect gets a new lease identity");

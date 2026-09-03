@@ -6,11 +6,15 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <unordered_map>
 
 #include "articore/dds/protocol.hpp"
 
 namespace articore::dds {
+
+enum class SequenceChannel : std::uint8_t {
+  Control,
+  Stream,
+};
 
 struct LeaseSnapshot {
   std::string client_id;
@@ -32,6 +36,7 @@ class LeaseManager {
   ProtocolError authorize(const std::string& client_id,
                           std::uint64_t lease_id,
                           std::uint64_t sequence,
+                          SequenceChannel channel,
                           bool refresh,
                           Clock::time_point now = Clock::now());
   ProtocolError heartbeat(const std::string& client_id,
@@ -52,7 +57,8 @@ class LeaseManager {
   LostCallback on_lost_;
   std::chrono::milliseconds timeout_;
   std::optional<LeaseSnapshot> active_;
-  std::unordered_map<std::string, std::uint64_t> last_sequences_;
+  std::optional<std::uint64_t> last_control_sequence_;
+  std::optional<std::uint64_t> last_stream_sequence_;
   std::uint64_t next_lease_id_ = 1;
 };
 
