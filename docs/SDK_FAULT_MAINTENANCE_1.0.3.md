@@ -10,7 +10,7 @@
 本地验证产物：
 
 ```text
-/home/ubuntu/motorbridge/dist/arm64/articore-runtime-service_1.0.3_arm64.deb
+/home/ubuntu/motorbridge/build/artifacts/arm64/articore-runtime-service_1.0.3_arm64.deb
 SHA256 805c5ff2550403da119a434a4a889e88b2d259540a7d59c49a0b64f351396517
 
 /home/ubuntu/Articore-SDK/dist/arx_d_can-1.0.2-py3-none-any.whl

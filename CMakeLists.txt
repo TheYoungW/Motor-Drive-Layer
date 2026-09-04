@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(motorbridge VERSION 1.2.0 LANGUAGES C CXX)
+project(motorbridge VERSION 1.2.7 LANGUAGES C CXX)
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
   message(FATAL_ERROR "articore-runtime-service supports Linux SocketCAN-FD only")
@@ -27,6 +27,7 @@ if(ARTICORE_BUILD_DEPLOYMENT AND ARTICORE_ENABLE_DDS)
   install(FILES deploy/can.conf
           DESTINATION etc/articore)
   install(PROGRAMS deploy/articore-can-init deploy/articore-can-hotplug
+                   deploy/articore-wait-dds-network
           DESTINATION usr/libexec/articore)
   install(FILES deploy/articore-can.service deploy/articore-runtime.service
                 deploy/articore-can-hotplug.service

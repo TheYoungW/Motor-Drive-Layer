@@ -82,38 +82,34 @@ inline constexpr std::array<float, ARTICORE_PRODUCT_ARM_DOF>
         900.0f * kRadiansPerDegree,
     };
 
-// A scalar user override applies to every arm joint, so its accepted range is
-// bounded by the most restrictive J1..J7 product limit. A zero configured
-// value means that no user override is installed and the per-joint defaults
-// above remain authoritative.
-inline constexpr float kYunyiPvMotionLimitResolution = 0.01f;
-inline constexpr float kYunyiOrdinaryPvDefaultLimitSelection = 0.0f;
-inline constexpr float kYunyiOrdinaryPvMaximumConfigurableVelocity =
-    kYunyiOrdinaryPvJointMaximumVelocities[0];
-inline constexpr float kYunyiOrdinaryPvMaximumConfigurableAcceleration =
-    kYunyiOrdinaryPvJointMaximumAccelerations[0];
+// Public ordinary-PV caps are percentages of each joint's product limit. This
+// keeps physical rad/s and rad/s^2 limits inside Runtime while preserving the
+// different J1..J7 limits. The per-command speed percentage remains a second,
+// independent linear scale applied to both velocity and acceleration.
+inline constexpr float kYunyiOrdinaryPvDefaultMaximumPercent = 100.0f;
+inline constexpr float kYunyiOrdinaryPvMinimumMaximumPercent = 1.0f;
+inline constexpr float kYunyiOrdinaryPvMaximumMaximumPercent = 100.0f;
 
 inline constexpr float yunyi_ordinary_pv_velocity_limit(
     uint32_t joint_index, float speed_percent,
-    float configured_maximum_velocity =
-        kYunyiOrdinaryPvDefaultLimitSelection) {
+    float maximum_velocity_percent =
+        kYunyiOrdinaryPvDefaultMaximumPercent) {
   const float default_limit = kYunyiOrdinaryPvJointMaximumVelocities[
       joint_index % ARTICORE_PRODUCT_ARM_DOF];
-  const float base_limit = configured_maximum_velocity > 0.0f
-      ? configured_maximum_velocity : default_limit;
+  const float base_limit = default_limit * maximum_velocity_percent / 100.0f;
   return base_limit * speed_percent / 100.0f;
 }
 
 inline constexpr float yunyi_ordinary_pv_acceleration_limit(
     uint32_t joint_index, float speed_percent,
-    float configured_maximum_acceleration =
-        kYunyiOrdinaryPvDefaultLimitSelection) {
-  const float time_scale = speed_percent / 100.0f;
+    float maximum_acceleration_percent =
+        kYunyiOrdinaryPvDefaultMaximumPercent) {
+  const float command_scale = speed_percent / 100.0f;
   const float default_limit = kYunyiOrdinaryPvJointMaximumAccelerations[
       joint_index % ARTICORE_PRODUCT_ARM_DOF];
-  const float base_limit = configured_maximum_acceleration > 0.0f
-      ? configured_maximum_acceleration : default_limit;
-  return base_limit * time_scale * time_scale;
+  const float base_limit =
+      default_limit * maximum_acceleration_percent / 100.0f;
+  return base_limit * command_scale;
 }
 
 static_assert(kYunyiOrdinaryPvJointMaximumVelocities[0] > 3.14159f &&

@@ -33,10 +33,10 @@ struct YunyiRuntimeCoreState {
   std::unique_ptr<articore::SafetyRuntime> runtime;
   ArticoreControlMode product_mode = ARTICORE_MODE_PV;
   std::mutex product_pv_limits_mutex;
-  float product_pv_max_velocity =
-      articore::kYunyiOrdinaryPvDefaultLimitSelection;
-  float product_pv_max_acceleration =
-      articore::kYunyiOrdinaryPvDefaultLimitSelection;
+  float product_pv_max_velocity_percent =
+      articore::kYunyiOrdinaryPvDefaultMaximumPercent;
+  float product_pv_max_acceleration_percent =
+      articore::kYunyiOrdinaryPvDefaultMaximumPercent;
   float product_speed_percent = 100.0f;
   std::mutex motion_mutex;
 };
@@ -103,29 +103,20 @@ void require_finite(const float* values, uint32_t count, const char* name) {
   }
 }
 
-float require_optional_pv_limit(
-    float value, float maximum, const char* name) {
-  if (!std::isfinite(value) || value < 0.0f || value > maximum) {
+float require_pv_maximum_percent(float value, const char* name) {
+  if (!std::isfinite(value) ||
+      value < articore::kYunyiOrdinaryPvMinimumMaximumPercent ||
+      value > articore::kYunyiOrdinaryPvMaximumMaximumPercent) {
     throw std::invalid_argument(
-        std::string(name) + " must be 0 to use product defaults or within " +
-        std::to_string(articore::kYunyiPvMotionLimitResolution) + ".." +
-        std::to_string(maximum));
+        std::string(name) + " must be finite and within 1..100 percent");
   }
-  if (value == 0.0f) return value;
-  const float quantized = std::round(
-      value / articore::kYunyiPvMotionLimitResolution) *
-      articore::kYunyiPvMotionLimitResolution;
-  if (std::abs(value - quantized) > 1.0e-5f) {
-    throw std::invalid_argument(
-        std::string(name) + " must use 0.01 physical-unit resolution");
-  }
-  return quantized;
+  return value;
 }
 
 std::pair<std::vector<float>, std::vector<float>>
 effective_product_pv_limits(
-    float speed_percent, float configured_maximum_velocity,
-    float configured_maximum_acceleration) {
+    float speed_percent, float maximum_velocity_percent,
+    float maximum_acceleration_percent) {
   std::vector<float> velocities;
   std::vector<float> accelerations;
   velocities.reserve(ARTICORE_PRODUCT_DUAL_ARM_DOF);
@@ -133,9 +124,9 @@ effective_product_pv_limits(
   for (uint32_t index = 0;
        index < ARTICORE_PRODUCT_DUAL_ARM_DOF; ++index) {
     velocities.push_back(articore::yunyi_ordinary_pv_velocity_limit(
-        index, speed_percent, configured_maximum_velocity));
+        index, speed_percent, maximum_velocity_percent));
     accelerations.push_back(articore::yunyi_ordinary_pv_acceleration_limit(
-        index, speed_percent, configured_maximum_acceleration));
+        index, speed_percent, maximum_acceleration_percent));
   }
   return {std::move(velocities), std::move(accelerations)};
 }
@@ -228,8 +219,8 @@ void install_product_joint_positions(
           std::unique_lock<std::mutex>(runtime->product_pv_limits_mutex);
     }
     auto limits = effective_product_pv_limits(
-        speed_percent, runtime->product_pv_max_velocity,
-        runtime->product_pv_max_acceleration);
+        speed_percent, runtime->product_pv_max_velocity_percent,
+        runtime->product_pv_max_acceleration_percent);
     pv_velocity_limits = std::move(limits.first);
     pv_acceleration_limits = std::move(limits.second);
   }
@@ -598,11 +589,16 @@ int32_t native_runtime_create_yunyi_configured(
 
 int32_t native_runtime_connect(YunyiRuntimeCoreState* runtime) {
   try {
+    const auto previous_health = checked(runtime).health();
     checked(runtime).connect();
     if (runtime->yunyi) {
       const auto connected_health = checked(runtime).health();
-      if (connected_health.state == ARTICORE_FAULT &&
-          connected_health.motor_fault_count > 0) {
+      if (previous_health.state == ARTICORE_FAULT ||
+          connected_health.state == ARTICORE_FAULT) {
+        // A faulted Runtime remains a valid maintenance endpoint. CONNECT may
+        // revalidate an auto-recoverable system fault, but it must not perform
+        // an implicit mode write. The controlling client explicitly chooses
+        // its requested mode after observing READY.
         checked(runtime).record_operation_result(ARTICORE_OPERATION_CONNECT,
                                                  ARTICORE_OPERATION_OK);
         g_last_error = "ok";
@@ -853,8 +849,8 @@ int32_t native_runtime_set_speed_percent(
     }
     std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
     auto limits = effective_product_pv_limits(
-        speed_percent, runtime->product_pv_max_velocity,
-        runtime->product_pv_max_acceleration);
+        speed_percent, runtime->product_pv_max_velocity_percent,
+        runtime->product_pv_max_acceleration_percent);
     checked(runtime).update_joint_pv_profile_limits(
         limits.first, limits.second);
     runtime->product_speed_percent = speed_percent;
@@ -895,12 +891,10 @@ int32_t native_runtime_get_speed_percent(
 }
 
 int32_t native_runtime_set_max_speed(
-    YunyiRuntimeCoreState* runtime, float max_speed_rad_s) {
+    YunyiRuntimeCoreState* runtime, float percent) {
   try {
-    const float validated = require_optional_pv_limit(
-        max_speed_rad_s,
-        articore::kYunyiOrdinaryPvMaximumConfigurableVelocity,
-        "ordinary PV maximum speed in rad/s");
+    const float validated = require_pv_maximum_percent(
+        percent, "ordinary PV maximum speed percentage");
     checked_yunyi(runtime);
     if (runtime->product_mode != ARTICORE_MODE_PV) {
       throw std::runtime_error(
@@ -909,10 +903,10 @@ int32_t native_runtime_set_max_speed(
     std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
     auto limits = effective_product_pv_limits(
         runtime->product_speed_percent, validated,
-        runtime->product_pv_max_acceleration);
+        runtime->product_pv_max_acceleration_percent);
     checked(runtime).update_joint_pv_profile_limits(
         limits.first, limits.second);
-    runtime->product_pv_max_velocity = validated;
+    runtime->product_pv_max_velocity_percent = validated;
     g_last_error = "ok";
     return ARTICORE_OPERATION_OK;
   } catch (const std::invalid_argument& error) {
@@ -925,9 +919,9 @@ int32_t native_runtime_set_max_speed(
 }
 
 int32_t native_runtime_get_max_speed(
-    YunyiRuntimeCoreState* runtime, float* max_speed_rad_s) {
-  if (!max_speed_rad_s) {
-    g_last_error = "max_speed_rad_s output is null";
+    YunyiRuntimeCoreState* runtime, float* percent) {
+  if (!percent) {
+    g_last_error = "maximum speed percentage output is null";
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
   }
   try {
@@ -937,7 +931,7 @@ int32_t native_runtime_get_max_speed(
           "maximum speed setting is available only in product PV mode");
     }
     std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
-    *max_speed_rad_s = runtime->product_pv_max_velocity;
+    *percent = runtime->product_pv_max_velocity_percent;
     g_last_error = "ok";
     return ARTICORE_OPERATION_OK;
   } catch (const std::invalid_argument& error) {
@@ -950,12 +944,10 @@ int32_t native_runtime_get_max_speed(
 }
 
 int32_t native_runtime_set_max_acceleration(
-    YunyiRuntimeCoreState* runtime, float max_acceleration_rad_s2) {
+    YunyiRuntimeCoreState* runtime, float percent) {
   try {
-    const float validated = require_optional_pv_limit(
-        max_acceleration_rad_s2,
-        articore::kYunyiOrdinaryPvMaximumConfigurableAcceleration,
-        "ordinary PV maximum acceleration in rad/s^2");
+    const float validated = require_pv_maximum_percent(
+        percent, "ordinary PV maximum acceleration percentage");
     checked_yunyi(runtime);
     if (runtime->product_mode != ARTICORE_MODE_PV) {
       throw std::runtime_error(
@@ -964,10 +956,10 @@ int32_t native_runtime_set_max_acceleration(
     std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
     auto limits = effective_product_pv_limits(
         runtime->product_speed_percent,
-        runtime->product_pv_max_velocity, validated);
+        runtime->product_pv_max_velocity_percent, validated);
     checked(runtime).update_joint_pv_profile_limits(
         limits.first, limits.second);
-    runtime->product_pv_max_acceleration = validated;
+    runtime->product_pv_max_acceleration_percent = validated;
     g_last_error = "ok";
     return ARTICORE_OPERATION_OK;
   } catch (const std::invalid_argument& error) {
@@ -980,9 +972,9 @@ int32_t native_runtime_set_max_acceleration(
 }
 
 int32_t native_runtime_get_max_acceleration(
-    YunyiRuntimeCoreState* runtime, float* max_acceleration_rad_s2) {
-  if (!max_acceleration_rad_s2) {
-    g_last_error = "max_acceleration_rad_s2 output is null";
+    YunyiRuntimeCoreState* runtime, float* percent) {
+  if (!percent) {
+    g_last_error = "maximum acceleration percentage output is null";
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
   }
   try {
@@ -992,7 +984,7 @@ int32_t native_runtime_get_max_acceleration(
           "maximum acceleration setting is available only in product PV mode");
     }
     std::lock_guard<std::mutex> lock(runtime->product_pv_limits_mutex);
-    *max_acceleration_rad_s2 = runtime->product_pv_max_acceleration;
+    *percent = runtime->product_pv_max_acceleration_percent;
     g_last_error = "ok";
     return ARTICORE_OPERATION_OK;
   } catch (const std::invalid_argument& error) {
@@ -1776,9 +1768,9 @@ float YunyiRuntimeCore::speed_percent() const {
   return value;
 }
 
-void YunyiRuntimeCore::set_max_speed(float max_speed_rad_s) {
+void YunyiRuntimeCore::set_max_speed(float percent) {
   check_result(
-      native_runtime_set_max_speed(checked(), max_speed_rad_s),
+      native_runtime_set_max_speed(checked(), percent),
       "set_max_speed");
 }
 
@@ -1789,9 +1781,9 @@ float YunyiRuntimeCore::max_speed() const {
   return value;
 }
 
-void YunyiRuntimeCore::set_max_acceleration(float max_acceleration_rad_s2) {
+void YunyiRuntimeCore::set_max_acceleration(float percent) {
   check_result(
-      native_runtime_set_max_acceleration(checked(), max_acceleration_rad_s2),
+      native_runtime_set_max_acceleration(checked(), percent),
       "set_max_acceleration");
 }
 

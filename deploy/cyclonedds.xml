@@ -5,7 +5,9 @@
   <Domain Id="0">
     <General>
       <Interfaces>
-        <NetworkInterface name="wlan0" priority="10"/>
+        <NetworkInterface name="eth0" priority="20" presence_required="false"/>
+        <NetworkInterface name="eth1" priority="10" presence_required="false"/>
+        <NetworkInterface name="wlan0" priority="0" presence_required="false"/>
       </Interfaces>
       <AllowMulticast>true</AllowMulticast>
     </General>

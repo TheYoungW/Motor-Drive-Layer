@@ -2,9 +2,9 @@
 set -euo pipefail
 
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-build_dir=${MOTOR_AARCH64_BUILD_DIR:-"${repo_dir}/build-aarch64"}
+build_dir=${MOTOR_AARCH64_BUILD_DIR:-"${repo_dir}/build/arm64-release"}
 install_dir=${MOTOR_AARCH64_INSTALL_DIR:-"${build_dir}/stage"}
-package_dir=${MOTOR_AARCH64_PACKAGE_DIR:-"${repo_dir}/dist/arm64"}
+package_dir=${MOTOR_AARCH64_PACKAGE_DIR:-"${repo_dir}/build/artifacts/arm64"}
 
 : "${MOTOR_AARCH64_SYSROOT:?set MOTOR_AARCH64_SYSROOT to the RK3588 sysroot}"
 : "${ARTICORE_HOST_IDLC:?set ARTICORE_HOST_IDLC to host Cyclone DDS 11.0.1 idlc}"

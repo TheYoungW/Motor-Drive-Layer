@@ -1,6 +1,6 @@
 module articore_wire {
   const uint16 PROTOCOL_MAJOR = 1;
-  const uint16 PROTOCOL_MINOR = 2;
+  const uint16 PROTOCOL_MINOR = 3;
   const uint32 ARM_DOF = 7;
   const uint32 ROBOT_DOF = 14;
   const uint32 POSE_DOF = 6;

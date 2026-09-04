@@ -948,6 +948,7 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
   copy_text(report.error, error);
 
   const auto all = cached_motor_power_state();
+  const bool motor_fault_reported = current_motor_fault_reported();
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     const bool rollback_safety_failure = enabled &&
@@ -974,6 +975,8 @@ ArticoreMotorPowerReport SafetyRuntime::set_motor_power_batch(
     if (rollback_safety_failure) {
       state_ = ARTICORE_FAULT;
       fault_latched_ = true;
+      motor_fault_latched_ =
+          motor_fault_latched_ || motor_fault_reported;
       disable_confirmed_ = false;
       fault_reason_ = error;
     } else if (all == ARTICORE_MOTOR_POWER_DISABLED) {
@@ -1177,11 +1180,14 @@ void SafetyRuntime::enable(ArticoreControlMode mode) {
     update_enable_report(true, false, missing_motors, "");
   } catch (const std::exception& failure) {
     enable_error = failure.what();
+    const bool motor_fault_reported = current_motor_fault_reported();
     {
       std::lock_guard<std::mutex> command_lock(command_mutex_);
       std::lock_guard<std::mutex> lock(state_mutex_);
       state_ = ARTICORE_FAULT;
       fault_latched_ = true;
+      motor_fault_latched_ =
+          motor_fault_latched_ || motor_fault_reported;
       hardware_transition_ = true;
       disable_confirmed_ = false;
       fault_reason_ = "runtime enable failed: " + enable_error;
@@ -1499,6 +1505,7 @@ void SafetyRuntime::disable() {
   }
   std::string error;
   const bool confirmed = disable_hardware(true, false, error);
+  const bool motor_fault_reported = current_motor_fault_reported();
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     disable_confirmed_ = confirmed;
@@ -1539,6 +1546,8 @@ void SafetyRuntime::disable() {
     } else {
       state_ = ARTICORE_FAULT;
       fault_latched_ = true;
+      motor_fault_latched_ =
+          motor_fault_latched_ || motor_fault_reported;
       fault_reason_ = preserve_fault && !preserved_reason.empty()
           ? preserved_reason + "; disable confirmation failed: " + error
           : "disable confirmation failed: " + error;
@@ -1649,6 +1658,7 @@ void SafetyRuntime::recover() {
   auto fail_recovery = [&](const char* stage, int32_t code,
                            const std::string& stage_error,
                            std::vector<std::string> failed_motors) -> void {
+    const bool motor_fault_reported = current_motor_fault_reported();
     {
       std::lock_guard<std::mutex> command_lock(command_mutex_);
       safe_pv_.clear();
@@ -1664,6 +1674,8 @@ void SafetyRuntime::recover() {
       std::lock_guard<std::mutex> state_lock(state_mutex_);
       state_ = ARTICORE_FAULT;
       fault_latched_ = true;
+      motor_fault_latched_ =
+          motor_fault_latched_ || motor_fault_reported;
       hardware_transition_ = true;
     }
 
@@ -1789,6 +1801,10 @@ void SafetyRuntime::recover() {
     fail_recovery("clear recoverable faults",
                   ARTICORE_OPERATION_MOTOR_COMMAND, error, failed_motors);
   }
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    motor_fault_latched_ = false;
+  }
 
   error.clear();
   if (!refresh_transport_health(error)) {
@@ -1848,6 +1864,7 @@ void SafetyRuntime::recover() {
     std::lock_guard<std::mutex> lock(state_mutex_);
     state_ = ARTICORE_READY;
     fault_latched_ = false;
+    motor_fault_latched_ = false;
     disable_confirmed_ = true;
     hardware_transition_ = false;
     fault_reason_.clear();
@@ -1962,6 +1979,7 @@ void SafetyRuntime::recover() {
     std::lock_guard<std::mutex> lock(state_mutex_);
     state_ = ARTICORE_READY;
     fault_latched_ = false;
+    motor_fault_latched_ = false;
     emergency_stop_latched_ = false;
     disable_confirmed_ = true;
     fault_reason_.clear();

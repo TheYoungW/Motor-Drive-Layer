@@ -282,13 +282,18 @@ inline NativePvReferenceStep advance_acceleration_limited_pv_reference(
   return {next_position, next_velocity};
 }
 
-// Feedback-distance Motor-V envelope. maximum_velocity is a hard ceiling;
-// sqrt(2*a*distance) provides the physical braking ceiling.
+// Feedback-aware Motor-V envelope. POS_VEL V is an unsigned drive-speed
+// ceiling, not the joint's current or target velocity. Keep the previous V
+// only while opening the ceiling, but close it from measured joint speed and
+// the physical sqrt(2*a*distance) braking ceiling. This lets the cap follow a
+// joint that has already slowed instead of spending the tail of the move
+// ramping down a stale, previously permitted V.
 inline float advance_ordinary_pv_drive_velocity(
-    float current_velocity_limit, float remaining_distance,
+    float previous_velocity_limit, float feedback_velocity,
+    float remaining_distance,
     float maximum_velocity, float maximum_acceleration, float period_s) {
-  if (!std::isfinite(current_velocity_limit) ||
-      current_velocity_limit < 0.0f ||
+  if (!std::isfinite(previous_velocity_limit) ||
+      previous_velocity_limit < 0.0f || !std::isfinite(feedback_velocity) ||
       !std::isfinite(remaining_distance) || remaining_distance < 0.0f ||
       !std::isfinite(maximum_velocity) || maximum_velocity <= 0.0f ||
       !std::isfinite(maximum_acceleration) || maximum_acceleration <= 0.0f ||
@@ -299,12 +304,23 @@ inline float advance_ordinary_pv_drive_velocity(
       std::max(0.0f, 2.0f * maximum_acceleration * remaining_distance));
   const float desired_velocity = std::min(maximum_velocity, braking_velocity);
   const float maximum_change = maximum_acceleration * period_s;
-  const float bounded_current = std::min(
-      current_velocity_limit, maximum_velocity);
-  if (desired_velocity >= bounded_current) {
-    return std::min(desired_velocity, bounded_current + maximum_change);
+  const float bounded_previous = std::min(
+      previous_velocity_limit, maximum_velocity);
+  const float measured_speed = std::min(
+      std::abs(feedback_velocity), maximum_velocity);
+  if (desired_velocity >= bounded_previous) {
+    // Raising V only grants more speed authority. Preserve a smooth a*dt
+    // opening, but never leave the cap below an already faster physical joint.
+    return std::min(
+        desired_velocity,
+        std::max(bounded_previous, measured_speed) + maximum_change);
   }
-  return std::max(desired_velocity, bounded_current - maximum_change);
+  // Lowering V is the braking action. Anchor it to measured speed rather than
+  // the old cap, and never increase the cap while the distance envelope is
+  // closing.
+  return std::min(
+      bounded_previous,
+      std::max(desired_velocity, measured_speed - maximum_change));
 }
 
 inline std::string yunyi_joint_role(uint32_t index) {
@@ -530,7 +546,8 @@ class SafetyRuntime {
       float pv_velocity_limit,
       CommandTransaction& transaction, uint64_t planning_token);
   // Product ordinary PV uses independent limits for every joint. The vectors
-  // follow target order and describe the current 1..100 percent time scale.
+  // follow target order and contain the current linearly percentage-scaled
+  // physical velocity and acceleration limits.
   void set_joint_pv_profile(
       const ArticoreJointPvTarget* targets, uint32_t count,
       const std::vector<float>& maximum_velocities,
@@ -947,6 +964,7 @@ class SafetyRuntime {
   ArticoreFeedbackIssueScope classify_feedback_issue_scope(
       const std::vector<ArticoreMotorFeedbackHealth>& motors) const;
   bool refresh_transport_health(std::string& error);
+  bool current_motor_fault_reported() const;
   void seed_gripper_targets_from_feedback(bool activate);
   std::string motor_error(const std::string& fallback) const;
   void set_side_error_locked(uint8_t side, const std::string& error,
@@ -1012,6 +1030,10 @@ class SafetyRuntime {
   ArticoreSafetyState state_ = ARTICORE_DISCONNECTED;
   ArticoreControlMode mode_ = ARTICORE_MODE_PV;
   bool fault_latched_ = false;
+  // Motor-reported status codes (>1) require explicit CLEAR_FAULTS/RECOVER.
+  // Runtime/transport failures keep fault_latched_ set but leave this false,
+  // allowing a later CONNECT to perform a read-only disabled-state recheck.
+  bool motor_fault_latched_ = false;
   bool emergency_stop_latched_ = false;
   bool disable_confirmed_ = false;
   bool has_successful_command_ = false;

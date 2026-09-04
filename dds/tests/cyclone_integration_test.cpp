@@ -68,6 +68,20 @@ void initialize(articore_wire_ControlRequest& request, const char* client,
 }  // namespace
 
 int main() {
+  articore::dds::ServiceConfig network_config;
+  network_config.network_interfaces = {"eth0", "eth1", "wlan0"};
+  const auto cyclone_config = articore::dds::cyclone_uri(network_config);
+  require(cyclone_config.find(
+              "name=\"eth0\" priority=\"20\" presence_required=\"false\"") !=
+              std::string::npos &&
+              cyclone_config.find(
+                  "name=\"eth1\" priority=\"10\" presence_required=\"false\"") !=
+                  std::string::npos &&
+              cyclone_config.find(
+                  "name=\"wlan0\" priority=\"0\" presence_required=\"false\"") !=
+                  std::string::npos,
+          "configured DDS interfaces tolerate an unavailable backup");
+
   articore::RuntimeState native_state{};
   native_state.gripper_openings = {321.25f, 654.5f};
   native_state.gripper_available = {true, true};
@@ -149,8 +163,22 @@ int main() {
   require(acquired.error == articore_wire_OK && acquired.lease_id != 0,
           "first client receives a correlated lease");
 
+  articore_wire_ControlRequest legacy_limits{};
+  initialize(legacy_limits, "client-a", 2, 106);
+  legacy_limits.protocol_minor = 2;
+  legacy_limits.operation = articore_wire_SET_MAX_SPEED;
+  legacy_limits.lease_id = acquired.lease_id;
+  legacy_limits.scalar[0] = 2.0f;
+  check(dds_write(request_writer, &legacy_limits),
+        "write legacy physical-unit PV limit request");
+  const auto legacy_limits_rejected = wait_reply(reply_reader, 106);
+  require(legacy_limits_rejected.error == articore_wire_VERSION_MISMATCH &&
+              std::string(legacy_limits_rejected.message).find(
+                  "percentages in protocol 1.3") != std::string::npos,
+          "protocol 1.2 cannot reinterpret physical PV limits as percentages");
+
   articore_wire_ControlRequest incompatible{};
-  initialize(incompatible, "client-a", 2, 102);
+  initialize(incompatible, "client-a", 3, 102);
   incompatible.protocol_major = 2;
   incompatible.operation = articore_wire_QUERY_HEALTH;
   check(dds_write(request_writer, &incompatible), "write incompatible request");

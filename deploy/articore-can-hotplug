@@ -28,5 +28,5 @@ if [ "$runtime_was_active" = yes ]; then
   "$LOGGER" -t articore-can-hotplug \
     "CAN restored; Runtime was active before hotplug and will not be auto-started. Inspect health, then restart explicitly if safe."
 else
-  "$SYSTEMCTL" start articore-runtime.service
+  "$SYSTEMCTL" start --no-block articore-runtime.service
 fi

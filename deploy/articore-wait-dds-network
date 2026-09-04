@@ -1,0 +1,77 @@
+#!/bin/sh
+set -eu
+
+config=${1:-/etc/articore/runtime-service.conf}
+SYS_CLASS_NET=${ARTICORE_SYS_CLASS_NET:-/sys/class/net}
+IP=${ARTICORE_IP:-ip}
+SLEEP=${ARTICORE_SLEEP:-sleep}
+POLL_SECONDS=${ARTICORE_NETWORK_POLL_SECONDS:-1}
+
+if [ ! -r "$config" ]; then
+  echo "DDS network wait: cannot read configuration: $config" >&2
+  exit 1
+fi
+
+dds_interfaces=$(
+  sed -n 's/^[[:space:]]*dds_interfaces[[:space:]]*=[[:space:]]*//p' \
+    "$config" | tail -n 1
+)
+if [ -z "$dds_interfaces" ]; then
+  echo "DDS network wait: dds_interfaces is not configured" >&2
+  exit 1
+fi
+
+old_ifs=$IFS
+IFS=,
+set -f
+set -- $dds_interfaces
+set +f
+IFS=$old_ifs
+
+interfaces=
+for raw_interface in "$@"; do
+  interface=$(printf '%s' "$raw_interface" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  case "$interface" in
+    ''|*[!A-Za-z0-9_.:-]*)
+      echo "DDS network wait: invalid interface name: $interface" >&2
+      exit 1
+      ;;
+  esac
+  interfaces="$interfaces $interface"
+done
+
+last_reason=
+while :; do
+  ready=no
+  ready_interface=
+  reason="no configured interface is ready"
+  for interface in $interfaces; do
+    if [ ! -e "$SYS_CLASS_NET/$interface" ]; then
+      reason="$interface is not present"
+      continue
+    fi
+    if ! "$IP" -o link show dev "$interface" 2>/dev/null |
+        grep -q '<[^>]*UP[^>]*LOWER_UP[^>]*>'; then
+      reason="$interface link is not connected"
+      continue
+    fi
+    if ! "$IP" -o address show dev "$interface" scope global 2>/dev/null |
+        grep -q '[^[:space:]]'; then
+      reason="$interface has no global IP address"
+      continue
+    fi
+    ready=yes
+    ready_interface=$interface
+    break
+  done
+
+  if [ "$ready" = yes ]; then
+    echo "DDS network ready on $ready_interface"
+    exit 0
+  fi
+  if [ "$reason" != "$last_reason" ]; then
+    echo "DDS network wait: $reason; waiting" >&2
+    last_reason=$reason
+  fi
+  "$SLEEP" "$POLL_SECONDS"
+done

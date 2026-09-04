@@ -233,8 +233,8 @@ class YunyiRuntime final {
   Status set_joint_mit_fast(const JointArray& positions,
                             float speed_percent = 100.0f);
   Status set_speed_percent(float speed_percent);
-  Status set_max_speed(float radians_per_second);
-  Status set_max_acceleration(float radians_per_second_squared);
+  Status set_max_speed(float percent);
+  Status set_max_acceleration(float percent);
   Result<float> speed_percent() const;
   Result<float> max_speed() const;
   Result<float> max_acceleration() const;

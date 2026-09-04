@@ -383,6 +383,8 @@ ArticoreConnectReport SafetyRuntime::last_connect_report() const {
 
 void SafetyRuntime::connect() {
   std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+  const bool cached_motor_fault = current_motor_fault_reported();
+  bool revalidating_system_fault = false;
   ArticoreConnectReport report{};
   report.struct_size = sizeof(report);
   report.expected_count = static_cast<uint32_t>(motors_.size());
@@ -410,7 +412,16 @@ void SafetyRuntime::connect() {
           "Runtime was terminally disconnected and cannot reconnect");
     }
     if (state_ != ARTICORE_DISCONNECTED) {
-      return;
+      const bool can_revalidate_system_fault =
+          state_ == ARTICORE_FAULT && fault_latched_ &&
+          !emergency_stop_latched_ && !motor_fault_latched_ &&
+          !hardware_transition_;
+      if (!can_revalidate_system_fault) return;
+      if (cached_motor_fault) {
+        motor_fault_latched_ = true;
+        return;
+      }
+      revalidating_system_fault = true;
     }
     if (require_gripper_product_profiles_) {
       for (std::size_t index = 0; index < motors_.size(); ++index) {
@@ -496,12 +507,15 @@ void SafetyRuntime::connect() {
       if (!error.empty()) sides_[side].last_error = error;
     }
     throw std::runtime_error(
-        "connect initial feedback transaction failed: " +
+        std::string(revalidating_system_fault
+                        ? "system fault revalidation failed: "
+                        : "connect initial feedback transaction failed: ") +
         (error.empty() ? std::string("incomplete motor feedback") : error));
   }
 
   bool physical_disable_confirmed = true;
   std::vector<std::string> detected_motor_faults;
+  std::vector<std::string> enabled_motors;
   bool side_has_motor_fault[2] = {false, false};
   std::string side_motor_fault_error[2];
   for (const auto& motor : motors_) {
@@ -509,6 +523,9 @@ void SafetyRuntime::connect() {
     if (backend_->get_state(motor.descriptor.motor, &motor_state) != 0 ||
         !motor_state.has_value || motor_state.status_code != 0) {
       physical_disable_confirmed = false;
+    }
+    if (motor_state.has_value && motor_state.status_code == 1) {
+      enabled_motors.emplace_back(motor.descriptor.name);
     }
     if (motor_state.has_value && motor_state.status_code > 1) {
       const std::string name(motor.descriptor.name);
@@ -523,6 +540,35 @@ void SafetyRuntime::connect() {
     }
   }
 
+  if (revalidating_system_fault && detected_motor_faults.empty() &&
+      !physical_disable_confirmed) {
+    std::ostringstream detail;
+    detail << "system fault revalidation requires every motor to be disabled";
+    if (!enabled_motors.empty()) {
+      detail << ": enabled_motors=[";
+      for (std::size_t index = 0; index < enabled_motors.size(); ++index) {
+        if (index != 0) detail << ", ";
+        detail << enabled_motors[index];
+      }
+      detail << ']';
+    }
+    const auto failure = detail.str();
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      report.success = 0;
+      report.error_code = ARTICORE_CONNECT_FEEDBACK_INVALID;
+      report.failure_count = static_cast<uint32_t>(enabled_motors.size());
+      copy_text(report.error, failure);
+      last_connect_report_ = report;
+      disable_confirmed_ = false;
+      hardware_transition_ = false;
+      fault_reason_ = failure;
+      operation_failed_motors_ = enabled_motors;
+    }
+    wakeup_.notify_all();
+    throw std::runtime_error(failure);
+  }
+
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     report.success = 1;
@@ -532,21 +578,28 @@ void SafetyRuntime::connect() {
     report.received_count = static_cast<uint32_t>(motors_.size());
     report.error[0] = '\0';
     last_connect_report_ = report;
-    const bool recoverable_motor_fault = !detected_motor_faults.empty();
-    state_ = emergency_stop_latched_ || recoverable_motor_fault
+    const bool reported_motor_fault = !detected_motor_faults.empty();
+    motor_fault_latched_ = motor_fault_latched_ || reported_motor_fault;
+    state_ = emergency_stop_latched_ || motor_fault_latched_
         ? ARTICORE_FAULT : ARTICORE_READY;
-    fault_latched_ = emergency_stop_latched_ || recoverable_motor_fault;
+    fault_latched_ = emergency_stop_latched_ || motor_fault_latched_;
     disable_confirmed_ = physical_disable_confirmed;
     if (emergency_stop_latched_) {
       fault_reason_ = "emergency stop requested";
-    } else if (recoverable_motor_fault) {
-      fault_reason_ = "connect detected recoverable motor fault";
+    } else if (reported_motor_fault) {
+      fault_reason_ =
+          "connect detected Motor-reported fault requiring explicit clear";
       for (const auto& name : detected_motor_faults) {
         fault_reason_ += ": " + name;
         presence_[name] = ARTICORE_FAULTED;
       }
     } else {
       fault_reason_.clear();
+      for (auto& entry : presence_) {
+        if (entry.second == ARTICORE_FAULTED) {
+          entry.second = ARTICORE_PRESENT;
+        }
+      }
     }
     safety_reason_.clear();
     motor_faults_ = detected_motor_faults;

@@ -82,7 +82,6 @@ bool SafetyRuntime::prepare_protective_hold(std::string& error) {
     for (const auto& motor : motors_) {
       if (motor.descriptor.is_gripper) continue;
       if (!side_connected[motor.descriptor.side]) {
-        faulted.push_back(motor.descriptor.motor);
         continue;
       }
       ArticoreFeedbackStats stats{};
@@ -94,7 +93,9 @@ bool SafetyRuntime::prepare_protective_hold(std::string& error) {
           backend_->get_state(motor.descriptor.motor, &state) == 0 &&
           state.has_value;
       if (has_state && state.status_code != 1) {
-        faulted.push_back(motor.descriptor.motor);
+        if (state.status_code > 1) {
+          faulted.push_back(motor.descriptor.motor);
+        }
         if (!error.empty()) error += "; ";
         error += std::string(motor.descriptor.name) +
                  ": excluded from protective hold because status=" +
@@ -141,7 +142,7 @@ bool SafetyRuntime::prepare_protective_hold(std::string& error) {
       const bool has_state =
           backend_->get_state(command.motor, &state) == 0 && state.has_value;
       if (has_state && state.status_code != 1) {
-        faulted.push_back(command.motor);
+        if (state.status_code > 1) faulted.push_back(command.motor);
         continue;
       }
       // Missing/stale feedback is a communication-quality condition, not a
@@ -424,8 +425,11 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
     if (item.has_state && !recovery_check && item.status_code == 0 &&
         !intentionally_disabled.count(motor.descriptor.motor)) {
       item.issues |= ARTICORE_FEEDBACK_ISSUE_UNEXPECTED_POWER_STATE;
-      motor_faults.push_back(name);
-      faulted_presence.push_back(motor.descriptor.motor);
+      // The Motor itself reports DISABLED, not a firmware fault. Keep this
+      // mismatch severe so active control stops immediately, but do not turn
+      // it into a Motor-fault latch: after lease-loss disable has confirmed
+      // the whole product safe, a later CONNECT may revalidate the Runtime-
+      // generated fault without sending clear-error or enable commands.
     }
 
     if (item.issues == ARTICORE_FEEDBACK_ISSUE_NONE) continue;
@@ -533,6 +537,7 @@ bool SafetyRuntime::refresh_feedback_health(bool recovery_check,
     const bool active_feedback_ok =
         (!active_sides_[0] || side_ok[0]) &&
         (!active_sides_[1] || side_ok[1]);
+    if (has_motor_faults) motor_fault_latched_ = true;
     if (transports_ok && active_feedback_ok && !has_motor_faults &&
         (!recovery_check || !has_unconfirmed)) {
       uint64_t maximum_active_age = 0;
@@ -616,8 +621,20 @@ bool SafetyRuntime::refresh_transport_health(std::string& error) {
   return healthy;
 }
 
+bool SafetyRuntime::current_motor_fault_reported() const {
+  for (const auto& motor : motors_) {
+    ArticoreMotorState state{};
+    if (backend_->get_state(motor.descriptor.motor, &state) == 0 &&
+        state.has_value && state.status_code > 1) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void SafetyRuntime::enter_fault(const std::string& reason, bool torque_off,
                                 bool allow_protective_hold) {
+  const bool motor_fault_reported = current_motor_fault_reported();
   std::string hold_error;
   const bool arm_hold_available =
       allow_protective_hold && prepare_protective_hold(hold_error);
@@ -630,6 +647,7 @@ void SafetyRuntime::enter_fault(const std::string& reason, bool torque_off,
         ARTICORE_MOTION_FAULT,
         "trajectory terminated by Runtime fault: " + reason);
     fault_latched_ = true;
+    motor_fault_latched_ = motor_fault_latched_ || motor_fault_reported;
     hardware_transition_ = torque_off;
     disable_confirmed_ = false;
     fault_reason_ = emergency_stop_latched_

@@ -912,6 +912,45 @@ void test_runtime_maintenance_keeps_ready_and_reports_partial_failure() {
           "failed recover falls back to confirmed disable and records motor identity");
 }
 
+void test_clear_faults_retries_transient_feedback() {
+  FakeDriver driver;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  for (auto& entry : driver.motors) entry.second.status = 0;
+  articore::SafetyRuntime runtime(
+      config(), api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, enable_all, enable_motor, false,
+      maintenance_api());
+  const auto controls = joint_configs(motors);
+  runtime.configure_joints(controls.data(),
+                           static_cast<uint32_t>(controls.size()));
+  runtime.connect();
+
+  uint32_t feedback_before = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].status = 8;
+    // Both active CAN-side requests in the first precheck time out. The next
+    // bounded retry observes feedback, clears every Motor, and verifies the
+    // whole product remains disabled.
+    driver.feedback_timeouts_remaining = 2;
+    feedback_before = driver.feedback_requests;
+  }
+
+  require(runtime.clear_faults() == ARTICORE_OPERATION_OK,
+          "fault clear retries transient feedback within its recovery window");
+  const auto health = runtime.health();
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.feedback_requests >= feedback_before + 6 &&
+                driver.clear_fault_calls == motors.size(),
+            "fault clear retries feedback before issuing one successful clear batch");
+  }
+  require(health.state == ARTICORE_READY && health.disable_confirmed == 1 &&
+              health.fault_reason[0] == '\0' && health.motor_fault_count == 0,
+          "retried fault clear returns only after verified disabled READY");
+}
+
 void test_mode_configuration_uses_bounded_side_workers() {
   FakeDriver driver;
   g_driver = &driver;
@@ -937,7 +976,7 @@ void test_mode_configuration_uses_bounded_side_workers() {
           "two CAN-side maintenance workers progress concurrently");
 }
 
-void test_connect_mode_configuration_accepts_moving_disabled_feedback() {
+void test_mode_configuration_and_enable_accept_moving_disabled_feedback() {
   FakeDriver driver;
   g_driver = &driver;
   auto motors = descriptors(driver);
@@ -970,15 +1009,22 @@ void test_connect_mode_configuration_accepts_moving_disabled_feedback() {
   }
 
   require(runtime.configure_mode(ARTICORE_MODE_PV) ==
-              ARTICORE_OPERATION_NOT_STATIONARY &&
-              std::string(runtime.health().last_operation_error).find(
-                  "left/l-joint5") != std::string::npos,
-          "explicit maintenance mode changes still require stationary motors");
+              ARTICORE_OPERATION_OK &&
+              runtime.health().state == ARTICORE_READY &&
+              runtime.motor_power_state("") ==
+                  ARTICORE_MOTOR_POWER_DISABLED,
+          "explicit mode configuration accepts moving disabled feedback");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.configure_mode_calls == motors.size() * 2 &&
+                driver.enable_calls[0] == 0 && driver.enable_calls[1] == 0 &&
+                driver.pv_history.empty() && driver.mit_history.empty(),
+            "moving mode configuration remains disabled and sends no target");
+  }
 
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     driver.motors[motors[0].motor].position = 0.42f;
-    driver.motors[motors[0].motor].velocity = 0.0f;
     driver.motors[motors[1].motor].position = -0.37f;
   }
   runtime.enable(ARTICORE_MODE_PV);
@@ -986,7 +1032,7 @@ void test_connect_mode_configuration_accepts_moving_disabled_feedback() {
             std::lock_guard<std::mutex> lock(driver.mutex);
             return !driver.pv_history.empty();
           }),
-          "enable sends an initial hold after moving connect");
+          "enable accepts moving feedback and sends an initial hold");
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     const auto& hold = driver.pv_history.front();
@@ -1066,6 +1112,27 @@ void test_connect_enabled_motor_fault_is_recoverable_from_ready() {
           "recording the rejected enable preserves the original connect root "
           "cause while exposing the complete operation error");
 
+  uint32_t clear_calls_before_reconnect = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    clear_calls_before_reconnect = driver.clear_fault_calls;
+    for (auto& entry : driver.motors) entry.second.status = 0;
+  }
+  runtime.connect();
+  health = runtime.health();
+  uint32_t clear_calls_after_reconnect = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    clear_calls_after_reconnect = driver.clear_fault_calls;
+  }
+  require(health.state == ARTICORE_READY &&
+              health.disable_confirmed == 1 &&
+              health.fault_reason[0] == '\0' &&
+              health.motor_fault_count == 0 &&
+              clear_calls_after_reconnect == clear_calls_before_reconnect,
+          "a later connect revalidates and releases a Runtime-generated fault "
+          "without sending Motor clear, enable, or motion commands");
+
   runtime.recover();
   health = runtime.health();
   require(health.state == ARTICORE_READY &&
@@ -1129,7 +1196,7 @@ void test_connect_motor_fault_is_clearable_without_configuring_product() {
               std::string(health.last_operation_error).find(
                   "required_states=[READY]") != std::string::npos &&
               std::string(health.last_operation_error).find(
-                  "connect detected recoverable motor fault") !=
+                  "Motor-reported fault requiring explicit clear") !=
                   std::string::npos &&
               health.operation_failed_motor_count == 1 &&
               std::string(health.operation_failed_motors[0]) ==
@@ -1148,7 +1215,8 @@ void test_connect_motor_fault_is_clearable_without_configuring_product() {
                     std::string::npos &&
                 detail.find("fault_latched=true") != std::string::npos &&
                 detail.find("fault_source=connect") != std::string::npos &&
-                detail.find("connect detected recoverable motor fault") !=
+                detail.find(
+                    "Motor-reported fault requiring explicit clear") !=
                     std::string::npos &&
                 detail.find("left/l-joint1(status_code=8)") !=
                     std::string::npos,
@@ -1157,6 +1225,29 @@ void test_connect_motor_fault_is_clearable_without_configuring_product() {
   }
   require(enable_rejected,
           "latched connect Motor fault rejects enable with typed state error");
+
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].status = 0;
+  }
+  uint32_t feedback_requests_before_reconnect = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    feedback_requests_before_reconnect = driver.feedback_requests;
+  }
+  runtime.connect();
+  health = runtime.health();
+  uint32_t feedback_requests_after_reconnect = 0;
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    feedback_requests_after_reconnect = driver.feedback_requests;
+  }
+  require(health.state == ARTICORE_FAULT &&
+              health.motor_fault_count == 1 &&
+              feedback_requests_after_reconnect ==
+                  feedback_requests_before_reconnect,
+          "a Motor-reported fault remains manually latched even if a later "
+          "cached status looks healthy");
 
   require(runtime.clear_faults() == ARTICORE_OPERATION_OK,
           "fault clear does not require a stationary faulted Motor");
@@ -2502,6 +2593,75 @@ void test_feedback_fault_diagnostics_include_identity_value_and_threshold() {
               reason.find("threshold=all feedback values finite") !=
                   std::string::npos,
           "feedback fault identifies channel, motor, CAN ID, actual value, and threshold");
+}
+
+void test_unexpected_disable_is_recoverable_system_fault() {
+  FakeDriver driver;
+  driver.emulate_arm_feedback = true;
+  g_driver = &driver;
+  auto motors = descriptors(driver);
+  auto cfg = config();
+  cfg.command_timeout_ms = 500;
+  cfg.feedback_check_hz = 200;
+  articore::SafetyRuntime runtime(
+      cfg, api(), reinterpret_cast<void*>(0x100), g_left_controller,
+      g_right_controller, motors, enable_all, enable_motor, false,
+      maintenance_api());
+  const auto configured = joint_configs(motors);
+  runtime.configure_joints(configured.data(),
+                           static_cast<uint32_t>(configured.size()));
+  runtime.connect();
+  runtime.enable(ARTICORE_MODE_PV);
+  ArticorePosVelCommand command[] = {
+      {motors[0].motor, 0.25f, 1.0f},
+      {motors[1].motor, 0.75f, 1.0f},
+  };
+  runtime.submit_pos_vel(command, 2);
+  require(wait_for([&] { return runtime.health().state == ARTICORE_RUNNING; }),
+          "unexpected-disable test reaches RUNNING");
+
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.motors[motors[0].motor].status = 0;
+  }
+  require(wait_for([&] { return runtime.health().state == ARTICORE_FAULT; }),
+          "an unexpectedly disabled Motor immediately stops active control");
+  auto health = runtime.health();
+  require(std::string(health.fault_reason).find(
+              "motor unexpectedly disabled; actual_status=0") !=
+              std::string::npos &&
+              health.motor_fault_count == 0 &&
+              runtime.motor_presence("left/joint1") == ARTICORE_PRESENT,
+          "DISABLED is diagnosed as a Runtime power-state mismatch, not a "
+          "Motor-reported firmware fault");
+
+  uint32_t clear_calls_before = 0;
+  uint32_t enable_calls_before[2]{};
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    clear_calls_before = driver.clear_fault_calls;
+    enable_calls_before[0] = driver.enable_calls[0];
+    enable_calls_before[1] = driver.enable_calls[1];
+  }
+  runtime.disable();
+  require(runtime.health().state == ARTICORE_FAULT &&
+              runtime.health().disable_confirmed == 1,
+          "lease-loss style disable preserves the fault while confirming "
+          "the whole product disabled");
+  runtime.connect();
+  health = runtime.health();
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    require(driver.clear_fault_calls == clear_calls_before &&
+                driver.enable_calls[0] == enable_calls_before[0] &&
+                driver.enable_calls[1] == enable_calls_before[1],
+            "system-fault revalidation sends neither clear-error nor enable");
+  }
+  require(health.state == ARTICORE_READY &&
+              health.disable_confirmed == 1 &&
+              health.fault_reason[0] == '\0' &&
+              health.motor_fault_count == 0,
+          "a later CONNECT revalidates the disabled fault-free product");
 }
 
 void test_single_stale_feedback_sample_keeps_persistent_position_control() {
@@ -4055,7 +4215,7 @@ void test_direct_mit_position_sends_endpoint_without_stepping() {
           "direct MIT endpoint hold is persistent beyond the stream watchdog");
 }
 
-void test_yunyi_ordinary_pv_uses_per_joint_time_scaled_hard_limits() {
+void test_yunyi_ordinary_pv_uses_per_joint_linear_percentage_limits() {
   require(std::abs(articore::yunyi_ordinary_pv_velocity_limit(0, 100.0f) -
                        3.1415927f) < 1.0e-6f &&
               std::abs(articore::yunyi_ordinary_pv_velocity_limit(3, 100.0f) -
@@ -4072,17 +4232,23 @@ void test_yunyi_ordinary_pv_uses_per_joint_time_scaled_hard_limits() {
                        1.5707964f) < 1.0e-6f &&
               std::abs(
               articore::yunyi_ordinary_pv_acceleration_limit(0, 50.0f) -
-              1.9634954f) < 1.0e-6f,
-          "fifty percent halves velocity and quarters acceleration");
+              3.9269908f) < 1.0e-6f,
+          "fifty percent halves both velocity and acceleration");
+  require(std::abs(articore::yunyi_ordinary_pv_velocity_limit(0, 30.0f) -
+                       0.9424778f) < 1.0e-6f &&
+              std::abs(
+              articore::yunyi_ordinary_pv_acceleration_limit(0, 30.0f) -
+              2.3561945f) < 1.0e-6f,
+          "thirty percent applies 54 deg/s and 135 deg/s^2 to J1");
   require(std::abs(articore::yunyi_ordinary_pv_velocity_limit(
-                       0, 10.0f, 3.0f) - 0.3f) < 1.0e-6f &&
+                       0, 10.0f, 50.0f) - 0.15707964f) < 1.0e-6f &&
               std::abs(articore::yunyi_ordinary_pv_acceleration_limit(
-                       0, 10.0f, 4.0f) - 0.04f) < 1.0e-6f &&
+                       0, 10.0f, 50.0f) - 0.39269908f) < 1.0e-6f &&
               std::abs(articore::yunyi_ordinary_pv_velocity_limit(
-                       3, 100.0f, 3.0f) - 3.0f) < 1.0e-6f &&
+                       3, 100.0f, 50.0f) - 1.9634954f) < 1.0e-6f &&
               std::abs(articore::yunyi_ordinary_pv_acceleration_limit(
-                       3, 100.0f, 4.0f) - 4.0f) < 1.0e-6f,
-          "configured PV limits become the 100-percent base for every joint");
+                       3, 100.0f, 50.0f) - 7.8539816f) < 1.0e-6f,
+          "configured PV percentages preserve each joint's physical limit");
   require(std::abs(articore::yunyi_effective_pv_reference_velocity(50.0f) -
                        1.0f) < 1.0e-6f &&
               std::abs(articore::kYunyiTrajectoryPvAccelerationLimit - 6.0f) <
@@ -4092,14 +4258,22 @@ void test_yunyi_ordinary_pv_uses_per_joint_time_scaled_hard_limits() {
           "complete trajectory Motor V policy remains unchanged");
 
   require(std::abs(articore::advance_ordinary_pv_drive_velocity(
-                       0.0f, 1.0f, 2.0f, 4.0f, 0.002f) - 0.008f) <
+                       0.0f, 0.0f, 1.0f, 2.0f, 4.0f, 0.002f) - 0.008f) <
                        1.0e-6f &&
               std::abs(articore::advance_ordinary_pv_drive_velocity(
-                       0.5f, 0.01f, 2.0f, 4.0f, 0.002f) - 0.492f) <
+                       0.5f, 0.5f, 0.01f, 2.0f, 4.0f, 0.002f) - 0.492f) <
                        1.0e-6f &&
               articore::advance_ordinary_pv_drive_velocity(
-                  0.0f, 0.0f, 2.0f, 4.0f, 0.002f) == 0.0f,
-          "ordinary PV ramps and brakes a bounded Motor V envelope");
+                  0.0f, 0.0f, 0.0f, 2.0f, 4.0f, 0.002f) == 0.0f,
+          "ordinary PV opens and brakes a bounded Motor V envelope");
+  require(std::abs(articore::advance_ordinary_pv_drive_velocity(
+                       1.0f, 0.20f, 0.001f, 2.0f, 4.0f, 0.002f) -
+                   0.192f) < 1.0e-6f &&
+              std::abs(articore::advance_ordinary_pv_drive_velocity(
+                       1.0f, 0.05f, 0.001f, 2.0f, 4.0f, 0.002f) -
+                   std::sqrt(0.008f)) < 1.0e-6f,
+          "ordinary PV braking follows actual joint speed instead of slowly "
+          "descending from the previously permitted V");
 }
 
 void test_ordinary_pv_per_joint_profile_executes_at_native_rate() {
@@ -4542,9 +4716,32 @@ void test_ordinary_pv_brakes_from_feedback_distance_and_settles() {
           }, 500ms),
           "ordinary PV reaches the physical-distance braking ceiling while P "
           "remains the final endpoint");
+  std::size_t feedback_braking_baseline = 0;
   {
     std::lock_guard<std::mutex> lock(driver.mutex);
     driver.emulated_pv_position_offset = -0.001f;
+    driver.emulated_pv_velocity = 0.10f;
+    feedback_braking_baseline = driver.pv_history.size();
+  }
+  require(wait_for([&] {
+            std::lock_guard<std::mutex> lock(driver.mutex);
+            if (driver.pv_history.size() < feedback_braking_baseline + 3) {
+              return false;
+            }
+            return std::any_of(
+                driver.pv_history.begin() + feedback_braking_baseline,
+                driver.pv_history.end(),
+                [&](const std::vector<ArticorePosVelCommand>& frame) {
+                  return frame.size() == 2 &&
+                      frame[0].target_position == targets[0].target_position &&
+                      std::abs(frame[0].velocity_limit - 0.094f) < 1.0e-5f;
+                });
+          }, 100ms),
+          "ordinary PV closes V from 0.10 rad/s feedback to 0.094 rad/s in "
+          "one 3 rad/s^2 control step instead of descending from the old cap");
+  {
+    std::lock_guard<std::mutex> lock(driver.mutex);
+    driver.emulated_pv_velocity = 0.0f;
   }
   require(wait_for([&] {
             std::lock_guard<std::mutex> lock(driver.mutex);
@@ -8248,8 +8445,9 @@ int main() {
     RUN_TEST(test_motor_power_batch_latches_fault_when_rollback_is_unconfirmed);
     RUN_TEST(test_partial_mit_filters_disabled_motors_before_torque_validation);
     RUN_TEST(test_runtime_maintenance_keeps_ready_and_reports_partial_failure);
+    RUN_TEST(test_clear_faults_retries_transient_feedback);
     RUN_TEST(test_mode_configuration_uses_bounded_side_workers);
-    RUN_TEST(test_connect_mode_configuration_accepts_moving_disabled_feedback);
+    RUN_TEST(test_mode_configuration_and_enable_accept_moving_disabled_feedback);
     RUN_TEST(test_connect_enabled_motor_fault_is_recoverable_from_ready);
     RUN_TEST(test_connect_motor_fault_is_clearable_without_configuring_product);
     RUN_TEST(test_disconnect_disables_after_connect_configuration_failure);
@@ -8277,6 +8475,7 @@ int main() {
     RUN_TEST(test_feedback_measurements_do_not_reuse_command_limits);
     RUN_TEST(test_feedback_seed_ignores_command_limits);
     RUN_TEST(test_feedback_fault_diagnostics_include_identity_value_and_threshold);
+    RUN_TEST(test_unexpected_disable_is_recoverable_system_fault);
     RUN_TEST(test_single_stale_feedback_sample_keeps_persistent_position_control);
     RUN_TEST(test_feedback_health_aggregates_motors_and_classifies_channel_stall);
     RUN_TEST(test_ordinary_position_can_recover_from_feedback_outside_hard_limit);
@@ -8312,7 +8511,7 @@ int main() {
     RUN_TEST(test_persistent_mit_rejects_unbounded_motion_terms);
     RUN_TEST(test_ordinary_mit_position_uses_constant_reference_speed);
     RUN_TEST(test_direct_mit_position_sends_endpoint_without_stepping);
-    RUN_TEST(test_yunyi_ordinary_pv_uses_per_joint_time_scaled_hard_limits);
+    RUN_TEST(test_yunyi_ordinary_pv_uses_per_joint_linear_percentage_limits);
     RUN_TEST(test_ordinary_pv_per_joint_profile_executes_at_native_rate);
     RUN_TEST(test_native_ordinary_pv_speed_percent_controls_v);
     RUN_TEST(test_ordinary_pv_reference_limits_acceleration_and_brakes);

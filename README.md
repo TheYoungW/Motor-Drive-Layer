@@ -24,6 +24,11 @@ can-left + can-right
 普通 PV/MIT 保持 latest-target-wins，有限 Cartesian 运动仍使用原有 Runtime
 轨迹语义。
 
+普通 PV 的 POS_VEL `P` 是最新完整终点，`V` 是非负的电机速度上限，不是目标速度。
+Runtime 在 500 Hz 周期内按产品速度/加速度百分比开启 `V`；进入物理制动距离后，
+使用每个关节的新鲜实测速度和剩余位置误差收紧 `V`，不再把上一周期允许的 `V`
+误当作关节当前速度。这样保留 latest-target-wins，同时缩短终点低速尾巴并减少抖动。
+
 Runtime 内部调用链为 `YunyiRuntime → YunyiRuntimeCore → SafetyRuntime → motor`。
 旧 `runtime_bridge_*`、opaque handle、独立 robot-model bridge 和 Motion-ID/FIFO
 入口已删除；内部核心头文件不安装，跨进程边界只有 DDS v1 IDL。
@@ -81,10 +86,10 @@ DDS I/O 线程直接处理 lease acquire、heartbeat 和 release；其他控制�
 必须使用 Cyclone DDS `11.0.1`，不能使用 Ubuntu 22.04 的旧包：
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+cmake -S . -B build/native-release -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH=/opt/cyclonedds-11.0.1
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake --build build/native-release -j
+ctest --test-dir build/native-release --output-on-failure
 ```
 
 只验证 Motor/Runtime、不构建网络服务时可使用
@@ -95,9 +100,9 @@ ctest --test-dir build --output-on-failure
 目标系统是 Ubuntu 22.04 ARM64。配置入口为
 `/etc/articore/runtime-service.conf` 和 `/etc/articore/can.conf`。
 Debian 包安装服务、私有 `libddsc.so.11`、CAN 初始化单元、Runtime 单元和
-udev 热插拔规则，不安装开发头文件。1.0.3 针对当前 RK3588 使用 `wlan0`
-作为 DDS 默认网卡，并按两个 USB-CAN 的真实序列号稳定命名
-`can-left`/`can-right`。
+udev 热插拔规则，不安装开发头文件。1.2.7 默认同时配置 `eth0`、`eth1` 和
+`wlan0`，按顺序设置 DDS 优先级；启动时至少等待一张网卡具有可用链路和全局
+IP。两个 USB-CAN 按真实序列号稳定命名为 `can-left`/`can-right`。
 
 交叉编译时，`idlc` 必须是宿主机 11.0.1 可执行文件，而 Cyclone DDS CMake
 包及 `libddsc` 必须来自 ARM64 sysroot：
@@ -108,6 +113,10 @@ ARTICORE_HOST_IDLC=/opt/cyclonedds-host-11.0.1/bin/idlc \
 ARTICORE_PINOCCHIO_HEADER_ROOT=/opt/pinocchio-3.8/include \
 scripts/build_aarch64_runtime.sh
 ```
+
+所有构建输出统一放在 `build/`：本机编译使用 `build/native-release`，RK3588
+交叉编译使用 `build/arm64-release`，Debian 包输出到
+`build/artifacts/arm64`。仓库根目录不再生成 `build-*`、`builds` 或 `dist`。
 
 Pinocchio 3.8 的算法是模板实现，交叉编译时直接编译进主程序，因此目标板
 不需要另装 `libpinocchio.so`。Cyclone DDS 11.0.1 则作为私有动态库随包安装。

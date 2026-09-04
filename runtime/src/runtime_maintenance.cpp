@@ -2,8 +2,10 @@
 #include "articore/detail/runtime_utils.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <sstream>
+#include <thread>
 
 namespace articore {
 
@@ -12,6 +14,8 @@ namespace {
 constexpr float kStationaryVelocityRadPerSecond = 0.05f;
 constexpr float kZeroPositionToleranceRad = 0.02f;
 constexpr uint32_t kControlModeTransactionTimeoutMs = 300;
+constexpr auto kClearFaultRetryWindow = std::chrono::seconds(5);
+constexpr auto kClearFaultRetryDelay = std::chrono::milliseconds(50);
 
 const char* operation_name(ArticoreRuntimeOperation operation) {
   switch (operation) {
@@ -87,6 +91,8 @@ int32_t SafetyRuntime::finish_maintenance(
     ArticoreRuntimeOperation operation, int32_t code,
     const std::string& error, const std::vector<std::string>& failed_motors,
     bool latch_fault) {
+  const bool motor_fault_reported =
+      code != ARTICORE_OPERATION_OK && current_motor_fault_reported();
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     hardware_transition_ = false;
@@ -99,6 +105,7 @@ int32_t SafetyRuntime::finish_maintenance(
       disable_confirmed_ = true;
       if (operation == ARTICORE_OPERATION_CLEAR_FAULTS) {
         fault_latched_ = false;
+        motor_fault_latched_ = false;
         fault_reason_.clear();
         motor_faults_.clear();
         for (auto& entry : presence_) {
@@ -114,6 +121,8 @@ int32_t SafetyRuntime::finish_maintenance(
     } else if (latch_fault) {
       state_ = ARTICORE_FAULT;
       fault_latched_ = true;
+      motor_fault_latched_ =
+          motor_fault_latched_ || motor_fault_reported;
       // A failed maintenance transaction cannot claim physical disable unless
       // a separate disable barrier has actually verified every installed Motor.
       disable_confirmed_ = false;
@@ -433,8 +442,12 @@ int32_t SafetyRuntime::configure_mode(ArticoreControlMode mode) {
                             "unsupported control mode");
     return ARTICORE_OPERATION_INVALID_ARGUMENT;
   }
+  // Changing the controller mode is allowed while a physically disabled arm
+  // still has residual motion. Fresh, finite feedback and disabled motor state
+  // are still required; enable() will seed its first hold from the latest
+  // measured positions instead of commanding an old target.
   return run_motor_maintenance(
-      ARTICORE_OPERATION_CONFIGURE_MODE, mode, true);
+      ARTICORE_OPERATION_CONFIGURE_MODE, mode, false);
 }
 
 int32_t SafetyRuntime::configure_mode_for_connect(ArticoreControlMode mode) {
@@ -461,8 +474,43 @@ int32_t SafetyRuntime::configure_mode_for_connect(ArticoreControlMode mode) {
 }
 
 int32_t SafetyRuntime::clear_faults() {
-  return run_motor_maintenance(
-      ARTICORE_OPERATION_CLEAR_FAULTS, mode_, false);
+  const auto deadline = Clock::now() + kClearFaultRetryWindow;
+  int32_t result = ARTICORE_OPERATION_OK;
+  for (;;) {
+    result = run_motor_maintenance(
+        ARTICORE_OPERATION_CLEAR_FAULTS, mode_, false);
+    if (result == ARTICORE_OPERATION_OK) return result;
+
+    // A clear command can take effect before every USB-CAN feedback response
+    // becomes observable. Retry only feedback/verification failures; invalid
+    // state, emergency stop, unsupported hardware, transport, and native send
+    // failures remain immediate errors rather than being hidden for 5 seconds.
+    if (result != ARTICORE_OPERATION_FEEDBACK &&
+        result != ARTICORE_OPERATION_VERIFICATION) {
+      return result;
+    }
+    const auto now = Clock::now();
+    if (now >= deadline) break;
+    std::this_thread::sleep_until(
+        std::min(deadline, now + kClearFaultRetryDelay));
+  }
+
+  std::string last_error;
+  std::vector<std::string> failed_motors;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    last_error = last_operation_error_;
+    failed_motors = operation_failed_motors_;
+  }
+  std::ostringstream timeout;
+  timeout << "clear faults timed out after "
+          << std::chrono::duration_cast<std::chrono::milliseconds>(
+                 kClearFaultRetryWindow)
+                 .count()
+          << " ms";
+  if (!last_error.empty()) timeout << ": " << last_error;
+  return finish_maintenance(ARTICORE_OPERATION_CLEAR_FAULTS, result,
+                            timeout.str(), failed_motors, true);
 }
 
 int32_t SafetyRuntime::set_zero() {

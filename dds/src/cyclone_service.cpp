@@ -111,14 +111,28 @@ const char* diagnostic_operation(articore_wire_ControlOperation operation) {
   switch (operation) {
     case articore_wire_CONFIGURE_MODE: return "CONFIGURE_MODE";
     case articore_wire_CLEAR_FAULTS: return "CLEAR_FAULTS";
+    case articore_wire_SET_GRIPPERS: return "SET_GRIPPERS";
     default: return nullptr;
   }
 }
 
 const char* required_states(articore_wire_ControlOperation operation) {
-  return operation == articore_wire_CLEAR_FAULTS
-      ? "[READY, FAULT(non_estop)]"
-      : "[READY]";
+  switch (operation) {
+    case articore_wire_CLEAR_FAULTS:
+      return "[READY, FAULT(non_estop)]";
+    case articore_wire_SET_GRIPPERS:
+      return "[ENABLED, RUNNING, DEGRADED, PARTIALLY_ENABLED]";
+    default:
+      return "[READY]";
+  }
+}
+
+bool requires_pv_percentage_limit_semantics(
+    articore_wire_ControlOperation operation) {
+  return operation == articore_wire_SET_MAX_SPEED ||
+      operation == articore_wire_SET_MAX_ACCELERATION ||
+      operation == articore_wire_GET_MAX_SPEED ||
+      operation == articore_wire_GET_MAX_ACCELERATION;
 }
 
 }  // namespace
@@ -521,6 +535,14 @@ class CycloneService::Impl {
                      "control lease expired while request was queued");
         return;
       }
+    }
+    if (requires_pv_percentage_limit_semantics(operation) &&
+        request.protocol_minor < kPvPercentageLimitsProtocolMinor) {
+      finish_reply(
+          reply, ProtocolError::VersionMismatch,
+          "PV maximum speed and acceleration use percentages in protocol 1.3; "
+          "upgrade the SDK before calling this operation");
+      return;
     }
     if (config_.before_control_execute_for_testing) {
       config_.before_control_execute_for_testing();

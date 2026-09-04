@@ -55,9 +55,9 @@ class YunyiRuntimeCore final {
       const std::vector<float>& positions, float speed_percent);
   void set_speed_percent(float speed_percent);
   float speed_percent() const;
-  void set_max_speed(float max_speed_rad_s);
+  void set_max_speed(float percent);
   float max_speed() const;
-  void set_max_acceleration(float max_acceleration_rad_s2);
+  void set_max_acceleration(float percent);
   float max_acceleration() const;
 
   std::array<float, ARTICORE_PRODUCT_DUAL_ARM_DOF> solve_ik(

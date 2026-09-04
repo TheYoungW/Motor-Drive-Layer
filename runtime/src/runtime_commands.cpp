@@ -793,7 +793,8 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
           const float native_maximum_acceleration =
               maximum_acceleration / feedback_velocity_scale;
           ordinary_drive_velocity_limit = advance_ordinary_pv_drive_velocity(
-              arm_mailbox_.pv_drive_velocity_commands[i], position_error,
+              arm_mailbox_.pv_drive_velocity_commands[i], actual.vel,
+              position_error,
               native_maximum_velocity, native_maximum_acceleration, period_s);
           const float target_shift = std::abs(
               final_position - arm_mailbox_.pv_hold_target_positions[i]);
@@ -992,10 +993,15 @@ bool SafetyRuntime::run_arm_control_cycle(Clock::time_point now,
         arm_mailbox_.pv_stationary_hold[index] = 0;
         arm_mailbox_.pv_hold_target_positions[index] = desired;
         if (arm_mailbox_.pv_per_joint_profile) {
+          const float feedback_velocity_scale =
+              limits.velocity_feedback_scale;
           command->velocity_limit = advance_ordinary_pv_drive_velocity(
               arm_mailbox_.pv_drive_velocity_commands[index],
+              follower.vel,
               std::abs(command->target_position - follower.pos),
-              maximum_velocity, maximum_acceleration, period_s);
+              maximum_velocity / feedback_velocity_scale,
+              maximum_acceleration / feedback_velocity_scale,
+              period_s);
           arm_mailbox_.pv_drive_velocity_commands[index] =
               command->velocity_limit;
         } else {

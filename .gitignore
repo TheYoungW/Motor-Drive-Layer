@@ -1,8 +1,7 @@
 /target
 /cpp_damiao/build/
+# All native, cross-compiled, packaged, and archived build outputs live here.
 /build/
-/build-*/
-/builds/
 /releases/
 *.o
 *.a

@@ -131,8 +131,11 @@ std::string cyclone_uri(const ServiceConfig& config) {
   xml << "<CycloneDDS><Domain Id=\"" << config.domain_id
       << "\"><General><Interfaces>";
   for (std::size_t i = 0; i < config.network_interfaces.size(); ++i) {
+    const auto priority =
+        10 * static_cast<int>(config.network_interfaces.size() - i - 1);
     xml << "<NetworkInterface name=\"" << config.network_interfaces[i]
-        << "\" priority=\"" << (i == 0 ? "10" : "0") << "\"/>";
+        << "\" priority=\"" << priority
+        << "\" presence_required=\"false\"/>";
   }
   xml << "</Interfaces><AllowMulticast>true</AllowMulticast>"
          "</General><Internal><Watermarks><WhcHigh>500kB</WhcHigh>"

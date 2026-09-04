@@ -66,7 +66,10 @@ if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
   # will retry later without leaving dpkg in a failed state.
   if ! systemctl is-active --quiet articore-runtime.service; then
     if systemctl restart articore-can.service; then
-      systemctl start articore-runtime.service
+      # The Runtime unit may legitimately remain in ExecStartPre while a
+      # configured DDS interface associates and receives an address. Queue the
+      # job without making package installation wait for network readiness.
+      systemctl start --no-block articore-runtime.service
     else
       echo "articore-runtime-service: CAN unavailable; Runtime remains stopped until USB-CAN hotplug" >&2
     fi

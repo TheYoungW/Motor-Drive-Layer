@@ -15,14 +15,14 @@ SSH 用户：neardi
 仓库内当前 ARM64 产物约定为：
 
 ```text
-dist/arm64/articore-runtime-service_<version>_arm64.deb
+build/artifacts/arm64/articore-runtime-service_<version>_arm64.deb
 ```
 
-当前 1.1.0 产物：
+当前 1.2.7 产物：
 
 ```text
-dist/arm64/articore-runtime-service_1.1.0_arm64.deb
-SHA256: 7c05600c5512b071f792ba8481eaa0d674972324f40580ce84518ee7de9bb466
+build/artifacts/arm64/articore-runtime-service_1.2.7_arm64.deb
+SHA256: 296b011a01f7a59adff32d8ab174fc0f07f0509b95242919abae1e855007fc52
 ```
 
 ## 上传
@@ -31,7 +31,7 @@ SHA256: 7c05600c5512b071f792ba8481eaa0d674972324f40580ce84518ee7de9bb466
 
 ```bash
 scp \
-  dist/arm64/articore-runtime-service_1.1.0_arm64.deb \
+  build/artifacts/arm64/articore-runtime-service_1.2.7_arm64.deb \
   neardi@192.168.1.185:/home/neardi/runtime/
 ```
 
@@ -43,7 +43,7 @@ scp \
 先计算本地产物摘要：
 
 ```bash
-sha256sum dist/arm64/articore-runtime-service_1.1.0_arm64.deb
+sha256sum build/artifacts/arm64/articore-runtime-service_1.2.7_arm64.deb
 ```
 
 然后检查远端设备和产物：
@@ -52,10 +52,10 @@ sha256sum dist/arm64/articore-runtime-service_1.1.0_arm64.deb
 ssh neardi@192.168.1.185 '
   uname -m
   dpkg-deb -f \
-    /home/neardi/runtime/articore-runtime-service_1.1.0_arm64.deb \
+    /home/neardi/runtime/articore-runtime-service_1.2.7_arm64.deb \
     Package Version Architecture
   sha256sum \
-    /home/neardi/runtime/articore-runtime-service_1.1.0_arm64.deb
+    /home/neardi/runtime/articore-runtime-service_1.2.7_arm64.deb
 '
 ```
 
@@ -73,15 +73,15 @@ ssh neardi@192.168.1.185 '
 ```bash
 cd /home/neardi/runtime
 sudo apt-get -o Dpkg::Options::="--force-confnew" \
-  install ./articore-runtime-service_1.1.0_arm64.deb
+  install ./articore-runtime-service_1.2.7_arm64.deb
 ```
 
-`--force-confnew` 仅用于从已手工修改配置的旧测试包升级：它选择 1.1.0
-随包提供的新配置（`wlan0`、真实 USB-CAN 序列号和 0.875 数据相位采样点）。
+`--force-confnew` 仅用于从已手工修改配置的旧测试包升级：当前配置同时列出
+`eth0`、`eth1`、`wlan0`，并包含真实 USB-CAN 序列号和 0.875 数据相位采样点。
 如设备配置与本机不同，应先备份配置，并改用普通 `sudo apt install` 人工处理
 conffile 差异。
 
-1.1.0 的安装脚本会重新加载 udev、enable CAN/Runtime，并在 Runtime 尚未
+当前安装脚本会重新加载 udev、enable CAN/Runtime，并在 Runtime 尚未
 运行时先初始化 CAN，再启动 Runtime。若安装前 Runtime 已在运行，为避免升级
 过程打断机器人或清除锁存 FAULT，安装脚本不会自动重启它；应进入安全维护
 状态并取得操作授权后执行：
@@ -128,12 +128,13 @@ SDK 1.0.2 的清错示例使用显式维护连接并维持 lease/heartbeat，无
 配置；普通业务会话在清错成功后另行配置 PV/MIT。普通清错仍会拒绝急停锁存，
 拒绝回复会携带当前状态、故障原因和失败电机。
 
-## 1.1.0 板卡默认值、末端扫描与热插拔
+## 板卡默认值、末端扫描与热插拔
 
-- DDS 默认接口：`wlan0`。
+- DDS 默认接口优先级：`eth0` > `eth1` > `wlan0`。启动至少等待一张配置网卡
+  具有可用链路和全局 IP；未就绪的备用接口不会阻止服务启动。
 - USB-CAN VID/PID：`1d50:606f`。
-- 左侧序列号：`015213EF68D8345BBAA6D57818A4EC3A`。
-- 右侧序列号：`AEEDE4FD23DEA4AFCA6B3EAA55ABC28A`。
+- 左侧序列号：`AEEDE4FD23DEA4AFCA6B3EAA55ABC28A`。
+- 右侧序列号：`015213EF68D8345BBAA6D57818A4EC3A`。
 - CAN-FD：1 Mbit/s arbitration、5 Mbit/s data、数据相位 sample point 0.875。
 - Runtime 启动时分别扫描 `can-left` 和 `can-right`：ID 1..7 必须存在，ID 8
   作为可选夹爪独立识别；允许单侧夹爪。
